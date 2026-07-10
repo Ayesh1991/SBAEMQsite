@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AUREUM · Pathway to MD — SBA & EMQ Mastery for PGIM Part 2</title>
+  <meta name="description" content="Focused SBA and EMQ practice for O&G Registrars and Senior Registrars preparing for the PGIM MD Part 2 examination (and MRCOG Part 2 & 3): two practice modes, guideline-referenced rationale and a progression system that follows you across devices.">
+  <meta name="theme-color" content="#0a0c18">
+
+  <!-- Typography -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="css/styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>✦</text></svg>">
+
+  <!-- Motion & 3D (graceful fallback if a CDN is unreachable) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js" defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.min.js" defer></script>
+</head>
+<body>
+  <canvas id="bg-canvas" aria-hidden="true"></canvas>
+
+  <nav id="nav" aria-label="Main navigation"></nav>
+
+  <main id="view" class="view" aria-live="polite"></main>
+
+  <!-- App modules (order matters) -->
+  <script src="js/config.js" defer></script>
+  <script src="js/backend.js" defer></script>
+  <script src="js/data.js" defer></script>
+  <script src="js/progression.js" defer></script>
+  <script src="js/charts.js" defer></script>
+  <script src="js/fx.js" defer></script>
+  <script src="js/three-bg.js" defer></script>
+  <script src="js/quiz.js" defer></script>
+  <script src="js/dev-console.js" defer></script>
+  <script src="js/app.js" defer></script>
+</body>
+</html>

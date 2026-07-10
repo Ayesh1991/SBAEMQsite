@@ -1,0 +1,70 @@
+{
+  "schema": "ogr-paper-v1",
+  "topic": "Postpartum haemorrhage",
+  "folderTag": "PPH",
+  "category": "Obstetrics",
+  "subcategory": "Emergencies",
+  "source": "RCOG Green-top Guideline No. 52",
+  "description": "Prevention and stepwise medical and surgical management of primary postpartum haemorrhage.",
+  "created": "2026-07-02",
+  "sba": [
+    {
+      "id": "sba1",
+      "stem": "A woman has a 900 ml haemorrhage after vaginal birth. The uterus is atonic. Oxytocin bolus and infusion, ergometrine and repeated carboprost have all been given, and bleeding continues from an atonic uterus. She is in theatre and the uterine cavity is confirmed empty.",
+      "lead": "What is the most appropriate next step?",
+      "options": ["Bimanual uterine compression only", "Intrauterine balloon tamponade", "B-Lynch compression suture", "Uterine artery embolisation", "Peripartum hysterectomy"],
+      "answer": 1,
+      "rationale": "When uterotonics fail in atonic PPH, the first-line surgical step is intrauterine balloon tamponade: quick, effective in most cases and fertility-sparing. Compression sutures, stepwise devascularisation, embolisation and hysterectomy follow if tamponade fails.",
+      "hook": "Uterotonics failed, atonic -> balloon tamponade first."
+    },
+    {
+      "id": "sba2",
+      "stem": "A woman bleeds briskly immediately after a spontaneous vaginal birth. The uterus is well contracted at the umbilicus and the placenta appears complete. Blood loss is now 700 ml and ongoing.",
+      "lead": "What is the most appropriate next step?",
+      "options": ["Repeat oxytocin bolus", "Intramuscular carboprost", "Examination under anaesthesia for genital tract trauma", "Intrauterine balloon tamponade", "Bimanual compression"],
+      "answer": 2,
+      "rationale": "Bleeding despite a well-contracted uterus and complete placenta points to genital tract trauma. The priority is examination under anaesthesia to identify and repair cervical or vaginal lacerations.",
+      "hook": "Bleeding + contracted uterus -> think trauma, EUA."
+    },
+    {
+      "id": "sba3",
+      "stem": "A woman with an atonic uterus after birth of the placenta continues to bleed after oxytocin. She has severe asthma.",
+      "lead": "Which second-line uterotonic should be AVOIDED in her case?",
+      "options": ["Ergometrine", "Misoprostol", "Carboprost", "Tranexamic acid", "Oxytocin infusion"],
+      "answer": 2,
+      "rationale": "Carboprost (a prostaglandin F2-alpha analogue) can cause severe bronchospasm and is contraindicated in asthma. Misoprostol is a safe alternative uterotonic in asthmatic women.",
+      "hook": "Asthma -> avoid carboprost, use misoprostol."
+    },
+    {
+      "id": "sba4",
+      "stem": "A multiparous woman is about to have an elective caesarean section. She has had a previous PPH.",
+      "lead": "What is the most appropriate agent for active management of the third stage to reduce PPH risk?",
+      "options": ["No routine uterotonic", "Oxytocin 5 units by slow intravenous injection", "Ergometrine alone", "Misoprostol 600 micrograms orally", "Carboprost intramuscularly"],
+      "answer": 1,
+      "rationale": "For caesarean section, oxytocin 5 units by slow IV injection is recommended to encourage contraction and reduce blood loss. Additional agents are used if risk factors are present, but oxytocin is the standard prophylactic uterotonic.",
+      "hook": "Caesarean third stage -> oxytocin 5 units slow IV."
+    },
+    {
+      "id": "sba5",
+      "stem": "A woman with major obstetric haemorrhage of 1500 ml and ongoing bleeding is being resuscitated. Tranexamic acid has not yet been given.",
+      "lead": "What is the most appropriate role of tranexamic acid?",
+      "options": ["It is contraindicated in obstetric haemorrhage", "Give 1 g intravenously as early as possible", "Reserve it only for hysterectomy", "Give only if fibrinogen is normal", "Give 5 g intravenously as a single dose"],
+      "answer": 1,
+      "rationale": "Tranexamic acid 1 g IV should be given as early as possible in major PPH (a second dose if bleeding continues), based on the WOMAN trial showing reduced death from bleeding when given early.",
+      "hook": "Major PPH -> tranexamic acid 1 g IV early."
+    }
+  ],
+  "emq": [
+    {
+      "id": "emq1",
+      "theme": "Stepwise management of primary PPH",
+      "instruction": "For each scenario, select the SINGLE most appropriate next step. Each option may be used once, more than once, or not at all.",
+      "options": ["A. Bimanual uterine compression", "B. Oxytocin bolus and infusion", "C. Carboprost intramuscularly", "D. Misoprostol", "E. Intrauterine balloon tamponade", "F. B-Lynch compression suture", "G. Peripartum hysterectomy", "H. Examination under anaesthesia"],
+      "stems": [
+        { "stem": "First response to an atonic uterus and 600 ml blood loss with IV access and a contracted-then-relaxing uterus.", "answer": 1, "rationale": "The first pharmacological step for atony is oxytocin (bolus then infusion) alongside uterine massage.", "hook": "First-line atony drug -> oxytocin." },
+        { "stem": "Persistent atony after full medical therapy and a confirmed empty cavity, with the woman keen to preserve fertility.", "answer": 4, "rationale": "Balloon tamponade is the fertility-sparing first surgical measure after medical therapy fails.", "hook": "Medical failure, wants fertility -> balloon." },
+        { "stem": "Torrential atonic bleeding unresponsive to tamponade and compression sutures in an unstable multiparous woman who has completed her family.", "answer": 6, "rationale": "Life-threatening PPH unresponsive to conservative surgery mandates hysterectomy, sooner rather than later.", "hook": "Uncontrolled, family complete -> hysterectomy." }
+      ]
+    }
+  ]
+}
