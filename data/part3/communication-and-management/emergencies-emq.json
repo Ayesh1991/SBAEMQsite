@@ -1,0 +1,74 @@
+{
+  "id": "p3-cm-emergencies-emq",
+  "title": "Obstetric Emergencies",
+  "mode": "EMQ",
+  "timeLimitMinutes": 10,
+  "themes": [
+    {
+      "theme": "Management of postpartum haemorrhage",
+      "instructions": "For each scenario select the single most appropriate next step in management from the option list. Each option may be used once, more than once, or not at all.",
+      "options": [
+        "Bimanual uterine compression",
+        "Intravenous oxytocin bolus and infusion",
+        "Intramuscular carboprost 250 micrograms",
+        "Sublingual misoprostol 800 micrograms",
+        "Intrauterine balloon tamponade",
+        "B-Lynch compression suture",
+        "Uterine artery embolisation",
+        "Peripartum hysterectomy",
+        "Examination under anaesthesia for retained products or trauma",
+        "Tranexamic acid 1 g intravenously"
+      ],
+      "stems": [
+        {
+          "stem": "A woman has a 900 ml haemorrhage after vaginal birth. The uterus is atonic. Oxytocin bolus and infusion, ergometrine and repeated carboprost have all been given, and bleeding continues from an atonic uterus. She is in theatre and the uterine cavity is confirmed empty.",
+          "answer": 4,
+          "explanation": "When uterotonics fail in atonic PPH, the recommended first-line 'surgical' step is intrauterine balloon tamponade — quick, effective in the majority of cases, and fertility-sparing. B-Lynch suturing, stepwise devascularisation, embolisation and hysterectomy follow if tamponade fails."
+        },
+        {
+          "stem": "A woman bleeds briskly immediately after a spontaneous vaginal birth. The uterus is well contracted at the level of the umbilicus and the placenta appears complete. Blood loss is now 700 ml and ongoing.",
+          "answer": 8,
+          "explanation": "Bleeding despite a well-contracted uterus and complete placenta points to genital tract trauma (or rarely retained tissue). The priority is examination under anaesthesia to identify and repair cervical or vaginal lacerations — the second most common cause of primary PPH after atony."
+        },
+        {
+          "stem": "A woman with an atonic uterus after birth of the placenta continues to bleed. Oxytocin has been given. She has severe asthma. Which second-line uterotonic should be avoided in her case, prompting an alternative from the list?",
+          "answer": 3,
+          "explanation": "Carboprost (haemabate), a prostaglandin F2α analogue, can cause severe bronchospasm and is contraindicated in asthma. Misoprostol (a prostaglandin E1 analogue) is a safe alternative uterotonic in asthmatic women."
+        }
+      ]
+    },
+    {
+      "theme": "Maternal collapse",
+      "instructions": "For each collapsed obstetric patient, select the single most likely cause from the option list. Each option may be used once, more than once, or not at all.",
+      "options": [
+        "Amniotic fluid embolism",
+        "Pulmonary thromboembolism",
+        "Eclampsia",
+        "Total spinal anaesthesia",
+        "Local anaesthetic toxicity",
+        "Anaphylaxis",
+        "Haemorrhagic hypovolaemia",
+        "Cardiac arrhythmia",
+        "Hypoglycaemia",
+        "Septic shock"
+      ],
+      "stems": [
+        {
+          "stem": "During an artificial rupture of membranes at 5 cm, a multiparous woman suddenly becomes agitated, cyanosed and hypotensive, then collapses. She develops profuse bleeding from venepuncture sites within 30 minutes.",
+          "answer": 0,
+          "explanation": "Sudden cardiorespiratory collapse during labour or shortly after membrane rupture, followed by disseminated intravascular coagulation, is the classic presentation of amniotic fluid embolism."
+        },
+        {
+          "stem": "Ten minutes after a top-up of epidural local anaesthetic, a labouring woman develops circumoral tingling and tinnitus, becomes confused, then has a seizure followed by cardiovascular collapse.",
+          "answer": 4,
+          "explanation": "Perioral paraesthesia, tinnitus and agitation progressing to seizures and cardiovascular collapse after local anaesthetic administration indicate local anaesthetic systemic toxicity, treated with intravenous lipid emulsion (Intralipid) alongside resuscitation."
+        },
+        {
+          "stem": "A woman collapses on day 3 after an emergency caesarean section for a BMI of 42. She reported sudden pleuritic chest pain and breathlessness before losing consciousness. She is tachycardic with distended neck veins.",
+          "answer": 1,
+          "explanation": "Postoperative state, obesity and sudden pleuritic chest pain with right heart strain signs point to massive pulmonary embolism — a leading cause of direct maternal death; caesarean birth and raised BMI are major risk factors."
+        }
+      ]
+    }
+  ]
+}

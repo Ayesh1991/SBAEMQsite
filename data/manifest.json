@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "updated": "2026-07-10",
+  "curricula": [
+    {
+      "id": "part2",
+      "title": "MRCOG Part 2",
+      "subtitle": "Written examination — SBA & EMQ",
+      "sections": [
+        {
+          "id": "maternal-medicine",
+          "title": "Maternal Medicine",
+          "topics": [
+            {
+              "id": "p2-mm-hypertension-sba",
+              "title": "Hypertensive Disorders of Pregnancy",
+              "mode": "SBA",
+              "file": "part2/maternal-medicine/hypertension-sba.json"
+            },
+            {
+              "id": "p2-mm-medical-disorders-emq",
+              "title": "Medical Disorders in Pregnancy",
+              "mode": "EMQ",
+              "file": "part2/maternal-medicine/medical-disorders-emq.json"
+            }
+          ]
+        },
+        {
+          "id": "gynaecological-oncology",
+          "title": "Gynaecological Oncology",
+          "topics": [
+            {
+              "id": "p2-onc-cervical-sba",
+              "title": "Cervical Disease & Screening",
+              "mode": "SBA",
+              "file": "part2/gynaecological-oncology/cervical-sba.json"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "part3",
+      "title": "MRCOG Part 3",
+      "subtitle": "Clinical assessment — applied knowledge drills",
+      "sections": [
+        {
+          "id": "communication-and-management",
+          "title": "Communication & Management",
+          "topics": [
+            {
+              "id": "p3-cm-intrapartum-sba",
+              "title": "Intrapartum Care Scenarios",
+              "mode": "SBA",
+              "file": "part3/communication-and-management/intrapartum-sba.json"
+            },
+            {
+              "id": "p3-cm-emergencies-emq",
+              "title": "Obstetric Emergencies",
+              "mode": "EMQ",
+              "file": "part3/communication-and-management/emergencies-emq.json"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

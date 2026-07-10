@@ -1,0 +1,86 @@
+{
+  "id": "p2-mm-hypertension-sba",
+  "title": "Hypertensive Disorders of Pregnancy",
+  "mode": "SBA",
+  "timeLimitMinutes": 11,
+  "questions": [
+    {
+      "stem": "A 28-year-old primigravida at 34 weeks' gestation attends the day assessment unit with a blood pressure of 152/98 mmHg on two occasions 4 hours apart. Urine protein:creatinine ratio is 45 mg/mmol. She is asymptomatic and fetal assessment is normal. What is the most appropriate first-line antihypertensive agent?",
+      "options": [
+        "Intravenous hydralazine",
+        "Oral labetalol",
+        "Oral methyldopa",
+        "Oral nifedipine modified-release",
+        "Intravenous magnesium sulphate"
+      ],
+      "answer": 1,
+      "explanation": "She has pre-eclampsia with sustained hypertension above 140/90 mmHg. NICE NG133 recommends oral labetalol as the first-line antihypertensive in pregnancy unless contraindicated (e.g. asthma). Nifedipine is the usual second-line agent, and methyldopa third-line. Intravenous therapy is reserved for severe hypertension, and magnesium sulphate is for eclampsia prophylaxis, not blood pressure control.",
+      "reference": "NICE NG133 — Hypertension in pregnancy (2019, updated 2023)"
+    },
+    {
+      "stem": "A 36-year-old woman with chronic hypertension is planning pregnancy. She currently takes ramipril. She asks how her medication should be managed. What is the most appropriate advice?",
+      "options": [
+        "Continue ramipril until 12 weeks' gestation then switch",
+        "Continue ramipril throughout pregnancy at a reduced dose",
+        "Stop ramipril only if proteinuria develops",
+        "Switch to labetalol before conception or as soon as pregnancy is confirmed",
+        "Stop all antihypertensives before conception"
+      ],
+      "answer": 3,
+      "explanation": "ACE inhibitors are associated with congenital malformations and fetal renal impairment. Women planning pregnancy should switch to a pregnancy-safe agent (labetalol, nifedipine or methyldopa) before conception, or within 2 working days of confirming pregnancy. Stopping treatment altogether would leave chronic hypertension uncontrolled.",
+      "reference": "NICE NG133 — Hypertension in pregnancy"
+    },
+    {
+      "stem": "A 31-year-old woman at 29 weeks' gestation is admitted with pre-eclampsia. On the ward she has a generalised tonic-clonic seizure lasting 90 seconds. Intravenous access is in place. What is the most appropriate immediate management?",
+      "options": [
+        "Intravenous diazepam 10 mg",
+        "Intravenous magnesium sulphate 4 g loading dose over 5–15 minutes",
+        "Intravenous phenytoin loading dose",
+        "Immediate category 1 caesarean section",
+        "Intravenous labetalol 50 mg bolus"
+      ],
+      "answer": 1,
+      "explanation": "This is eclampsia. First-line treatment is magnesium sulphate: a 4 g intravenous loading dose over 5–15 minutes followed by an infusion of 1 g/hour for 24 hours after the last seizure or delivery. Benzodiazepines and phenytoin are not first-line. Delivery is indicated once the mother is stabilised — not as the immediate response to the seizure.",
+      "reference": "NICE NG133; MAGPIE Trial"
+    },
+    {
+      "stem": "A woman receiving a magnesium sulphate infusion for severe pre-eclampsia becomes drowsy. Her respiratory rate is 8 breaths per minute and patellar reflexes are absent. What is the most appropriate immediate treatment?",
+      "options": [
+        "Intravenous naloxone 400 micrograms",
+        "Stop the infusion and give 10 ml of 10% calcium gluconate intravenously",
+        "Halve the infusion rate and recheck magnesium levels",
+        "Intravenous flumazenil",
+        "Intubation and ventilation without other measures"
+      ],
+      "answer": 1,
+      "explanation": "Loss of deep tendon reflexes followed by respiratory depression indicates magnesium toxicity. Management is to stop the infusion immediately and give 10 ml of 10% calcium gluconate by slow intravenous injection as the antidote, with airway support as needed.",
+      "reference": "RCOG / NICE NG133"
+    },
+    {
+      "stem": "A 26-year-old primigravida at 12 weeks' gestation is assessed as being at high risk of pre-eclampsia because of chronic kidney disease. What is the most appropriate prophylactic intervention?",
+      "options": [
+        "Aspirin 75–150 mg daily from 12 weeks until delivery",
+        "Low molecular weight heparin from 12 weeks",
+        "Calcium supplementation alone",
+        "Vitamin C and E supplementation",
+        "No intervention; increased surveillance only"
+      ],
+      "answer": 0,
+      "explanation": "Women with one high-risk factor (chronic kidney disease, chronic hypertension, diabetes, autoimmune disease, or previous hypertensive disease of pregnancy) should take aspirin 75–150 mg daily from 12 weeks' gestation until birth. Antioxidant vitamins have not been shown to prevent pre-eclampsia.",
+      "reference": "NICE NG133 — Hypertension in pregnancy"
+    },
+    {
+      "stem": "A 33-year-old woman with gestational hypertension delivered vaginally 5 days ago and attends for a postnatal blood pressure review. She is breastfeeding. Her blood pressure is 158/102 mmHg. Which antihypertensive is most appropriate to commence?",
+      "options": [
+        "Ramipril is absolutely contraindicated while breastfeeding",
+        "Enalapril",
+        "Losartan",
+        "Amlodipine is the only safe choice",
+        "Methyldopa"
+      ],
+      "answer": 1,
+      "explanation": "NICE NG133 advises enalapril as a first-line antihypertensive in the postnatal period, including for breastfeeding women, with monitoring of maternal renal function. Angiotensin receptor blockers such as losartan should be avoided while breastfeeding. Methyldopa should be avoided postnatally because of its association with depression.",
+      "reference": "NICE NG133 — postnatal management"
+    }
+  ]
+}

@@ -1,0 +1,73 @@
+{
+  "id": "p3-cm-intrapartum-sba",
+  "title": "Intrapartum Care Scenarios",
+  "mode": "SBA",
+  "timeLimitMinutes": 9,
+  "questions": [
+    {
+      "stem": "You are the ST5 on labour ward. A midwife asks you to review a CTG for a low-risk primigravida at term in spontaneous labour, cervix 6 cm. The CTG shows a baseline of 142 bpm, variability 8 bpm, no accelerations, and variable decelerations dropping 70 bpm lasting 70 seconds with over 50% of contractions for the last 25 minutes. What is the most appropriate initial management?",
+      "options": [
+        "Immediate category 1 caesarean section",
+        "Fetal blood sampling",
+        "Conservative measures: change maternal position, intravenous fluids if hypotensive, and reassess",
+        "Commence oxytocin to expedite delivery",
+        "Continuous CTG only, review in 60 minutes"
+      ],
+      "answer": 2,
+      "explanation": "Variable decelerations with this depth and duration for over 50% of contractions make the trace suspicious/pathological depending on overall assessment, but the first step for presumed cord compression is conservative management — maternal repositioning, correcting hypotension and reducing uterine activity — with prompt reassessment and escalation if the trace does not improve. Immediate operative delivery is not yet indicated with normal baseline and variability.",
+      "reference": "NICE NG229 — Fetal monitoring in labour"
+    },
+    {
+      "stem": "During a vaginal breech delivery the arms are extended and cannot be delivered. Which manoeuvre is most appropriate?",
+      "options": [
+        "McRoberts manoeuvre",
+        "Løvset's manoeuvre",
+        "Mauriceau–Smellie–Veit manoeuvre",
+        "Rubin II manoeuvre",
+        "Fundal pressure"
+      ],
+      "answer": 1,
+      "explanation": "Løvset's manoeuvre — rotating the trunk while applying gentle downward traction so each arm sweeps across the chest and can be delivered — is the manoeuvre for extended (nuchal) arms in breech delivery. Mauriceau–Smellie–Veit is for delivery of the aftercoming head; McRoberts and Rubin II address shoulder dystocia in cephalic presentation.",
+      "reference": "RCOG Green-top Guideline No. 20b — Breech delivery"
+    },
+    {
+      "stem": "A woman with one previous lower segment caesarean section is in spontaneous labour aiming for vaginal birth. At 7 cm she develops constant severe abdominal pain between contractions, fresh vaginal bleeding, and the fetal head is no longer palpable at the previous station. The CTG shows a prolonged bradycardia. What is the most likely diagnosis?",
+      "options": [
+        "Placental abruption",
+        "Uterine rupture",
+        "Vasa praevia",
+        "Cord prolapse",
+        "Uterine hyperstimulation"
+      ],
+      "answer": 1,
+      "explanation": "Constant scar pain, vaginal bleeding, loss of the presenting part's station and an abnormal CTG in a woman labouring after a previous caesarean are the classic tetrad of uterine rupture, which mandates immediate laparotomy and delivery.",
+      "reference": "RCOG Green-top Guideline No. 45 — Birth after previous caesarean"
+    },
+    {
+      "stem": "You are called to a shoulder dystocia. McRoberts positioning and suprapubic pressure have failed after 60 seconds. What is the most appropriate next step?",
+      "options": [
+        "Fundal pressure with maternal pushing",
+        "Attempt delivery of the posterior arm or internal rotational manoeuvres",
+        "Zavanelli manoeuvre",
+        "Symphysiotomy",
+        "Immediate cleidotomy"
+      ],
+      "answer": 1,
+      "explanation": "After McRoberts and suprapubic pressure fail, the next steps in the RCOG algorithm are internal manoeuvres — delivery of the posterior arm or internal rotation (Rubin II / Woods' screw) — with an episiotomy considered to gain access. Fundal pressure is contraindicated; Zavanelli, symphysiotomy and cleidotomy are last-resort measures.",
+      "reference": "RCOG Green-top Guideline No. 42 — Shoulder dystocia"
+    },
+    {
+      "stem": "A primigravida has been actively pushing for 2 hours; the fetal head is in a direct occipito-anterior position at station +2 with no caput or moulding, and the CTG is normal. She is exhausted. Contractions are 4 in 10. What is the most appropriate management?",
+      "options": [
+        "Category 2 caesarean section",
+        "Assisted vaginal birth in the room, if criteria are met",
+        "Trial of assisted vaginal birth in theatre",
+        "Commence oxytocin and reassess in 1 hour",
+        "Encourage another hour of active pushing"
+      ],
+      "answer": 1,
+      "explanation": "Prolonged active second stage with maternal exhaustion is an indication for assisted vaginal birth. With a direct OA position at +2 station, no caput or moulding, and a normal CTG, this is a low- to mid-cavity lift-out that meets criteria for delivery in the room; a trial in theatre is for anticipated higher-risk extractions (e.g. rotational, mid-cavity with uncertainty).",
+      "reference": "RCOG Green-top Guideline No. 26 — Assisted vaginal birth"
+    }
+  ]
+}

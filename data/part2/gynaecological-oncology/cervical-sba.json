@@ -1,0 +1,73 @@
+{
+  "id": "p2-onc-cervical-sba",
+  "title": "Cervical Disease & Screening",
+  "mode": "SBA",
+  "timeLimitMinutes": 9,
+  "questions": [
+    {
+      "stem": "A 29-year-old woman has a routine cervical screening sample that is positive for high-risk HPV with normal cytology. What is the most appropriate next step?",
+      "options": [
+        "Immediate colposcopy referral",
+        "Repeat cervical screening in 12 months",
+        "Repeat cervical screening in 3 months",
+        "Return to routine 3-yearly recall",
+        "HPV vaccination followed by routine recall"
+      ],
+      "answer": 1,
+      "explanation": "In the NHS HPV primary screening programme, a high-risk HPV-positive sample with negative cytology is repeated in 12 months. Colposcopy is reserved for HPV-positive samples with abnormal cytology, or for persistent HPV positivity at 24 months.",
+      "reference": "NHS Cervical Screening Programme (HPV primary screening pathway)"
+    },
+    {
+      "stem": "A 34-year-old woman undergoes colposcopy for high-grade dyskaryosis. Biopsy confirms CIN 3 with the entire transformation zone visible. She has completed her family. What is the most appropriate treatment?",
+      "options": [
+        "Cold coagulation of the entire cervix",
+        "Large loop excision of the transformation zone (LLETZ)",
+        "Simple hysterectomy",
+        "Cone biopsy under general anaesthesia",
+        "Conservative management with 6-monthly colposcopy"
+      ],
+      "answer": 1,
+      "explanation": "LLETZ is the standard treatment for CIN 2–3: it is an outpatient excisional technique that provides a specimen for histology, unlike ablative methods. Hysterectomy is not first-line management of CIN, and cone biopsy is reserved for suspected glandular disease or when the transformation zone cannot be fully assessed.",
+      "reference": "NHSCSP Colposcopy and Programme Management guidance"
+    },
+    {
+      "stem": "A 31-year-old woman is diagnosed with a cervical squamous cell carcinoma. MRI shows a 3.5 cm tumour confined to the cervix with no parametrial or nodal involvement. What is the FIGO 2018 stage?",
+      "options": [
+        "Stage IA2",
+        "Stage IB1",
+        "Stage IB2",
+        "Stage IIA1",
+        "Stage IIB"
+      ],
+      "answer": 2,
+      "explanation": "FIGO 2018 subdivides stage IB by size: IB1 is invasive carcinoma <2 cm, IB2 is 2 to <4 cm, and IB3 is ≥4 cm, all confined to the cervix. A 3.5 cm tumour confined to the cervix is therefore stage IB2. Stage II implies extension beyond the uterus.",
+      "reference": "FIGO 2018 cervical cancer staging"
+    },
+    {
+      "stem": "A 28-year-old nulliparous woman with stage IA1 cervical squamous carcinoma (no lymphovascular space invasion) wishes to preserve fertility. Excision margins on the diagnostic LLETZ are involved. What is the most appropriate management?",
+      "options": [
+        "Radical hysterectomy with pelvic lymphadenectomy",
+        "Repeat excisional procedure to obtain clear margins",
+        "Chemoradiotherapy",
+        "Radical trachelectomy with laparoscopic lymphadenectomy",
+        "Surveillance with 6-monthly cytology alone"
+      ],
+      "answer": 1,
+      "explanation": "Stage IA1 disease without lymphovascular invasion carries minimal nodal risk and can be managed conservatively with complete local excision. With involved margins, a repeat excision (LLETZ or cone) is required to confirm complete removal. Trachelectomy is fertility-sparing surgery for selected IA2–IB1 tumours, not IA1.",
+      "reference": "BGCS Cervical Cancer Guidelines"
+    },
+    {
+      "stem": "A 42-year-old woman receiving follow-up after chemoradiotherapy for stage IIB cervical cancer asks about the most significant late toxicity affecting quality of life. Which is the most common late complication of pelvic radiotherapy?",
+      "options": [
+        "Vesicovaginal fistula",
+        "Bowel and bladder dysfunction with vaginal stenosis",
+        "Femoral head avascular necrosis",
+        "Lumbosacral plexopathy",
+        "Secondary pelvic sarcoma"
+      ],
+      "answer": 1,
+      "explanation": "Late effects of pelvic radiotherapy most commonly involve chronic bowel and urinary dysfunction (frequency, urgency, bleeding) and vaginal stenosis with sexual dysfunction; vaginal dilator use and topical oestrogen are advised. Fistulae, plexopathy and radiation-induced malignancy are recognised but much rarer.",
+      "reference": "RCOG / BGCS survivorship guidance"
+    }
+  ]
+}
