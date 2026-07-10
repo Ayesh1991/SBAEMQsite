@@ -38,7 +38,7 @@ window.AUREUM_CONFIG = {
      Fill these in from your Supabase project → Settings → API.
      Both blank ⇒ the app runs fully in this browser's localStorage. */
   supabase: {
-    url: '',
-    anonKey: ''
+    url: 'https://bhemrozypoglbcvkhpzk.supabase.co/rest/v1/',
+    anonKey: 'sb_publishable_F-TRsz9ZfSMlE6gTeA-iFQ_3uPtYIsj'
   }
 };
