@@ -18,6 +18,7 @@ window.AUREUM_CONFIG = {
     date: '2026-11-21'
   },
 
+   
   /* Developer console access — either the email OR the code unlocks it. */
   developer: {
     email: 'ayeshmantha@gmail.com',
