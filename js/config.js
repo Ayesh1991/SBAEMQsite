@@ -39,6 +39,6 @@ window.AUREUM_CONFIG = {
      Both blank ⇒ the app runs fully in this browser's localStorage. */
   supabase: {
     url: 'https://bhemrozypoglbcvkhpzk.supabase.co/rest/v1/',
-    anonKey: 'sb_publishable_F-TRsz9ZfSMlE6gTeA-iFQ_3uPtYIsj'
+    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJoZW1yb3p5cG9nbGJjdmtocHprIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM2NzUzNTcsImV4cCI6MjA5OTI1MTM1N30.ZRFvD3TJ_8qaRV_oUW8SMOtb-2yy4oMQAn9LLnd3A_Q'
   }
 };
