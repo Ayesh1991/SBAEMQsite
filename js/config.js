@@ -17,8 +17,7 @@ window.AUREUM_CONFIG = {
     // ISO date (local midnight). Change this to the next paper date.
     date: '2026-11-21'
   },
-
-   
+ 
   /* Developer console access — either the email OR the code unlocks it. */
   developer: {
     email: 'ayeshmantha@gmail.com',
