@@ -179,12 +179,16 @@ async function callGemini(system, user, model, env) {
   // the URL and Google returns a cryptic "cannot bind query parameter"
   // error — so fail fast with a message the developer can act on.
   const key = String(env.GEMINI_API_KEY).trim();
+  // A real key is a single token — either the classic "AIza…" or the newer
+  // "AQ.…" format. Only reject values that would corrupt the URL (spaces,
+  // separators) — e.g. text pasted from schema.sql by mistake.
   if (/\s/.test(key) || /[&?#'"();]/.test(key) || key.length < 20) {
-    throw new Error('The GEMINI_API_KEY set in Cloudflare is not a valid key — it should be a single "AIza…" string with no spaces. Re-paste your key from https://aistudio.google.com/apikey (Settings → Variables and secrets → GEMINI_API_KEY) and redeploy.');
+    throw new Error('The GEMINI_API_KEY set in Cloudflare is not a valid key — it should be a single "AIza…" or "AQ.…" string with no spaces. Re-paste your key from https://aistudio.google.com/apikey (Settings → Variables and secrets → GEMINI_API_KEY) and redeploy.');
   }
-  // Try the configured model first, then well-known fallbacks (handles a model
-  // name that isn't available on this key/region).
-  const models = [model || 'gemini-2.0-flash', 'gemini-2.0-flash-001', 'gemini-1.5-flash', 'gemini-flash-latest'];
+  // Try the configured model first, then well-known fallbacks. This handles a
+  // model that isn't available on this key/region AND the case where one model
+  // has no free-tier quota but another still does.
+  const models = [model || 'gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-flash-latest', 'gemini-2.0-flash-001'];
   const tried = new Set();
   let lastErr = 'unknown error';
   for (const m of models) {
@@ -213,9 +217,20 @@ async function callGemini(system, user, model, env) {
     // surface Google's real message (e.g. "API key not valid", "API not enabled")
     lastErr = data.error?.message || `HTTP ${res.status}`;
     const modelIssue = res.status === 404 || /not found|not supported|unknown name|unsupported|is not found/i.test(lastErr);
-    if (!modelIssue) break;   // auth/quota/other → don't waste calls on other models
+    const quota = res.status === 429 || /quota|exceeded|resource_exhausted/i.test(lastErr);
+    if (quota) { lastErr = quotaHint(lastErr); continue; }  // another model may still have free quota
+    if (!modelIssue) break;   // auth/other key problem → other models won't help
   }
   throw new Error('Gemini: ' + lastErr);
+}
+// Turn Google's verbose quota error into one actionable line. "limit: 0" means
+// the project was granted NO free-tier quota (usually the free tier isn't
+// offered in this account's region) — waiting never helps; billing is the fix.
+function quotaHint(msg) {
+  if (/limit:\s*0\b/.test(msg)) {
+    return 'Gemini free-tier quota is 0 for this Google project (the free tier isn\'t available in your region). Enable billing on the project behind this API key at https://aistudio.google.com/apikey — Gemini Flash is charged per use but costs a tiny amount. (Original: ' + msg.slice(0, 140) + '…)';
+  }
+  return 'Gemini rate/quota limit reached. ' + msg.slice(0, 200);
 }
 async function callClaude(system, user, model, env) {
   if (!env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not configured on the server.');
