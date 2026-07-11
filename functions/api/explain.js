@@ -173,6 +173,15 @@ function stripFences(s) { return s.replace(/^```[a-z]*\n?/i, '').replace(/```\s*
 
 async function callGemini(system, user, model, env) {
   if (!env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not configured on the server.');
+  // Guard against a mis-pasted secret: a real key is a single token
+  // (AIza… , no spaces / newlines / punctuation). If the stored value
+  // contains whitespace or SQL-ish characters, the request would corrupt
+  // the URL and Google returns a cryptic "cannot bind query parameter"
+  // error — so fail fast with a message the developer can act on.
+  const key = String(env.GEMINI_API_KEY).trim();
+  if (/\s/.test(key) || /[&?#'"();]/.test(key) || key.length < 20) {
+    throw new Error('The GEMINI_API_KEY set in Cloudflare is not a valid key — it should be a single "AIza…" string with no spaces. Re-paste your key from https://aistudio.google.com/apikey (Settings → Variables and secrets → GEMINI_API_KEY) and redeploy.');
+  }
   // Try the configured model first, then well-known fallbacks (handles a model
   // name that isn't available on this key/region).
   const models = [model || 'gemini-2.0-flash', 'gemini-2.0-flash-001', 'gemini-1.5-flash', 'gemini-flash-latest'];
@@ -180,7 +189,7 @@ async function callGemini(system, user, model, env) {
   let lastErr = 'unknown error';
   for (const m of models) {
     if (tried.has(m)) continue; tried.add(m);
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${env.GEMINI_API_KEY}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${encodeURIComponent(key)}`;
     let res, data;
     try {
       res = await fetch(url, {
