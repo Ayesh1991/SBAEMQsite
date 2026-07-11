@@ -1,22 +1,21 @@
 /* ============================================================
    ai.js — the "Explore with AI" panel.
 
-   Renders under a question's explanation (study mode + results
-   review). Talks ONLY to the Cloudflare function at
-   AUREUM_CONFIG.ai.apiBase (functions/api/explain.js) — the API
-   keys never touch the browser.
+   Talks ONLY to the Cloudflare function at AUREUM_CONFIG.ai.apiBase
+   (functions/api/explain.js) — API keys never touch the browser.
 
-   Everyone: Gemini Flash explanation + a short follow-up chat.
-   Developer only: a Claude toggle and downloadable study aids
-   (summary, chart, infographic, tree diagram).
+   Everyone: Gemini Flash explanation + follow-up chat.
+   Developer: a Claude toggle and downloadable study aids
+   (summary as Word/PDF/text, chart & tree as SVG/PNG, infographic).
    ============================================================ */
 
 const AI = (() => {
   const cfg = () => window.AUREUM_CONFIG?.ai || {};
-  let devKnown = null;                       // cache: is current user the developer?
+  let devKnown = null;
 
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const LOADING = `<div class="ai-loading"><span></span><span></span><span></span></div>`;
 
   async function isDev() {
     if (devKnown !== null) return devKnown;
@@ -24,7 +23,6 @@ const AI = (() => {
     return devKnown;
   }
 
-  /** Render the launcher button into `slot`, wired for question `ctx`. */
   async function attach(slot, ctx) {
     if (!slot || !cfg().enabled) return;
     if (Backend.mode !== 'cloud') {
@@ -47,11 +45,12 @@ const AI = (() => {
           </div>` : `<span class="ai-badge">Gemini Flash</span>`}
           <button class="ai-x" data-ai-close aria-label="Close">✕</button>
         </div>
-        <div class="ai-body" id="ai-body"><div class="ai-loading"><span></span><span></span><span></span></div></div>
-        <div class="ai-chat" id="ai-chat" hidden>
+        <div class="ai-body" id="ai-body">${LOADING}</div>
+        <div class="ai-chat" id="ai-chat">
+          <p class="ai-chat-label">💬 Chat to elaborate on this topic</p>
           <div class="ai-messages" id="ai-messages"></div>
           <form class="ai-ask" id="ai-ask">
-            <input type="text" id="ai-input" placeholder="Ask a follow-up… e.g. why not option D?" autocomplete="off">
+            <input type="text" id="ai-input" placeholder="Ask a follow-up… e.g. why not option D? / explain the physiology" autocomplete="off">
             <button class="btn btn-primary btn-sm" type="submit">Ask</button>
           </form>
           <p class="ai-followcount" id="ai-followcount"></p>
@@ -74,20 +73,25 @@ const AI = (() => {
     panel.querySelectorAll('.ai-prov').forEach(b => b.addEventListener('click', () => {
       panel.querySelectorAll('.ai-prov').forEach(x => x.classList.toggle('active', x === b));
       st.provider = b.dataset.prov;
+      runExplain();                                   // regenerate with the chosen provider
     }));
     panel.querySelector('#ai-ask').addEventListener('submit', e => { e.preventDefault(); ask(panel, ctx, st); });
     panel.querySelectorAll('[data-aid]').forEach(b => b.addEventListener('click', () => genAid(panel, ctx, st, b.dataset.aid)));
 
     FX.viewIn(panel);
-    // first: the one-shot explanation
-    const body = panel.querySelector('#ai-body');
-    try {
-      const { text } = await call({ action: 'explain', provider: st.provider, questionKey: ctx.questionKey, question: ctx });
-      body.innerHTML = renderMarkdown(text);
-      panel.querySelector('#ai-chat').hidden = false;
-      updateFollowCount(panel, st);
-    } catch (err) {
-      body.innerHTML = `<p class="ai-error">${esc(err.message)}</p>`;
+    updateFollowCount(panel, st);                     // chat is always available
+    await runExplain();
+
+    async function runExplain() {
+      const body = panel.querySelector('#ai-body');
+      body.innerHTML = LOADING;
+      try {
+        const { text } = await call({ action: 'explain', provider: st.provider, questionKey: ctx.questionKey, question: ctx });
+        body.innerHTML = renderMarkdown(text);
+      } catch (err) {
+        body.innerHTML = `<p class="ai-error">${esc(err.message)}</p>
+          <p class="ai-hint">${st.dev ? 'Try the other provider above, or ' : 'You can still '}ask a question in the chat below.</p>`;
+      }
     }
   }
 
@@ -114,6 +118,7 @@ const AI = (() => {
       updateFollowCount(panel, st);
     } catch (err) {
       holder.innerHTML = `<p class="ai-error">${esc(err.message)}</p>`;
+      st.messages.pop();
     }
     msgs.scrollTop = msgs.scrollHeight;
   }
@@ -124,28 +129,100 @@ const AI = (() => {
     const el = panel.querySelector('#ai-followcount');
     const form = panel.querySelector('#ai-ask');
     if (el) el.textContent = left > 0 ? `${left} follow-up${left > 1 ? 's' : ''} left for this question` : 'Follow-up limit reached for this question';
-    if (form) form.querySelector('input,button').disabled = left <= 0 ? true : false;
-    if (left <= 0 && form) form.querySelectorAll('input,button').forEach(x => x.disabled = true);
+    if (form) form.querySelectorAll('input,button').forEach(x => x.disabled = left <= 0);
   }
 
   /* ---------------- developer study aids ---------------- */
 
   async function genAid(panel, ctx, st, kind) {
     const out = panel.querySelector('#ai-aid-out');
-    out.innerHTML = `<div class="ai-loading sm"><span></span><span></span><span></span></div>`;
+    out.innerHTML = LOADING;
     try {
       const { artifact } = await call({ action: 'artifact', artifact: kind, provider: st.provider, questionKey: ctx.questionKey, question: ctx });
-      const blob = new Blob([artifact.content], { type: artifact.mime });
-      const url = URL.createObjectURL(blob);
-      let preview = '';
-      if (artifact.mime.includes('svg')) preview = `<div class="ai-aid-preview">${artifact.content}</div>`;
-      else if (artifact.mime.includes('html')) preview = `<iframe class="ai-aid-frame" sandbox></iframe>`;
-      out.innerHTML = `${preview}<a class="btn btn-gold btn-sm" download="${esc(artifact.filename)}" href="${url}">⬇ Download ${esc(kind)}</a>`;
-      const frame = out.querySelector('iframe');
-      if (frame) frame.srcdoc = artifact.content;
+      if (kind === 'summary') return renderSummaryAid(out, artifact, ctx);
+      renderMediaAid(out, artifact, kind);
     } catch (err) {
       out.innerHTML = `<p class="ai-error">${esc(err.message)}</p>`;
     }
+  }
+
+  function renderSummaryAid(out, artifact, ctx) {
+    const md = artifact.content;
+    const html = renderMarkdown(md);
+    const title = ctx.paperTitle || 'Summary';
+    out.innerHTML = `
+      <div class="ai-summary">
+        <div class="ai-summary-doc">${html}</div>
+        <div class="ai-aid-actions">
+          <button class="btn btn-gold btn-sm" data-dl="doc">⬇ Word (.doc)</button>
+          <button class="btn btn-ghost btn-sm" data-dl="pdf">🖨 Print / Save as PDF</button>
+          <button class="btn btn-ghost btn-sm" data-dl="txt">⬇ Text (.txt)</button>
+        </div>
+      </div>`;
+    out.querySelector('[data-dl="doc"]').addEventListener('click', () => download(wordBlob(html, title), slug(title) + '-summary.doc'));
+    out.querySelector('[data-dl="txt"]').addEventListener('click', () => download(new Blob([mdToText(md)], { type: 'text/plain' }), slug(title) + '-summary.txt'));
+    out.querySelector('[data-dl="pdf"]').addEventListener('click', () => printHtml(printableDoc(title + ' — revision summary', html)));
+  }
+
+  function renderMediaAid(out, artifact, kind) {
+    const blob = new Blob([artifact.content], { type: artifact.mime });
+    const url = URL.createObjectURL(blob);
+    const isSvg = artifact.mime.includes('svg');
+    const isHtml = artifact.mime.includes('html');
+    out.innerHTML = `
+      ${isSvg ? `<div class="ai-aid-preview">${artifact.content}</div>` : ''}
+      ${isHtml ? `<iframe class="ai-aid-frame" sandbox></iframe>` : ''}
+      <div class="ai-aid-actions">
+        <a class="btn btn-gold btn-sm" download="${esc(artifact.filename)}" href="${url}">⬇ Download ${esc(kind)}</a>
+        ${isSvg ? `<button class="btn btn-ghost btn-sm" data-png>⬇ PNG</button>` : ''}
+        ${isHtml ? `<button class="btn btn-ghost btn-sm" data-print>🖨 Print / PDF</button>` : ''}
+      </div>`;
+    const frame = out.querySelector('iframe'); if (frame) frame.srcdoc = artifact.content;
+    out.querySelector('[data-png]')?.addEventListener('click', () => svgToPng(artifact.content, artifact.filename.replace(/\.svg$/, '.png')));
+    out.querySelector('[data-print]')?.addEventListener('click', () => printHtml(artifact.content));
+  }
+
+  /* ---------------- download helpers ---------------- */
+
+  function download(blob, filename) {
+    const u = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = u; a.download = filename; document.body.appendChild(a); a.click();
+    setTimeout(() => { a.remove(); URL.revokeObjectURL(u); }, 1500);
+  }
+  function wordBlob(bodyHtml, title) {
+    const doc = `<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'><head><meta charset='utf-8'><title>${esc(title)}</title></head>` +
+      `<body style="font-family:Calibri,Arial,sans-serif;font-size:12pt;color:#111;line-height:1.5"><h1 style="font-size:18pt">${esc(title)} — revision summary</h1>${bodyHtml}</body></html>`;
+    return new Blob(['﻿' + doc], { type: 'application/msword' });
+  }
+  function mdToText(md) { return String(md).replace(/[*_`>#]/g, '').replace(/\n{3,}/g, '\n\n').trim(); }
+  function printableDoc(title, bodyHtml) {
+    return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title>` +
+      `<style>body{font-family:Georgia,'Times New Roman',serif;max-width:720px;margin:40px auto;padding:0 20px;color:#111;line-height:1.65}` +
+      `h1{font-size:20pt;margin-bottom:10px}h2,h3,strong{color:#0a1a3a}ul{margin:8px 0 14px 22px}li{margin-bottom:4px}` +
+      `@media print{body{margin:0}}</style></head><body><h1>${esc(title)}</h1>${bodyHtml}` +
+      `<script>window.onload=function(){setTimeout(function(){window.print()},300)}<\/script></body></html>`;
+  }
+  function printHtml(html) {
+    const w = window.open('', '_blank');
+    if (!w) { alert('Please allow pop-ups for this site to print / save as PDF.'); return; }
+    w.document.open();
+    w.document.write(/<html/i.test(html) ? html : printableDoc('AUREUM study aid', html));
+    w.document.close();
+  }
+  function slug(s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'aureum'; }
+  function svgToPng(svg, filename) {
+    const img = new Image();
+    const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    img.onload = () => {
+      const w = img.naturalWidth || 800, h = img.naturalHeight || 600;
+      const c = document.createElement('canvas'); c.width = w * 2; c.height = h * 2;
+      const g = c.getContext('2d'); g.scale(2, 2);
+      g.fillStyle = '#12152b'; g.fillRect(0, 0, w, h); g.drawImage(img, 0, 0, w, h);
+      c.toBlob(b => { if (b) download(b, filename); URL.revokeObjectURL(url); }, 'image/png');
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); alert('Could not convert this diagram to PNG — use the SVG download.'); };
+    img.src = url;
   }
 
   /* ---------------- transport ---------------- */
@@ -171,10 +248,10 @@ const AI = (() => {
 
   function renderMarkdown(md) {
     let h = esc(md);
-    h = h.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/\*(.+?)\*/g, '<em>$1</em>');
+    h = h.replace(/^###\s+(.+)$/gm, '<h4>$1</h4>').replace(/^##\s+(.+)$/gm, '<h3>$1</h3>').replace(/^#\s+(.+)$/gm, '<h3>$1</h3>');
+    h = h.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/(^|[^*])\*(?!\s)(.+?)\*/g, '$1<em>$2</em>');
     h = h.replace(/`(.+?)`/g, '<code>$1</code>');
-    // bullet lists
-    h = h.replace(/(?:^|\n)[-•]\s+(.+)/g, '\n<li>$1</li>');
+    h = h.replace(/(?:^|\n)\s*[-•]\s+(.+)/g, '\n<li>$1</li>');
     h = h.replace(/(<li>[\s\S]*?<\/li>)/g, m => '<ul>' + m.replace(/\n/g, '') + '</ul>');
     h = h.replace(/\n{2,}/g, '</p><p>').replace(/\n/g, '<br>');
     return '<p>' + h + '</p>';

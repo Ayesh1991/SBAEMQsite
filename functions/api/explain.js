@@ -173,21 +173,40 @@ function stripFences(s) { return s.replace(/^```[a-z]*\n?/i, '').replace(/```\s*
 
 async function callGemini(system, user, model, env) {
   if (!env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not configured on the server.');
-  const m = model || 'gemini-2.0-flash';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${env.GEMINI_API_KEY}`;
-  const res = await fetch(url, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: system }] },
-      contents: [{ role: 'user', parts: [{ text: user }] }],
-      generationConfig: { temperature: 0.4, maxOutputTokens: 1200 }
-    })
-  });
-  if (!res.ok) throw new Error(`Gemini error (HTTP ${res.status}). Check GEMINI_API_KEY and free-tier limits.`);
-  const data = await res.json();
-  const text = data.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
-  if (!text) throw new Error('Gemini returned an empty response.');
-  return text;
+  // Try the configured model first, then well-known fallbacks (handles a model
+  // name that isn't available on this key/region).
+  const models = [model || 'gemini-2.0-flash', 'gemini-2.0-flash-001', 'gemini-1.5-flash', 'gemini-flash-latest'];
+  const tried = new Set();
+  let lastErr = 'unknown error';
+  for (const m of models) {
+    if (tried.has(m)) continue; tried.add(m);
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${env.GEMINI_API_KEY}`;
+    let res, data;
+    try {
+      res = await fetch(url, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: system }] },
+          contents: [{ role: 'user', parts: [{ text: user }] }],
+          generationConfig: { temperature: 0.4, maxOutputTokens: 1400 }
+        })
+      });
+      data = await res.json().catch(() => ({}));
+    } catch (e) { lastErr = String(e.message || e); continue; }
+
+    if (res.ok) {
+      const text = (data.candidates?.[0]?.content?.parts || []).map(p => p.text).join('') || '';
+      if (text) return text;
+      const fr = data.candidates?.[0]?.finishReason;
+      lastErr = fr ? `no text (finishReason: ${fr})` : 'empty response';
+      continue;
+    }
+    // surface Google's real message (e.g. "API key not valid", "API not enabled")
+    lastErr = data.error?.message || `HTTP ${res.status}`;
+    const modelIssue = res.status === 404 || /not found|not supported|unknown name|unsupported|is not found/i.test(lastErr);
+    if (!modelIssue) break;   // auth/quota/other → don't waste calls on other models
+  }
+  throw new Error('Gemini: ' + lastErr);
 }
 async function callClaude(system, user, model, env) {
   if (!env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not configured on the server.');
