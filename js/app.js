@@ -36,6 +36,7 @@
     if (!match) { location.hash = '#/'; return; }
     const user = await Backend.currentUser();
     if (!match.public && !user) { location.hash = '#/auth'; return; }
+    await syncExamDate(user);
 
     ThreeBG.setMood(match.fn === renderLanding ? 'hero' : 'interior');
     renderNav(user);
@@ -60,7 +61,7 @@
     const isDev = user && (user.email === cfg.developer.email || sessionStorage.getItem('aureum-dev') === '1');
     nav.innerHTML = `
       <a class="brand" href="#/">
-        <span class="brand-mark">✦</span> ${esc(cfg.brandName)}<span class="brand-sub">${esc(cfg.brandTag)}</span>
+        <img class="brand-logo" src="assets/logo-mark.svg" alt=""> ${esc(cfg.brandName)}<span class="brand-sub">${esc(cfg.brandTag)}</span>
       </a>
       <div class="nav-links">
         ${user ? `
@@ -78,14 +79,31 @@
 
   /* ================= countdown ================= */
 
-  // The exam date is configurable: a value chosen on the home page is
-  // remembered per-browser and overrides the default in config.js.
+  // The exam date is configurable on the home page. When signed in it is
+  // saved to the user's profile (so it survives re-login on any device);
+  // localStorage is the offline/logged-out cache.
+  let examDateCache = null;
   function getExamDate() {
-    try { const v = localStorage.getItem('aureum.examDate'); if (v) return v; } catch { /* ignore */ }
+    if (examDateCache) return examDateCache;
+    try { const v = localStorage.getItem('aureum.examDate'); if (v) return (examDateCache = v); } catch { /* ignore */ }
     return cfg.exam.date;
   }
-  function setExamDate(iso) {
+  async function setExamDate(iso) {
+    examDateCache = iso;
     try { localStorage.setItem('aureum.examDate', iso); } catch { /* ignore */ }
+    try { if (await Backend.currentUser()) await Backend.setExamDate(iso); } catch { /* ignore */ }
+  }
+  // On login, the profile's exam date wins; if the profile has none yet,
+  // push the local choice up so it persists from now on.
+  async function syncExamDate(user) {
+    if (!user) return;
+    if (user.examDate) {
+      examDateCache = user.examDate;
+      try { localStorage.setItem('aureum.examDate', user.examDate); } catch { /* ignore */ }
+    } else {
+      const local = getExamDate();
+      if (local && local !== cfg.exam.date) { try { await Backend.setExamDate(local); } catch { /* ignore */ } }
+    }
   }
   function examCountdown() {
     const target = new Date(getExamDate() + 'T00:00:00');
@@ -222,14 +240,34 @@
         errBox.hidden = true;
         const btn = e.target.querySelector('button[type=submit]'); btn.disabled = true;
         try {
-          if (mode === 'signup') await Backend.signUp({ name: f.get('name'), email: f.get('email'), password: f.get('password'), position: f.get('position') });
-          else await Backend.signIn(f.get('email'), f.get('password'));
-          location.hash = '#/dashboard';
+          if (mode === 'signup') {
+            const { needsConfirmation } = await Backend.signUp({ name: f.get('name'), email: f.get('email'), password: f.get('password'), position: f.get('position') });
+            if (needsConfirmation) { showVerifyNotice(f.get('email')); return; }
+            location.hash = '#/dashboard';
+          } else {
+            await Backend.signIn(f.get('email'), f.get('password'));
+            location.hash = '#/dashboard';
+          }
         } catch (err) {
           errBox.textContent = err.message; errBox.hidden = false; btn.disabled = false;
           FX.shake(errBox.closest('.auth-card'));
         }
       });
+      function showVerifyNotice(email) {
+        view.innerHTML = `
+          <section class="page narrow auth-page" data-animate>
+            <div class="auth-card verify-card">
+              <div class="verify-icon">✉️</div>
+              <h1 class="page-title">Email has been sent — please verify</h1>
+              <p class="muted">We've sent a verification link to <strong>${esc(email)}</strong>.
+                 Open it to activate your account, then come back and sign in.</p>
+              <p class="tiny muted">Can't find it? Check your spam folder. The link can take a minute to arrive.</p>
+              <button class="btn btn-gold btn-block" id="verify-back">Back to sign in</button>
+            </div>
+          </section>`;
+        view.querySelector('#verify-back').addEventListener('click', () => { mode = 'signin'; paint(); FX.viewIn(view); });
+        FX.viewIn(view);
+      }
     }
     paint();
   }
@@ -492,6 +530,18 @@
     const progress = await Backend.getProgress();
     const pStats = Progression.paperStats(progress);
 
+    // saved (resumable) sessions for this paper, keyed by "kind:mode"
+    const sessions = {};
+    try {
+      (await Backend.listSessions()).forEach(s => {
+        if (s.key.startsWith(paperId + ':')) {
+          const [, kind, mode] = s.key.split(':');
+          const st = s.state || {};
+          if ((st.answered || 0) > 0 && st.answered < st.total) sessions[kind + ':' + mode] = st;
+        }
+      });
+    } catch { /* optional */ }
+
     function bestFor(kind) { const s = pStats[paperId + ':' + kind]; return s ? `Best ${s.best}% · ${s.attempts} attempt${s.attempts > 1 ? 's' : ''}` : 'Not attempted yet'; }
 
     view.innerHTML = `
@@ -505,18 +555,39 @@
         </header>
 
         <div class="run-grid">
-          ${sbaN ? runCard('SBA', sbaN, bestFor('SBA'), paperId) : ''}
-          ${emqN ? runCard('EMQ', emqN, bestFor('EMQ'), paperId) : ''}
+          ${sbaN ? runCard('SBA', sbaN, bestFor('SBA'), paperId, sessions) : ''}
+          ${emqN ? runCard('EMQ', emqN, bestFor('EMQ'), paperId, sessions) : ''}
         </div>
         <p class="muted mode-note">
           <strong>Exam mode</strong> is timed and shows feedback at the end.
           <strong>Study mode</strong> shows the answer and rationale immediately after each question.
+          A half-finished paper is saved automatically so you can resume it here.
         </p>
       </section>`;
+
+    // restart handlers
+    view.querySelectorAll('[data-restart]').forEach(b => b.addEventListener('click', async e => {
+      e.preventDefault();
+      const key = b.dataset.restart;
+      try { await Backend.clearSession(key); } catch {}
+      location.hash = '#/quiz/' + key.split(':').map(encodeURIComponent).join('/');
+    }));
   }
 
-  function runCard(kind, n, best, paperId) {
+  function runCard(kind, n, best, paperId, sessions) {
     const mins = Math.max(5, Math.round(n * 1.8));
+    function actions(mode, label) {
+      const s = sessions[kind + ':' + mode];
+      const href = `#/quiz/${encodeURIComponent(paperId)}/${kind}/${mode}`;
+      const cls = mode === 'exam' ? 'btn-gold' : 'btn-primary';
+      if (s) {
+        return `<div class="resume-pair">
+          <a class="btn ${cls}" href="${href}">Resume ${label} · ${s.answered}/${s.total}</a>
+          <a class="btn btn-ghost btn-sm" href="#" data-restart="${paperId}:${kind}:${mode}">Restart</a>
+        </div>`;
+      }
+      return `<a class="btn ${cls}" href="${href}">${label}${mode === 'exam' ? ' · ~' + mins + ' min' : ''}</a>`;
+    }
     return `
       <div class="run-card">
         <div class="run-head">
@@ -525,8 +596,8 @@
         </div>
         <p class="muted run-best">${best}</p>
         <div class="run-actions">
-          <a class="btn btn-gold" href="#/quiz/${encodeURIComponent(paperId)}/${kind}/exam">Exam mode · ~${mins} min</a>
-          <a class="btn btn-primary" href="#/quiz/${encodeURIComponent(paperId)}/${kind}/study">Study mode</a>
+          ${actions('exam', 'Exam mode')}
+          ${actions('study', 'Study mode')}
         </div>
       </div>`;
   }
@@ -537,9 +608,16 @@
     const loaded = await Data.loadPaper(paperId);
     const questions = Data.flatten(loaded.paper, kind);
     if (!questions.length) throw new Error(`This paper has no ${kind} questions.`);
+    const sessionKey = `${paperId}:${kind}:${mode}`;
+    let resume = null;
+    try {
+      const saved = await Backend.loadSession(sessionKey);
+      if (saved && (saved.answered || 0) > 0 && saved.answered < saved.total) resume = saved;
+      else if (saved) { await Backend.clearSession(sessionKey); }   // stale/complete
+    } catch { /* optional */ }
     view.innerHTML = '';
     Quiz.start(view, loaded, questions, {
-      mode, kind,
+      mode, kind, sessionKey, resume,
       timeLimitMinutes: Math.max(5, Math.round(questions.length * 1.8)),
       onFinish: async (attempt) => {
         const summary = await Backend.recordAttempt(attempt);
@@ -599,6 +677,8 @@
                   ${q.rationale ? `<p class="r-expl">${esc(q.rationale)}</p>` : ''}
                   ${q.hook ? `<p class="r-hook">💡 ${esc(q.hook)}</p>` : ''}
                   ${q.reference ? `<p class="r-ref">§ ${esc(q.reference)}</p>` : ''}
+                  <div class="r-note" data-note-key="${esc(attempt.paperId + ':' + attempt.kind + ':' + q.number)}"></div>
+                  <div class="ai-slot" data-ai-i="${i}"></div>
                 </article>`;
             }).join('')}
           </div>` : `<p class="muted" data-animate>This paper is no longer published, so the review is unavailable.</p>`}
@@ -606,6 +686,29 @@
 
     FX.scoreReveal(document.getElementById('score-big'), attempt.percent);
     if (attempt.percent >= 70) FX.confetti(view.querySelector('.results-head'));
+
+    // mount AI panels + notes on each reviewed question
+    if (questions) {
+      let notes = {};
+      try { notes = await Backend.getNotesForPaper(attempt.paperId + ':' + attempt.kind + ':'); } catch { /* optional */ }
+      questions.forEach((q, i) => {
+        const d = attempt.detail[i] || {};
+        const item = view.querySelectorAll('.review-item')[i];
+        if (!item) return;
+        // note display
+        const nKey = attempt.paperId + ':' + attempt.kind + ':' + q.number;
+        const noteEl = item.querySelector('.r-note');
+        if (notes[nKey]) noteEl.innerHTML = `<div class="note-shown">🗒 <span>${esc(notes[nKey])}</span></div>`;
+        // AI
+        if (window.AI && cfg.ai?.enabled) {
+          AI.attach(item.querySelector('.ai-slot'), {
+            questionKey: nKey, kind: q.kind, theme: q.theme || '', stem: q.stem, lead: q.lead || '',
+            options: q.options, answer: q.answer, chosen: d.chosen, rationale: q.rationale || '',
+            hook: q.hook || '', reference: q.reference || '', paperTitle: attempt.paperTitle, preLettered: q.preLettered
+          });
+        }
+      });
+    }
   }
 
   /* ================= profile ================= */

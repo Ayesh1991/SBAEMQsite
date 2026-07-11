@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Aureum mark">
+  <defs>
+    <linearGradient id="am-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#161a34"/>
+      <stop offset="1" stop-color="#0a0c18"/>
+    </linearGradient>
+    <linearGradient id="am-spark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5eead4"/>
+      <stop offset="0.55" stop-color="#a78bfa"/>
+      <stop offset="1" stop-color="#f4c95d"/>
+    </linearGradient>
+    <radialGradient id="am-glow" cx="0.5" cy="0.42" r="0.6">
+      <stop offset="0" stop-color="#a78bfa" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#a78bfa" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="16" y="16" width="480" height="480" rx="116" fill="url(#am-bg)"/>
+  <rect x="16.5" y="16.5" width="479" height="479" rx="115.5" fill="none" stroke="#ffffff" stroke-opacity="0.10" stroke-width="1"/>
+  <circle cx="256" cy="238" r="180" fill="url(#am-glow)"/>
+
+  <!-- four-point sparkle: two crossed concave diamonds -->
+  <g fill="url(#am-spark)">
+    <path d="M256 96 C 268 176, 336 244, 416 256 C 336 268, 268 336, 256 416 C 244 336, 176 268, 96 256 C 176 244, 244 176, 256 96 Z"/>
+  </g>
+  <!-- small secondary sparkle -->
+  <g fill="#f4c95d">
+    <path d="M372 138 C 376 158, 390 172, 410 176 C 390 180, 376 194, 372 214 C 368 194, 354 180, 334 176 C 354 172, 368 158, 372 138 Z" opacity="0.9"/>
+  </g>
+  <!-- gold orbit dot -->
+  <circle cx="150" cy="360" r="12" fill="#f4c95d"/>
+</svg>

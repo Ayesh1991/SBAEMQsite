@@ -136,3 +136,69 @@ The landing-page countdown and the dashboard chip update automatically.
 | Accounts & progress | ✅ (this browser) | ✅ (all devices) | — |
 | Publish via manual paste | ✅ (this browser) | ✅ (everyone) | — |
 | Scan & import from Drive | snapshot only | snapshot only | ✅ live |
+
+---
+
+## 6. Explore with AI (Gemini Flash + optional Claude)
+
+This adds a **✨ Explore with AI** button under each question's explanation
+(study mode + results review). Everyone gets **Gemini Flash**; only the developer
+email gets a **Claude** toggle and downloadable study aids (summary, chart,
+infographic, tree). The keys live **only** in Cloudflare — never in the browser.
+
+### 6.1 Run the updated database script
+Re-run [`supabase/schema.sql`](../supabase/schema.sql) in the Supabase SQL Editor.
+It adds the AI cache + usage tables and the `bump_ai_usage` function (and is safe
+to run again — it only adds what's missing).
+
+### 6.2 Get a Gemini API key (free)
+1. Go to **https://aistudio.google.com/apikey** (sign in with your Google account).
+2. Click **Create API key** → **Create API key in new project** (or pick your
+   existing "aureum" project).
+3. Copy the key (starts with `AIza…`).
+
+> The Gemini **free tier** is generous (Flash models allow a high daily request
+> count). The app also **caches** each question's first explanation and
+> **rate-limits** per user per day (`ai.dailyLimit` in `js/config.js`, default 40),
+> so a 7-person group stays comfortably inside the free tier.
+
+### 6.3 (Optional, developer-only) Get a Claude key
+1. Go to **https://console.anthropic.com** → **API Keys** → **Create Key**.
+2. Copy it (starts with `sk-ant-…`). This is **paid**, but only *you* can trigger
+   Claude, so the cost is tiny.
+
+### 6.4 Paste the keys into Cloudflare
+Cloudflare → **Workers & Pages → sbaemqsite → Settings → Variables and secrets**
+→ **Add**. Add each of these as **Secret** (type = Secret), Production:
+
+| Variable name | Value |
+|---|---|
+| `GEMINI_API_KEY` | your `AIza…` key |
+| `SUPABASE_URL` | `https://bhemrozypoglbcvkhpzk.supabase.co` |
+| `SUPABASE_ANON_KEY` | your Supabase anon public key (same one in `js/config.js`) |
+| `DEV_EMAIL` | `ayeshmantha@gmail.com` |
+| `ANTHROPIC_API_KEY` | *(optional)* your `sk-ant-…` key — only if you want Claude |
+
+(You already added `GOOGLE_API_KEY` for Drive — leave it; it's separate.)
+
+Then **Deployments → ⋯ → Retry deployment** so the new variables load.
+
+### 6.5 Verify
+1. Sign in on the site, do a question in **Study mode**.
+2. Under the explanation, click **✨ Explore with AI** → an explanation should
+   stream in, with a follow-up box.
+3. As the developer you'll also see the **Gemini / Claude** toggle and the
+   **Study aids** buttons (Summary / Chart / Infographic / Tree) that download files.
+
+### How the developer-only gate is enforced
+The browser sends your Supabase login token to the function; the function asks
+Supabase who you are and compares your email to `DEV_EMAIL`. So a candidate
+**cannot** flip a switch to spend your Claude credits — non-developers are always
+served Gemini, and study aids return "developer only".
+
+### Tuning
+`js/config.js` → `ai` block:
+- `enabled` — master on/off.
+- `dailyLimit` — AI calls per user per day (free-tier guard).
+- `followUpLimit` — follow-up chat messages per question per user.
+- `geminiModel` / `claudeModel` — model ids.

@@ -175,6 +175,17 @@
           { "id": "t-tog-older", "title": "TOG 2016–2022", "tags": ["TOG 2022", "TOG 2021", "TOG 2020", "TOG 2019", "TOG 2018", "TOG 2017", "TOG 2016"] }
         ]}
       ]
+    },
+    {
+      "id": "mock",
+      "title": "Mock Papers",
+      "sections": [
+        { "id": "mock-full", "title": "Full Mock Papers", "topics": [
+          { "id": "t-mock-1", "title": "Mock Paper 1", "tags": ["Mock Paper 1", "Mock 1"] },
+          { "id": "t-mock-2", "title": "Mock Paper 2", "tags": ["Mock Paper 2", "Mock 2"] },
+          { "id": "t-mock-3", "title": "Mock Paper 3", "tags": ["Mock Paper 3", "Mock 3"] }
+        ]}
+      ]
     }
   ]
 }

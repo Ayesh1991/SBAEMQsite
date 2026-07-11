@@ -45,6 +45,42 @@ const DevConsole = (() => {
         <div id="dev-list" data-animate></div>
 
         <div class="card" data-animate>
+          <h3 class="card-title">Manage curriculum</h3>
+          <p class="muted">Add a new category, a section inside a category, or a topic inside a section
+            (including <strong>Mock Paper 1, 2, 3…</strong>). New entries appear as targets when you index papers.</p>
+          <div class="curr-mgr">
+            <div class="curr-row">
+              <label>New category
+                <input type="text" id="curr-cat-title" placeholder="e.g. Rapid Revision">
+              </label>
+              <button class="btn btn-ghost btn-sm" id="curr-add-cat">Add category</button>
+            </div>
+            <div class="curr-row">
+              <label>Add section to
+                <select id="curr-sec-cat"></select>
+              </label>
+              <label>Section title
+                <input type="text" id="curr-sec-title" placeholder="e.g. Full Mock Papers">
+              </label>
+              <button class="btn btn-ghost btn-sm" id="curr-add-sec">Add section</button>
+            </div>
+            <div class="curr-row">
+              <label>Add topic to
+                <select id="curr-top-cat"></select>
+              </label>
+              <label>Section
+                <select id="curr-top-sec"></select>
+              </label>
+              <label>Topic title
+                <input type="text" id="curr-top-title" placeholder="e.g. Mock Paper 4">
+              </label>
+              <button class="btn btn-ghost btn-sm" id="curr-add-top">Add topic</button>
+            </div>
+            <p class="curr-msg" id="curr-msg"></p>
+          </div>
+        </div>
+
+        <div class="card" data-animate>
           <h3 class="card-title">Manual import</h3>
           <p class="muted">Paste a single paper's JSON (ogr-paper-v1) to validate and publish it directly.</p>
           <textarea id="dev-paste" class="dev-textarea" placeholder='{ "schema": "ogr-paper-v1", "topic": "…", "sba": [...], "emq": [...] }'></textarea>
@@ -60,8 +96,87 @@ const DevConsole = (() => {
 
     view.querySelector('#dev-scan').addEventListener('click', scan);
     view.querySelector('#dev-paste-btn').addEventListener('click', stagePasted);
+    wireCurriculumManager(view);
     await refreshPublished(view);
     ctx.FX.viewIn(view);
+  }
+
+  /* ---------------- curriculum manager ---------------- */
+
+  function slugify(s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40); }
+
+  function wireCurriculumManager(view) {
+    const catSel = view.querySelector('#curr-sec-cat');
+    const tCatSel = view.querySelector('#curr-top-cat');
+    const tSecSel = view.querySelector('#curr-top-sec');
+    const msg = view.querySelector('#curr-msg');
+    const say = (t, ok) => { msg.textContent = t; msg.className = 'curr-msg ' + (ok ? 'good' : 'bad'); };
+
+    function refillCategories() {
+      const opts = syllabus.categories.map(c => `<option value="${c.id}">${ctx.esc(c.title)}</option>`).join('');
+      catSel.innerHTML = opts; tCatSel.innerHTML = opts; refillTopicSections();
+    }
+    function refillTopicSections() {
+      const cat = syllabus.categories.find(c => c.id === tCatSel.value);
+      tSecSel.innerHTML = (cat?.sections || []).map(s => `<option value="${s.id}">${ctx.esc(s.title)}</option>`).join('');
+    }
+    tCatSel.addEventListener('change', refillTopicSections);
+    refillCategories();
+
+    // custom curriculum accumulator (persisted via backend)
+    async function loadCustom() { try { return await ctx.Backend.getCustomCurriculum(); } catch { return { categories: [] }; } }
+    function findOrAddCat(custom, id, title) {
+      let c = custom.categories.find(x => x.id === id);
+      if (!c) { c = { id, title, sections: [] }; custom.categories.push(c); }
+      return c;
+    }
+    function findOrAddSec(cat, id, title) {
+      let s = (cat.sections = cat.sections || []).find(x => x.id === id);
+      if (!s) { s = { id, title, topics: [] }; cat.sections.push(s); }
+      return s;
+    }
+
+    view.querySelector('#curr-add-cat').addEventListener('click', async () => {
+      const title = view.querySelector('#curr-cat-title').value.trim();
+      if (!title) return say('Enter a category title.', false);
+      const id = 'cat-' + slugify(title);
+      const custom = await loadCustom();
+      findOrAddCat(custom, id, title);
+      await ctx.Backend.saveCustomCurriculum(custom);
+      await ctx.Data.loadSyllabus(true); syllabus = await ctx.Data.loadSyllabus();
+      view.querySelector('#curr-cat-title').value = '';
+      refillCategories(); say(`Added category “${title}”.`, true);
+    });
+
+    view.querySelector('#curr-add-sec').addEventListener('click', async () => {
+      const catId = catSel.value; const title = view.querySelector('#curr-sec-title').value.trim();
+      if (!title) return say('Enter a section title.', false);
+      const cat = syllabus.categories.find(c => c.id === catId);
+      const id = 'sec-' + slugify(title);
+      const custom = await loadCustom();
+      const cCat = findOrAddCat(custom, cat.id, cat.title);
+      findOrAddSec(cCat, id, title);
+      await ctx.Backend.saveCustomCurriculum(custom);
+      await ctx.Data.loadSyllabus(true); syllabus = await ctx.Data.loadSyllabus();
+      view.querySelector('#curr-sec-title').value = '';
+      refillCategories(); say(`Added section “${title}” to ${cat.title}.`, true);
+    });
+
+    view.querySelector('#curr-add-top').addEventListener('click', async () => {
+      const catId = tCatSel.value, secId = tSecSel.value, title = view.querySelector('#curr-top-title').value.trim();
+      if (!title) return say('Enter a topic title.', false);
+      const cat = syllabus.categories.find(c => c.id === catId);
+      const sec = cat.sections.find(s => s.id === secId);
+      const id = 'top-' + slugify(title);
+      const custom = await loadCustom();
+      const cCat = findOrAddCat(custom, cat.id, cat.title);
+      const cSec = findOrAddSec(cCat, sec.id, sec.title);
+      if (!(cSec.topics = cSec.topics || []).find(t => t.id === id)) cSec.topics.push({ id, title, tags: [title] });
+      await ctx.Backend.saveCustomCurriculum(custom);
+      await ctx.Data.loadSyllabus(true); syllabus = await ctx.Data.loadSyllabus();
+      view.querySelector('#curr-top-title').value = '';
+      refillTopicSections(); say(`Added topic “${title}” to ${sec.title}.`, true);
+    });
   }
 
   async function refreshPublished(view) {

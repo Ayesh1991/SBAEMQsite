@@ -21,9 +21,35 @@ const Data = (() => {
     return res.json();
   }
 
-  async function loadSyllabus() {
-    if (!syllabus) syllabus = await fetchJSON('data/syllabus.json');
+  async function loadSyllabus(force) {
+    if (!syllabus || force) {
+      const base = await fetchJSON('data/syllabus.json');
+      // deep-clone so merges don't accumulate across reloads
+      const merged = JSON.parse(JSON.stringify(base));
+      let custom = null;
+      try { custom = await Backend.getCustomCurriculum(); } catch { /* optional */ }
+      if (custom && Array.isArray(custom.categories)) mergeCurriculum(merged, custom);
+      syllabus = merged;
+    }
     return syllabus;
+  }
+
+  /** Merge developer-added categories/sections/topics on top of the static tree. */
+  function mergeCurriculum(base, custom) {
+    for (const cCat of custom.categories) {
+      let cat = base.categories.find(c => c.id === cCat.id);
+      if (!cat) { cat = { id: cCat.id, title: cCat.title, sections: [] }; base.categories.push(cat); }
+      if (cCat.title) cat.title = cat.title || cCat.title;
+      for (const cSec of (cCat.sections || [])) {
+        let sec = cat.sections.find(s => s.id === cSec.id);
+        if (!sec) { sec = { id: cSec.id, title: cSec.title, topics: [] }; cat.sections.push(sec); }
+        for (const cTop of (cSec.topics || [])) {
+          if (!sec.topics.find(t => t.id === cTop.id)) {
+            sec.topics.push({ id: cTop.id, title: cTop.title, tags: cTop.tags || [cTop.title] });
+          }
+        }
+      }
+    }
   }
 
   async function loadManifest() {
