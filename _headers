@@ -1,0 +1,15 @@
+# Cloudflare Pages headers.
+# The HTML shell must always be re-fetched so a new release is picked up
+# immediately (this is what caused the "I uploaded but nothing changed"
+# problem — an old index.html was cached and never loaded the new scripts).
+/
+  Cache-Control: no-cache, must-revalidate
+/index.html
+  Cache-Control: no-cache, must-revalidate
+
+# Versioned assets (js/…?v=N, css/…?v=N) are safe to cache hard — the ?v=
+# changes on every release, so a new version is a new URL.
+/js/*
+  Cache-Control: public, max-age=86400
+/css/*
+  Cache-Control: public, max-age=86400

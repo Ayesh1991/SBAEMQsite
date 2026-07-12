@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AUREUM — Paper Validator (ogr-paper-v1)</title>
+  <link rel="stylesheet" href="../css/styles.css">
+  <style>
+    .admin-wrap { max-width: 900px; margin: 0 auto; padding: 40px 24px 80px; position: relative; z-index: 1; }
+    textarea { width: 100%; min-height: 300px; font-family: ui-monospace, monospace; font-size: 0.82rem;
+      background: var(--surface-2); color: var(--ink); border: 1px solid var(--hairline); border-radius: 12px; padding: 16px; resize: vertical; }
+    .ok { color: var(--good); } .err-list { color: var(--bad); white-space: pre-line; font-size: 0.9rem; }
+    .preview-q { border-left: 3px solid var(--teal); padding-left: 14px; margin-top: 14px; font-size: 0.9rem; }
+    .preview-q .ans { color: var(--good); } .preview-q.emq { border-left-color: var(--violet); }
+  </style>
+</head>
+<body>
+  <div class="admin-wrap">
+    <p class="kicker">ADMIN · CONTENT CHECK</p>
+    <h1 class="page-title">Paper validator</h1>
+    <p class="muted">Standalone check for a single <code>ogr-paper-v1</code> file before it goes into Drive. This is the
+      same validation the in-app developer console runs — publishing happens there (or via the Drive import), not here.</p>
+
+    <div class="card">
+      <p style="margin-bottom:12px"><input type="file" id="file" accept=".json,application/json"></p>
+      <textarea id="src" spellcheck="false" placeholder='{ "schema": "ogr-paper-v1", "topic": "…", "sba": [...], "emq": [...] }'></textarea>
+      <p style="margin-top:14px"><button class="btn btn-primary" id="check">Validate</button></p>
+    </div>
+
+    <div class="card" id="result" hidden>
+      <h3 class="card-title">Result</h3>
+      <div id="verdict"></div>
+      <div id="preview"></div>
+    </div>
+  </div>
+
+  <script src="../js/backend.js"></script>
+  <script>window.AUREUM_CONFIG = { supabase: {} };</script>
+  <script src="../js/data.js"></script>
+  <script>
+    const $ = id => document.getElementById(id);
+    const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const L = 'ABCDEFGHIJKLMNOPQRST';
+
+    $('file').addEventListener('change', e => { const f = e.target.files[0]; if (f) f.text().then(t => $('src').value = t); });
+
+    $('check').addEventListener('click', () => {
+      $('result').hidden = false; $('preview').innerHTML = '';
+      let paper;
+      try { paper = JSON.parse($('src').value); }
+      catch (e) { $('verdict').innerHTML = `<p class="err-list">Not valid JSON:\n${esc(e.message)}</p>`; return; }
+
+      const errors = Data.validatePaper(paper);
+      if (errors.length) { $('verdict').innerHTML = `<p class="err-list">${errors.map(esc).join('\n')}</p>`; return; }
+
+      const sbaN = Data.countSBA(paper), emqN = Data.countEMQ(paper);
+      $('verdict').innerHTML = `<p class="ok">✓ Valid — “${esc(paper.topic || paper.title)}” · ${sbaN} SBA · ${emqN} EMQ${paper.folderTag ? ' · folderTag: ' + esc(paper.folderTag) : ''}</p>`;
+
+      const sbas = Data.flatten(paper, 'SBA').slice(0, 3);
+      const emqs = Data.flatten(paper, 'EMQ').slice(0, 3);
+      $('preview').innerHTML =
+        sbas.map(q => `<div class="preview-q"><p>SBA. ${esc(q.stem)}</p>${q.lead ? `<p><em>${esc(q.lead)}</em></p>` : ''}
+          <p class="ans">Answer: ${q.preLettered ? '' : L[q.answer] + '. '}${esc(q.options[q.answer])}</p></div>`).join('') +
+        emqs.map(q => `<div class="preview-q emq"><p><strong>${esc(q.theme)}</strong></p><p>${esc(q.stem)}</p>
+          <p class="ans">Answer: ${q.preLettered ? '' : L[q.answer] + '. '}${esc(q.options[q.answer])}</p></div>`).join('');
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,191 @@
+{
+  "version": 2,
+  "note": "Curriculum tree for the PGIM MD (O&G) Part 2, adapted from the OG Revise folder-tag knowledge base. Categories → sections → topics. Papers are attached to a topic id in manifest.json; the developer console maps a paper's folderTag to a topic here.",
+  "categories": [
+    {
+      "id": "obstetrics",
+      "title": "Obstetrics",
+      "sections": [
+        { "id": "obs-antenatal", "title": "Antenatal Care", "topics": [
+          { "id": "t-preconception", "title": "Pre-conceptional counselling", "tags": ["Pre-conceptional counselling"] },
+          { "id": "t-routine-anc", "title": "Routine antenatal care", "tags": ["Routine antenatal care"] },
+          { "id": "t-fetal-surveillance", "title": "Antepartum fetal surveillance", "tags": ["Antepartum fetal surveillance"] }
+        ]},
+        { "id": "obs-early-pregnancy", "title": "Early Pregnancy", "topics": [
+          { "id": "t-miscarriage", "title": "Miscarriage", "tags": ["Miscarriages", "Miscarriage"] },
+          { "id": "t-rpl", "title": "Recurrent pregnancy loss", "tags": ["Recurrent pregnancy loss (RPL)", "RPL"] },
+          { "id": "t-ectopic", "title": "Ectopic pregnancy", "tags": ["Ectopic pregnancy"] },
+          { "id": "t-gtd", "title": "Gestational trophoblastic disease", "tags": ["Gestational trophoblastic disease (GTD)", "GTD"] },
+          { "id": "t-hyperemesis", "title": "NVP / Hyperemesis gravidarum", "tags": ["NVP / Hyperemesis gravidarum", "Hyperemesis gravidarum"] }
+        ]},
+        { "id": "obs-labour", "title": "Labour & Delivery", "topics": [
+          { "id": "t-labour-physiology", "title": "Physiology & mechanism of labour", "tags": ["Physiology and mechanism of labour"] },
+          { "id": "t-iol", "title": "Induction of labour", "tags": ["Induction of labour"] },
+          { "id": "t-intrapartum", "title": "Intrapartum care", "tags": ["Intrapartum care"] },
+          { "id": "t-ctg", "title": "CTG interpretation & fetal monitoring", "tags": ["CTG interpretation", "Fetal blood sampling (FBS)", "STAN"] },
+          { "id": "t-dysfunctional-labour", "title": "Abnormal / dysfunctional labour", "tags": ["Abnormal / dysfunctional labour"] },
+          { "id": "t-malpresentation", "title": "Malposition & malpresentation", "tags": ["Malposition and malpresentation"] },
+          { "id": "t-analgesia", "title": "Obstetric analgesia", "tags": ["Obstetric analgesia"] },
+          { "id": "t-avd", "title": "Assisted vaginal delivery", "tags": ["Assisted vaginal delivery"] },
+          { "id": "t-perineal", "title": "Episiotomy & perineal tears", "tags": ["Episiotomy and perineal tears"] },
+          { "id": "t-breech", "title": "Breech & ECV", "tags": ["Breech presentation", "ECV"] },
+          { "id": "t-vbac", "title": "VBAC", "tags": ["VBAC"] },
+          { "id": "t-caesarean", "title": "Caesarean section", "tags": ["Caesarean section"] },
+          { "id": "t-postpartum", "title": "Normal postpartum care", "tags": ["Normal postpartum care"] }
+        ]},
+        { "id": "obs-preterm", "title": "Preterm & PROM", "topics": [
+          { "id": "t-ptl", "title": "Preterm labour & prevention", "tags": ["Preterm labour", "PTL prevention"] },
+          { "id": "t-cerclage", "title": "Cervical cerclage", "tags": ["Cervical cerclage", "Cervical_cerclage"] },
+          { "id": "t-prom", "title": "PROM / PPROM", "tags": ["PROM / PPROM"] },
+          { "id": "t-iufd", "title": "Intrauterine fetal death", "tags": ["IUFD"] }
+        ]},
+        { "id": "obs-fetal-medicine", "title": "Fetal Medicine", "topics": [
+          { "id": "t-rfm", "title": "Reduced fetal movements", "tags": ["Reduced fetal movements"] },
+          { "id": "t-prenatal-testing", "title": "Prenatal testing & screening", "tags": ["Prenatal testing"] },
+          { "id": "t-anomaly", "title": "Antenatal ultrasound & fetal anomalies", "tags": ["Antenatal ultrasound", "Fetal anomalies"] },
+          { "id": "t-fgr", "title": "Fetal growth restriction", "tags": ["FGR", "Fetal growth restriction"] },
+          { "id": "t-macrosomia", "title": "Fetal macrosomia", "tags": ["Fetal macrosomia"] },
+          { "id": "t-multiple", "title": "Multiple pregnancy", "tags": ["Multiple pregnancies"] },
+          { "id": "t-fetal-infection", "title": "Fetal infections", "tags": ["Fetal infections"] },
+          { "id": "t-rhesus", "title": "Rh negative, Kell & anti-D", "tags": ["Rh negative and Kell", "Anti-D prophylaxis"] }
+        ]},
+        { "id": "obs-medical", "title": "Medical Disorders in Pregnancy", "topics": [
+          { "id": "t-md-autoimmune", "title": "Autoimmune (SLE, APLS, RA)", "tags": ["SLE and APLS", "Rheumatoid arthritis in pregnancy"] },
+          { "id": "t-md-cardiac", "title": "Cardiac disease", "tags": ["General cardiac", "Aortic valvular disease in pregnancy", "Mitral valvular disease in pregnancy", "Cardiomyopathy in pregnancy", "Congenital heart disease in pregnancy", "IHD in pregnancy", "Marfan syndrome in pregnancy", "Peripartum cardiomyopathy", "Aortopathy in pregnancy", "Pulmonary arterial hypertension in pregnancy"] },
+          { "id": "t-md-endocrine", "title": "Endocrine (diabetes, thyroid)", "tags": ["Diabetes in pregnancy", "Thyroid disorders in pregnancy", "Prolactinoma in pregnancy"] },
+          { "id": "t-md-haematology", "title": "Haematology", "tags": ["Anaemia in pregnancy", "Thrombocytopenia in pregnancy", "VTE in pregnancy", "Sickle cell disease in pregnancy", "Thalassaemia in pregnancy", "Haemophilia and vWD in pregnancy", "Haemoglobinopathies in pregnancy", "Inherited bleeding disorders", "Blood transfusion in pregnancy", "Other Haematology pregnancy"] },
+          { "id": "t-md-hypertension", "title": "Hypertension & HELLP", "tags": ["Hypertension in pregnancy", "HELLP syndrome", "Hypertensive disorders of pregnancy"] },
+          { "id": "t-md-infection", "title": "Infection", "tags": ["Sepsis in pregnancy", "GBS in pregnancy", "COVID-19 in pregnancy", "Chickenpox in pregnancy", "CMV in pregnancy", "Hepatitis in pregnancy", "Rubella in pregnancy", "HSV in pregnancy", "HIV in pregnancy", "Syphilis in pregnancy", "Other infection pregnancy"] },
+          { "id": "t-md-liver", "title": "Liver disease", "tags": ["Obstetric cholestasis (IHCP)", "Acute fatty liver of pregnancy", "Other Liver pregnancy"] },
+          { "id": "t-md-neurology", "title": "Neurology", "tags": ["Epilepsy in pregnancy", "Headache and migraine in pregnancy", "Stroke in pregnancy", "other neurology pregnancy"] },
+          { "id": "t-md-renal", "title": "Renal", "tags": ["UTI and pyelonephritis in pregnancy", "Renal disease in pregnancy", "Renal transplant in pregnancy"] },
+          { "id": "t-md-respiratory", "title": "Respiratory", "tags": ["Asthma in pregnancy", "Other respiratory pregnancy"] },
+          { "id": "t-md-gi", "title": "Gastrointestinal", "tags": ["Abdominal pain in pregnancy", "Constipation in pregnancy", "Appendicitis in pregnancy", "IBD in pregnancy"] },
+          { "id": "t-md-mental", "title": "Perinatal mental health", "tags": ["Mental health in pregnancy", "PPD / PPP"] },
+          { "id": "t-md-derm", "title": "Dermatology", "tags": ["Skin eruptions in pregnancy"] },
+          { "id": "t-md-drugs", "title": "Drugs in pregnancy & lactation", "tags": ["Drugs in pregnancy and lactation", "Drugs_in_pregnancy_and_lactation"] }
+        ]},
+        { "id": "obs-tumours", "title": "Tumours in Pregnancy", "topics": [
+          { "id": "t-tumour-preg", "title": "Malignancy & cysts in pregnancy", "tags": ["Fibroids in pregnancy", "Breast cancer in pregnancy", "Ovarian cancer in pregnancy", "Cervical cancer in pregnancy", "Lymphoma in pregnancy", "Ovarian cyst in pregnancy", "Common tumor pregnancy"] }
+        ]},
+        { "id": "obs-emergencies", "title": "Obstetric Emergencies", "topics": [
+          { "id": "t-pph", "title": "Postpartum haemorrhage", "tags": ["PPH", "Postpartum haemorrhage"] },
+          { "id": "t-shoulder", "title": "Shoulder dystocia", "tags": ["Shoulder dystocia"] },
+          { "id": "t-cord-prolapse", "title": "Cord prolapse", "tags": ["Cord prolapse"] },
+          { "id": "t-uterine-rupture", "title": "Uterine rupture & inversion", "tags": ["Uterine rupture", "Uterine inversion"] },
+          { "id": "t-collapse", "title": "Maternal collapse & AFE", "tags": ["Maternal collapse", "Amniotic fluid embolism", "Perimortem caesarean section"] },
+          { "id": "t-obs-hysterectomy", "title": "Obstetric hysterectomy", "tags": ["Obstetric hysterectomy"] }
+        ]},
+        { "id": "obs-aph", "title": "APH & Placenta", "topics": [
+          { "id": "t-aph", "title": "Antepartum haemorrhage", "tags": ["APH — general", "APH"] },
+          { "id": "t-abruption", "title": "Placental abruption", "tags": ["Placental abruption"] },
+          { "id": "t-praevia", "title": "Placenta / Vasa praevia", "tags": ["Placenta praevia / Vasa praevia"] },
+          { "id": "t-pas", "title": "Placenta accreta spectrum", "tags": ["Placenta accreta spectrum (PAS)", "PAS"] }
+        ]},
+        { "id": "obs-neonatology", "title": "Liquor & Neonatology", "topics": [
+          { "id": "t-liquor", "title": "Polyhydramnios / Oligohydramnios", "tags": ["Polyhydramnios / Oligohydramnios"] },
+          { "id": "t-neonatal", "title": "Neonatal care & resuscitation", "tags": ["Neonatal resuscitation", "Neonatal infections", "Common neonatal problems", "Breastfeeding problems"] }
+        ]}
+      ]
+    },
+    {
+      "id": "gynaecology",
+      "title": "Gynaecology",
+      "sections": [
+        { "id": "gyn-adolescent", "title": "Adolescent Gynaecology", "topics": [
+          { "id": "t-adolescent", "title": "Adolescent gynaecology & teenage pregnancy", "tags": ["Adolescent gynaecology", "Teenage pregnancy"] }
+        ]},
+        { "id": "gyn-aub", "title": "Abnormal Uterine Bleeding", "topics": [
+          { "id": "t-aub", "title": "AUB (PALM-COEIN)", "tags": ["AUB — general", "COEIN", "AUB"] },
+          { "id": "t-fibroid", "title": "Fibroids", "tags": ["Fibroid", "Fibroids"] },
+          { "id": "t-adenomyosis", "title": "Adenomyosis", "tags": ["Adenomyosis"] },
+          { "id": "t-polyp", "title": "Endometrial polyp", "tags": ["Endometrial polyp"] }
+        ]},
+        { "id": "gyn-contraception", "title": "Contraception", "topics": [
+          { "id": "t-contraception", "title": "Contraception & sterilisation", "tags": ["LARC", "Emergency contraception", "POP and injectables", "OCP", "PPIUD and postpartum contraception", "Sterilisation", "UKmec", "Contraception other", "Contraception problem"] }
+        ]},
+        { "id": "gyn-dsd", "title": "Disorders of Sex Development", "topics": [
+          { "id": "t-dsd", "title": "Sex determination & DSD", "tags": ["Normal sex determination", "Ambiguous genitalia / DSD"] }
+        ]},
+        { "id": "gyn-oncology", "title": "Gynaecological Oncology", "topics": [
+          { "id": "t-cervical-ca", "title": "Cervical cancer & CIN", "tags": ["Cervical cancer"] },
+          { "id": "t-endometrial-ca", "title": "Endometrial cancer", "tags": ["Endometrial cancer"] },
+          { "id": "t-ovarian-ca", "title": "Ovarian cancer & cysts", "tags": ["Ovarian cancer", "Postmenopausal ovarian cysts"] },
+          { "id": "t-vulval-ca", "title": "Vulval cancer", "tags": ["Vulval cancer"] },
+          { "id": "t-gtn", "title": "GTN", "tags": ["GTN"] },
+          { "id": "t-cancer-genetics", "title": "Cancer genetics & prophylactic BSO", "tags": ["Cancer genetics and prophylactic BSO", "Cancer other"] }
+        ]},
+        { "id": "gyn-menopause", "title": "Menopause", "topics": [
+          { "id": "t-menopause", "title": "Menopause & HRT", "tags": ["Menopause", "HRT", "Benign conditions in menopause"] },
+          { "id": "t-poi", "title": "Premature ovarian insufficiency", "tags": ["Premature ovarian insufficiency"] },
+          { "id": "t-osteoporosis", "title": "Osteoporosis", "tags": ["Osteoporosis"] }
+        ]},
+        { "id": "gyn-amenorrhoea", "title": "Amenorrhoea & Reproductive Endocrinology", "topics": [
+          { "id": "t-menstruation", "title": "Physiology of menstruation & puberty", "tags": ["Physiology of menstruation", "Puberty and delayed puberty", "Steroidogenesis"] },
+          { "id": "t-amenorrhoea", "title": "Amenorrhoea", "tags": ["Primary amenorrhoea", "Secondary amenorrhoea"] },
+          { "id": "t-pcos", "title": "PCOS", "tags": ["PCOS"] },
+          { "id": "t-hyperprolactin", "title": "Hyperprolactinaemia, hirsutism & virilism", "tags": ["Hyperprolactinaemia and pituitary adenomas", "Hirsutism and virilism"] }
+        ]},
+        { "id": "gyn-pain", "title": "Pelvic & Perineal Pain", "topics": [
+          { "id": "t-endometriosis", "title": "Endometriosis", "tags": ["Endometriosis"] },
+          { "id": "t-pid", "title": "PID / TOA", "tags": ["PID / TOA"] },
+          { "id": "t-pms", "title": "Premenstrual syndrome", "tags": ["Premenstrual syndrome (PMS)"] },
+          { "id": "t-dysmenorrhoea", "title": "Dysmenorrhoea & dyspareunia", "tags": ["Dysmenorrhoea", "Dyspareunia", "Vulvodynia", "Bladder pain syndrome"] }
+        ]},
+        { "id": "gyn-subfertility", "title": "Subfertility", "topics": [
+          { "id": "t-infertility", "title": "Female, male & unexplained subfertility", "tags": ["Female infertility", "Male infertility", "Unexplained subfertility", "Fertility problems", "Fertility other"] },
+          { "id": "t-art", "title": "ART / IVF & ovulation induction", "tags": ["ART / IVF", "Ovulation induction / OHSS", "Fertility preservation"] }
+        ]},
+        { "id": "gyn-prolapse", "title": "Pelvic Organ Prolapse", "topics": [
+          { "id": "t-pop", "title": "Prolapse & vault prolapse", "tags": ["Pelvic organ prolapse", "POP-Q", "Vault prolapse", "Hypertrophic elongated cervix", "pelvic organ prolapse other"] }
+        ]},
+        { "id": "gyn-urogynae", "title": "Urogynaecology", "topics": [
+          { "id": "t-sui", "title": "Stress urinary incontinence", "tags": ["Stress urinary incontinence"] },
+          { "id": "t-oab", "title": "Overactive bladder", "tags": ["Overactive bladder (OAB)"] },
+          { "id": "t-urodynamics", "title": "Urodynamics & pelvic floor", "tags": ["Urodynamics", "Pelvic anatomy and physiology"] },
+          { "id": "t-fistula", "title": "Fistulae", "tags": ["Fistulae"] }
+        ]},
+        { "id": "gyn-infection", "title": "Infections in Gynaecology", "topics": [
+          { "id": "t-gyn-infection", "title": "Vaginal discharge & STIs", "tags": ["Vulvovaginal candidiasis (VVC)", "Bacterial Vaginosis (BV)", "Vaginal Discharge", "Chlamydia Gynae", "Trichomoniasis (TV)", "HSV gynaecology", "HIV gynae", "LGV gynae", "Infection other"] }
+        ]}
+      ]
+    },
+    {
+      "id": "governance",
+      "title": "Clinical Governance & Others",
+      "sections": [
+        { "id": "gov-governance", "title": "Clinical Governance", "topics": [
+          { "id": "t-appraisal", "title": "Critical appraisal & statistics", "tags": ["Critical appraisal", "Health statistics"] },
+          { "id": "t-risk-audit", "title": "Risk management & audit", "tags": ["Risk management", "Audit", "Maternity dashboard", "Clinical governance pillars"] },
+          { "id": "t-consent", "title": "Consent & ethics", "tags": ["Valid consent"] },
+          { "id": "t-safeguarding", "title": "Safeguarding & public health", "tags": ["Domestic violence", "Sexual assault and rape", "FGM", "Millennium development goals", "Health policies and health economics"] },
+          { "id": "t-surgical", "title": "Surgical procedures & recovery", "tags": ["Surgical procedures", "Postoperative care", "Enhanced recovery", "Hysteroscopy / Laparoscopy / Colposcopy", "Ultrasound in obstetrics and gynaecology"] }
+        ]}
+      ]
+    },
+    {
+      "id": "tog",
+      "title": "TOG Review Articles",
+      "sections": [
+        { "id": "tog-articles", "title": "The Obstetrician & Gynaecologist", "topics": [
+          { "id": "t-tog-2026", "title": "TOG 2026", "tags": ["TOG 2026"] },
+          { "id": "t-tog-2025", "title": "TOG 2025", "tags": ["TOG 2025"] },
+          { "id": "t-tog-2024", "title": "TOG 2024", "tags": ["TOG 2024"] },
+          { "id": "t-tog-2023", "title": "TOG 2023", "tags": ["TOG 2023"] },
+          { "id": "t-tog-older", "title": "TOG 2016–2022", "tags": ["TOG 2022", "TOG 2021", "TOG 2020", "TOG 2019", "TOG 2018", "TOG 2017", "TOG 2016"] }
+        ]}
+      ]
+    },
+    {
+      "id": "mock",
+      "title": "Mock Papers",
+      "sections": [
+        { "id": "mock-full", "title": "Full Mock Papers", "topics": [
+          { "id": "t-mock-1", "title": "Mock Paper 1", "tags": ["Mock Paper 1", "Mock 1"] },
+          { "id": "t-mock-2", "title": "Mock Paper 2", "tags": ["Mock Paper 2", "Mock 2"] },
+          { "id": "t-mock-3", "title": "Mock Paper 3", "tags": ["Mock Paper 3", "Mock 3"] }
+        ]}
+      ]
+    }
+  ]
+}
