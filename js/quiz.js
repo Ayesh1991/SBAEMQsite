@@ -214,16 +214,22 @@ const Quiz = (() => {
         <div class="palette-card">
           <h4>Navigator</h4>
           <div class="palette-grid">
-            ${state.questions.map((_, i) => `
+            ${state.questions.map((_, i) => {
+              const studyDone = state.mode === 'study' && state.revealed[i];
+              const studyCorrect = studyDone && state.answers[i] === state.questions[i].answer;
+              return `
               <button class="palette-cell
                 ${i === state.index ? 'current' : ''}
                 ${state.answers[i] !== null ? 'done' : ''}
+                ${studyDone ? (studyCorrect ? 'pal-correct' : 'pal-wrong') : ''}
                 ${state.flags.has(i) ? 'flagged' : ''}
                 ${state.notes[state.questions[i].number] ? 'noted' : ''}"
-                data-goto="${i}" aria-label="Go to question ${i + 1}">${i + 1}</button>`).join('')}
+                data-goto="${i}" aria-label="Go to question ${i + 1}">${i + 1}</button>`; }).join('')}
           </div>
           <div class="palette-legend">
-            <span><i class="dot dot-done"></i>${state.mode === 'study' ? 'Seen' : 'Answered'}</span>
+            ${state.mode === 'study'
+              ? '<span><i class="dot dot-correct"></i>Correct</span><span><i class="dot dot-wrong"></i>Wrong</span>'
+              : '<span><i class="dot dot-done"></i>Answered</span>'}
             ${state.mode === 'exam' ? '<span><i class="dot dot-flag"></i>Flagged</span>' : ''}
             <span><i class="dot dot-note"></i>Note</span>
           </div>
@@ -245,7 +251,8 @@ const Quiz = (() => {
       wrap.innerHTML = q.options.map((opt, i) => optionHTML(q, i, opt)).join('');
       showFeedback();
       updateStudyScore();
-      state.container.querySelector(`[data-goto="${state.index}"]`)?.classList.add('done');
+      const cell = state.container.querySelector(`[data-goto="${state.index}"]`);
+      cell?.classList.add('done', state.answers[state.index] === q.answer ? 'pal-correct' : 'pal-wrong');
       FX.pulse(wrap.querySelector('.q-option.correct'));
     } else {
       state.container.querySelectorAll('.q-option').forEach((b, i) => b.classList.toggle('selected', i === idx));
@@ -270,9 +277,19 @@ const Quiz = (() => {
         ${q.rationale ? `<p class="fb-rationale">${esc(q.rationale)}</p>` : ''}
         ${q.hook ? `<p class="fb-hook">💡 ${esc(q.hook)}</p>` : ''}
         ${q.reference ? `<p class="fb-ref">§ ${esc(q.reference)}</p>` : ''}
+        <div class="qedit-slot"></div>
         <div class="ai-slot" id="ai-slot"></div>
       </div>`;
     if (!isCorrect) FX.shake(box.querySelector('.feedback'));
+
+    // developer flag / edit-explanation controls (and any correction, shown to all)
+    if (typeof QEdit !== "undefined") {
+      QEdit.mount(box.querySelector('.qedit-slot'), {
+        questionKey: questionKey(i), rationale: q.rationale || '',
+        paperTitle: state.loaded.paper.topic || state.loaded.meta.title,
+        answerText: (q.preLettered ? '' : LETTERS[q.answer] + '. ') + q.options[q.answer]
+      });
+    }
 
     // mount the Explore-with-AI panel
     if (typeof AI !== "undefined" && (window.AUREUM_CONFIG?.ai?.enabled)) {

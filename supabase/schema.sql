@@ -143,6 +143,42 @@ begin
   return v_count;
 end; $$;
 
+-- ---------- 8b) AI SAVES (per-user saved chats, charts, infographics, mind maps, summaries) ----------
+create table if not exists public.ai_saves (
+  id text primary key,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  question_key text,                    -- paperId:kind:number (null for loose items)
+  paper_title text,
+  kind text not null,                   -- chat | chart | infographic | tree | mindmap | summary
+  title text,
+  content text,                         -- markdown / svg / html / json transcript
+  mime text,
+  created_at timestamptz default now()
+);
+create index if not exists ai_saves_user_idx on public.ai_saves (user_id, created_at desc);
+create index if not exists ai_saves_q_idx on public.ai_saves (user_id, question_key);
+alter table public.ai_saves enable row level security;
+drop policy if exists "own ai_saves all" on public.ai_saves;
+create policy "own ai_saves all" on public.ai_saves for all
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+-- ---------- 8c) QUESTION EDITS (developer flag + explanation override, shown to everyone) ----------
+create table if not exists public.question_edits (
+  question_key text primary key,        -- paperId:kind:number
+  flagged boolean default false,
+  flag_note text,
+  explanation text,                     -- editor's correction / override
+  updated_by text,
+  updated_at timestamptz default now()
+);
+alter table public.question_edits enable row level security;
+drop policy if exists "qedits public read" on public.question_edits;
+drop policy if exists "qedits dev write"   on public.question_edits;
+create policy "qedits public read" on public.question_edits for select using (true);
+create policy "qedits dev write" on public.question_edits for all
+  using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
+  with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+
 -- ---------- 9) Auto-create a profile row on sign-up ----------
 create or replace function public.handle_new_user()
 returns trigger language plpgsql security definer as $$

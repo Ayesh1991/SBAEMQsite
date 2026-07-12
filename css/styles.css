@@ -917,3 +917,75 @@ details[open] > summary .tw-caret { transform: rotate(90deg); }
 .ai-summary-doc ul { margin: 6px 0 10px 18px; }
 .ai-summary-doc li { margin-bottom: 4px; }
 .ai-summary-doc p { margin-bottom: 8px; color: var(--ink-2); }
+
+/* ============================================================
+   v6 — navigator colours, question corrections, AI saved-work,
+   mind maps, and the private Studio tab.
+   ============================================================ */
+
+/* --- study-mode navigator: correct = green, wrong = red --- */
+.palette-cell.pal-correct { background: rgba(60,200,120,0.18); color: #7ee6a8; border-color: rgba(60,200,120,0.55); }
+.palette-cell.pal-wrong   { background: rgba(240,90,90,0.16);  color: #ff9d9d; border-color: rgba(240,90,90,0.55); }
+.palette-cell.pal-correct.current, .palette-cell.pal-wrong.current { border-color: var(--ink); }
+.dot-correct { background: #4ecb7f; }
+.dot-wrong   { background: #f0605f; }
+
+/* --- question corrections (flag + editable explanation) --- */
+.qedit-slot:empty { display: none; }
+.qedit-flag { margin-top: 12px; padding: 9px 12px; border-radius: 10px; font-size: 0.86rem;
+  background: rgba(240,120,90,0.12); border: 1px solid rgba(240,120,90,0.4); color: #ffbfa8; }
+.qedit-correction { margin-top: 10px; padding: 10px 12px; border-radius: 10px; font-size: 0.9rem;
+  background: rgba(94,234,212,0.10); border: 1px solid rgba(94,234,212,0.32); color: var(--ink-2); }
+.qedit-correction strong, .qedit-flag strong { color: var(--ink); }
+.qedit-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.qedit-tag { font-size: 0.66rem; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3);
+  border: 1px solid var(--hairline); border-radius: 999px; padding: 2px 8px; }
+.qedit-box { margin-top: 10px; padding: 12px; border: 1px solid var(--hairline); border-radius: 12px; background: #060814; }
+.qedit-box textarea { width: 100%; min-height: 84px; resize: vertical; border-radius: 10px; padding: 9px 11px;
+  background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink); font-family: var(--font-ui); font-size: 0.9rem; }
+.qedit-box .qedit-expl { min-height: 120px; }
+.qedit-label { display: block; font-size: 0.8rem; color: var(--ink-3); margin-bottom: 6px; }
+.qedit-check { display: flex; align-items: center; gap: 8px; font-size: 0.88rem; color: var(--ink-2); margin-bottom: 8px; }
+.qedit-btns { display: flex; gap: 8px; margin-top: 10px; }
+
+/* --- AI panel: saved-work toolbar + history --- */
+.ai-tools { display: flex; gap: 8px; padding: 8px 14px 0; }
+.ai-history { padding: 8px 14px 0; }
+.ai-hist-list { display: flex; flex-direction: column; gap: 10px; }
+.ai-hist-card { border: 1px solid var(--hairline); border-radius: 12px; background: #060814; overflow: hidden; }
+.ai-hist-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--hairline);
+  background: rgba(255,255,255,0.02); font-size: 0.82rem; }
+.ai-hist-kind { font-weight: 600; color: var(--ink); }
+.ai-hist-when { color: var(--ink-3); margin-left: auto; }
+.ai-hist-del { background: none; border: none; cursor: pointer; font-size: 0.9rem; opacity: 0.7; }
+.ai-hist-del:hover { opacity: 1; }
+.ai-hist-body { padding: 10px 12px; }
+.ai-hist-msgs { max-height: 260px; overflow: auto; margin-bottom: 8px; }
+
+/* --- Studio (private gallery) --- */
+.studio-toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin: 18px 0 10px; }
+.studio-filters { display: flex; flex-wrap: wrap; gap: 8px; }
+.studio-search { flex: 1 1 220px; max-width: 320px; padding: 9px 14px; border-radius: 999px;
+  background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink); font-family: var(--font-ui); }
+.studio-group { margin-bottom: 16px; border: 1px solid var(--hairline); border-radius: 16px; overflow: hidden; background: var(--surface); }
+.studio-group > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 10px;
+  padding: 14px 18px; font-family: var(--font-display); font-size: 1.05rem; color: var(--ink); }
+.studio-group > summary::-webkit-details-marker { display: none; }
+.studio-group > summary::before { content: '▸'; color: var(--teal); transition: transform .2s; }
+.studio-group[open] > summary::before { transform: rotate(90deg); }
+.studio-group-count { margin-left: auto; font-size: 0.8rem; color: var(--ink-3); background: var(--surface-2);
+  border: 1px solid var(--hairline); border-radius: 999px; padding: 2px 10px; }
+.studio-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; padding: 0 18px 18px; }
+.studio-card { border: 1px solid var(--hairline); border-radius: 14px; background: #070a16; overflow: hidden; display: flex; flex-direction: column; }
+.studio-card.is-chat { grid-column: span 1; }
+.studio-card-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--hairline);
+  background: rgba(255,255,255,0.02); font-size: 0.82rem; }
+.studio-card-kind { font-weight: 600; color: var(--ink); }
+.studio-card-when { color: var(--ink-3); margin-left: auto; }
+.studio-card-del { background: none; border: none; cursor: pointer; font-size: 0.9rem; opacity: 0.65; }
+.studio-card-del:hover { opacity: 1; }
+.studio-card-body { padding: 12px; }
+.studio-card-body .ai-messages { max-height: 300px; overflow: auto; }
+.studio-card-body .ai-aid-preview svg, .studio-card-body svg { max-width: 100%; height: auto; }
+.studio-empty { padding: 40px 8px; text-align: center; }
+@media (max-width: 560px) { .studio-grid { grid-template-columns: 1fr; padding: 0 12px 14px; } }

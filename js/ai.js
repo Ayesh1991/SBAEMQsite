@@ -45,6 +45,10 @@ const AI = (() => {
           </div>` : `<span class="ai-badge">Gemini Flash</span>`}
           <button class="ai-x" data-ai-close aria-label="Close">✕</button>
         </div>
+        <div class="ai-tools">
+          <button class="btn btn-ghost btn-sm" id="ai-hist" title="Reopen everything you saved for this question">↺ My saved work</button>
+        </div>
+        <div class="ai-history" id="ai-history" hidden></div>
         <div class="ai-body" id="ai-body">${LOADING}</div>
         <div class="ai-chat" id="ai-chat">
           <p class="ai-chat-label">💬 Chat to elaborate on this topic</p>
@@ -61,6 +65,7 @@ const AI = (() => {
           <button class="btn btn-ghost btn-sm" data-aid="chart">📊 Chart</button>
           <button class="btn btn-ghost btn-sm" data-aid="infographic">🖼 Infographic</button>
           <button class="btn btn-ghost btn-sm" data-aid="tree">🌳 Tree</button>
+          <button class="btn btn-ghost btn-sm" data-aid="mindmap">🧠 Mind map</button>
           <div class="ai-aid-out" id="ai-aid-out"></div>
         </div>` : ''}
         <p class="ai-disclaimer">AI-generated — verify against NICE / RCOG / SLCOG guidance.</p>
@@ -76,6 +81,7 @@ const AI = (() => {
       runExplain();                                   // regenerate with the chosen provider
     }));
     panel.querySelector('#ai-ask').addEventListener('submit', e => { e.preventDefault(); ask(panel, ctx, st); });
+    panel.querySelector('#ai-hist').addEventListener('click', () => toggleHistory(panel, ctx, st));
     panel.querySelectorAll('[data-aid]').forEach(b => b.addEventListener('click', () => genAid(panel, ctx, st, b.dataset.aid)));
 
     FX.viewIn(panel);
@@ -116,6 +122,7 @@ const AI = (() => {
       holder.innerHTML = renderMarkdown(text);
       st.follow += 1;
       updateFollowCount(panel, st);
+      try { Backend.saveAiChat(ctx.questionKey, st.messages, ctx.paperTitle).catch(() => {}); } catch {}
     } catch (err) {
       holder.innerHTML = `<p class="ai-error">${esc(err.message)}</p>`;
       st.messages.pop();
@@ -139,11 +146,76 @@ const AI = (() => {
     out.innerHTML = LOADING;
     try {
       const { artifact } = await call({ action: 'artifact', artifact: kind, provider: st.provider, questionKey: ctx.questionKey, question: ctx });
-      if (kind === 'summary') return renderSummaryAid(out, artifact, ctx);
-      renderMediaAid(out, artifact, kind);
+      try { Backend.saveAiItem({ questionKey: ctx.questionKey, paperTitle: ctx.paperTitle, kind, title: kindLabel(kind) + ' — ' + (ctx.paperTitle || ''), content: artifact.content, mime: artifact.mime }).catch(() => {}); } catch {}
+      if (kind === 'summary') renderSummaryAid(out, artifact, ctx);
+      else renderMediaAid(out, artifact, kind);
     } catch (err) {
       out.innerHTML = `<p class="ai-error">${esc(err.message)}</p>`;
     }
+  }
+
+  /* ---------------- saved-work history ---------------- */
+
+  const kindIcon = k => ({ chat: '💬', chart: '📊', infographic: '🖼', tree: '🌳', mindmap: '🧠', summary: '📄' }[k] || '✨');
+  const kindLabel = k => ({ chat: 'Conversation', chart: 'Chart', infographic: 'Infographic', tree: 'Decision tree', mindmap: 'Mind map', summary: 'Summary' }[k] || k);
+  const extFor = m => { m = m || ''; if (/svg/.test(m)) return 'svg'; if (/html/.test(m)) return 'html'; if (/markdown/.test(m)) return 'md'; return 'txt'; };
+  const safeParse = s => { try { return JSON.parse(s); } catch { return []; } };
+  function chatInner(msgs) {
+    return (msgs || []).map(m =>
+      `<div class="ai-msg ai-msg-${m.role === 'user' ? 'user' : 'ai'}">${m.role === 'user' ? esc(m.content) : renderMarkdown(m.content)}</div>`).join('');
+  }
+  function chatHTML(msgs) { return `<div class="ai-messages ai-hist-msgs">${chatInner(msgs)}</div>`; }
+  function renderSavedMedia(el, item) {
+    const artifact = { type: item.kind, mime: item.mime || 'text/plain', content: item.content || '', filename: slug(item.paperTitle || 'aureum') + '-' + item.kind + '.' + extFor(item.mime) };
+    if (item.kind === 'summary' || /markdown/.test(item.mime || '')) renderSummaryAid(el, artifact, { paperTitle: item.paperTitle });
+    else renderMediaAid(el, artifact, item.kind);
+  }
+  // public: used by the Studio tab (app.js) to render a saved item read-only
+  function renderSavedItem(el, item) {
+    if (!el) return;
+    if (item.kind === 'chat') { el.innerHTML = chatHTML(safeParse(item.content)); return; }
+    renderSavedMedia(el, item);
+  }
+  function loadChat(panel, st, msgs) {
+    st.messages = (msgs || []).slice();
+    const box = panel.querySelector('#ai-messages');
+    if (box) { box.innerHTML = chatInner(st.messages); box.scrollTop = box.scrollHeight; }
+  }
+  async function toggleHistory(panel, ctx, st) {
+    const box = panel.querySelector('#ai-history');
+    if (!box.hidden) { box.hidden = true; box.innerHTML = ''; return; }
+    box.hidden = false; box.innerHTML = LOADING;
+    let items = [];
+    try { items = await Backend.listAiItems(ctx.questionKey); } catch {}
+    if (!items.length) { box.innerHTML = `<p class="ai-note">Nothing saved for this question yet. Your chats and any charts, mind maps, or summaries you generate are saved here automatically — come back any day and reopen them.</p>`; return; }
+    box.innerHTML = `<div class="ai-hist-list"></div>`;
+    const list = box.querySelector('.ai-hist-list');
+    items.forEach(item => {
+      const card = document.createElement('div'); card.className = 'ai-hist-card';
+      const when = item.created ? new Date(item.created).toLocaleString() : '';
+      card.innerHTML = `
+        <div class="ai-hist-head">
+          <span class="ai-hist-kind">${kindIcon(item.kind)} ${esc(kindLabel(item.kind))}</span>
+          <span class="ai-hist-when">${esc(when)}</span>
+          <button class="ai-hist-del" title="Delete">🗑</button>
+        </div>
+        <div class="ai-hist-body"></div>`;
+      const body = card.querySelector('.ai-hist-body');
+      if (item.kind === 'chat') {
+        const msgs = safeParse(item.content);
+        body.innerHTML = chatHTML(msgs) + `<button class="btn btn-ghost btn-sm ai-hist-load">↥ Load into chat</button>`;
+        body.querySelector('.ai-hist-load').addEventListener('click', () => loadChat(panel, st, msgs));
+      } else {
+        renderSavedMedia(body, item);
+      }
+      card.querySelector('.ai-hist-del').addEventListener('click', async () => {
+        if (!confirm('Delete this saved item?')) return;
+        try { await Backend.deleteAiItem(item.id); } catch {}
+        card.remove();
+        if (!list.children.length) box.innerHTML = `<p class="ai-note">Nothing saved for this question yet.</p>`;
+      });
+      list.appendChild(card);
+    });
   }
 
   function renderSummaryAid(out, artifact, ctx) {
@@ -257,5 +329,5 @@ const AI = (() => {
     return '<p>' + h + '</p>';
   }
 
-  return { attach };
+  return { attach, renderSavedItem, kindIcon, kindLabel };
 })();

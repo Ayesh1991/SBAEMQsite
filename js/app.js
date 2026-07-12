@@ -26,6 +26,7 @@
     { re: /^#\/quiz\/([^/]+)\/(SBA|EMQ)\/(exam|study)$/, fn: renderQuiz },
     { re: /^#\/results\/([^/]+)$/, fn: renderResults },
     { re: /^#\/profile$/, fn: renderProfile },
+    { re: /^#\/studio$/, fn: renderStudio },
     { re: /^#\/dev$/, fn: renderDev }
   ];
 
@@ -68,6 +69,7 @@
           <a href="#/dashboard" class="${location.hash === '#/dashboard' ? 'active' : ''}">Dashboard</a>
           <a href="#/library" class="${location.hash.startsWith('#/library') || location.hash.startsWith('#/paper') ? 'active' : ''}">Library</a>
           <a href="#/profile" class="${location.hash === '#/profile' ? 'active' : ''}">Profile</a>
+          ${isDev ? `<a href="#/studio" class="${location.hash === '#/studio' ? 'active' : ''}">Studio</a>` : ''}
           ${isDev ? `<a href="#/dev" class="${location.hash === '#/dev' ? 'active' : ''}">Developer</a>` : ''}
           <button class="btn btn-ghost btn-sm" id="nav-logout">Sign out</button>
         ` : `<a href="#/auth" class="btn btn-primary btn-sm">Sign in</a>`}
@@ -677,6 +679,7 @@
                   ${q.rationale ? `<p class="r-expl">${esc(q.rationale)}</p>` : ''}
                   ${q.hook ? `<p class="r-hook">💡 ${esc(q.hook)}</p>` : ''}
                   ${q.reference ? `<p class="r-ref">§ ${esc(q.reference)}</p>` : ''}
+                  <div class="qedit-slot"></div>
                   <div class="r-note" data-note-key="${esc(attempt.paperId + ':' + attempt.kind + ':' + q.number)}"></div>
                   <div class="ai-slot" data-ai-i="${i}"></div>
                 </article>`;
@@ -699,6 +702,13 @@
         const nKey = attempt.paperId + ':' + attempt.kind + ':' + q.number;
         const noteEl = item.querySelector('.r-note');
         if (notes[nKey]) noteEl.innerHTML = `<div class="note-shown">🗒 <span>${esc(notes[nKey])}</span></div>`;
+        // developer flag / edit-explanation (and any correction, shown to all)
+        if (typeof QEdit !== 'undefined') {
+          QEdit.mount(item.querySelector('.qedit-slot'), {
+            questionKey: nKey, rationale: q.rationale || '', paperTitle: attempt.paperTitle,
+            answerText: (q.preLettered ? '' : Quiz.LETTERS[q.answer] + '. ') + q.options[q.answer]
+          });
+        }
         // AI
         if (window.AI && cfg.ai?.enabled) {
           AI.attach(item.querySelector('.ai-slot'), {
@@ -786,6 +796,108 @@
     view.querySelector('#reset-progress').addEventListener('click', async () => {
       if (confirm('Erase all attempts, XP and streaks? This cannot be undone.')) { await Backend.resetProgress(); route(); }
     });
+  }
+
+  /* ================= studio (private AI gallery) ================= */
+
+  async function renderStudio(user) {
+    const authorised = user.email === cfg.developer.email || sessionStorage.getItem('aureum-dev') === '1';
+    if (!authorised) return renderDevGate(user);
+
+    view.innerHTML = `
+      <section class="page">
+        <header data-animate>
+          <p class="kicker">STUDIO · PRIVATE</p>
+          <h1 class="page-title">Your AI studio</h1>
+          <p class="muted">Every conversation, chart, mind map, infographic and note you've created — grouped by paper, private to your account.</p>
+        </header>
+        <div class="studio-toolbar" data-animate>
+          <div class="studio-filters" id="studio-filters"></div>
+          <input type="search" id="studio-search" class="studio-search" placeholder="Search your studio…" autocomplete="off">
+        </div>
+        <div id="studio-body"><p class="muted">Loading your studio…</p></div>
+      </section>`;
+
+    const [items, notes, papers] = await Promise.all([
+      Backend.listAiItems ? Backend.listAiItems().catch(() => []) : Promise.resolve([]),
+      Backend.listAllNotes ? Backend.listAllNotes().catch(() => []) : Promise.resolve([]),
+      Data.publishedPapers().catch(() => [])
+    ]);
+    const titleOf = {}; papers.forEach(p => titleOf[p.id] = p.title);
+
+    const records = [];
+    items.forEach(it => records.push({
+      kind: it.kind, when: it.created ? new Date(it.created).getTime() : 0,
+      paper: it.paperTitle || titleOf[String(it.questionKey || '').split(':')[0]] || 'Unfiled',
+      qnum: String(it.questionKey || '').split(':')[2] || '', ai: it,
+      del: () => Backend.deleteAiItem(it.id)
+    }));
+    notes.forEach(n => {
+      const [pid, , num] = String(n.question_key).split(':');
+      records.push({ kind: 'note', when: 0, paper: titleOf[pid] || pid || 'Unfiled', qnum: num || '', note: n.body, del: () => Backend.saveNote(n.question_key, '') });
+    });
+    records.sort((a, b) => b.when - a.when);
+    records.forEach((r, i) => r._i = i);
+
+    const label = k => k === 'note' ? 'Note' : (AI.kindLabel ? AI.kindLabel(k) : k);
+    const icon = k => k === 'note' ? '🗒' : (AI.kindIcon ? AI.kindIcon(k) : '✨');
+    const live = () => records.filter(r => !r._deleted);
+    const present = () => [...new Set(live().map(r => r.kind))];
+
+    let filter = 'all', search = '';
+    const filtersEl = view.querySelector('#studio-filters');
+    const bodyEl = view.querySelector('#studio-body');
+    const searchEl = view.querySelector('#studio-search');
+
+    function drawFilters() {
+      const L = live();
+      filtersEl.innerHTML = `<button class="filter-chip ${filter === 'all' ? 'active' : ''}" data-k="all">All <span>${L.length}</span></button>` +
+        present().map(k => `<button class="filter-chip ${filter === k ? 'active' : ''}" data-k="${k}">${icon(k)} ${esc(label(k))} <span>${L.filter(r => r.kind === k).length}</span></button>`).join('');
+      filtersEl.querySelectorAll('.filter-chip').forEach(b => b.addEventListener('click', () => { filter = b.dataset.k; drawFilters(); draw(); }));
+    }
+    function matches(r) {
+      if (r._deleted) return false;
+      if (filter !== 'all' && r.kind !== filter) return false;
+      if (!search) return true;
+      return [r.paper, r.qnum, r.note || '', r.ai?.title || '', r.ai?.content || ''].join(' ').toLowerCase().includes(search);
+    }
+    function cardHTML(r) {
+      const head = `
+        <div class="studio-card-head">
+          <span class="studio-card-kind">${icon(r.kind)} ${esc(label(r.kind))}${r.qnum ? ' · Q' + esc(r.qnum) : ''}</span>
+          ${r.when ? `<span class="studio-card-when">${esc(new Date(r.when).toLocaleDateString())}</span>` : ''}
+          <button class="studio-card-del" data-rid="${r._i}" title="Delete">🗑</button>
+        </div>`;
+      const body = r.kind === 'note'
+        ? `<div class="studio-card-body"><div class="note-shown">🗒 <span>${esc(r.note)}</span></div></div>`
+        : `<div class="studio-card-body" data-render="${r._i}"></div>`;
+      return `<article class="studio-card ${r.kind === 'chat' ? 'is-chat' : ''}">${head}${body}</article>`;
+    }
+    function draw() {
+      const shown = records.filter(matches);
+      if (!shown.length) {
+        bodyEl.innerHTML = `<p class="muted studio-empty">${live().length ? 'Nothing matches that filter.' : 'Your studio is empty. Open a question in Study mode, tap ✨ Explore with AI, and every chat, chart, mind map and summary you make is saved here for next time.'}</p>`;
+        return;
+      }
+      const groups = {};
+      shown.forEach(r => (groups[r.paper] || (groups[r.paper] = [])).push(r));
+      bodyEl.innerHTML = Object.keys(groups).map(paper => `
+        <details class="studio-group" open>
+          <summary><span class="studio-group-title">${esc(paper)}</span><span class="studio-group-count">${groups[paper].length}</span></summary>
+          <div class="studio-grid">${groups[paper].map(cardHTML).join('')}</div>
+        </details>`).join('');
+      bodyEl.querySelectorAll('[data-render]').forEach(el => { const r = records[Number(el.dataset.render)]; if (r && r.ai) AI.renderSavedItem(el, r.ai); });
+      bodyEl.querySelectorAll('.studio-card-del').forEach(b => b.addEventListener('click', async () => {
+        const r = records[Number(b.dataset.rid)]; if (!r || !confirm('Delete this item from your studio?')) return;
+        try { await r.del(); } catch {}
+        r._deleted = true; drawFilters(); draw();
+      }));
+      if (typeof gsap !== 'undefined' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        gsap.fromTo(bodyEl.querySelectorAll('.studio-card'), { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.4, stagger: 0.03, ease: 'power2.out', clearProps: 'transform' });
+      }
+    }
+    searchEl.addEventListener('input', () => { search = searchEl.value.trim().toLowerCase(); draw(); });
+    drawFilters(); draw();
   }
 
   /* ================= developer console ================= */

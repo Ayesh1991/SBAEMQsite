@@ -130,9 +130,38 @@ const Backend = (() => {
     async function saveNote(qk, body) { const e = sessionEmail(); if (!e) return; const n = read(nKey(e), {}); if (body) n[qk] = body; else delete n[qk]; write(nKey(e), n); }
     async function getNotesForPaper(prefix) { const e = sessionEmail(); if (!e) return {}; const n = read(nKey(e), {}); const out = {}; for (const k in n) if (k.startsWith(prefix)) out[k] = n[k]; return out; }
 
+    async function listAllNotes() { const e = sessionEmail(); if (!e) return []; const n = read(nKey(e), {}); return Object.entries(n).map(([question_key, body]) => ({ question_key, body })); }
+
     /* custom curriculum */
     async function getCustomCurriculum() { return read('curriculum', { categories: [] }); }
     async function saveCustomCurriculum(data) { write('curriculum', data); }
+
+    /* AI saves (chats, charts, infographics, mind maps, summaries) */
+    const aKey = e => 'aisaves.' + e;
+    const newId = () => 'ai-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    async function saveAiItem(item) {
+      const e = sessionEmail(); if (!e) return null;
+      const list = read(aKey(e), []);
+      const rec = { id: newId(), questionKey: item.questionKey || null, paperTitle: item.paperTitle || '', kind: item.kind, title: item.title || '', content: item.content || '', mime: item.mime || 'text/plain', created: Date.now() };
+      list.unshift(rec); if (list.length > 1000) list.length = 1000; write(aKey(e), list); return rec;
+    }
+    async function saveAiChat(questionKey, messages, paperTitle) {
+      const e = sessionEmail(); if (!e) return null;
+      const list = read(aKey(e), []);
+      const i = list.findIndex(x => x.kind === 'chat' && x.questionKey === questionKey);
+      const rec = { id: i >= 0 ? list[i].id : newId(), questionKey, paperTitle: paperTitle || (i >= 0 ? list[i].paperTitle : ''), kind: 'chat', title: 'Conversation', content: JSON.stringify(messages || []), mime: 'application/json', created: i >= 0 ? list[i].created : Date.now(), updated: Date.now() };
+      if (i >= 0) list[i] = rec; else list.unshift(rec); write(aKey(e), list); return rec;
+    }
+    async function listAiItems(questionKey) { const e = sessionEmail(); if (!e) return []; const list = read(aKey(e), []); return questionKey ? list.filter(x => x.questionKey === questionKey) : list; }
+    async function deleteAiItem(id) { const e = sessionEmail(); if (!e) return; write(aKey(e), read(aKey(e), []).filter(x => x.id !== id)); }
+
+    /* question edits (developer flag + explanation override) — global on this device */
+    async function getQuestionEdit(qk) { const m = read('qedits', {}); return m[qk] || null; }
+    async function saveQuestionEdit(qk, patch) {
+      const m = read('qedits', {}); m[qk] = Object.assign({}, m[qk], patch, { updated: Date.now() });
+      if (!m[qk].flagged && !m[qk].flag_note && !m[qk].explanation) delete m[qk];
+      write('qedits', m); return m[qk] || null;
+    }
 
     /* AI (local mode has no server function — the app disables AI in local) */
     async function getAccessToken() { return null; }
@@ -143,7 +172,8 @@ const Backend = (() => {
       getProgress, recordAttempt, getAttempt, resetProgress,
       getPublishedPapers, publishPaper, unpublishPaper,
       getExamDate, setExamDate, saveSession, loadSession, clearSession, listSessions,
-      getNote, saveNote, getNotesForPaper, getCustomCurriculum, saveCustomCurriculum, getAccessToken };
+      getNote, saveNote, getNotesForPaper, listAllNotes, getCustomCurriculum, saveCustomCurriculum,
+      saveAiItem, saveAiChat, listAiItems, deleteAiItem, getQuestionEdit, saveQuestionEdit, getAccessToken };
   })();
 
   /* ================= SUPABASE BACKEND ================= */
@@ -244,10 +274,50 @@ const Backend = (() => {
     async function getNote(qk) { await ensureClient(); const id = await uid(); if (!id) return null; const { data } = await sb.from('notes').select('body').eq('user_id', id).eq('question_key', qk).single(); return data?.body || null; }
     async function saveNote(qk, body) { await ensureClient(); const id = await uid(); if (!id) return; if (body) await sb.from('notes').upsert({ user_id: id, question_key: qk, body, updated_at: new Date().toISOString() }); else await sb.from('notes').delete().eq('user_id', id).eq('question_key', qk); }
     async function getNotesForPaper(prefix) { await ensureClient(); const id = await uid(); if (!id) return {}; const { data } = await sb.from('notes').select('question_key, body').eq('user_id', id).like('question_key', prefix + '%'); const out = {}; (data || []).forEach(r => out[r.question_key] = r.body); return out; }
+    async function listAllNotes() { await ensureClient(); const id = await uid(); if (!id) return []; const { data } = await sb.from('notes').select('question_key, body').eq('user_id', id); return data || []; }
 
     /* custom curriculum */
     async function getCustomCurriculum() { await ensureClient(); const { data } = await sb.from('curriculum').select('data').eq('id', 'default').single(); return data?.data || { categories: [] }; }
     async function saveCustomCurriculum(data) { await ensureClient(); await sb.from('curriculum').upsert({ id: 'default', data, updated_at: new Date().toISOString() }); }
+
+    /* AI saves (chats, charts, infographics, mind maps, summaries) */
+    const newId = () => 'ai-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    function mapAi(r) { return { id: r.id, questionKey: r.question_key, paperTitle: r.paper_title, kind: r.kind, title: r.title, content: r.content, mime: r.mime, created: r.created_at }; }
+    async function saveAiItem(item) {
+      await ensureClient(); const id = await uid(); if (!id) return null;
+      const rec = { id: newId(), user_id: id, question_key: item.questionKey || null, paper_title: item.paperTitle || '', kind: item.kind, title: item.title || '', content: item.content || '', mime: item.mime || 'text/plain' };
+      try { await sb.from('ai_saves').insert(rec); } catch {}
+      return mapAi(rec);
+    }
+    async function saveAiChat(questionKey, messages, paperTitle) {
+      await ensureClient(); const id = await uid(); if (!id) return null;
+      const content = JSON.stringify(messages || []);
+      const { data: ex } = await sb.from('ai_saves').select('id').eq('user_id', id).eq('question_key', questionKey).eq('kind', 'chat').limit(1);
+      if (ex && ex.length) { await sb.from('ai_saves').update({ content, paper_title: paperTitle || '', created_at: new Date().toISOString() }).eq('id', ex[0].id); return { id: ex[0].id }; }
+      const rec = { id: newId(), user_id: id, question_key: questionKey, paper_title: paperTitle || '', kind: 'chat', title: 'Conversation', content, mime: 'application/json' };
+      await sb.from('ai_saves').insert(rec); return mapAi(rec);
+    }
+    async function listAiItems(questionKey) {
+      await ensureClient(); const id = await uid(); if (!id) return [];
+      let q = sb.from('ai_saves').select('*').eq('user_id', id).order('created_at', { ascending: false });
+      if (questionKey) q = q.eq('question_key', questionKey);
+      const { data } = await q; return (data || []).map(mapAi);
+    }
+    async function deleteAiItem(id) { await ensureClient(); const u = await uid(); if (!u) return; await sb.from('ai_saves').delete().eq('id', id).eq('user_id', u); }
+
+    /* question edits (developer flag + explanation override) */
+    async function getQuestionEdit(qk) {
+      await ensureClient();
+      const { data } = await sb.from('question_edits').select('*').eq('question_key', qk).single();
+      return data ? { flagged: !!data.flagged, flag_note: data.flag_note || '', explanation: data.explanation || '', updated: data.updated_at } : null;
+    }
+    async function saveQuestionEdit(qk, patch) {
+      await ensureClient();
+      const u = await currentUser();
+      const row = Object.assign({ question_key: qk }, patch, { updated_by: u?.email || null, updated_at: new Date().toISOString() });
+      await sb.from('question_edits').upsert(row);
+      return getQuestionEdit(qk);
+    }
 
     /* AI auth token for the Cloudflare function */
     async function getAccessToken() { await ensureClient(); const { data } = await sb.auth.getSession(); return data.session?.access_token || null; }
@@ -256,7 +326,8 @@ const Backend = (() => {
       getProgress, recordAttempt, getAttempt, resetProgress,
       getPublishedPapers, publishPaper, unpublishPaper,
       getExamDate, setExamDate, saveSession, loadSession, clearSession, listSessions,
-      getNote, saveNote, getNotesForPaper, getCustomCurriculum, saveCustomCurriculum, getAccessToken };
+      getNote, saveNote, getNotesForPaper, listAllNotes, getCustomCurriculum, saveCustomCurriculum,
+      saveAiItem, saveAiChat, listAiItems, deleteAiItem, getQuestionEdit, saveQuestionEdit, getAccessToken };
   })();
 
   const impl = useCloud ? Cloud : Local;
