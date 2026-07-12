@@ -6,6 +6,7 @@
    local (single-device) mode.
    ============================================================ */
 
+
 window.AUREUM_CONFIG = {
   /* Branding */
   brandName: 'AUREUM',
