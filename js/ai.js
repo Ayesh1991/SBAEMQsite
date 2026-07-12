@@ -40,8 +40,8 @@ const AI = (() => {
         <div class="ai-head">
           <span class="ai-title">✨ AI tutor</span>
           ${dev ? `<div class="ai-providers">
-            <button class="ai-prov active" data-prov="gemini">Gemini Flash</button>
-            <button class="ai-prov" data-prov="claude">Claude</button>
+            <button class="ai-prov" data-prov="gemini">Gemini Flash</button>
+            <button class="ai-prov active" data-prov="claude">Claude</button>
           </div>` : `<span class="ai-badge">Gemini Flash</span>`}
           <button class="ai-x" data-ai-close aria-label="Close">✕</button>
         </div>
@@ -72,7 +72,7 @@ const AI = (() => {
       </div>`;
 
     const panel = slot.querySelector('.ai-panel');
-    const st = { provider: 'gemini', messages: [], follow: 0, dev };
+    const st = { provider: dev ? 'claude' : 'gemini', messages: [], follow: 0, dev };
 
     panel.querySelector('[data-ai-close]').addEventListener('click', () => attach(slot, ctx));
     panel.querySelectorAll('.ai-prov').forEach(b => b.addEventListener('click', () => {
