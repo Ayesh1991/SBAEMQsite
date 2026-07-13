@@ -54,7 +54,10 @@ const AI = (() => {
         <div class="ai-history" id="ai-history" hidden></div>
         <div class="ai-body" id="ai-body">${LOADING}</div>
         <div class="ai-chat" id="ai-chat">
-          <p class="ai-chat-label">💬 Chat to elaborate on this topic</p>
+          <div class="ai-chat-labelrow">
+            <p class="ai-chat-label">💬 Chat to elaborate on this topic</p>
+            <button class="btn btn-ghost btn-sm ai-save-chat" id="ai-save-chat" title="Save this whole conversation to your Studio">💾 Save chat to Studio</button>
+          </div>
           <div class="ai-messages" id="ai-messages"></div>
           <form class="ai-ask" id="ai-ask">
             <input type="text" id="ai-input" placeholder="Ask a follow-up… e.g. why not option D? / explain the physiology" autocomplete="off">
@@ -89,6 +92,7 @@ const AI = (() => {
       if (st.provider === 'gemini') runExplain();     // re-run with the chosen Gemini model
     });
     panel.querySelector('#ai-ask').addEventListener('submit', e => { e.preventDefault(); ask(panel, ctx, st); });
+    panel.querySelector('#ai-save-chat').addEventListener('click', () => saveChatToStudio(panel, ctx, st));
     panel.querySelector('#ai-hist').addEventListener('click', () => toggleHistory(panel, ctx, st));
     panel.querySelectorAll('[data-aid]').forEach(b => b.addEventListener('click', () => genAid(panel, ctx, st, b.dataset.aid)));
 
@@ -143,6 +147,20 @@ const AI = (() => {
       ? (cfg().geminiFollowUpLimit || cfg().followUpLimit || 6)
       : (cfg().followUpLimit || 6);
   }
+  async function saveChatToStudio(panel, ctx, st) {
+    const btn = panel.querySelector('#ai-save-chat');
+    if (!st.messages.length) { flash(btn, 'Ask a question first'); return; }
+    const prev = btn.textContent; btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      await Backend.saveAiChat(ctx.questionKey, st.messages, ctx.paperTitle);
+      btn.textContent = '✓ Saved to Studio';
+      setTimeout(() => { btn.textContent = prev; btn.disabled = false; }, 1800);
+    } catch (e) {
+      btn.textContent = prev; btn.disabled = false; flash(btn, 'Could not save');
+    }
+  }
+  function flash(btn, msg) { const p = btn.textContent; btn.textContent = msg; setTimeout(() => btn.textContent = p, 1600); }
+
   function updateFollowCount(panel, st) {
     const max = maxFollowups(st);
     const left = Math.max(0, max - st.follow);
@@ -186,8 +204,20 @@ const AI = (() => {
   // public: used by the Studio tab (app.js) to render a saved item read-only
   function renderSavedItem(el, item) {
     if (!el) return;
-    if (item.kind === 'chat') { el.innerHTML = chatHTML(safeParse(item.content)); return; }
+    if (item.kind === 'chat') { el.innerHTML = transcriptHTML(safeParse(item.content)); return; }
     renderSavedMedia(el, item);
+  }
+  function transcriptHTML(msgs) {
+    return `<div class="ai-transcript">
+      <div class="ai-transcript-meta">💬 ${msgs.length} message${msgs.length !== 1 ? 's' : ''}</div>
+      <div class="ai-transcript-body">
+        ${msgs.map(m => `
+          <div class="ai-turn ai-turn-${m.role === 'user' ? 'you' : 'ai'}">
+            <span class="ai-turn-who">${m.role === 'user' ? 'You' : '✦ AI tutor'}</span>
+            <div class="ai-turn-bubble">${m.role === 'user' ? esc(m.content) : renderMarkdown(m.content)}</div>
+          </div>`).join('')}
+      </div>
+    </div>`;
   }
   function loadChat(panel, st, msgs) {
     st.messages = (msgs || []).slice();
@@ -216,7 +246,7 @@ const AI = (() => {
       const body = card.querySelector('.ai-hist-body');
       if (item.kind === 'chat') {
         const msgs = safeParse(item.content);
-        body.innerHTML = chatHTML(msgs) + `<button class="btn btn-ghost btn-sm ai-hist-load">↥ Load into chat</button>`;
+        body.innerHTML = transcriptHTML(msgs) + `<button class="btn btn-ghost btn-sm ai-hist-load">↥ Load into chat</button>`;
         body.querySelector('.ai-hist-load').addEventListener('click', () => loadChat(panel, st, msgs));
       } else {
         renderSavedMedia(body, item);
