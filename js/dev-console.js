@@ -408,15 +408,23 @@ const DevConsole = (() => {
     const key = f.key || slug(deck.topic || f.title);
     return { id: 'deck-' + key, driveKey: f.key || null, title: deck.topic || (f.title || '').replace(/\.json$/i, ''), source: deck.source || '', cardCount: cards.length, content: { topic: deck.topic || f.title, cards } };
   }
+  let lastDeckScanMeta = {};
   async function fetchDeckIndex() {
     const base = ctx.cfg.drive.apiBase, fid = ctx.cfg.drive.flashcardFolderId;
+    lastDeckScanMeta = {};
     let liveError = null;
     try {
       const res = await fetch(`${base}?action=list&folderId=${encodeURIComponent(fid)}`, { cache: 'no-cache' });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        if (data.truncated) console.warn('Drive listing truncated — very large folder; rescan to pick up the rest after publishing.');
-        return (data.files || []).map(f => ({ key: f.key || f.id, id: f.id, title: f.title || f.name, folder: f.folder || '', deck: f.deck || f.paper || null }));
+        const all = (data.files || []);
+        // Only real decks: your decks follow the "flashcards…" naming (like
+        // papers use "papers__…"). This skips the other app's config JSONs
+        // (OG-Revise-TopicSM2, StudyPlan, FolderMap, …) that caused the
+        // "Missing topic" publish errors.
+        const decks = all.filter(f => /flashcard/i.test(f.title || f.name || ''));
+        lastDeckScanMeta = { truncated: data.truncated, skipped: data.skipped, ignored: all.length - decks.length };
+        return decks.map(f => ({ key: f.key || f.id, id: f.id, title: f.title || f.name, folder: f.folder || '', deck: f.deck || f.paper || null }));
       }
       liveError = data.error || `HTTP ${res.status}`;
     } catch (e) { liveError = 'network: ' + (e.message || e); }
@@ -438,7 +446,10 @@ const DevConsole = (() => {
     const pubKeys = new Set(pub.map(d => d.driveKey).filter(Boolean));
     const pubTitles = new Set(pub.map(d => (d.title || '').toLowerCase()));
     const neu = files.filter(f => !pubKeys.has(f.key) && !pubTitles.has((f.title || '').replace(/\.json$/i, '').toLowerCase()));
-    status.innerHTML = `${files.length} deck file${files.length !== 1 ? 's' : ''} · <strong>${neu.length} new</strong>`;
+    const warn = (lastDeckScanMeta.ignored ? ` · <span class="muted">${lastDeckScanMeta.ignored} non-deck JSON${lastDeckScanMeta.ignored > 1 ? 's' : ''} ignored</span>` : '') +
+      (lastDeckScanMeta.skipped ? ` · <span class="bad">${lastDeckScanMeta.skipped} subfolder${lastDeckScanMeta.skipped > 1 ? 's' : ''} skipped (Restricted sharing)</span>` : '') +
+      (lastDeckScanMeta.truncated ? ` · <span class="bad">list truncated (very large folder) — rescan after publishing to see the rest</span>` : '');
+    status.innerHTML = `${files.length} deck file${files.length !== 1 ? 's' : ''} · <strong>${neu.length} new</strong>${warn}`;
     if (!neu.length) { list.innerHTML = `<p class="muted">All flashcard decks are already published. 🎉</p>`; return; }
     stagedDecks = neu;
     list.innerHTML = neu.map((f, i) => deckRow(f, i)).join('');

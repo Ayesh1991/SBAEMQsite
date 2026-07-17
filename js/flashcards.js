@@ -52,16 +52,43 @@ const Flashcards = (() => {
   }
 
   function deckStats(deck, prog) {
-    let due = 0, learned = 0, fresh = 0;
+    let due = 0, learned = 0, fresh = 0, reviewDue = 0;
     for (const c of deck.content.cards) {
       const st = prog[c.id];
-      if (!st) { fresh++; due++; }
-      else { if ((st.reps || 0) > 0) learned++; if (isDue(st)) due++; }
+      if (!st) { fresh++; due++; }                       // new card: counts as something to do
+      else {
+        if ((st.reps || 0) > 0) learned++;
+        if (isDue(st)) { due++; if ((st.reps || 0) > 0) reviewDue++; }   // reviewDue = learned & past its date
+      }
     }
-    return { total: deck.content.cards.length, due, learned, fresh };
+    return { total: deck.content.cards.length, due, learned, fresh, reviewDue };
   }
 
   /* ---------- deck list (#/cards) ---------- */
+
+  function deckCardHTML(d, st) {
+    const pct = st.total ? Math.round((st.learned / st.total) * 100) : 0;
+    return `
+      <a class="fc-deck" href="#/cards/${encodeURIComponent(d.id)}" style="--fc-accent:linear-gradient(135deg,#a78bfa,#5eead4)">
+        <div class="fc-deck-top">
+          <span class="fc-deck-ico">🃏</span>
+          ${st.reviewDue ? `<span class="fc-due-badge">${st.reviewDue} to review</span>`
+            : st.fresh ? `<span class="fc-new-badge">${st.fresh} new</span>`
+            : `<span class="fc-done-badge">✓ up to date</span>`}
+        </div>
+        <h3 class="fc-deck-title">${esc(d.title)}</h3>
+        <p class="fc-deck-source muted">${esc(d.source || '')}</p>
+        <div class="fc-deck-meter"><span style="width:${pct}%"></span></div>
+        <div class="fc-deck-foot">
+          <span class="muted tiny">${st.total} cards · ${st.learned} learned</span>
+          <span class="fc-deck-go">Study →</span>
+        </div>
+      </a>`;
+  }
+  function groupLetter(title) {
+    const c = String(title || '').trim().charAt(0).toUpperCase();
+    return /[A-Z]/.test(c) ? c : '#';
+  }
 
   async function renderList(view, user) {
     view.innerHTML = `
@@ -86,36 +113,76 @@ const Flashcards = (() => {
       return;
     }
 
-    let totalDue = 0;
-    const cards = list.map(d => {
-      const st = deckStats(d, allProg[d.id] || {});
-      totalDue += st.due;
-      const pct = st.total ? Math.round((st.learned / st.total) * 100) : 0;
-      return `
-        <a class="fc-deck" href="#/cards/${encodeURIComponent(d.id)}" style="--fc-accent:linear-gradient(135deg,#a78bfa,#5eead4)">
-          <div class="fc-deck-top">
-            <span class="fc-deck-ico">🃏</span>
-            ${st.due ? `<span class="fc-due-badge">${st.due} due</span>` : `<span class="fc-done-badge">✓ up to date</span>`}
-          </div>
-          <h3 class="fc-deck-title">${esc(d.title)}</h3>
-          <p class="fc-deck-source muted">${esc(d.source || '')}</p>
-          <div class="fc-deck-meter"><span style="width:${pct}%"></span></div>
-          <div class="fc-deck-foot">
-            <span class="muted tiny">${st.total} cards · ${st.learned} learned</span>
-            <span class="fc-deck-go">Study →</span>
-          </div>
-        </a>`;
-    }).join('');
+    // stats + sortable model
+    const rows = list.map(d => ({ d, st: deckStats(d, allProg[d.id] || {}) }))
+      .sort((a, b) => a.d.title.localeCompare(b.d.title));
+    const totalDue = rows.reduce((n, r) => n + r.st.due, 0);
+    const totalCards = rows.reduce((n, r) => n + r.st.total, 0);
 
     body.innerHTML = `
       <div class="fc-summary card" data-animate>
-        <div><strong>${list.length}</strong><span>Decks</span></div>
+        <div><strong>${rows.length}</strong><span>Decks</span></div>
         <div><strong class="${totalDue ? 'gold' : 'good'}">${totalDue}</strong><span>Cards due now</span></div>
-        <div><strong>${list.reduce((n, d) => n + d.content.cards.length, 0)}</strong><span>Total cards</span></div>
+        <div><strong>${totalCards}</strong><span>Total cards</span></div>
       </div>
-      <div class="fc-deck-grid">${cards}</div>`;
+      <div class="lib-search" data-animate>
+        <span class="lib-search-ico">⌕</span>
+        <input type="search" id="fc-search" placeholder="Search decks by name… e.g. breech, PPROM, FGR" autocomplete="off">
+      </div>
+      <div class="lib-filters" id="fc-filters" data-animate>
+        <button class="filter-chip active" data-f="all">All <span>${rows.length}</span></button>
+        <button class="filter-chip" data-f="due">Reviews due <span>${rows.filter(r => r.st.reviewDue).length}</span></button>
+        <button class="filter-chip" data-f="progress">In progress <span>${rows.filter(r => r.st.learned && r.st.learned < r.st.total).length}</span></button>
+        <button class="filter-chip" data-f="fresh">Not started <span>${rows.filter(r => !r.st.learned).length}</span></button>
+      </div>
+      <div id="fc-results" class="lib-results" hidden></div>
+      <div id="fc-groups"></div>`;
+
+    const groupsEl = body.querySelector('#fc-groups');
+    const resultsEl = body.querySelector('#fc-results');
+    const filtersEl = body.querySelector('#fc-filters');
+    const searchEl = body.querySelector('#fc-search');
+    let filter = 'all';
+
+    const passFilter = r => filter === 'all' ? true
+      : filter === 'due' ? r.st.reviewDue > 0
+      : filter === 'progress' ? (r.st.learned > 0 && r.st.learned < r.st.total)
+      : /* fresh */ r.st.learned === 0;
+
+    function drawGroups() {
+      const shown = rows.filter(passFilter);
+      if (!shown.length) { groupsEl.innerHTML = `<p class="muted lib-empty">No decks match this filter.</p>`; return; }
+      const groups = {};
+      shown.forEach(r => (groups[groupLetter(r.d.title)] || (groups[groupLetter(r.d.title)] = [])).push(r));
+      const letters = Object.keys(groups).sort((a, b) => a === '#' ? 1 : b === '#' ? -1 : a.localeCompare(b));
+      groupsEl.innerHTML = letters.map(L => `
+        <details class="chapter-section fc-group" open>
+          <summary><span class="cs-caret">▸</span><span class="cs-title">${L}</span><span class="cs-count">${groups[L].length}</span></summary>
+          <div class="cs-body"><div class="fc-deck-grid">${groups[L].map(r => deckCardHTML(r.d, r.st)).join('')}</div></div>
+        </details>`).join('');
+    }
+
+    function drawSearch(q) {
+      const hits = rows.filter(r => r.d.title.toLowerCase().includes(q) || (r.d.source || '').toLowerCase().includes(q));
+      resultsEl.innerHTML = hits.length
+        ? `<p class="muted lib-results-count">${hits.length} deck${hits.length > 1 ? 's' : ''} matching “${esc(q)}”</p><div class="fc-deck-grid">${hits.map(r => deckCardHTML(r.d, r.st)).join('')}</div>`
+        : `<p class="muted">No decks match “${esc(q)}”.</p>`;
+    }
+
+    filtersEl.addEventListener('click', e => {
+      const btn = e.target.closest('.filter-chip'); if (!btn) return;
+      filtersEl.querySelectorAll('.filter-chip').forEach(b => b.classList.toggle('active', b === btn));
+      filter = btn.dataset.f; drawGroups();
+    });
+    searchEl.addEventListener('input', () => {
+      const q = searchEl.value.trim().toLowerCase();
+      if (!q) { resultsEl.hidden = true; groupsEl.hidden = false; filtersEl.hidden = false; return; }
+      groupsEl.hidden = true; filtersEl.hidden = true; resultsEl.hidden = false; drawSearch(q);
+    });
+
+    drawGroups();
     if (typeof gsap !== 'undefined' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      gsap.fromTo('.fc-deck', { opacity: 0, y: 22 }, { opacity: 1, y: 0, duration: 0.5, stagger: 0.06, ease: 'power3.out' });
+      gsap.fromTo('.fc-group', { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.45, stagger: 0.05, ease: 'power2.out' });
     }
   }
 

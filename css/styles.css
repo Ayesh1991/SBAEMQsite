@@ -1180,3 +1180,8 @@ details[open] > summary .tw-caret { transform: rotate(90deg); }
 /* locked (invite-only) page */
 .locked-card { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 12px; }
 .locked-ico { font-size: 2.6rem; }
+
+/* v11 — flashcard "new" badge (distinct from review-due) */
+.fc-new-badge { font-size: 0.68rem; font-weight: 700; padding: 3px 9px; border-radius: 999px;
+  background: rgba(94,234,212,0.14); color: var(--teal); }
+.fc-group { margin-top: 14px; }
