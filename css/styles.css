@@ -1142,3 +1142,41 @@ details[open] > summary .tw-caret { transform: rotate(90deg); }
 .bp-cols ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px; }
 .bp-cols li { font-size: 0.82rem; color: var(--ink-2); display: flex; justify-content: space-between; gap: 8px;
   padding: 4px 0; border-bottom: 1px solid var(--hairline); }
+
+/* ============================================================
+   v10 — exam readiness, review queue, users panel, PWA, locked page.
+   ============================================================ */
+
+/* exam readiness */
+.readiness-body { display: flex; gap: 24px; align-items: center; flex-wrap: wrap; }
+.readiness-parts { flex: 1 1 240px; display: flex; flex-direction: column; gap: 10px; }
+.readiness-part { display: grid; grid-template-columns: minmax(110px, auto) 1fr auto; gap: 10px; align-items: center; }
+.readiness-label { font-size: 0.78rem; color: var(--ink-2); }
+.readiness-bar { height: 7px; border-radius: 999px; background: rgba(255,255,255,0.07); overflow: hidden; }
+.readiness-bar span { display: block; height: 100%; background: linear-gradient(90deg, var(--teal), var(--gold)); }
+.readiness-val { font-size: 0.78rem; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+
+/* review queue */
+.review-cta { display: flex; flex-direction: column; gap: 12px; align-items: flex-start; }
+.review-due-badge { display: flex; align-items: baseline; gap: 8px; }
+.review-due-badge strong { font-family: var(--serif, 'Fraunces', serif); font-size: 2.2rem; line-height: 1; color: var(--gold); }
+.review-due-badge span { font-size: 0.75rem; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-3); }
+.review-due-badge.review-clear strong { color: var(--good); font-size: 1.8rem; }
+
+/* users & access panel */
+.dev-section-users { border-top: 2px solid rgba(244,201,93,0.3); }
+.dev-users-table td { vertical-align: middle; }
+.dev-users-me { background: rgba(244,201,93,0.05); }
+.dev-flag { position: relative; display: inline-block; width: 40px; height: 22px; cursor: pointer; }
+.dev-flag input { opacity: 0; width: 0; height: 0; }
+.dev-flag span { position: absolute; inset: 0; border-radius: 999px; background: rgba(255,255,255,0.1);
+  border: 1px solid var(--hairline); transition: background .2s ease; }
+.dev-flag span::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+  background: var(--ink-3); transition: transform .2s ease, background .2s ease; }
+.dev-flag input:checked + span { background: rgba(94,234,212,0.25); border-color: rgba(94,234,212,0.5); }
+.dev-flag input:checked + span::after { transform: translateX(18px); background: var(--teal); }
+.dev-flag input:disabled + span { opacity: 0.5; }
+
+/* locked (invite-only) page */
+.locked-card { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.locked-ico { font-size: 2.6rem; }

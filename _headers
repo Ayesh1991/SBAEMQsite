@@ -13,3 +13,10 @@
   Cache-Control: public, max-age=86400
 /css/*
   Cache-Control: public, max-age=86400
+
+# The service worker must always be revalidated so a new release's SW
+# (and its VERSION) is picked up on the next visit, never a stale one.
+/sw.js
+  Cache-Control: no-cache, must-revalidate
+/manifest.webmanifest
+  Cache-Control: no-cache, must-revalidate

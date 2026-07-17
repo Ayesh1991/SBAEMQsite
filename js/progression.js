@@ -81,5 +81,46 @@ const Progression = (() => {
     return stats;
   }
 
-  return { TIERS, POSITIONS, tierFor, summarise, categoryAccuracy, scoreSeries, paperStats };
+  /**
+   * Exam-readiness estimate (0–100), deterministic and explainable:
+   *   55% recent accuracy   — mean % of the last 10 sets
+   *   25% syllabus coverage — distinct papers attempted / papers published
+   *   20% consistency       — practice days in the last 14
+   *   ±5  trend bonus       — last-5 average vs the previous 5
+   */
+  function readiness(progress, publishedCount) {
+    const attempts = progress.attempts || [];
+    if (!attempts.length) return null;
+
+    const recent = attempts.slice(0, 10);
+    const acc = recent.reduce((s, a) => s + (a.percent || 0), 0) / recent.length;
+
+    const papersTried = new Set(attempts.map(a => a.paperId)).size;
+    const coverage = publishedCount ? Math.min(1, papersTried / publishedCount) : 0;
+
+    const now = Date.now();
+    const days = new Set(attempts
+      .filter(a => now - new Date(a.date).getTime() < 14 * 86400000)
+      .map(a => String(a.date).slice(0, 10)));
+    const consistency = Math.min(1, days.size / 14);
+
+    let trend = 0;
+    if (attempts.length >= 6) {
+      const last5 = attempts.slice(0, 5).reduce((s, a) => s + a.percent, 0) / 5;
+      const prev5 = attempts.slice(5, 10);
+      const prevAvg = prev5.length ? prev5.reduce((s, a) => s + a.percent, 0) / prev5.length : last5;
+      trend = Math.max(-5, Math.min(5, (last5 - prevAvg) / 4));
+    }
+
+    const score = Math.max(0, Math.min(100, Math.round(0.55 * acc + 25 * coverage + 20 * consistency + trend)));
+    return {
+      score,
+      accuracy: Math.round(acc),
+      coverage: Math.round(coverage * 100),
+      consistency: Math.round(consistency * 100),
+      trend: Math.round(trend * 10) / 10
+    };
+  }
+
+  return { TIERS, POSITIONS, tierFor, summarise, categoryAccuracy, scoreSeries, paperStats, readiness };
 })();

@@ -126,6 +126,13 @@ const DevConsole = (() => {
           </div>
           <div id="bp-summary"></div>
         </div>
+
+        <div class="card dev-section-users" data-animate>
+          <h3 class="card-title">👥 Users &amp; access</h3>
+          <p class="muted">Everyone registered on the site. Toggle the advanced features on for chosen users —
+            everything else stays available to all. (Cloud mode needs the updated schema.sql run once.)</p>
+          <div id="dev-users"><p class="muted">Loading users…</p></div>
+        </div>
       </section>`;
 
     view.querySelector('#dev-scan').addEventListener('click', scan);
@@ -137,6 +144,7 @@ const DevConsole = (() => {
     await refreshPublished(view);
     await refreshDecks(view);
     await refreshBlueprint(view);
+    await refreshUsers(view);
     ctx.FX.viewIn(view);
   }
 
@@ -274,7 +282,7 @@ const DevConsole = (() => {
   let stagedNew = [];
 
   function newFileRow(f, i) {
-    const suggest = f.classification || (f.paper ? ctx.Data.classifyByTag(f.paper.folderTag || f.paper.topic) : null);
+    const suggest = f.classification || ctx.Data.classifyByTag(f.paper ? (f.paper.folderTag || f.paper.topic) : ((f.folder || '').split(' / ').pop() || String(f.title || '').replace(/\.json$/i, '')));
     const badges = f.counts ? `<span class="chip chip-sba">SBA ${f.counts.sba}</span> ${f.counts.emq ? `<span class="chip chip-emq">EMQ ${f.counts.emq}</span>` : ''}` : '';
     return `
       <div class="dev-row card" data-i="${i}">
@@ -304,7 +312,7 @@ const DevConsole = (() => {
     const catSel = row.querySelector('[data-role="cat"]');
     const secSel = row.querySelector('[data-role="sec"]');
     const topSel = row.querySelector('[data-role="top"]');
-    const suggest = f.classification || (f.paper ? ctx.Data.classifyByTag(f.paper.folderTag || f.paper.topic) : null);
+    const suggest = f.classification || ctx.Data.classifyByTag(f.paper ? (f.paper.folderTag || f.paper.topic) : ((f.folder || '').split(' / ').pop() || String(f.title || '').replace(/\.json$/i, '')));
 
     function fillSections(selCat) {
       const cat = syllabus.categories.find(c => c.id === selCat);
@@ -402,12 +410,18 @@ const DevConsole = (() => {
   }
   async function fetchDeckIndex() {
     const base = ctx.cfg.drive.apiBase, fid = ctx.cfg.drive.flashcardFolderId;
+    let liveError = null;
     try {
       const res = await fetch(`${base}?action=list&folderId=${encodeURIComponent(fid)}`, { cache: 'no-cache' });
-      if (res.ok) { const data = await res.json(); return (data.files || []).map(f => ({ key: f.key || f.id, id: f.id, title: f.title || f.name, folder: f.folder || '', deck: f.deck || f.paper || null })); }
-    } catch { /* fall through */ }
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        if (data.truncated) console.warn('Drive listing truncated — very large folder; rescan to pick up the rest after publishing.');
+        return (data.files || []).map(f => ({ key: f.key || f.id, id: f.id, title: f.title || f.name, folder: f.folder || '', deck: f.deck || f.paper || null }));
+      }
+      liveError = data.error || `HTTP ${res.status}`;
+    } catch (e) { liveError = 'network: ' + (e.message || e); }
     try { const snap = await fetch('data/flashcard-index.json', { cache: 'no-cache' }); if (snap.ok) { const data = await snap.json(); return (data.files || []).map(f => ({ key: f.key || f.id, id: f.id, title: f.title || f.name, folder: f.folder || '', deck: f.deck || null })); } } catch { /* ignore */ }
-    throw new Error('Live Drive API unavailable and no bundled flashcard snapshot. Deploy functions/api/drive.js.');
+    throw new Error('Flashcard Drive scan failed — ' + liveError);
   }
   function deckRow(f, i) {
     return `<div class="dev-row card" data-di="${i}"><div class="dev-row-head">
@@ -498,23 +512,78 @@ const DevConsole = (() => {
       </div></div>`;
   }
 
+  /* ---------------- users & feature flags ---------------- */
+
+  const FEATURES = [
+    { id: 'simulator',  label: 'Simulator' },
+    { id: 'flashcards', label: 'Flashcards' }
+  ];
+
+  async function refreshUsers(view) {
+    const host = view.querySelector('#dev-users');
+    if (!host) return;
+    let list = [];
+    try { list = await ctx.Backend.listAllUsers(); } catch (e) {
+      host.innerHTML = `<p class="bad">Could not load users — ${ctx.esc(e.message || e)}.<br>
+        <span class="muted tiny">In cloud mode this needs the new "profiles dev read" policy: run the updated supabase/schema.sql once.</span></p>`;
+      return;
+    }
+    if (!list.length) { host.innerHTML = `<p class="muted">No registered users found.</p>`; return; }
+    const devMail = (ctx.cfg.developer.email || '').toLowerCase();
+    host.innerHTML = `
+      <div class="table-scroll"><table class="table dev-users-table">
+        <thead><tr><th>Name</th><th>Email</th><th>Position</th><th>XP</th><th>Joined</th>${FEATURES.map(f => `<th>${f.label}</th>`).join('')}</tr></thead>
+        <tbody>${list.map(u => {
+          const isDev = (u.email || '').toLowerCase() === devMail;
+          return `<tr class="${isDev ? 'dev-users-me' : ''}">
+            <td>${ctx.esc(u.name || '')}${isDev ? ' <span class="qedit-tag">developer</span>' : ''}</td>
+            <td class="muted">${ctx.esc(u.email || '')}</td>
+            <td class="muted">${ctx.esc(u.position || '')}</td>
+            <td class="muted">${u.xp || 0}</td>
+            <td class="muted">${u.createdAt ? new Date(u.createdAt).toLocaleDateString() : ''}</td>
+            ${FEATURES.map(f => `<td>${isDev
+              ? '<span class="tiny muted">always</span>'
+              : `<label class="dev-flag"><input type="checkbox" data-uid="${ctx.esc(u.id)}" data-flag="${f.id}" ${u.featureFlags?.[f.id] ? 'checked' : ''}><span></span></label>`}</td>`).join('')}
+          </tr>`;
+        }).join('')}</tbody>
+      </table></div>
+      <p class="dev-row-msg" id="dev-users-msg"></p>`;
+    host.querySelectorAll('input[data-flag]').forEach(cb => cb.addEventListener('change', async () => {
+      const msg = host.querySelector('#dev-users-msg');
+      cb.disabled = true;
+      try {
+        await ctx.Backend.setUserFeature(cb.dataset.uid, cb.dataset.flag, cb.checked);
+        msg.textContent = `✓ ${cb.dataset.flag} ${cb.checked ? 'enabled' : 'disabled'} — takes effect on their next page load.`;
+        msg.className = 'dev-row-msg good';
+      } catch (e) {
+        cb.checked = !cb.checked;
+        msg.textContent = 'Could not save: ' + (e.message || e); msg.className = 'dev-row-msg bad';
+      }
+      cb.disabled = false;
+    }));
+  }
+
   /* ---------------- Drive access ---------------- */
 
   async function fetchDriveIndex() {
     const base = ctx.cfg.drive.apiBase;
-    // Try the live Cloudflare function first.
+    // Try the live Cloudflare function first. If the SERVER answers with an
+    // error, surface its real message (e.g. "GOOGLE_API_KEY is not
+    // configured") — hiding it behind a generic fallback made this
+    // impossible to diagnose.
+    let liveError = null;
     try {
       const res = await fetch(`${base}?action=list&folderId=${encodeURIComponent(ctx.cfg.drive.folderId)}`, { cache: 'no-cache' });
-      if (res.ok) {
-        const data = await res.json();
-        return (data.files || []).map(normaliseDriveFile);
-      }
-    } catch { /* fall through to snapshot */ }
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) return (data.files || []).map(normaliseDriveFile);
+      liveError = data.error || `HTTP ${res.status}`;
+    } catch (e) { liveError = 'network: ' + (e.message || e); }
     // Fallback: bundled snapshot generated at build time.
-    const snap = await fetch('data/drive-index.json', { cache: 'no-cache' });
-    if (!snap.ok) throw new Error('Live Drive API unavailable and no bundled snapshot found. Deploy functions/api/drive.js (see docs/SETUP.md).');
-    const data = await snap.json();
-    return (data.files || []).map(normaliseDriveFile);
+    try {
+      const snap = await fetch('data/drive-index.json', { cache: 'no-cache' });
+      if (snap.ok) { const data = await snap.json(); return (data.files || []).map(normaliseDriveFile); }
+    } catch { /* no snapshot either */ }
+    throw new Error('Drive scan failed — ' + liveError);
   }
 
   async function fetchDriveFile(id) {

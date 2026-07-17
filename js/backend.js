@@ -194,10 +194,27 @@ const Backend = (() => {
     async function listMockResults() { const e = sessionEmail(); if (!e) return []; return read(mKey(e), []); }
     async function getMockResult(id) { return (await listMockResults()).find(m => m.id === id) || null; }
 
+    /* review queue — wrong SBA/EMQ scheduled for spaced review */
+    const rvKey = e => 'review.' + e;
+    async function listReviewItems() { const e = sessionEmail(); if (!e) return []; const m = read(rvKey(e), {}); return Object.entries(m).map(([question_key, s]) => ({ question_key, ...s })); }
+    async function saveReviewItem(qk, s) { const e = sessionEmail(); if (!e) return; const m = read(rvKey(e), {}); m[qk] = Object.assign({}, m[qk], s, { updated: Date.now() }); write(rvKey(e), m); }
+    async function removeReviewItem(qk) { const e = sessionEmail(); if (!e) return; const m = read(rvKey(e), {}); delete m[qk]; write(rvKey(e), m); }
+
+    /* users & feature flags (developer) */
+    async function listAllUsers() {
+      const all = users();
+      return Object.values(all).map(u => ({ id: u.id, name: u.name, email: u.email, position: u.position, xp: read(pKey(u.email), blankProgress()).xp || 0, createdAt: u.createdAt, featureFlags: u.featureFlags || {} }));
+    }
+    async function setUserFeature(userId, flag, on) {
+      const all = users(); const u = Object.values(all).find(x => x.id === userId || x.email === userId);
+      if (!u) return; (u.featureFlags || (u.featureFlags = {}))[flag] = !!on; if (!on) delete u.featureFlags[flag];
+      write('users', all);
+    }
+
     /* AI (local mode has no server function — the app disables AI in local) */
     async function getAccessToken() { return null; }
 
-    function publicUser(u) { return { id: u.id, name: u.name, email: u.email, position: u.position, createdAt: u.createdAt, isDeveloper: norm(u.email) === devEmail }; }
+    function publicUser(u) { return { id: u.id, name: u.name, email: u.email, position: u.position, createdAt: u.createdAt, isDeveloper: norm(u.email) === devEmail, featureFlags: u.featureFlags || {} }; }
 
     return { init, signUp, signIn, signOut, currentUser, updateProfile,
       getProgress, recordAttempt, getAttempt, resetProgress,
@@ -208,7 +225,8 @@ const Backend = (() => {
       getUserQuestionEdit, saveUserQuestionEdit, listExcludedQuestions,
       getFlashcardDecks, publishFlashcardDeck, unpublishFlashcardDeck,
       getCardProgress, saveCardProgress, listAllCardProgress,
-      getBlueprint, saveBlueprint, saveMockResult, listMockResults, getMockResult, getAccessToken };
+      getBlueprint, saveBlueprint, saveMockResult, listMockResults, getMockResult,
+      listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, getAccessToken };
   })();
 
   /* ================= SUPABASE BACKEND ================= */
@@ -257,7 +275,8 @@ const Backend = (() => {
         position: prof?.position || data.user.user_metadata?.position || 'Registrar',
         examDate: prof?.exam_date || null,
         createdAt: data.user.created_at,
-        isDeveloper: norm(data.user.email) === devEmail
+        isDeveloper: norm(data.user.email) === devEmail,
+        featureFlags: prof?.feature_flags || {}
       };
     }
     async function updateProfile(patch) {
@@ -413,6 +432,32 @@ const Backend = (() => {
       return data ? { id: data.id, ...data.payload } : null;
     }
 
+    /* review queue — wrong SBA/EMQ scheduled for spaced review */
+    async function listReviewItems() {
+      await ensureClient(); const id = await uid(); if (!id) return [];
+      const { data } = await sb.from('review_items').select('*').eq('user_id', id);
+      return (data || []).map(r => ({ question_key: r.question_key, paperTitle: r.paper_title, due: r.due, interval: r.interval, ease: r.ease, reps: r.reps, lapses: r.lapses, wrongCount: r.wrong_count }));
+    }
+    async function saveReviewItem(qk, s) {
+      await ensureClient(); const id = await uid(); if (!id) return;
+      await sb.from('review_items').upsert({ user_id: id, question_key: qk, paper_title: s.paperTitle || null, due: s.due, interval: s.interval || 0, ease: s.ease || 2.5, reps: s.reps || 0, lapses: s.lapses || 0, wrong_count: s.wrongCount || 1, updated_at: new Date().toISOString() }, { onConflict: 'user_id,question_key' });
+    }
+    async function removeReviewItem(qk) { await ensureClient(); const id = await uid(); if (!id) return; await sb.from('review_items').delete().eq('user_id', id).eq('question_key', qk); }
+
+    /* users & feature flags (developer — RLS "profiles dev read/update" policies) */
+    async function listAllUsers() {
+      await ensureClient();
+      const { data } = await sb.from('profiles').select('id,name,email,position,xp,created_at,feature_flags').order('created_at', { ascending: true });
+      return (data || []).map(r => ({ id: r.id, name: r.name, email: r.email, position: r.position, xp: r.xp || 0, createdAt: r.created_at, featureFlags: r.feature_flags || {} }));
+    }
+    async function setUserFeature(userId, flag, on) {
+      await ensureClient();
+      const { data } = await sb.from('profiles').select('feature_flags').eq('id', userId).single();
+      const flags = Object.assign({}, data?.feature_flags);
+      if (on) flags[flag] = true; else delete flags[flag];
+      await sb.from('profiles').update({ feature_flags: flags }).eq('id', userId);
+    }
+
     /* AI auth token for the Cloudflare function */
     async function getAccessToken() { await ensureClient(); const { data } = await sb.auth.getSession(); return data.session?.access_token || null; }
 
@@ -425,7 +470,8 @@ const Backend = (() => {
       getUserQuestionEdit, saveUserQuestionEdit, listExcludedQuestions,
       getFlashcardDecks, publishFlashcardDeck, unpublishFlashcardDeck,
       getCardProgress, saveCardProgress, listAllCardProgress,
-      getBlueprint, saveBlueprint, saveMockResult, listMockResults, getMockResult, getAccessToken };
+      getBlueprint, saveBlueprint, saveMockResult, listMockResults, getMockResult,
+      listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, getAccessToken };
   })();
 
   const impl = useCloud ? Cloud : Local;

@@ -281,6 +281,7 @@ const Simulator = (() => {
       timeLimitMinutes: bp.paper.durationMin || 180,
       onFinish: async (attempt) => {
         const mock = await saveMock(attempt, bp, counts, questions);
+        try { if (typeof ReviewQueue !== 'undefined') ReviewQueue.addFromAttempt(attempt); } catch { /* optional */ }
         location.hash = mock ? '#/simulator/result/' + encodeURIComponent(mock.id) : '#/simulator';
       },
       onQuit: () => { location.hash = '#/simulator'; }

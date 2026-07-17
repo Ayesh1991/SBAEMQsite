@@ -24,13 +24,25 @@ create table if not exists public.profiles (
 -- add exam_date if the table already existed
 alter table public.profiles add column if not exists exam_date date;
 
+-- feature_flags: developer-granted per-user access to advanced features
+-- (e.g. {"simulator": true, "flashcards": true}). Empty = defaults only.
+alter table public.profiles add column if not exists feature_flags jsonb default '{}'::jsonb;
+
 alter table public.profiles enable row level security;
 drop policy if exists "own profile read"   on public.profiles;
 drop policy if exists "own profile insert" on public.profiles;
 drop policy if exists "own profile update" on public.profiles;
+drop policy if exists "profiles dev read"   on public.profiles;
+drop policy if exists "profiles dev update" on public.profiles;
 create policy "own profile read"   on public.profiles for select using (auth.uid() = id);
 create policy "own profile insert" on public.profiles for insert with check (auth.uid() = id);
 create policy "own profile update" on public.profiles for update using (auth.uid() = id);
+-- the developer can list every profile (Users panel) and grant feature flags
+create policy "profiles dev read" on public.profiles for select
+  using (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+create policy "profiles dev update" on public.profiles for update
+  using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
+  with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
 
 -- ---------- 2) ATTEMPTS (completed runs) ----------
 create table if not exists public.attempts (
@@ -260,6 +272,26 @@ drop policy if exists "own mock all" on public.mock_results;
 create policy "own mock read"   on public.mock_results for select using (auth.uid() = user_id);
 create policy "own mock insert" on public.mock_results for insert with check (auth.uid() = user_id);
 create policy "own mock delete" on public.mock_results for delete using (auth.uid() = user_id);
+
+-- ---------- 8i) REVIEW ITEMS (wrong SBA/EMQ auto-converted into spaced review, per-user) ----------
+create table if not exists public.review_items (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  question_key text not null,           -- paperId:kind:number
+  paper_title text,
+  due date,
+  interval integer default 0,           -- days
+  ease real default 2.5,
+  reps integer default 0,
+  lapses integer default 0,
+  wrong_count integer default 1,
+  updated_at timestamptz default now(),
+  primary key (user_id, question_key)
+);
+create index if not exists review_due_idx on public.review_items (user_id, due);
+alter table public.review_items enable row level security;
+drop policy if exists "own review all" on public.review_items;
+create policy "own review all" on public.review_items for all
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
 -- ---------- 9) Auto-create a profile row on sign-up ----------
 create or replace function public.handle_new_user()

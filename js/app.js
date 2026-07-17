@@ -27,6 +27,7 @@
     { re: /^#\/results\/([^/]+)$/, fn: renderResults },
     { re: /^#\/profile$/, fn: renderProfile },
     { re: /^#\/studio$/, fn: renderStudio },
+    { re: /^#\/review$/, fn: renderReview },
     { re: /^#\/cards$/, fn: renderCards },
     { re: /^#\/cards\/([^/]+)$/, fn: renderDeck },
     { re: /^#\/simulator$/, fn: renderSimHome },
@@ -76,8 +77,8 @@
           <a href="#/library" class="${location.hash.startsWith('#/library') || location.hash.startsWith('#/paper') ? 'active' : ''}">Library</a>
           <a href="#/profile" class="${location.hash === '#/profile' ? 'active' : ''}">Profile</a>
           <a href="#/studio" class="${location.hash === '#/studio' ? 'active' : ''}">Studio</a>
-          ${isDev ? `<a href="#/cards" class="${location.hash.startsWith('#/cards') ? 'active' : ''}">Flashcards</a>` : ''}
-          ${isDev ? `<a href="#/simulator" class="${location.hash.startsWith('#/simulator') ? 'active' : ''}">Simulator</a>` : ''}
+          ${(isDev || user.featureFlags?.flashcards) ? `<a href="#/cards" class="${location.hash.startsWith('#/cards') ? 'active' : ''}">Flashcards</a>` : ''}
+          ${(isDev || user.featureFlags?.simulator) ? `<a href="#/simulator" class="${location.hash.startsWith('#/simulator') ? 'active' : ''}">Simulator</a>` : ''}
           ${isDev ? `<a href="#/dev" class="${location.hash === '#/dev' ? 'active' : ''}">Developer</a>` : ''}
           <button class="btn btn-ghost btn-sm" id="nav-logout">Sign out</button>
         ` : `<a href="#/auth" class="btn btn-primary btn-sm">Sign in</a>`}
@@ -287,6 +288,11 @@
   async function renderDashboard(user) {
     await Data.loadSyllabus();
     const progress = await Backend.getProgress();
+    let publishedCount = 0;
+    try { publishedCount = (await Data.publishedPapers()).length; } catch { /* decorative */ }
+    let reviewDue = [];
+    try { reviewDue = await ReviewQueue.dueItems(); } catch { /* optional */ }
+    const ready = Progression.readiness(progress, publishedCount);
     const stats = Progression.summarise(progress);
     const tier = stats.tier;
     const first = firstName(user.name);
@@ -326,6 +332,38 @@
         </div>
 
         <div class="dash-grid">
+          <div class="card readiness-card" data-animate>
+            <h3 class="card-title">Exam readiness</h3>
+            ${ready ? `
+              <div class="readiness-body">
+                <div id="ring-ready"></div>
+                <div class="readiness-parts">
+                  ${[['Recent accuracy', ready.accuracy], ['Syllabus coverage', ready.coverage], ['Consistency (14d)', ready.consistency]].map(([label, v]) => `
+                    <div class="readiness-part">
+                      <span class="readiness-label">${label}</span>
+                      <div class="readiness-bar"><span style="width:${v}%"></span></div>
+                      <span class="readiness-val">${v}%</span>
+                    </div>`).join('')}
+                  <p class="tiny muted">${ready.trend > 0.5 ? `📈 Trending up (+${ready.trend} on recent sets)` : ready.trend < -0.5 ? `📉 Recent sets dipped (${ready.trend}) — steady on` : '➡ Holding steady'} · blends accuracy, coverage and practice rhythm.</p>
+                </div>
+              </div>` : `<p class="muted">Complete a few sets and your readiness estimate appears here.</p>`}
+          </div>
+          <div class="card review-card" data-animate>
+            <h3 class="card-title">Review queue</h3>
+            ${reviewDue.length ? `
+              <div class="review-cta">
+                <div class="review-due-badge"><strong>${reviewDue.length}</strong><span>question${reviewDue.length > 1 ? 's' : ''} due</span></div>
+                <p class="muted">Questions you got wrong, back on their spaced-repetition date. Clear them while they're fresh.</p>
+                <a class="btn btn-gold" href="#/review">Review now →</a>
+              </div>` : `
+              <div class="review-cta">
+                <div class="review-due-badge review-clear"><strong>✓</strong><span>all clear</span></div>
+                <p class="muted">Nothing due. Wrong answers from any set are scheduled back here automatically — tomorrow first, then at growing intervals.</p>
+              </div>`}
+          </div>
+        </div>
+
+        <div class="dash-grid">
           <div class="card" data-animate><h3 class="card-title">Score trend</h3><div class="chart-host" id="chart-trend"></div></div>
           <div class="card" data-animate><h3 class="card-title">Accuracy by category</h3><div class="chart-host" id="chart-cats"></div></div>
         </div>
@@ -340,6 +378,7 @@
     FX.countUp(document.getElementById('exam-days'), Math.abs(days));
     FX.fillBar(document.getElementById('level-fill'), tier.progress);
     Charts.ring(document.getElementById('ring-acc'), stats.accuracy, 'Accuracy');
+    if (ready) Charts.ring(document.getElementById('ring-ready'), ready.score, 'Ready');
     Charts.scoreTrend(document.getElementById('chart-trend'), Progression.scoreSeries(progress));
     Charts.sectionBars(document.getElementById('chart-cats'), Progression.categoryAccuracy(progress));
 
@@ -631,6 +670,7 @@
       timeLimitMinutes: Math.max(5, Math.round(questions.length * 1.8)),
       onFinish: async (attempt) => {
         const summary = await Backend.recordAttempt(attempt);
+        try { ReviewQueue.addFromAttempt(attempt); } catch { /* optional */ }
         location.hash = '#/results/' + summary.attemptId;
       },
       onQuit: () => { location.hash = '#/paper/' + encodeURIComponent(paperId); }
@@ -912,13 +952,26 @@
     await DevConsole.render(view, { cfg, Data, Backend, esc, FX });
   }
 
-  /* ================= flashcards & simulator (developer-only for now) ================= */
+  /* ================= flashcards & simulator (developer + flag-granted users) ================= */
 
-  async function renderCards(user) { if (!devOnly(user)) return renderDevGate(user); await Flashcards.renderList(view, user); }
-  async function renderDeck(deckId, user) { if (!devOnly(user)) return renderDevGate(user); await Flashcards.renderDeck(view, deckId, user); }
-  async function renderSimHome(user) { if (!devOnly(user)) return renderDevGate(user); await Simulator.renderHome(view, user); }
-  async function renderSimRun(user) { if (!devOnly(user)) return renderDevGate(user); await Simulator.startRun(view, user); }
-  async function renderSimResult(id, user) { if (!devOnly(user)) return renderDevGate(user); await Simulator.renderResult(view, id, user); }
+  const canUse = (user, flag) => devOnly(user) || !!user?.featureFlags?.[flag];
+  async function renderReview(user) { await ReviewQueue.renderRun(view, user); }
+  function renderLocked(title) {
+    view.innerHTML = `
+      <section class="page narrow" data-animate>
+        <div class="card locked-card">
+          <span class="locked-ico">🔒</span>
+          <h1 class="page-title">${esc(title)} is invite-only for now</h1>
+          <p class="muted">This advanced feature is being rolled out gradually. Ask the site owner to enable it on your account — everything else keeps working as normal.</p>
+          <a class="btn btn-gold" href="#/dashboard">Back to dashboard</a>
+        </div>
+      </section>`;
+  }
+  async function renderCards(user) { if (!canUse(user, 'flashcards')) return renderLocked('Flashcards'); await Flashcards.renderList(view, user); }
+  async function renderDeck(deckId, user) { if (!canUse(user, 'flashcards')) return renderLocked('Flashcards'); await Flashcards.renderDeck(view, deckId, user); }
+  async function renderSimHome(user) { if (!canUse(user, 'simulator')) return renderLocked('The adaptive simulator'); await Simulator.renderHome(view, user); }
+  async function renderSimRun(user) { if (!canUse(user, 'simulator')) return renderLocked('The adaptive simulator'); await Simulator.startRun(view, user); }
+  async function renderSimResult(id, user) { if (!canUse(user, 'simulator')) return renderLocked('The adaptive simulator'); await Simulator.renderResult(view, id, user); }
 
   function renderDevGate(user) {
     view.innerHTML = `
