@@ -99,7 +99,10 @@ async function listChildren(parentIds, key, budget) {
   do {
     if (budget.used >= MAX_QUERIES) { out.truncated = true; break; }
     budget.used++;
-    const q = encodeURIComponent(`(${parentQ}) and trashed = false`);
+    // Server-side filter: only folders and JSON-ish files come back, so a
+    // library holding thousands of images/docs never inflates the listing
+    // (that inflation is what caused "list truncated" on big folders).
+    const q = encodeURIComponent(`(${parentQ}) and trashed = false and (mimeType = 'application/vnd.google-apps.folder' or mimeType = 'application/json' or name contains '.json')`);
     const fields = encodeURIComponent('nextPageToken, files(id,name,mimeType,parents,owners(emailAddress))');
     const u = `${DRIVE}/files?q=${q}&fields=${fields}&pageSize=1000&key=${key}` + (pageToken ? `&pageToken=${pageToken}` : '');
     const res = await fetch(u);

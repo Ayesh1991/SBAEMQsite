@@ -31,8 +31,10 @@ window.AUREUM_CONFIG = {
      data/drive-index.json snapshot. */
   drive: {
     folderId: '13SFKM0Cn_lNAhOHb8Laikvj4Xc5zXT5x',
-    // Separate shared folder holding flashcard-deck JSON (with subfolders).
-    flashcardFolderId: '1TfxkM515p_AxEuD9L4smwze73AcTZ9FR',
+    // Flashcard decks live in OGR-Common (flat folders consolidated by the
+    // AUREUM Bridge app: Flashcards/, Infographics/, DOCx/). Keep this folder
+    // link-shared as "Anyone with the link — Viewer".
+    flashcardFolderId: '1ksGV_wYzWemBDFMCtiQwZdiYnDr2OI1Y',
     apiBase: '/api/drive'
   },
 
