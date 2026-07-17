@@ -417,14 +417,12 @@ const DevConsole = (() => {
       const res = await fetch(`${base}?action=list&folderId=${encodeURIComponent(fid)}`, { cache: 'no-cache' });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        const all = (data.files || []);
-        // Only real decks: your decks follow the "flashcards…" naming (like
-        // papers use "papers__…"). This skips the other app's config JSONs
-        // (OG-Revise-TopicSM2, StudyPlan, FolderMap, …) that caused the
-        // "Missing topic" publish errors.
-        const decks = all.filter(f => /flashcard/i.test(f.title || f.name || ''));
-        lastDeckScanMeta = { truncated: data.truncated, skipped: data.skipped, ignored: all.length - decks.length };
-        return decks.map(f => ({ key: f.key || f.id, id: f.id, title: f.title || f.name, folder: f.folder || '', deck: f.deck || f.paper || null }));
+        // Accept ALL .json files — decks are identified by their CONTENT
+        // (topic + cards), not their name, so old cards without a
+        // "flashcards__" prefix import too. Non-deck JSONs are validated
+        // out at scan time (see scanCards).
+        lastDeckScanMeta = { truncated: data.truncated, skipped: data.skipped };
+        return (data.files || []).map(f => ({ key: f.key || f.id, id: f.id, title: f.title || f.name, folder: f.folder || '', deck: f.deck || f.paper || null }));
       }
       liveError = data.error || `HTTP ${res.status}`;
     } catch (e) { liveError = 'network: ' + (e.message || e); }
@@ -445,16 +443,46 @@ const DevConsole = (() => {
     const pub = await ctx.Backend.getFlashcardDecks().catch(() => []);
     const pubKeys = new Set(pub.map(d => d.driveKey).filter(Boolean));
     const pubTitles = new Set(pub.map(d => (d.title || '').toLowerCase()));
-    const neu = files.filter(f => !pubKeys.has(f.key) && !pubTitles.has((f.title || '').replace(/\.json$/i, '').toLowerCase()));
-    const warn = (lastDeckScanMeta.ignored ? ` · <span class="muted">${lastDeckScanMeta.ignored} non-deck JSON${lastDeckScanMeta.ignored > 1 ? 's' : ''} ignored</span>` : '') +
-      (lastDeckScanMeta.skipped ? ` · <span class="bad">${lastDeckScanMeta.skipped} subfolder${lastDeckScanMeta.skipped > 1 ? 's' : ''} skipped (Restricted sharing)</span>` : '') +
-      (lastDeckScanMeta.truncated ? ` · <span class="bad">list truncated (very large folder) — rescan after publishing to see the rest</span>` : '');
-    status.innerHTML = `${files.length} deck file${files.length !== 1 ? 's' : ''} · <strong>${neu.length} new</strong>${warn}`;
-    if (!neu.length) { list.innerHTML = `<p class="muted">All flashcard decks are already published. 🎉</p>`; return; }
-    stagedDecks = neu;
-    list.innerHTML = neu.map((f, i) => deckRow(f, i)).join('');
-    neu.forEach((f, i) => document.querySelector(`#fc-list [data-role="deck-approve"][data-i="${i}"]`).addEventListener('click', () => approveDeck(f, i)));
+    const candidates = files.filter(f => !pubKeys.has(f.key) && !pubTitles.has((f.title || '').replace(/\.json$/i, '').toLowerCase()));
+    const envWarn = (lastDeckScanMeta.skipped ? ` · <span class="bad">${lastDeckScanMeta.skipped} subfolder${lastDeckScanMeta.skipped > 1 ? 's' : ''} skipped (Restricted sharing)</span>` : '') +
+      (lastDeckScanMeta.truncated ? ` · <span class="bad">list truncated (very large folder) — rescan after publishing for the rest</span>` : '');
+    if (!candidates.length) {
+      status.innerHTML = `${files.length} JSON file${files.length !== 1 ? 's' : ''} · <strong>all already published</strong>${envWarn}`;
+      list.innerHTML = `<p class="muted">All flashcard decks are already published. 🎉</p>`; return;
+    }
+    // Identify decks by CONTENT (topic + cards), not filename — imports old
+    // decks regardless of name and quietly skips non-deck JSONs.
+    const { valid, invalid } = await validateNewDecks(candidates, status);
+    const warn = (invalid ? ` · <span class="muted">${invalid} non-deck JSON${invalid > 1 ? 's' : ''} skipped</span>` : '') + envWarn;
+    status.innerHTML = `${files.length} JSON file${files.length !== 1 ? 's' : ''} · <strong>${valid.length} new deck${valid.length !== 1 ? 's' : ''}</strong>${warn}`;
+    if (!valid.length) { list.innerHTML = `<p class="muted">No new valid decks found (the JSON files here aren't in <code>{ topic, cards[] }</code> flashcard format).</p>`; return; }
+    stagedDecks = valid;
+    list.innerHTML = valid.map((f, i) => deckRow(f, i)).join('');
+    valid.forEach((f, i) => document.querySelector(`#fc-list [data-role="deck-approve"][data-i="${i}"]`).addEventListener('click', () => approveDeck(f, i)));
   }
+  // Fetch + validate new candidates' content with bounded concurrency.
+  // A file is a deck if it parses to { topic/title, cards:[…] }. Attaches
+  // the fetched content onto f.deck so publishing needs no second fetch.
+  async function validateNewDecks(candidates, status) {
+    const valid = [], queue = candidates.slice();
+    let invalid = 0, done = 0;
+    const total = candidates.length;
+    async function worker() {
+      while (queue.length) {
+        const f = queue.shift();
+        let deck = f.deck;
+        if (!deck && f.id) { try { deck = await fetchDriveFile(f.id); } catch { deck = null; } }
+        if (deck && validateDeck(deck).length === 0) { f.deck = deck; valid.push(f); } else invalid++;
+        done++;
+        if (status && (done % 4 === 0 || done === total)) status.innerHTML = `Checking ${done}/${total} files for flashcard decks…`;
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(6, total) }, worker));
+    // preserve original folder order for a stable list
+    valid.sort((a, b) => candidates.indexOf(a) - candidates.indexOf(b));
+    return { valid, invalid };
+  }
+
   async function approveDeck(f, i) {
     const msg = document.querySelector(`#fc-list [data-role="deck-msg"][data-i="${i}"]`);
     msg.textContent = 'Publishing…'; msg.className = 'dev-row-msg muted';
