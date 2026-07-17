@@ -57,17 +57,28 @@ const Data = (() => {
     return manifest;
   }
 
-  /** All published papers = static manifest + backend-published, de-duplicated by id. */
+  /** All published papers = static manifest + backend-published, de-duplicated by id.
+      The backend list carries each paper's full content inline, so it is cached
+      on-device (Cache) to spare Supabase egress; publishing busts the cache. */
+  const PAPERS_KEY = 'published-papers';
+  const PAPERS_TTL = 15 * 60 * 1000;   // 15 min freshness; publish/unpublish busts sooner
   async function publishedPapers() {
     await loadManifest();
     const fromManifest = manifest.papers || [];
     let fromBackend = [];
-    try { fromBackend = (await Backend.getPublishedPapers()) || []; } catch { /* backend optional */ }
+    try {
+      const loader = () => Backend.getPublishedPapers().then(r => r || []);
+      fromBackend = (typeof Cache !== 'undefined'
+        ? await Cache.wrap(PAPERS_KEY, PAPERS_TTL, loader)
+        : await loader()) || [];
+    } catch { /* backend optional */ }
     const byId = new Map();
     for (const p of fromManifest) byId.set(p.id, p);
     for (const p of fromBackend) byId.set(p.id, p);      // backend overrides/extends
     return [...byId.values()];
   }
+  /** Call after publishing/unpublishing so the next read re-fetches from Supabase. */
+  function bustPapers() { if (typeof Cache !== 'undefined') Cache.bust(PAPERS_KEY); }
 
   /* ---------- syllabus helpers ---------- */
 
@@ -224,7 +235,7 @@ const Data = (() => {
   }
 
   return {
-    loadSyllabus, loadManifest, publishedPapers,
+    loadSyllabus, loadManifest, publishedPapers, bustPapers,
     categoryById, topicPath, classifyByTag,
     countSBA, countEMQ, validatePaper, flatten, looksLettered, loadPaper
   };

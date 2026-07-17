@@ -179,6 +179,88 @@ create policy "qedits dev write" on public.question_edits for all
   using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
   with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
 
+-- ---------- 8d) USER QUESTION EDITS (each user's personal flag / note + simulator exclusion) ----------
+-- Everyone can flag an answer they think is wrong and add a private note,
+-- without touching the developer's global question_edits. The `excluded`
+-- flag also tells the adaptive exam simulator to disregard a question when
+-- scoring that user's performance.
+create table if not exists public.user_question_edits (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  question_key text not null,           -- paperId:kind:number
+  flagged boolean default false,
+  flag_note text,
+  explanation text,
+  excluded boolean default false,       -- simulator: don't count this question for me
+  updated_at timestamptz default now(),
+  primary key (user_id, question_key)
+);
+create index if not exists uqe_excluded_idx on public.user_question_edits (user_id) where excluded;
+alter table public.user_question_edits enable row level security;
+drop policy if exists "own uqe all" on public.user_question_edits;
+create policy "own uqe all" on public.user_question_edits for all
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+-- ---------- 8e) FLASHCARD DECKS (developer-published, everyone reads) ----------
+create table if not exists public.flashcard_decks (
+  id text primary key,
+  meta jsonb not null,                  -- { id, title, source, cardCount, content:{topic,cards[]} }
+  updated_at timestamptz default now()
+);
+alter table public.flashcard_decks enable row level security;
+drop policy if exists "decks public read" on public.flashcard_decks;
+drop policy if exists "decks dev write"   on public.flashcard_decks;
+create policy "decks public read" on public.flashcard_decks for select using (true);
+create policy "decks dev write" on public.flashcard_decks for all
+  using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
+  with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+
+-- ---------- 8f) FLASHCARD PROGRESS (per-user SM-2 schedule, saved card-by-card) ----------
+create table if not exists public.flashcard_progress (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  deck_id text not null,
+  card_id text not null,
+  due date,
+  interval integer default 0,           -- days
+  ease real default 2.5,                -- SM-2 ease factor
+  reps integer default 0,
+  lapses integer default 0,
+  updated_at timestamptz default now(),
+  primary key (user_id, deck_id, card_id)
+);
+create index if not exists fcp_due_idx on public.flashcard_progress (user_id, due);
+alter table public.flashcard_progress enable row level security;
+drop policy if exists "own fcp all" on public.flashcard_progress;
+create policy "own fcp all" on public.flashcard_progress for all
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+-- ---------- 8g) APP CONFIG (single-row docs: the exam blueprint, etc.) ----------
+create table if not exists public.app_config (
+  id text primary key,                  -- e.g. 'blueprint'
+  data jsonb not null,
+  updated_at timestamptz default now()
+);
+alter table public.app_config enable row level security;
+drop policy if exists "config public read" on public.app_config;
+drop policy if exists "config dev write"   on public.app_config;
+create policy "config public read" on public.app_config for select using (true);
+create policy "config dev write" on public.app_config for all
+  using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
+  with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+
+-- ---------- 8h) MOCK RESULTS (adaptive simulator runs, per-user) ----------
+create table if not exists public.mock_results (
+  id text primary key,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  payload jsonb not null,               -- score, per-bucket accuracy, question keys used, excluded keys
+  created_at timestamptz default now()
+);
+create index if not exists mock_user_idx on public.mock_results (user_id, created_at desc);
+alter table public.mock_results enable row level security;
+drop policy if exists "own mock all" on public.mock_results;
+create policy "own mock read"   on public.mock_results for select using (auth.uid() = user_id);
+create policy "own mock insert" on public.mock_results for insert with check (auth.uid() = user_id);
+create policy "own mock delete" on public.mock_results for delete using (auth.uid() = user_id);
+
 -- ---------- 9) Auto-create a profile row on sign-up ----------
 create or replace function public.handle_new_user()
 returns trigger language plpgsql security definer as $$

@@ -31,6 +31,8 @@ window.AUREUM_CONFIG = {
      data/drive-index.json snapshot. */
   drive: {
     folderId: '13SFKM0Cn_lNAhOHb8Laikvj4Xc5zXT5x',
+    // Separate shared folder holding flashcard-deck JSON (with subfolders).
+    flashcardFolderId: '1TfxkM515p_AxEuD9L4smwze73AcTZ9FR',
     apiBase: '/api/drive'
   },
 

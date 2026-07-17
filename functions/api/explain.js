@@ -67,6 +67,11 @@ export async function onRequest(context) {
       const art = await generateArtifact({ artifact, question, provider, model, env });
       return json({ artifact: art });
     }
+    if (action === 'coach') {
+      const p = buildCoachPrompt(body);
+      const text = provider === 'claude' ? await callClaude(p.system, p.user, model, env) : await callGemini(p.system, p.user, model, env);
+      return json({ text });
+    }
     const prompt = action === 'chat' ? buildChatPrompt(question, messages) : buildExplainPrompt(question);
     const text = provider === 'claude'
       ? await callClaude(prompt.system, prompt.user, model, env)
@@ -138,6 +143,20 @@ function buildExplainPrompt(q) {
 function buildChatPrompt(q, messages) {
   const convo = (messages || []).map(m => `${m.role === 'user' ? 'Candidate' : 'Tutor'}: ${m.content}`).join('\n');
   return { system: PERSONA, user: `Context question:\n${qBlock(q)}\n\nConversation so far:\n${convo}\n\nAnswer the candidate's latest message concisely and accurately.` };
+}
+function buildCoachPrompt(body) {
+  const a = body.analytics || {};
+  const rows = (a.buckets || []).map(b => `- ${b.label}: ${b.correct}/${b.seen} (${b.pct}%)`).join('\n') || '(no per-topic data)';
+  return {
+    system: PERSONA + ' You are writing a focused, motivating study plan for one candidate.',
+    user: `A candidate just finished an adaptive PGIM MD Part 2 mock (30 SBA + 30 EMQ, blueprint-shaped).\n` +
+      `Overall: ${a.correct}/${a.scored} (${a.percent}%). SBA ${a.sba || 'n/a'}, EMQ ${a.emq || 'n/a'}.\n` +
+      `Per-topic performance (weakest first):\n${rows}\n\n` +
+      `Blueprint context (examiner tendencies, high-yield stems from 2022–2025 recall):\n${String(body.blueprintNotes || '').slice(0, 2500)}\n\n` +
+      `Write, in under 220 words with **bold** headers and bullets: (1) a 2-sentence overall verdict; ` +
+      `(2) the 3 highest-priority topics to revise next, each with WHY — tie it to the weak scores AND the blueprint's high-yield stems; ` +
+      `(3) 3 concrete actions for tomorrow's study session.`
+  };
 }
 function buildArtifactPrompt(kind, q) {
   const base = qBlock(q);

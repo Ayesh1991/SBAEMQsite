@@ -46,7 +46,9 @@ const Quiz = (() => {
       timerId: null,
       remaining: resume?.remaining != null ? resume.remaining : null,
       notes: {},
-      saveTimer: null
+      saveTimer: null,
+      simulator: !!opts.simulator,                 // adaptive-mock mode: real per-question keys + exclude control
+      flawed: new Set(resume?.flawed || [])        // indices the candidate marked as flawed (not scored)
     };
     if (state.mode === 'exam' && state.timeLimitSec > 0 && state.remaining == null) state.remaining = state.timeLimitSec;
     if (state.mode === 'exam' && state.remaining != null) state.timerId = setInterval(tick, 1000);
@@ -86,11 +88,13 @@ const Quiz = (() => {
   /* ---------------- persistence (resume) ---------------- */
 
   function notePrefix() { return `${state.loaded.meta.id}:${state.kind}:`; }
-  function questionKey(i) { return `${state.loaded.meta.id}:${state.kind}:${state.questions[i].number}`; }
+  // In the simulator each question keeps its ORIGINAL key (paperId:kind:number)
+  // so notes / AI / flawed-exclusions map back to the real question across mocks.
+  function questionKey(i) { return state.questions[i]._qkey || `${state.loaded.meta.id}:${state.kind}:${state.questions[i].number}`; }
 
   function snapshot() {
     return {
-      answers: state.answers, revealed: state.revealed, flags: [...state.flags],
+      answers: state.answers, revealed: state.revealed, flags: [...state.flags], flawed: [...state.flawed],
       index: state.index, remaining: state.remaining,
       mode: state.mode, kind: state.kind,
       paperTitle: state.loaded.paper.topic || state.loaded.meta.title,
@@ -170,6 +174,7 @@ const Quiz = (() => {
             ${mode === 'exam'
               ? `<button class="btn btn-ghost btn-sm ${state.flags.has(index) ? 'flag-on' : ''}" id="quiz-flag">${state.flags.has(index) ? '⚑ Flagged' : '⚐ Flag'}</button>`
               : `<span class="study-score" id="study-score"></span>`}
+            ${state.simulator ? `<button class="btn btn-ghost btn-sm ${state.flawed.has(index) ? 'flawed-on' : ''}" id="quiz-flawed" title="Exclude this question from your score if it's flawed or below standard">${state.flawed.has(index) ? '⚠ Excluded' : '⚠ Flawed'}</button>` : ''}
             <button class="btn btn-ghost btn-sm ${hasNote ? 'note-on' : ''}" id="quiz-note">${hasNote ? '🗒 Note ✓' : '🗒 Note'}</button>
           </div>
           ${index < total - 1
@@ -186,6 +191,7 @@ const Quiz = (() => {
     state.container.querySelector('#quiz-next')?.addEventListener('click', () => go(1));
     state.container.querySelector('#quiz-submit')?.addEventListener('click', () => submit(false));
     state.container.querySelector('#quiz-flag')?.addEventListener('click', toggleFlag);
+    state.container.querySelector('#quiz-flawed')?.addEventListener('click', toggleFlawed);
     state.container.querySelector('#quiz-note').addEventListener('click', toggleNoteEditor);
     state.container.querySelector('#quiz-quit').addEventListener('click', () => {
       const keep = confirm('Exit this set? Your progress is saved — you can resume it later from the paper page.');
@@ -355,6 +361,14 @@ const Quiz = (() => {
     if (state.flags.has(state.index)) state.flags.delete(state.index); else state.flags.add(state.index);
     autosave(); render();
   }
+  // Simulator: mark a question as flawed/below-standard so it is disregarded when
+  // scoring this run. Persisted (excluded) so future adaptive selection avoids it too.
+  function toggleFlawed() {
+    const i = state.index, on = !state.flawed.has(i);
+    if (on) state.flawed.add(i); else state.flawed.delete(i);
+    try { Backend.saveUserQuestionEdit?.(questionKey(i), { excluded: on }); } catch {}
+    autosave(); render();
+  }
   function go(d) { goto(state.index + d); }
   function goto(i) { if (i >= 0 && i < state.questions.length) { state.index = i; autosave(); render(); } }
 
@@ -366,8 +380,13 @@ const Quiz = (() => {
       const unanswered = answers.filter(a => a === null).length;
       if (!timedOut && unanswered > 0 && !confirm(`${unanswered} question${unanswered > 1 ? 's' : ''} unanswered. Submit anyway?`)) return;
     }
-    let correct = 0;
-    const detail = questions.map((q, i) => { const ok = answers[i] === q.answer; if (ok) correct++; return { chosen: answers[i], correct: q.answer, isCorrect: ok }; });
+    let correct = 0, scored = 0;
+    const detail = questions.map((q, i) => {
+      const ok = answers[i] === q.answer;
+      const excluded = state.flawed.has(i);            // simulator: flawed questions don't count
+      if (!excluded) { scored++; if (ok) correct++; }
+      return { chosen: answers[i], correct: q.answer, isCorrect: ok, excluded, qkey: questionKey(i), bucket: q.bucket || '', kind: q.kind };
+    });
     const meta = state.loaded.meta, path = state.loaded.path;
     const attempt = {
       paperId: meta.id, paperTitle: state.loaded.paper.topic || meta.title,
@@ -375,8 +394,13 @@ const Quiz = (() => {
       categoryId: meta.categoryId, categoryTitle: path.category?.title || '',
       topicId: meta.topicId, topicTitle: path.topic?.title || '',
       date: new Date().toISOString(), durationSec: Math.round((Date.now() - state.startedAt) / 1000),
-      timedOut: !!timedOut, total: questions.length, correct, percent: Math.round((correct / questions.length) * 100), detail
+      timedOut: !!timedOut, total: questions.length, scored, correct,
+      percent: Math.round((correct / (scored || 1)) * 100), detail
     };
+    if (state.simulator) {
+      attempt.simulator = true;
+      attempt.excludedKeys = [...state.flawed].map(i => questionKey(i));
+    }
     // clear the resume session — the paper is finished
     if (state.sessionKey && Backend.clearSession) Backend.clearSession(state.sessionKey).catch(() => {});
     const finish = state.onFinish;

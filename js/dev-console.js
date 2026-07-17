@@ -92,12 +92,51 @@ const DevConsole = (() => {
           <h3 class="card-title">Published papers (${'{count}'})</h3>
           <div id="dev-published"></div>
         </div>
+
+        <div class="card dev-section-flash" data-animate>
+          <h3 class="card-title">🃏 Flashcard decks — import &amp; publish</h3>
+          <p class="muted">A <strong>separate</strong> pipeline from question papers. Import spaced-repetition decks
+            (<code>{ "topic": "…", "cards": [ { "question": "…", "answer": "…" } ] }</code>) from the flashcard
+            Drive folder, or paste one. Published decks appear in the Flashcards tab.</p>
+          <div class="dev-toolbar">
+            <button class="btn btn-gold" id="fc-scan">Scan flashcard Drive</button>
+            <span class="dev-status" id="fc-status"></span>
+          </div>
+          <div id="fc-list"></div>
+          <details class="dev-paste-wrap">
+            <summary>Paste a deck manually</summary>
+            <textarea id="fc-paste" class="dev-textarea" placeholder='{ "topic": "Breech Presentation", "cards": [ { "question": "…", "answer": "…", "keyPoint": "" } ] }'></textarea>
+            <button class="btn btn-primary" id="fc-paste-btn" style="margin-top:12px">Validate &amp; stage</button>
+            <div id="fc-paste-result"></div>
+          </details>
+          <h4 class="dev-subhead">Published decks (<span id="fc-pub-count">0</span>)</h4>
+          <div id="fc-published"></div>
+        </div>
+
+        <div class="card dev-section-bp" data-animate>
+          <h3 class="card-title">🧭 Exam blueprint (adaptive simulator)</h3>
+          <p class="muted">Drives which topics the daily mock samples. Upload the blueprint Markdown
+            (YAML front-matter) or JSON. Stored on the server and used across devices; the bundled
+            <code>data/blueprint.md</code> is the fallback.</p>
+          <div class="dev-toolbar">
+            <label class="btn btn-gold" style="cursor:pointer">Upload blueprint file
+              <input type="file" id="bp-file" accept=".md,.markdown,.json,.txt" hidden>
+            </label>
+            <span class="dev-status" id="bp-status"></span>
+          </div>
+          <div id="bp-summary"></div>
+        </div>
       </section>`;
 
     view.querySelector('#dev-scan').addEventListener('click', scan);
     view.querySelector('#dev-paste-btn').addEventListener('click', stagePasted);
+    view.querySelector('#fc-scan').addEventListener('click', scanCards);
+    view.querySelector('#fc-paste-btn').addEventListener('click', stagePastedDeck);
+    view.querySelector('#bp-file').addEventListener('change', uploadBlueprint);
     wireCurriculumManager(view);
     await refreshPublished(view);
+    await refreshDecks(view);
+    await refreshBlueprint(view);
     ctx.FX.viewIn(view);
   }
 
@@ -201,6 +240,8 @@ const DevConsole = (() => {
     host.querySelectorAll('[data-unpub]').forEach(b => b.addEventListener('click', async () => {
       if (confirm('Unpublish this paper? Candidate history is kept but the paper leaves the library.')) {
         await ctx.Backend.unpublishPaper(b.dataset.unpub);
+        ctx.Data.bustPapers?.();
+        if (typeof Cache !== 'undefined') Cache.bust('sim-qindex');
         await refreshPublished(view);
       }
     }));
@@ -294,6 +335,8 @@ const DevConsole = (() => {
 
       const meta = buildMeta(f, paper, els);
       await ctx.Backend.publishPaper(meta);
+      ctx.Data.bustPapers?.();                 // new paper is instantly eligible everywhere (incl. mocks)
+      if (typeof Cache !== 'undefined') Cache.bust('sim-qindex');
       msg.textContent = '✓ Published to the library.'; msg.className = 'dev-row-msg good';
       els.row.classList.add('dev-done');
       els.row.querySelector('[data-role="approve"]').disabled = true;
@@ -338,6 +381,121 @@ const DevConsole = (() => {
     wireRow(f, 0, list);
     out.innerHTML = `<p class="good">Valid ogr-paper-v1 · ${f.counts.sba} SBA / ${f.counts.emq} EMQ — classify and publish above.</p>`;
     list.scrollIntoView({ behavior: 'smooth' });
+  }
+
+  /* ---------------- flashcard decks (separate pipeline) ---------------- */
+
+  let stagedDecks = [];
+
+  function validateDeck(d) {
+    const e = [];
+    if (!d || typeof d !== 'object') return ['File is not a JSON object.'];
+    if (!d.topic && !d.title) e.push('Missing "topic".');
+    if (!Array.isArray(d.cards) || !d.cards.length) e.push('Needs a non-empty "cards" array.');
+    (d.cards || []).forEach((c, i) => { if (!c.question) e.push(`Card ${i + 1}: missing "question".`); if (!c.answer) e.push(`Card ${i + 1}: missing "answer".`); });
+    return e;
+  }
+  function buildDeckMeta(f, deck) {
+    const cards = deck.cards.map((c, i) => ({ id: String(c.id != null ? c.id : i + 1), question: c.question, answer: c.answer, keyPoint: c.keyPoint || '' }));
+    const key = f.key || slug(deck.topic || f.title);
+    return { id: 'deck-' + key, driveKey: f.key || null, title: deck.topic || (f.title || '').replace(/\.json$/i, ''), source: deck.source || '', cardCount: cards.length, content: { topic: deck.topic || f.title, cards } };
+  }
+  async function fetchDeckIndex() {
+    const base = ctx.cfg.drive.apiBase, fid = ctx.cfg.drive.flashcardFolderId;
+    try {
+      const res = await fetch(`${base}?action=list&folderId=${encodeURIComponent(fid)}`, { cache: 'no-cache' });
+      if (res.ok) { const data = await res.json(); return (data.files || []).map(f => ({ key: f.key || f.id, id: f.id, title: f.title || f.name, folder: f.folder || '', deck: f.deck || f.paper || null })); }
+    } catch { /* fall through */ }
+    try { const snap = await fetch('data/flashcard-index.json', { cache: 'no-cache' }); if (snap.ok) { const data = await snap.json(); return (data.files || []).map(f => ({ key: f.key || f.id, id: f.id, title: f.title || f.name, folder: f.folder || '', deck: f.deck || null })); } } catch { /* ignore */ }
+    throw new Error('Live Drive API unavailable and no bundled flashcard snapshot. Deploy functions/api/drive.js.');
+  }
+  function deckRow(f, i) {
+    return `<div class="dev-row card" data-di="${i}"><div class="dev-row-head">
+      <div><p class="dev-file">🃏 ${ctx.esc(f.title)}</p><p class="muted tiny">${ctx.esc(f.folder || 'root')}${f.deck ? ' · ' + (f.deck.cards || []).length + ' cards' : ''}</p></div>
+      <button class="btn btn-gold btn-sm" data-role="deck-approve" data-i="${i}">Publish deck</button>
+    </div><p class="dev-row-msg" data-role="deck-msg" data-i="${i}"></p></div>`;
+  }
+  async function scanCards() {
+    const status = document.getElementById('fc-status'), list = document.getElementById('fc-list');
+    status.textContent = 'Scanning…'; list.innerHTML = '';
+    let files;
+    try { files = await fetchDeckIndex(); } catch (e) { status.innerHTML = `<span class="bad">${ctx.esc(e.message)}</span>`; return; }
+    const pub = await ctx.Backend.getFlashcardDecks().catch(() => []);
+    const pubKeys = new Set(pub.map(d => d.driveKey).filter(Boolean));
+    const pubTitles = new Set(pub.map(d => (d.title || '').toLowerCase()));
+    const neu = files.filter(f => !pubKeys.has(f.key) && !pubTitles.has((f.title || '').replace(/\.json$/i, '').toLowerCase()));
+    status.innerHTML = `${files.length} deck file${files.length !== 1 ? 's' : ''} · <strong>${neu.length} new</strong>`;
+    if (!neu.length) { list.innerHTML = `<p class="muted">All flashcard decks are already published. 🎉</p>`; return; }
+    stagedDecks = neu;
+    list.innerHTML = neu.map((f, i) => deckRow(f, i)).join('');
+    neu.forEach((f, i) => document.querySelector(`#fc-list [data-role="deck-approve"][data-i="${i}"]`).addEventListener('click', () => approveDeck(f, i)));
+  }
+  async function approveDeck(f, i) {
+    const msg = document.querySelector(`#fc-list [data-role="deck-msg"][data-i="${i}"]`);
+    msg.textContent = 'Publishing…'; msg.className = 'dev-row-msg muted';
+    try {
+      let deck = f.deck; if (!deck && f.id) deck = await fetchDriveFile(f.id);
+      if (!deck) throw new Error('Could not load this deck\'s content.');
+      const errs = validateDeck(deck); if (errs.length) throw new Error(errs.join(' '));
+      const meta = buildDeckMeta(f, deck);
+      await ctx.Backend.publishFlashcardDeck(meta);
+      if (typeof Cache !== 'undefined') Cache.bust('flashcard-decks');
+      msg.textContent = `✓ Published · ${meta.cardCount} cards.`; msg.className = 'dev-row-msg good';
+      document.querySelector(`.dev-row[data-di="${i}"]`)?.classList.add('dev-done');
+      await refreshDecks(document.getElementById('view'));
+    } catch (e) { msg.textContent = e.message; msg.className = 'dev-row-msg bad'; }
+  }
+  async function stagePastedDeck() {
+    const ta = document.getElementById('fc-paste'), out = document.getElementById('fc-paste-result');
+    let deck; try { deck = JSON.parse(ta.value); } catch (e) { out.innerHTML = `<p class="bad">Invalid JSON: ${ctx.esc(e.message)}</p>`; return; }
+    const errs = validateDeck(deck); if (errs.length) { out.innerHTML = `<p class="bad">${errs.map(ctx.esc).join('<br>')}</p>`; return; }
+    const f = { key: 'paste-' + slug(deck.topic || 'deck'), title: (deck.topic || 'Pasted deck') + '.json', folder: 'manual', deck };
+    stagedDecks = [f];
+    const list = document.getElementById('fc-list'); list.innerHTML = deckRow(f, 0);
+    document.querySelector('#fc-list [data-role="deck-approve"][data-i="0"]').addEventListener('click', () => approveDeck(f, 0));
+    out.innerHTML = `<p class="good">Valid · ${deck.cards.length} cards — publish above.</p>`;
+  }
+  async function refreshDecks(view) {
+    const decks = await ctx.Backend.getFlashcardDecks().catch(() => []);
+    const host = view.querySelector('#fc-published'), count = view.querySelector('#fc-pub-count');
+    if (count) count.textContent = decks.length;
+    host.innerHTML = decks.length ? `<div class="table-scroll"><table class="table">
+      <thead><tr><th>Deck</th><th>Cards</th><th>Source</th><th></th></tr></thead>
+      <tbody>${decks.map(d => `<tr><td>${ctx.esc(d.title)}</td><td class="muted">${d.cardCount || d.content?.cards?.length || 0}</td><td class="muted">${ctx.esc(d.source || '')}</td><td><button class="link-btn" data-unpub-deck="${ctx.esc(d.id)}">unpublish</button></td></tr>`).join('')}</tbody>
+    </table></div>` : `<p class="muted">No decks published yet.</p>`;
+    host.querySelectorAll('[data-unpub-deck]').forEach(b => b.addEventListener('click', async () => {
+      if (confirm('Unpublish this deck? Card progress is kept.')) { await ctx.Backend.unpublishFlashcardDeck(b.dataset.unpubDeck); if (typeof Cache !== 'undefined') Cache.bust('flashcard-decks'); await refreshDecks(view); }
+    }));
+  }
+
+  /* ---------------- exam blueprint ---------------- */
+
+  async function uploadBlueprint(e) {
+    const file = e.target.files[0]; if (!file) return;
+    const status = document.getElementById('bp-status'); status.textContent = 'Parsing…'; status.className = 'dev-status';
+    try {
+      const text = await file.text();
+      let doc;
+      if (/\.json$/i.test(file.name)) { const raw = JSON.parse(text); doc = raw.sba ? raw : Blueprint.normalise(raw); }
+      else doc = Blueprint.parseFrontMatter(text);
+      if (!(doc.sba || []).length && !(doc.emq || []).length) throw new Error('No blueprint_sba / blueprint_emq buckets found in the file.');
+      await Blueprint.save(doc);
+      status.innerHTML = `<span class="good">✓ Saved — ${doc.sba.length} SBA topics, ${doc.emq.length} EMQ themes.</span>`;
+      await refreshBlueprint(document.getElementById('view'));
+    } catch (err) { status.innerHTML = `<span class="bad">${ctx.esc(err.message || err)}</span>`; }
+    e.target.value = '';
+  }
+  async function refreshBlueprint(view) {
+    const host = view.querySelector('#bp-summary');
+    let doc; try { doc = await Blueprint.load(); } catch { doc = null; }
+    if (!doc || (!(doc.sba || []).length && !(doc.emq || []).length)) { host.innerHTML = `<p class="muted">No blueprint loaded yet — the bundled default is used until you upload one.</p>`; return; }
+    const sbaW = doc.sba.reduce((s, b) => s + b.weight, 0), emqW = doc.emq.reduce((s, b) => s + b.weight, 0);
+    host.innerHTML = `<div class="bp-summary">
+      <p class="good">Blueprint v${doc.version || 1}${doc.updated ? ' · ' + ctx.esc(doc.updated) : ''} loaded.</p>
+      <div class="bp-cols">
+        <div><h5>SBA · ${doc.sba.length} topics · Σ${sbaW}</h5><ul>${doc.sba.map(b => `<li>${ctx.esc(b.subcategory || b.category)} <span class="muted">w${b.weight}</span></li>`).join('')}</ul></div>
+        <div><h5>EMQ · ${doc.emq.length} themes · Σ${emqW}</h5><ul>${doc.emq.map(b => `<li>${ctx.esc(b.theme)} <span class="muted">w${b.weight}</span></li>`).join('')}</ul></div>
+      </div></div>`;
   }
 
   /* ---------------- Drive access ---------------- */

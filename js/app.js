@@ -27,8 +27,14 @@
     { re: /^#\/results\/([^/]+)$/, fn: renderResults },
     { re: /^#\/profile$/, fn: renderProfile },
     { re: /^#\/studio$/, fn: renderStudio },
+    { re: /^#\/cards$/, fn: renderCards },
+    { re: /^#\/cards\/([^/]+)$/, fn: renderDeck },
+    { re: /^#\/simulator$/, fn: renderSimHome },
+    { re: /^#\/simulator\/run$/, fn: renderSimRun },
+    { re: /^#\/simulator\/result\/([^/]+)$/, fn: renderSimResult },
     { re: /^#\/dev$/, fn: renderDev }
   ];
+  const devOnly = user => !!(user && (user.email === cfg.developer.email || sessionStorage.getItem('aureum-dev') === '1'));
 
   async function route() {
     Quiz.destroy();
@@ -69,7 +75,9 @@
           <a href="#/dashboard" class="${location.hash === '#/dashboard' ? 'active' : ''}">Dashboard</a>
           <a href="#/library" class="${location.hash.startsWith('#/library') || location.hash.startsWith('#/paper') ? 'active' : ''}">Library</a>
           <a href="#/profile" class="${location.hash === '#/profile' ? 'active' : ''}">Profile</a>
-          ${isDev ? `<a href="#/studio" class="${location.hash === '#/studio' ? 'active' : ''}">Studio</a>` : ''}
+          <a href="#/studio" class="${location.hash === '#/studio' ? 'active' : ''}">Studio</a>
+          ${isDev ? `<a href="#/cards" class="${location.hash.startsWith('#/cards') ? 'active' : ''}">Flashcards</a>` : ''}
+          ${isDev ? `<a href="#/simulator" class="${location.hash.startsWith('#/simulator') ? 'active' : ''}">Simulator</a>` : ''}
           ${isDev ? `<a href="#/dev" class="${location.hash === '#/dev' ? 'active' : ''}">Developer</a>` : ''}
           <button class="btn btn-ghost btn-sm" id="nav-logout">Sign out</button>
         ` : `<a href="#/auth" class="btn btn-primary btn-sm">Sign in</a>`}
@@ -801,13 +809,10 @@
   /* ================= studio (private AI gallery) ================= */
 
   async function renderStudio(user) {
-    const authorised = user.email === cfg.developer.email || sessionStorage.getItem('aureum-dev') === '1';
-    if (!authorised) return renderDevGate(user);
-
     view.innerHTML = `
       <section class="page">
         <header data-animate>
-          <p class="kicker">STUDIO · PRIVATE</p>
+          <p class="kicker">STUDIO · PRIVATE TO YOU</p>
           <h1 class="page-title">Your AI studio</h1>
           <p class="muted">Every conversation, chart, mind map, infographic and note you've created — grouped by paper, private to your account.</p>
         </header>
@@ -903,10 +908,17 @@
   /* ================= developer console ================= */
 
   async function renderDev(user) {
-    const authorised = user.email === cfg.developer.email || sessionStorage.getItem('aureum-dev') === '1';
-    if (!authorised) return renderDevGate(user);
+    if (!devOnly(user)) return renderDevGate(user);
     await DevConsole.render(view, { cfg, Data, Backend, esc, FX });
   }
+
+  /* ================= flashcards & simulator (developer-only for now) ================= */
+
+  async function renderCards(user) { if (!devOnly(user)) return renderDevGate(user); await Flashcards.renderList(view, user); }
+  async function renderDeck(deckId, user) { if (!devOnly(user)) return renderDevGate(user); await Flashcards.renderDeck(view, deckId, user); }
+  async function renderSimHome(user) { if (!devOnly(user)) return renderDevGate(user); await Simulator.renderHome(view, user); }
+  async function renderSimRun(user) { if (!devOnly(user)) return renderDevGate(user); await Simulator.startRun(view, user); }
+  async function renderSimResult(id, user) { if (!devOnly(user)) return renderDevGate(user); await Simulator.renderResult(view, id, user); }
 
   function renderDevGate(user) {
     view.innerHTML = `

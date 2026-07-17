@@ -163,6 +163,37 @@ const Backend = (() => {
       write('qedits', m); return m[qk] || null;
     }
 
+    /* per-user question edits (personal flag / correction) + simulator exclusion */
+    const uqKey = e => 'uqedits.' + e;
+    async function getUserQuestionEdit(qk) { const e = sessionEmail(); if (!e) return null; return read(uqKey(e), {})[qk] || null; }
+    async function saveUserQuestionEdit(qk, patch) {
+      const e = sessionEmail(); if (!e) return null;
+      const m = read(uqKey(e), {});
+      m[qk] = Object.assign({}, m[qk], patch, { updated: Date.now() });
+      if (!m[qk].flagged && !m[qk].flag_note && !m[qk].explanation && !m[qk].excluded) delete m[qk];
+      write(uqKey(e), m); return m[qk] || null;
+    }
+    async function listExcludedQuestions() { const e = sessionEmail(); if (!e) return []; const m = read(uqKey(e), {}); return Object.keys(m).filter(qk => m[qk].excluded); }
+
+    /* flashcards — decks are global (developer-published); SRS progress is per-user */
+    async function getFlashcardDecks() { return read('decks', []); }
+    async function publishFlashcardDeck(meta) { const l = read('decks', []); const i = l.findIndex(d => d.id === meta.id); if (i >= 0) l[i] = meta; else l.push(meta); write('decks', l); return meta; }
+    async function unpublishFlashcardDeck(id) { write('decks', read('decks', []).filter(d => d.id !== id)); }
+    const cpKey = e => 'cardprog.' + e;
+    async function getCardProgress(deckId) { const e = sessionEmail(); if (!e) return {}; return read(cpKey(e), {})[deckId] || {}; }
+    async function saveCardProgress(deckId, cardId, s) { const e = sessionEmail(); if (!e) return; const m = read(cpKey(e), {}); (m[deckId] || (m[deckId] = {}))[cardId] = s; write(cpKey(e), m); }
+    async function listAllCardProgress() { const e = sessionEmail(); if (!e) return {}; return read(cpKey(e), {}); }
+
+    /* blueprint — single global doc (developer-editable) */
+    async function getBlueprint() { return read('blueprint', null); }
+    async function saveBlueprint(doc) { write('blueprint', doc); return doc; }
+
+    /* adaptive-simulator mock results — per-user */
+    const mKey = e => 'mocks.' + e;
+    async function saveMockResult(result) { const e = sessionEmail(); if (!e) return null; const l = read(mKey(e), []); result.id = result.id || ('mock-' + Date.now().toString(36)); l.unshift(result); if (l.length > 200) l.length = 200; write(mKey(e), l); return result; }
+    async function listMockResults() { const e = sessionEmail(); if (!e) return []; return read(mKey(e), []); }
+    async function getMockResult(id) { return (await listMockResults()).find(m => m.id === id) || null; }
+
     /* AI (local mode has no server function — the app disables AI in local) */
     async function getAccessToken() { return null; }
 
@@ -173,7 +204,11 @@ const Backend = (() => {
       getPublishedPapers, publishPaper, unpublishPaper,
       getExamDate, setExamDate, saveSession, loadSession, clearSession, listSessions,
       getNote, saveNote, getNotesForPaper, listAllNotes, getCustomCurriculum, saveCustomCurriculum,
-      saveAiItem, saveAiChat, listAiItems, deleteAiItem, getQuestionEdit, saveQuestionEdit, getAccessToken };
+      saveAiItem, saveAiChat, listAiItems, deleteAiItem, getQuestionEdit, saveQuestionEdit,
+      getUserQuestionEdit, saveUserQuestionEdit, listExcludedQuestions,
+      getFlashcardDecks, publishFlashcardDeck, unpublishFlashcardDeck,
+      getCardProgress, saveCardProgress, listAllCardProgress,
+      getBlueprint, saveBlueprint, saveMockResult, listMockResults, getMockResult, getAccessToken };
   })();
 
   /* ================= SUPABASE BACKEND ================= */
@@ -319,6 +354,65 @@ const Backend = (() => {
       return getQuestionEdit(qk);
     }
 
+    /* per-user question edits (personal flag / correction) + simulator exclusion */
+    function mapUqe(d) { return d ? { flagged: !!d.flagged, flag_note: d.flag_note || '', explanation: d.explanation || '', excluded: !!d.excluded, updated: d.updated_at } : null; }
+    async function getUserQuestionEdit(qk) {
+      await ensureClient(); const id = await uid(); if (!id) return null;
+      const { data } = await sb.from('user_question_edits').select('*').eq('user_id', id).eq('question_key', qk).single();
+      return mapUqe(data);
+    }
+    async function saveUserQuestionEdit(qk, patch) {
+      await ensureClient(); const id = await uid(); if (!id) return null;
+      const row = Object.assign({ user_id: id, question_key: qk }, patch, { updated_at: new Date().toISOString() });
+      await sb.from('user_question_edits').upsert(row, { onConflict: 'user_id,question_key' });
+      return getUserQuestionEdit(qk);
+    }
+    async function listExcludedQuestions() {
+      await ensureClient(); const id = await uid(); if (!id) return [];
+      const { data } = await sb.from('user_question_edits').select('question_key').eq('user_id', id).eq('excluded', true);
+      return (data || []).map(r => r.question_key);
+    }
+
+    /* flashcards — decks global (dev-published), SRS progress per-user */
+    async function getFlashcardDecks() { await ensureClient(); const { data } = await sb.from('flashcard_decks').select('*'); return (data || []).map(r => r.meta); }
+    async function publishFlashcardDeck(meta) { await ensureClient(); await sb.from('flashcard_decks').upsert({ id: meta.id, meta }); return meta; }
+    async function unpublishFlashcardDeck(id) { await ensureClient(); await sb.from('flashcard_decks').delete().eq('id', id); }
+    async function getCardProgress(deckId) {
+      await ensureClient(); const id = await uid(); if (!id) return {};
+      const { data } = await sb.from('flashcard_progress').select('*').eq('user_id', id).eq('deck_id', deckId);
+      const out = {}; (data || []).forEach(r => out[r.card_id] = { due: r.due, interval: r.interval, ease: r.ease, reps: r.reps, lapses: r.lapses, updated: r.updated_at }); return out;
+    }
+    async function saveCardProgress(deckId, cardId, s) {
+      await ensureClient(); const id = await uid(); if (!id) return;
+      await sb.from('flashcard_progress').upsert({ user_id: id, deck_id: deckId, card_id: String(cardId), due: s.due, interval: s.interval, ease: s.ease, reps: s.reps, lapses: s.lapses || 0, updated_at: new Date().toISOString() }, { onConflict: 'user_id,deck_id,card_id' });
+    }
+    async function listAllCardProgress() {
+      await ensureClient(); const id = await uid(); if (!id) return {};
+      const { data } = await sb.from('flashcard_progress').select('deck_id,card_id,due,interval,ease,reps,lapses').eq('user_id', id);
+      const out = {}; (data || []).forEach(r => { (out[r.deck_id] || (out[r.deck_id] = {}))[r.card_id] = { due: r.due, interval: r.interval, ease: r.ease, reps: r.reps, lapses: r.lapses }; }); return out;
+    }
+
+    /* blueprint — single global doc (dev-editable) */
+    async function getBlueprint() { await ensureClient(); const { data } = await sb.from('app_config').select('data').eq('id', 'blueprint').single(); return data?.data || null; }
+    async function saveBlueprint(doc) { await ensureClient(); await sb.from('app_config').upsert({ id: 'blueprint', data: doc, updated_at: new Date().toISOString() }); return doc; }
+
+    /* adaptive-simulator mock results — per-user */
+    async function saveMockResult(result) {
+      await ensureClient(); const id = await uid(); if (!id) return null;
+      result.id = result.id || ('mock-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6));
+      await sb.from('mock_results').insert({ id: result.id, user_id: id, payload: result }); return result;
+    }
+    async function listMockResults() {
+      await ensureClient(); const id = await uid(); if (!id) return [];
+      const { data } = await sb.from('mock_results').select('id,payload').eq('user_id', id).order('created_at', { ascending: false });
+      return (data || []).map(r => ({ id: r.id, ...r.payload }));
+    }
+    async function getMockResult(mid) {
+      await ensureClient();
+      const { data } = await sb.from('mock_results').select('id,payload').eq('id', mid).single();
+      return data ? { id: data.id, ...data.payload } : null;
+    }
+
     /* AI auth token for the Cloudflare function */
     async function getAccessToken() { await ensureClient(); const { data } = await sb.auth.getSession(); return data.session?.access_token || null; }
 
@@ -327,7 +421,11 @@ const Backend = (() => {
       getPublishedPapers, publishPaper, unpublishPaper,
       getExamDate, setExamDate, saveSession, loadSession, clearSession, listSessions,
       getNote, saveNote, getNotesForPaper, listAllNotes, getCustomCurriculum, saveCustomCurriculum,
-      saveAiItem, saveAiChat, listAiItems, deleteAiItem, getQuestionEdit, saveQuestionEdit, getAccessToken };
+      saveAiItem, saveAiChat, listAiItems, deleteAiItem, getQuestionEdit, saveQuestionEdit,
+      getUserQuestionEdit, saveUserQuestionEdit, listExcludedQuestions,
+      getFlashcardDecks, publishFlashcardDeck, unpublishFlashcardDeck,
+      getCardProgress, saveCardProgress, listAllCardProgress,
+      getBlueprint, saveBlueprint, saveMockResult, listMockResults, getMockResult, getAccessToken };
   })();
 
   const impl = useCloud ? Cloud : Local;
