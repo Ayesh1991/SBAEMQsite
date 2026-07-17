@@ -33,7 +33,7 @@
     { re: /^#\/simulator$/, fn: renderSimHome },
     { re: /^#\/simulator\/run$/, fn: renderSimRun },
     { re: /^#\/simulator\/result\/([^/]+)$/, fn: renderSimResult },
-    { re: /^#\/dev$/, fn: renderDev }
+    { re: /^#\/dev(?:\/(papers|cards|users|blueprint))?$/, fn: renderDev }
   ];
   const devOnly = user => !!(user && (user.email === cfg.developer.email || sessionStorage.getItem('aureum-dev') === '1'));
 
@@ -75,11 +75,11 @@
         ${user ? `
           <a href="#/dashboard" class="${location.hash === '#/dashboard' ? 'active' : ''}">Dashboard</a>
           <a href="#/library" class="${location.hash.startsWith('#/library') || location.hash.startsWith('#/paper') ? 'active' : ''}">Library</a>
-          <a href="#/profile" class="${location.hash === '#/profile' ? 'active' : ''}">Profile</a>
           <a href="#/studio" class="${location.hash === '#/studio' ? 'active' : ''}">Studio</a>
           ${(isDev || user.featureFlags?.flashcards) ? `<a href="#/cards" class="${location.hash.startsWith('#/cards') ? 'active' : ''}">Flashcards</a>` : ''}
           ${(isDev || user.featureFlags?.simulator) ? `<a href="#/simulator" class="${location.hash.startsWith('#/simulator') ? 'active' : ''}">Simulator</a>` : ''}
-          ${isDev ? `<a href="#/dev" class="${location.hash === '#/dev' ? 'active' : ''}">Developer</a>` : ''}
+          ${isDev ? `<a href="#/dev" class="${location.hash.startsWith('#/dev') ? 'active' : ''}">Developer</a>` : ''}
+          <a href="#/profile" class="${location.hash === '#/profile' ? 'active' : ''}">Profile</a>
           <button class="btn btn-ghost btn-sm" id="nav-logout">Sign out</button>
         ` : `<a href="#/auth" class="btn btn-primary btn-sm">Sign in</a>`}
       </div>`;
@@ -757,8 +757,9 @@
             answerText: (q.preLettered ? '' : Quiz.LETTERS[q.answer] + '. ') + q.options[q.answer]
           });
         }
-        // AI
-        if (window.AI && cfg.ai?.enabled) {
+        // AI ("AI" is a lexical const — window.AI is always undefined, so the
+        // old window.AI check silently disabled the tutor in every review)
+        if (typeof AI !== 'undefined' && cfg.ai?.enabled) {
           AI.attach(item.querySelector('.ai-slot'), {
             questionKey: nKey, kind: q.kind, theme: q.theme || '', stem: q.stem, lead: q.lead || '',
             options: q.options, answer: q.answer, chosen: d.chosen, rationale: q.rationale || '',
@@ -856,6 +857,7 @@
           <h1 class="page-title">Your AI studio</h1>
           <p class="muted">Every conversation, chart, mind map, infographic and note you've created — grouped by paper, private to your account.</p>
         </header>
+        <div class="studio-stats" id="studio-stats" data-animate hidden></div>
         <div class="studio-toolbar" data-animate>
           <div class="studio-filters" id="studio-filters"></div>
           <input type="search" id="studio-search" class="studio-search" placeholder="Search your studio…" autocomplete="off">
@@ -883,6 +885,20 @@
     });
     records.sort((a, b) => b.when - a.when);
     records.forEach((r, i) => r._i = i);
+
+    // summary band: what's in the studio at a glance
+    const statsEl = view.querySelector('#studio-stats');
+    if (statsEl && records.length) {
+      const paperCount = new Set(records.map(r => r.paper)).size;
+      const latest = records.find(r => r.when);
+      statsEl.hidden = false;
+      statsEl.innerHTML = `
+        <div class="studio-stat"><strong>${records.length}</strong><span>Saved items</span></div>
+        <div class="studio-stat"><strong>${records.filter(r => r.kind === 'chat').length}</strong><span>Conversations</span></div>
+        <div class="studio-stat"><strong>${records.filter(r => r.kind === 'note').length}</strong><span>Notes</span></div>
+        <div class="studio-stat"><strong>${paperCount}</strong><span>Papers covered</span></div>
+        ${latest ? `<div class="studio-stat"><strong>${esc(new Date(latest.when).toLocaleDateString())}</strong><span>Last saved</span></div>` : ''}`;
+    }
 
     const label = k => k === 'note' ? 'Note' : (AI.kindLabel ? AI.kindLabel(k) : k);
     const icon = k => k === 'note' ? '🗒' : (AI.kindIcon ? AI.kindIcon(k) : '✨');
@@ -947,9 +963,69 @@
 
   /* ================= developer console ================= */
 
-  async function renderDev(user) {
+  async function renderDev(section, user) {
     if (!devOnly(user)) return renderDevGate(user);
-    await DevConsole.render(view, { cfg, Data, Backend, esc, FX });
+    if (!(await ensureDevKey())) { location.hash = '#/dashboard'; return; }
+    await DevConsole.render(view, { cfg, Data, Backend, esc, FX }, section || 'hub');
+  }
+
+  /**
+   * Passkey gate for the developer console. Asks once per session; the key
+   * is verified server-side against the Cloudflare secret PASS_KEY
+   * (functions/api/devkey.js). If PASS_KEY isn't configured yet — or the
+   * site runs in local mode — the developer code from config.js unlocks it,
+   * so you're never locked out.
+   */
+  function ensureDevKey() {
+    if (sessionStorage.getItem('aureum-passkey') === '1') return Promise.resolve(true);
+    return new Promise(resolve => {
+      const overlay = document.createElement('div');
+      overlay.className = 'passkey-overlay';
+      overlay.innerHTML = `
+        <div class="passkey-modal" role="dialog" aria-modal="true" aria-label="Developer passkey">
+          <div class="passkey-ico">🔐</div>
+          <h2>Developer passkey</h2>
+          <p class="muted">Enter the passkey to open the developer console.</p>
+          <form id="pk-form">
+            <input type="password" id="pk-input" inputmode="numeric" autocomplete="off"
+              maxlength="16" placeholder="• • • •" aria-label="Passkey">
+            <p class="form-error" id="pk-error" hidden></p>
+            <div class="passkey-btns">
+              <button class="btn btn-gold" type="submit">Unlock</button>
+              <button class="btn btn-ghost" type="button" id="pk-cancel">Cancel</button>
+            </div>
+          </form>
+        </div>`;
+      document.body.appendChild(overlay);
+      const input = overlay.querySelector('#pk-input');
+      const err = overlay.querySelector('#pk-error');
+      const done = ok => { overlay.remove(); resolve(ok); };
+      setTimeout(() => input.focus(), 50);
+      if (typeof gsap !== 'undefined' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        gsap.fromTo('.passkey-modal', { opacity: 0, y: 26, scale: 0.96 }, { opacity: 1, y: 0, scale: 1, duration: 0.35, ease: 'power3.out' });
+      }
+      overlay.querySelector('#pk-cancel').addEventListener('click', () => done(false));
+      overlay.addEventListener('click', e => { if (e.target === overlay) done(false); });
+      overlay.querySelector('#pk-form').addEventListener('submit', async e => {
+        e.preventDefault();
+        const key = input.value.trim();
+        if (!key) return;
+        err.hidden = true;
+        let ok = false, configured = true;
+        try {
+          const res = await fetch('/api/devkey', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key }) });
+          if (res.ok) { const data = await res.json().catch(() => ({})); ok = !!data.ok; configured = data.configured !== false; }
+          else configured = false;                   // endpoint missing (local / old deploy)
+        } catch { configured = false; }              // network error / local mode
+        if (!ok && !configured) ok = key === cfg.developer.code;   // fallback so you're never locked out
+        if (ok) { sessionStorage.setItem('aureum-passkey', '1'); done(true); }
+        else {
+          err.textContent = configured ? 'Incorrect passkey.' : 'Incorrect. (PASS_KEY not set in Cloudflare yet — the developer code also works.)';
+          err.hidden = false; input.value = ''; input.focus();
+          FX.shake(overlay.querySelector('.passkey-modal'));
+        }
+      });
+    });
   }
 
   /* ================= flashcards & simulator (developer + flag-granted users) ================= */

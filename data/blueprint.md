@@ -10,7 +10,7 @@ source_papers:
 paper:
   sba_count: 30
   emq_count: 30
-  duration_min: 180
+  duration_min: 120
   sba_mark_each: 3
   emq_mark_each: 3
   negative_marking: false
@@ -346,7 +346,7 @@ priority_topics:
 ## 1. Paper anatomy & marking
 - **SBA:** 30 questions × +3 = 90 marks. Single lead stem, **5 options**, one best answer. No negative marking.
 - **EMQ:** 30 scored items × +3 = 90 marks. Delivered as **themed sets**: one option list (8–10 options) followed by **2–5 vignettes**, each scored as one question. Options may be used once, more than once, or not at all.
-- **Combined C1.2 theory** is reported out of 600 after conversion. Duration for the SBA+EMQ paper is **2 hours** in the real exam; this simulator uses a 180-min full-mock envelope by default (adjust `duration_min` as needed).
+- **Combined C1.2 theory** is reported out of 600 after conversion. Duration for the SBA+EMQ paper is **2 hours** in the real exam; this simulator uses the exam-realistic 120-min envelope (adjust `duration_min` as needed).
 - **Style:** clinical vignette led, management-decision heavy ("**next best step**", "**most appropriate**", "**best investigation**"), frequently anchored in **Sri Lankan service context** (Mithuru Piyasa, FHB pathways, resource-aware choices).
 
 ## 2. Examiner tendencies (recurring across 2022–2025)

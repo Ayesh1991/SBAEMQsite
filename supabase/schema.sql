@@ -140,8 +140,12 @@ create table if not exists public.ai_usage (
 );
 alter table public.ai_usage enable row level security;
 drop policy if exists "own usage all" on public.ai_usage;
+drop policy if exists "usage dev read" on public.ai_usage;
 create policy "own usage all" on public.ai_usage for all
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
+-- the developer can read everyone's AI usage (Users panel analytics)
+create policy "usage dev read" on public.ai_usage for select
+  using (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
 
 -- atomically increment today's counter and return the new value
 create or replace function public.bump_ai_usage(p_limit integer)
@@ -268,7 +272,10 @@ create table if not exists public.mock_results (
 );
 create index if not exists mock_user_idx on public.mock_results (user_id, created_at desc);
 alter table public.mock_results enable row level security;
-drop policy if exists "own mock all" on public.mock_results;
+drop policy if exists "own mock all"    on public.mock_results;
+drop policy if exists "own mock read"   on public.mock_results;
+drop policy if exists "own mock insert" on public.mock_results;
+drop policy if exists "own mock delete" on public.mock_results;
 create policy "own mock read"   on public.mock_results for select using (auth.uid() = user_id);
 create policy "own mock insert" on public.mock_results for insert with check (auth.uid() = user_id);
 create policy "own mock delete" on public.mock_results for delete using (auth.uid() = user_id);

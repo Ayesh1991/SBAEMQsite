@@ -252,11 +252,17 @@ const Flashcards = (() => {
           <button class="fc-grade fc-good"  data-g="good"><strong>Good</strong><span>${previewInterval(st, 'good')}</span></button>
           <button class="fc-grade fc-easy"  data-g="easy"><strong>Easy</strong><span>${previewInterval(st, 'easy')}</span></button>
         </div>
-        <p class="fc-hint muted tiny">Space / Enter reveals · 1–4 grade</p>`;
+        <p class="fc-hint muted tiny">Tap the card to flip · Space / Enter flips · 1–4 grade</p>`;
 
       const reveal = () => { s.revealed = true; view.querySelector('#fc-card')?.classList.add('is-flipped'); const g = view.querySelector('#fc-grades'); if (g) g.hidden = false; };
+      // After the answer is shown, tapping the card flips it back and forth
+      // (question ↔ answer) as often as you like; the grade buttons stay put.
+      const flipToggle = () => view.querySelector('#fc-card')?.classList.toggle('is-flipped');
       view.querySelector('#fc-reveal')?.addEventListener('click', reveal);
-      view.querySelector('#fc-card')?.addEventListener('click', e => { if (!s.revealed && !e.target.closest('button')) reveal(); });
+      view.querySelector('#fc-card')?.addEventListener('click', e => {
+        if (e.target.closest('button')) return;
+        if (!s.revealed) reveal(); else flipToggle();
+      });
       view.querySelectorAll('#fc-grades .fc-grade').forEach(b => b.addEventListener('click', () => grade(b.dataset.g)));
       if (typeof gsap !== 'undefined' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
         gsap.fromTo('#fc-card', { opacity: 0, y: 18, scale: 0.98 }, { opacity: 1, y: 0, scale: 1, duration: 0.35, ease: 'power2.out' });
@@ -302,7 +308,12 @@ const Flashcards = (() => {
     // keyboard
     function onKey(e) {
       if (/^(input|textarea|select)$/i.test(document.activeElement?.tagName || '')) return;
-      if (!s.revealed && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); view.querySelector('#fc-reveal')?.click(); return; }
+      if (e.key === ' ' || e.key === 'Enter') {
+        e.preventDefault();
+        if (!s.revealed) view.querySelector('#fc-reveal')?.click();
+        else view.querySelector('#fc-card')?.classList.toggle('is-flipped');   // flip back & forth
+        return;
+      }
       if (s.revealed && /^[1-4]$/.test(e.key)) { e.preventDefault(); grade(['again', 'hard', 'good', 'easy'][Number(e.key) - 1]); }
     }
     document.addEventListener('keydown', onKey);

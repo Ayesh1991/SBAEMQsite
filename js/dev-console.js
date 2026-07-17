@@ -23,16 +23,82 @@ const DevConsole = (() => {
   let published = [];
   let syllabus = null;
 
-  async function render(view, context) {
+  /**
+   * Entry point. section = 'hub' | 'papers' | 'cards' | 'users' | 'blueprint'.
+   * The hub is a card launcher; each section is its own page with a back link.
+   */
+  async function render(view, context, section = 'hub') {
     ctx = context;
-    const { esc } = ctx;
     syllabus = await ctx.Data.loadSyllabus();
+    if (section === 'papers') return renderPapersSection(view);
+    if (section === 'cards') return renderCardsSection(view);
+    if (section === 'users') return renderUsersSection(view);
+    if (section === 'blueprint') return renderBlueprintSection(view);
+    return renderHub(view);
+  }
 
+  /* ---------------- hub ---------------- */
+
+  async function renderHub(view) {
+    const { esc } = ctx;
+    let paperN = '…', deckN = '…', userN = '…';
     view.innerHTML = `
       <section class="page">
         <header data-animate>
-          <p class="kicker">DEVELOPER · CONTENT PIPELINE</p>
-          <h1 class="page-title">Import papers from Google Drive</h1>
+          <p class="kicker">DEVELOPER CONSOLE</p>
+          <h1 class="page-title">Mission control</h1>
+          <p class="muted">Backend: <strong>${ctx.Backend.mode === 'cloud' ? 'Supabase (shared)' : 'local (this browser)'}</strong> — pick a workspace.</p>
+        </header>
+        <div class="dev-hub" data-animate>
+          <a class="dev-hub-card" href="#/dev/papers" style="--hub-accent:linear-gradient(135deg,#5eead4,#3987e5)">
+            <span class="dev-hub-ico">📄</span>
+            <h3>SBA / EMQ importer</h3>
+            <p>Scan Drive for question papers, classify against the curriculum, publish to the library.</p>
+            <span class="dev-hub-count" id="hub-papers">…</span>
+          </a>
+          <a class="dev-hub-card" href="#/dev/cards" style="--hub-accent:linear-gradient(135deg,#a78bfa,#e879b9)">
+            <span class="dev-hub-ico">🃏</span>
+            <h3>Flashcard importer</h3>
+            <p>Scan the flashcard folder, validate decks by content, publish to the Flashcards tab.</p>
+            <span class="dev-hub-count" id="hub-decks">…</span>
+          </a>
+          <a class="dev-hub-card" href="#/dev/users" style="--hub-accent:linear-gradient(135deg,#f4c95d,#e8a33d)">
+            <span class="dev-hub-ico">👥</span>
+            <h3>User management</h3>
+            <p>Registered accounts, AI usage per user, and selective feature unlock.</p>
+            <span class="dev-hub-count" id="hub-users">…</span>
+          </a>
+          <a class="dev-hub-card" href="#/dev/blueprint" style="--hub-accent:linear-gradient(135deg,#34d399,#5eead4)">
+            <span class="dev-hub-ico">🧭</span>
+            <h3>Exam blueprint</h3>
+            <p>The weights behind the adaptive simulator's daily mock. Upload a new version any time.</p>
+            <span class="dev-hub-count" id="hub-bp">…</span>
+          </a>
+        </div>
+      </section>`;
+    ctx.FX.viewIn(view);
+    // decorate counts asynchronously (all reads are device-cached)
+    try { paperN = (await ctx.Data.publishedPapers()).length + ' published'; } catch { paperN = '—'; }
+    try { deckN = ((await ctx.Backend.getFlashcardDecks()) || []).length + ' decks live'; } catch { deckN = '—'; }
+    try { userN = ((await ctx.Backend.listAllUsers()) || []).length + ' accounts'; } catch { userN = 'run schema.sql'; }
+    let bpN = 'bundled default';
+    try { const bp = await Blueprint.load(); if (bp?.sba?.length) bpN = `v${bp.version} · ${bp.sba.length}+${bp.emq.length} topics`; } catch { /* keep default */ }
+    const put = (id, v) => { const el = view.querySelector(id); if (el) el.textContent = v; };
+    put('#hub-papers', paperN); put('#hub-decks', deckN); put('#hub-users', userN); put('#hub-bp', bpN);
+  }
+
+  const backLink = `<a class="link muted dev-back" href="#/dev">← Developer</a>`;
+
+  /* ---------------- section: SBA/EMQ papers ---------------- */
+
+  async function renderPapersSection(view) {
+    const { esc } = ctx;
+    view.innerHTML = `
+      <section class="page">
+        ${backLink}
+        <header data-animate>
+          <p class="kicker">DEVELOPER · SBA / EMQ IMPORTER</p>
+          <h1 class="page-title">Question papers</h1>
           <p class="muted">Source folder: <code>${esc(ctx.cfg.drive.folderId)}</code> ·
             Backend: <strong>${ctx.Backend.mode === 'cloud' ? 'Supabase (shared)' : 'local (this browser)'}</strong></p>
         </header>
@@ -45,7 +111,25 @@ const DevConsole = (() => {
         <div id="dev-list" data-animate></div>
 
         <div class="card" data-animate>
-          <h3 class="card-title">Manage curriculum</h3>
+          <details class="dev-collapse">
+            <summary><span class="card-title">Published papers (…)</span><span class="dc-caret">▸</span></summary>
+            <div id="dev-published"></div>
+          </details>
+        </div>
+
+        <div class="card" data-animate>
+          <details class="dev-collapse">
+            <summary><span class="card-title">Manual import (paste JSON)</span><span class="dc-caret">▸</span></summary>
+            <p class="muted">Paste a single paper's JSON (ogr-paper-v1) to validate and publish it directly.</p>
+            <textarea id="dev-paste" class="dev-textarea" placeholder='{ "schema": "ogr-paper-v1", "topic": "…", "sba": [...], "emq": [...] }'></textarea>
+            <button class="btn btn-primary" id="dev-paste-btn" style="margin-top:12px">Validate &amp; stage</button>
+            <div id="dev-paste-result"></div>
+          </details>
+        </div>
+
+        <div class="card" data-animate>
+          <details class="dev-collapse">
+            <summary><span class="card-title">Manage curriculum</span><span class="dc-caret">▸</span></summary>
           <p class="muted">Add a new category, a section inside a category, or a topic inside a section
             (including <strong>Mock Paper 1, 2, 3…</strong>). New entries appear as targets when you index papers.</p>
           <div class="curr-mgr">
@@ -78,46 +162,75 @@ const DevConsole = (() => {
             </div>
             <p class="curr-msg" id="curr-msg"></p>
           </div>
+          </details>
+        </div>
+      </section>`;
+
+    view.querySelector('#dev-scan').addEventListener('click', scan);
+    view.querySelector('#dev-paste-btn').addEventListener('click', stagePasted);
+    wireCurriculumManager(view);
+    await refreshPublished(view);
+    ctx.FX.viewIn(view);
+  }
+
+  /* ---------------- section: flashcard decks ---------------- */
+
+  async function renderCardsSection(view) {
+    const { esc } = ctx;
+    view.innerHTML = `
+      <section class="page">
+        ${backLink}
+        <header data-animate>
+          <p class="kicker">DEVELOPER · FLASHCARD IMPORTER</p>
+          <h1 class="page-title">Flashcard decks</h1>
+          <p class="muted">A <strong>separate</strong> pipeline from question papers. Decks are recognised by their
+            content (<code>{ "topic": "…", "cards": [ … ] }</code>), whatever the filename. Published decks
+            appear in the Flashcards tab.</p>
+        </header>
+
+        <div class="dev-toolbar" data-animate>
+          <button class="btn btn-gold" id="fc-scan">Scan flashcard Drive</button>
+          <span class="dev-status" id="fc-status"></span>
+        </div>
+        <div id="fc-list" data-animate></div>
+
+        <div class="card" data-animate>
+          <details class="dev-collapse">
+            <summary><span class="card-title">Published decks (<span id="fc-pub-count">…</span>)</span><span class="dc-caret">▸</span></summary>
+            <div id="fc-published"></div>
+          </details>
         </div>
 
         <div class="card" data-animate>
-          <h3 class="card-title">Manual import</h3>
-          <p class="muted">Paste a single paper's JSON (ogr-paper-v1) to validate and publish it directly.</p>
-          <textarea id="dev-paste" class="dev-textarea" placeholder='{ "schema": "ogr-paper-v1", "topic": "…", "sba": [...], "emq": [...] }'></textarea>
-          <button class="btn btn-primary" id="dev-paste-btn" style="margin-top:12px">Validate & stage</button>
-          <div id="dev-paste-result"></div>
-        </div>
-
-        <div class="card danger-zone" data-animate>
-          <h3 class="card-title">Published papers (${'{count}'})</h3>
-          <div id="dev-published"></div>
-        </div>
-
-        <div class="card dev-section-flash" data-animate>
-          <h3 class="card-title">🃏 Flashcard decks — import &amp; publish</h3>
-          <p class="muted">A <strong>separate</strong> pipeline from question papers. Import spaced-repetition decks
-            (<code>{ "topic": "…", "cards": [ { "question": "…", "answer": "…" } ] }</code>) from the flashcard
-            Drive folder, or paste one. Published decks appear in the Flashcards tab.</p>
-          <div class="dev-toolbar">
-            <button class="btn btn-gold" id="fc-scan">Scan flashcard Drive</button>
-            <span class="dev-status" id="fc-status"></span>
-          </div>
-          <div id="fc-list"></div>
-          <details class="dev-paste-wrap">
-            <summary>Paste a deck manually</summary>
+          <details class="dev-collapse">
+            <summary><span class="card-title">Paste a deck manually</span><span class="dc-caret">▸</span></summary>
             <textarea id="fc-paste" class="dev-textarea" placeholder='{ "topic": "Breech Presentation", "cards": [ { "question": "…", "answer": "…", "keyPoint": "" } ] }'></textarea>
             <button class="btn btn-primary" id="fc-paste-btn" style="margin-top:12px">Validate &amp; stage</button>
             <div id="fc-paste-result"></div>
           </details>
-          <h4 class="dev-subhead">Published decks (<span id="fc-pub-count">0</span>)</h4>
-          <div id="fc-published"></div>
         </div>
+      </section>`;
 
-        <div class="card dev-section-bp" data-animate>
-          <h3 class="card-title">🧭 Exam blueprint (adaptive simulator)</h3>
+    view.querySelector('#fc-scan').addEventListener('click', scanCards);
+    view.querySelector('#fc-paste-btn').addEventListener('click', stagePastedDeck);
+    await refreshDecks(view);
+    ctx.FX.viewIn(view);
+  }
+
+  /* ---------------- section: exam blueprint ---------------- */
+
+  async function renderBlueprintSection(view) {
+    view.innerHTML = `
+      <section class="page">
+        ${backLink}
+        <header data-animate>
+          <p class="kicker">DEVELOPER · ADAPTIVE SIMULATOR</p>
+          <h1 class="page-title">Exam blueprint</h1>
           <p class="muted">Drives which topics the daily mock samples. Upload the blueprint Markdown
             (YAML front-matter) or JSON. Stored on the server and used across devices; the bundled
             <code>data/blueprint.md</code> is the fallback.</p>
+        </header>
+        <div class="card" data-animate>
           <div class="dev-toolbar">
             <label class="btn btn-gold" style="cursor:pointer">Upload blueprint file
               <input type="file" id="bp-file" accept=".md,.markdown,.json,.txt" hidden>
@@ -126,24 +239,29 @@ const DevConsole = (() => {
           </div>
           <div id="bp-summary"></div>
         </div>
+      </section>`;
 
-        <div class="card dev-section-users" data-animate>
-          <h3 class="card-title">👥 Users &amp; access</h3>
-          <p class="muted">Everyone registered on the site. Toggle the advanced features on for chosen users —
-            everything else stays available to all. (Cloud mode needs the updated schema.sql run once.)</p>
+    view.querySelector('#bp-file').addEventListener('change', uploadBlueprint);
+    await refreshBlueprint(view);
+    ctx.FX.viewIn(view);
+  }
+
+  /* ---------------- section: users ---------------- */
+
+  async function renderUsersSection(view) {
+    view.innerHTML = `
+      <section class="page">
+        ${backLink}
+        <header data-animate>
+          <p class="kicker">DEVELOPER · USER MANAGEMENT</p>
+          <h1 class="page-title">Users &amp; access</h1>
+          <p class="muted">Everyone registered on the site — activity, AI usage, and selective unlock of the
+            advanced features. (Cloud mode needs the updated schema.sql run once.)</p>
+        </header>
+        <div class="card" data-animate>
           <div id="dev-users"><p class="muted">Loading users…</p></div>
         </div>
       </section>`;
-
-    view.querySelector('#dev-scan').addEventListener('click', scan);
-    view.querySelector('#dev-paste-btn').addEventListener('click', stagePasted);
-    view.querySelector('#fc-scan').addEventListener('click', scanCards);
-    view.querySelector('#fc-paste-btn').addEventListener('click', stagePastedDeck);
-    view.querySelector('#bp-file').addEventListener('change', uploadBlueprint);
-    wireCurriculumManager(view);
-    await refreshPublished(view);
-    await refreshDecks(view);
-    await refreshBlueprint(view);
     await refreshUsers(view);
     ctx.FX.viewIn(view);
   }
@@ -568,17 +686,28 @@ const DevConsole = (() => {
       return;
     }
     if (!list.length) { host.innerHTML = `<p class="muted">No registered users found.</p>`; return; }
+    let usage = {};
+    try { usage = (await ctx.Backend.listAiUsage?.()) || {}; } catch { usage = {}; }
     const devMail = (ctx.cfg.developer.email || '').toLowerCase();
+    const totalAi = Object.values(usage).reduce((s, u) => s + (u.total || 0), 0);
     host.innerHTML = `
+      <div class="dev-users-stats">
+        <div><strong>${list.length}</strong><span>Accounts</span></div>
+        <div><strong>${list.reduce((s, u) => s + (u.xp || 0), 0)}</strong><span>Total XP</span></div>
+        <div><strong>${totalAi}</strong><span>AI calls (all time)</span></div>
+      </div>
       <div class="table-scroll"><table class="table dev-users-table">
-        <thead><tr><th>Name</th><th>Email</th><th>Position</th><th>XP</th><th>Joined</th>${FEATURES.map(f => `<th>${f.label}</th>`).join('')}</tr></thead>
+        <thead><tr><th>Name</th><th>Email</th><th>Position</th><th>XP</th><th>AI today</th><th>AI total</th><th>Joined</th>${FEATURES.map(f => `<th>${f.label}</th>`).join('')}</tr></thead>
         <tbody>${list.map(u => {
           const isDev = (u.email || '').toLowerCase() === devMail;
+          const ai = usage[u.id] || { total: 0, today: 0 };
           return `<tr class="${isDev ? 'dev-users-me' : ''}">
             <td>${ctx.esc(u.name || '')}${isDev ? ' <span class="qedit-tag">developer</span>' : ''}</td>
             <td class="muted">${ctx.esc(u.email || '')}</td>
             <td class="muted">${ctx.esc(u.position || '')}</td>
             <td class="muted">${u.xp || 0}</td>
+            <td class="muted">${ai.today}</td>
+            <td class="muted">${ai.total}</td>
             <td class="muted">${u.createdAt ? new Date(u.createdAt).toLocaleDateString() : ''}</td>
             ${FEATURES.map(f => `<td>${isDev
               ? '<span class="tiny muted">always</span>'
@@ -586,6 +715,7 @@ const DevConsole = (() => {
           </tr>`;
         }).join('')}</tbody>
       </table></div>
+      <p class="tiny muted">AI counts are calls to the tutor/coach (the site's rate-limit counters), not raw tokens — the closest per-user cost signal the backend records.</p>
       <p class="dev-row-msg" id="dev-users-msg"></p>`;
     host.querySelectorAll('input[data-flag]').forEach(cb => cb.addEventListener('change', async () => {
       const msg = host.querySelector('#dev-users-msg');

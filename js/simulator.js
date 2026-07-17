@@ -278,7 +278,9 @@ const Simulator = (() => {
     view.innerHTML = '';
     Quiz.start(view, loaded, questions, {
       mode: 'exam', kind: 'MIX', sessionKey: null, simulator: true,
-      timeLimitMinutes: bp.paper.durationMin || 180,
+      // Real PGIM SBA+EMQ paper is 2 hours — cap at 120 min even if an older
+      // stored blueprint still says 180. A shorter blueprint value is honoured.
+      timeLimitMinutes: Math.min(bp.paper.durationMin || 120, 120),
       onFinish: async (attempt) => {
         const mock = await saveMock(attempt, bp, counts, questions);
         try { if (typeof ReviewQueue !== 'undefined') ReviewQueue.addFromAttempt(attempt); } catch { /* optional */ }
@@ -447,7 +449,7 @@ const Simulator = (() => {
       const qk = slot.dataset.qk; const q = dict[qk]; if (!q || typeof QEdit === 'undefined') return;
       QEdit.mount(slot, { questionKey: qk, rationale: q.rationale || '', paperTitle: q._paperTitle || 'Mock', answerText: (q.preLettered ? '' : Quiz.LETTERS[q.answer] + '. ') + q.options[q.answer] });
     });
-    if (window.AI && window.AUREUM_CONFIG?.ai?.enabled) {
+    if (typeof AI !== 'undefined' && window.AUREUM_CONFIG?.ai?.enabled) {
       host.querySelectorAll('.ai-slot').forEach(slot => {
         const d = (mock.detail || [])[Number(slot.dataset.ai)]; const q = d && dict[d.qkey]; if (!q) return;
         AI.attach(slot, { questionKey: d.qkey, kind: q.kind, theme: q.theme || '', stem: q.stem, lead: q.lead || '', options: q.options, answer: q.answer, chosen: d.chosen, rationale: q.rationale || '', hook: q.hook || '', reference: q.reference || '', paperTitle: q._paperTitle || 'Mock', preLettered: q.preLettered });

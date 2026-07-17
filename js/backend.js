@@ -210,6 +210,7 @@ const Backend = (() => {
       if (!u) return; (u.featureFlags || (u.featureFlags = {}))[flag] = !!on; if (!on) delete u.featureFlags[flag];
       write('users', all);
     }
+    async function listAiUsage() { return {}; }   // local mode has no AI backend
 
     /* AI (local mode has no server function — the app disables AI in local) */
     async function getAccessToken() { return null; }
@@ -226,7 +227,7 @@ const Backend = (() => {
       getFlashcardDecks, publishFlashcardDeck, unpublishFlashcardDeck,
       getCardProgress, saveCardProgress, listAllCardProgress,
       getBlueprint, saveBlueprint, saveMockResult, listMockResults, getMockResult,
-      listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, getAccessToken };
+      listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, listAiUsage, getAccessToken };
   })();
 
   /* ================= SUPABASE BACKEND ================= */
@@ -457,6 +458,20 @@ const Backend = (() => {
       if (on) flags[flag] = true; else delete flags[flag];
       await sb.from('profiles').update({ feature_flags: flags }).eq('id', userId);
     }
+    /* AI usage per user (developer — "usage dev read" policy). Returns
+       { userId: { total, today } } aggregated from the daily counters. */
+    async function listAiUsage() {
+      await ensureClient();
+      const { data } = await sb.from('ai_usage').select('user_id, day, count');
+      const today = new Date().toISOString().slice(0, 10);
+      const out = {};
+      (data || []).forEach(r => {
+        const u = out[r.user_id] || (out[r.user_id] = { total: 0, today: 0 });
+        u.total += r.count || 0;
+        if (r.day === today) u.today += r.count || 0;
+      });
+      return out;
+    }
 
     /* AI auth token for the Cloudflare function */
     async function getAccessToken() { await ensureClient(); const { data } = await sb.auth.getSession(); return data.session?.access_token || null; }
@@ -471,7 +486,7 @@ const Backend = (() => {
       getFlashcardDecks, publishFlashcardDeck, unpublishFlashcardDeck,
       getCardProgress, saveCardProgress, listAllCardProgress,
       getBlueprint, saveBlueprint, saveMockResult, listMockResults, getMockResult,
-      listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, getAccessToken };
+      listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, listAiUsage, getAccessToken };
   })();
 
   const impl = useCloud ? Cloud : Local;
