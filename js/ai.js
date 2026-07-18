@@ -11,16 +11,16 @@
 
 const AI = (() => {
   const cfg = () => window.AUREUM_CONFIG?.ai || {};
-  let devKnown = null;
+  let userKnown;
 
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const LOADING = `<div class="ai-loading"><span></span><span></span><span></span></div>`;
 
-  async function isDev() {
-    if (devKnown !== null) return devKnown;
-    try { devKnown = !!(await Backend.currentUser())?.isDeveloper; } catch { devKnown = false; }
-    return devKnown;
+  async function getUser() {
+    if (userKnown !== undefined) return userKnown;
+    try { userKnown = await Backend.currentUser(); } catch { userKnown = null; }
+    return userKnown;
   }
 
   async function attach(slot, ctx) {
@@ -34,7 +34,14 @@ const AI = (() => {
   }
 
   async function openPanel(slot, ctx) {
-    const dev = await isDev();
+    const u = await getUser();
+    const dev = !!u?.isDeveloper;
+    // Gemini+ users (flag granted in Users & access) can pick their Gemini
+    // model; the server re-checks the flag, so this is UX, not the gate.
+    const advanced = dev || !!u?.featureFlags?.gemini_advanced;
+    const modelPicker = `<select class="ai-model" id="ai-model" title="Gemini model">
+            ${(cfg().geminiModels || [{ id: cfg().geminiModel || 'gemini-2.5-flash', label: 'Gemini Flash' }]).map(m => `<option value="${m.id}" ${m.id === (cfg().geminiModel) ? 'selected' : ''}>${m.label}</option>`).join('')}
+          </select>`;
     slot.innerHTML = `
       <div class="ai-panel" data-animate>
         <div class="ai-head">
@@ -43,9 +50,7 @@ const AI = (() => {
             <button class="ai-prov" data-prov="gemini">Gemini Flash</button>
             <button class="ai-prov active" data-prov="claude">Claude</button>
           </div>
-          <select class="ai-model" id="ai-model" title="Gemini model (developer only)">
-            ${(cfg().geminiModels || [{ id: cfg().geminiModel || 'gemini-2.0-flash', label: 'Gemini Flash' }]).map(m => `<option value="${m.id}" ${m.id === (cfg().geminiModel) ? 'selected' : ''}>${m.label}</option>`).join('')}
-          </select>` : `<span class="ai-badge">Gemini Flash</span>`}
+          ${modelPicker}` : (advanced ? modelPicker : `<span class="ai-badge">Gemini Flash</span>`)}
           <button class="ai-x" data-ai-close aria-label="Close">✕</button>
         </div>
         <div class="ai-tools">
@@ -78,7 +83,7 @@ const AI = (() => {
       </div>`;
 
     const panel = slot.querySelector('.ai-panel');
-    const st = { provider: dev ? 'claude' : 'gemini', geminiModel: cfg().geminiModel || 'gemini-2.0-flash', messages: [], follow: 0, dev };
+    const st = { provider: dev ? 'claude' : 'gemini', geminiModel: cfg().geminiModel || 'gemini-2.5-flash', messages: [], follow: 0, dev };
 
     panel.querySelector('[data-ai-close]').addEventListener('click', () => attach(slot, ctx));
     panel.querySelectorAll('.ai-prov').forEach(b => b.addEventListener('click', () => {

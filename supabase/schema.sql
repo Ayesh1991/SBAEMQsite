@@ -300,6 +300,47 @@ drop policy if exists "own review all" on public.review_items;
 create policy "own review all" on public.review_items for all
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
+-- ---------- 8j) AI TOKEN USAGE (true token metering → per-user billing) ----------
+-- One row per user × day × provider × model, incremented by the server
+-- function with the EXACT token counts each API reported (Gemini
+-- usageMetadata / Anthropic usage). This is the billing source of truth.
+create table if not exists public.ai_token_usage (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  day date not null,
+  provider text not null,               -- 'gemini' | 'claude'
+  model text not null,                  -- exact model id that answered (e.g. gemini-2.5-flash)
+  calls integer not null default 0,
+  input_tokens bigint not null default 0,
+  output_tokens bigint not null default 0,
+  updated_at timestamptz default now(),
+  primary key (user_id, day, provider, model)
+);
+create index if not exists atu_day_idx on public.ai_token_usage (day);
+alter table public.ai_token_usage enable row level security;
+drop policy if exists "own tokens read" on public.ai_token_usage;
+drop policy if exists "tokens dev read" on public.ai_token_usage;
+create policy "own tokens read" on public.ai_token_usage for select using (auth.uid() = user_id);
+-- the developer reads everyone's metered tokens (Users panel + invoices)
+create policy "tokens dev read" on public.ai_token_usage for select
+  using (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+
+-- Writes happen ONLY through this RPC (no insert/update policies above), so
+-- a client can never inflate or shrink its own meter. security definer +
+-- auth.uid() ties the row to the verified caller.
+create or replace function public.log_ai_tokens(p_provider text, p_model text, p_input integer, p_output integer)
+returns void language plpgsql security definer as $$
+begin
+  if auth.uid() is null then return; end if;
+  insert into public.ai_token_usage (user_id, day, provider, model, calls, input_tokens, output_tokens)
+  values (auth.uid(), current_date, p_provider, p_model, 1,
+          greatest(coalesce(p_input, 0), 0), greatest(coalesce(p_output, 0), 0))
+  on conflict (user_id, day, provider, model) do update
+    set calls         = public.ai_token_usage.calls + 1,
+        input_tokens  = public.ai_token_usage.input_tokens  + excluded.input_tokens,
+        output_tokens = public.ai_token_usage.output_tokens + excluded.output_tokens,
+        updated_at    = now();
+end; $$;
+
 -- ---------- 9) Auto-create a profile row on sign-up ----------
 create or replace function public.handle_new_user()
 returns trigger language plpgsql security definer as $$

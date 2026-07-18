@@ -61,12 +61,31 @@ window.AUREUM_CONFIG = {
     dailyLimit: 40,
     followUpLimit: 6,            // Claude (and default) — follow-up chats per question
     geminiFollowUpLimit: 20,     // Gemini — higher, since you pay for Gemini now
-    geminiModel: 'gemini-2.0-flash',   // default Gemini model everyone gets
-    // Developer-only Gemini model picker (shown only to the developer email).
+    // Baseline Gemini model everyone gets. (Gemini 2.0 Flash was retired by
+    // Google on 2026-06-01 — 2.5 Flash is the baseline now.)
+    geminiModel: 'gemini-2.5-flash',
+    // Gemini model picker — shown to the developer AND to any user granted
+    // the `gemini_advanced` flag in Users & access. The server re-checks the
+    // flag, so the picker is a convenience, not the security boundary.
     geminiModels: [
-      { id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
-      { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' }
+      { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+      { id: 'gemini-3-flash',   label: 'Gemini 3 Flash' },
+      { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash' }
     ],
-    claudeModel: 'claude-haiku-4-5-20251001'
+    claudeModel: 'claude-haiku-4-5-20251001',
+    // USD per 1,000,000 tokens — the invoice engine (js/billing.js) matches
+    // each metered model id against these by longest prefix. Update here when
+    // Google/Anthropic change list prices; historical rows are re-priced at
+    // the current table (simple + predictable for a small study group).
+    pricing: {
+      'gemini-2.0-flash':      { in: 0.10, out: 0.40, label: 'Gemini 2.0 Flash (retired)' },
+      'gemini-2.5-flash-lite': { in: 0.10, out: 0.40, label: 'Gemini 2.5 Flash-Lite' },
+      'gemini-2.5-flash':      { in: 0.30, out: 2.50, label: 'Gemini 2.5 Flash' },
+      'gemini-3-flash':        { in: 0.50, out: 3.00, label: 'Gemini 3 Flash' },
+      'gemini-3.5-flash':      { in: 1.50, out: 9.00, label: 'Gemini 3.5 Flash' },
+      'gemini':                { in: 0.30, out: 2.50, label: 'Gemini (other)' },
+      'claude-haiku-4-5':      { in: 1.00, out: 5.00, label: 'Claude Haiku 4.5' },
+      'claude':                { in: 1.00, out: 5.00, label: 'Claude (other)' }
+    }
   }
 };

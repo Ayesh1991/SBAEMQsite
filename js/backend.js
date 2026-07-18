@@ -210,7 +210,8 @@ const Backend = (() => {
       if (!u) return; (u.featureFlags || (u.featureFlags = {}))[flag] = !!on; if (!on) delete u.featureFlags[flag];
       write('users', all);
     }
-    async function listAiUsage() { return {}; }   // local mode has no AI backend
+    async function listAiUsage() { return {}; }        // local mode has no AI backend
+    async function listAiTokenUsage() { return []; }   // local mode has no token meter
 
     /* AI (local mode has no server function — the app disables AI in local) */
     async function getAccessToken() { return null; }
@@ -227,7 +228,7 @@ const Backend = (() => {
       getFlashcardDecks, publishFlashcardDeck, unpublishFlashcardDeck,
       getCardProgress, saveCardProgress, listAllCardProgress,
       getBlueprint, saveBlueprint, saveMockResult, listMockResults, getMockResult,
-      listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, listAiUsage, getAccessToken };
+      listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, listAiUsage, listAiTokenUsage, getAccessToken };
   })();
 
   /* ================= SUPABASE BACKEND ================= */
@@ -473,6 +474,19 @@ const Backend = (() => {
       return out;
     }
 
+    /* True token meter, one row per user × day × provider × model
+       (developer — "tokens dev read" policy; users see only their own rows).
+       Feeds the Users panel cost columns and the invoice generator. */
+    async function listAiTokenUsage() {
+      await ensureClient();
+      const { data, error } = await sb.from('ai_token_usage')
+        .select('user_id, day, provider, model, calls, input_tokens, output_tokens')
+        .order('day', { ascending: true });
+      if (error) throw new Error(error.message);
+      return (data || []).map(r => ({ userId: r.user_id, day: r.day, provider: r.provider, model: r.model,
+        calls: r.calls || 0, inputTokens: r.input_tokens || 0, outputTokens: r.output_tokens || 0 }));
+    }
+
     /* AI auth token for the Cloudflare function */
     async function getAccessToken() { await ensureClient(); const { data } = await sb.auth.getSession(); return data.session?.access_token || null; }
 
@@ -486,7 +500,7 @@ const Backend = (() => {
       getFlashcardDecks, publishFlashcardDeck, unpublishFlashcardDeck,
       getCardProgress, saveCardProgress, listAllCardProgress,
       getBlueprint, saveBlueprint, saveMockResult, listMockResults, getMockResult,
-      listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, listAiUsage, getAccessToken };
+      listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, listAiUsage, listAiTokenUsage, getAccessToken };
   })();
 
   const impl = useCloud ? Cloud : Local;

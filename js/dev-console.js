@@ -672,8 +672,11 @@ const DevConsole = (() => {
   /* ---------------- users & feature flags ---------------- */
 
   const FEATURES = [
-    { id: 'simulator',  label: 'Simulator' },
-    { id: 'flashcards', label: 'Flashcards' }
+    { id: 'simulator',       label: 'Simulator' },
+    { id: 'flashcards',      label: 'Flashcards' },
+    // grants the Gemini model picker (2.5 / 3 / 3.5 Flash) — enforced
+    // server-side in functions/api/explain.js, billed at the model's rate
+    { id: 'gemini_advanced', label: 'Gemini+' }
   ];
 
   async function refreshUsers(view) {
@@ -688,36 +691,47 @@ const DevConsole = (() => {
     if (!list.length) { host.innerHTML = `<p class="muted">No registered users found.</p>`; return; }
     let usage = {};
     try { usage = (await ctx.Backend.listAiUsage?.()) || {}; } catch { usage = {}; }
+    // true token meter → dollar costs (needs the updated schema.sql once)
+    let tokenRows = [], tokensLive = true;
+    try { tokenRows = (await ctx.Backend.listAiTokenUsage?.()) || []; } catch { tokensLive = false; }
+    const costs = Billing.userTotals(tokenRows);
     const devMail = (ctx.cfg.developer.email || '').toLowerCase();
     const totalAi = Object.values(usage).reduce((s, u) => s + (u.total || 0), 0);
+    const monthTotal = Object.values(costs).reduce((s, c) => s + c.thisMonth, 0);
     host.innerHTML = `
       <div class="dev-users-stats">
         <div><strong>${list.length}</strong><span>Accounts</span></div>
         <div><strong>${list.reduce((s, u) => s + (u.xp || 0), 0)}</strong><span>Total XP</span></div>
         <div><strong>${totalAi}</strong><span>AI calls (all time)</span></div>
+        <div><strong>${Billing.usd(monthTotal)}</strong><span>AI cost this month</span></div>
       </div>
       <div class="table-scroll"><table class="table dev-users-table">
-        <thead><tr><th>Name</th><th>Email</th><th>Position</th><th>XP</th><th>AI today</th><th>AI total</th><th>Joined</th>${FEATURES.map(f => `<th>${f.label}</th>`).join('')}</tr></thead>
+        <thead><tr><th>Name</th><th>Email</th><th>XP</th><th>AI today</th><th>AI total</th><th>Cost (month)</th><th>Cost (all)</th>${FEATURES.map(f => `<th>${f.label}</th>`).join('')}<th></th></tr></thead>
         <tbody>${list.map(u => {
           const isDev = (u.email || '').toLowerCase() === devMail;
           const ai = usage[u.id] || { total: 0, today: 0 };
+          const c = costs[u.id] || { thisMonth: 0, allTime: 0 };
           return `<tr class="${isDev ? 'dev-users-me' : ''}">
             <td>${ctx.esc(u.name || '')}${isDev ? ' <span class="qedit-tag">developer</span>' : ''}</td>
             <td class="muted">${ctx.esc(u.email || '')}</td>
-            <td class="muted">${ctx.esc(u.position || '')}</td>
             <td class="muted">${u.xp || 0}</td>
             <td class="muted">${ai.today}</td>
             <td class="muted">${ai.total}</td>
-            <td class="muted">${u.createdAt ? new Date(u.createdAt).toLocaleDateString() : ''}</td>
-            ${FEATURES.map(f => `<td>${isDev
+            <td class="dev-cost">${Billing.usd(c.thisMonth)}</td>
+            <td class="muted">${Billing.usd(c.allTime)}</td>
+            ${FEATURES.map(f => `<td>${isDev && f.id !== 'gemini_advanced'
               ? '<span class="tiny muted">always</span>'
-              : `<label class="dev-flag"><input type="checkbox" data-uid="${ctx.esc(u.id)}" data-flag="${f.id}" ${u.featureFlags?.[f.id] ? 'checked' : ''}><span></span></label>`}</td>`).join('')}
+              : `<label class="dev-flag"><input type="checkbox" data-uid="${ctx.esc(u.id)}" data-flag="${f.id}" ${(isDev && f.id === 'gemini_advanced') || u.featureFlags?.[f.id] ? 'checked' : ''} ${isDev ? 'disabled' : ''}><span></span></label>`}</td>`).join('')}
+            <td><button class="btn btn-ghost btn-sm" data-bill="${ctx.esc(u.id)}" title="Generate this user's invoice">🧾 Bill</button></td>
           </tr>`;
         }).join('')}</tbody>
       </table></div>
-      <p class="tiny muted">AI counts are calls to the tutor/coach (the site's rate-limit counters), not raw tokens — the closest per-user cost signal the backend records.</p>
+      <p class="tiny muted">Costs come from <strong>true token counts</strong> reported by Google/Anthropic per call, metered per user × model × day
+        (rates in <code>config.js → ai.pricing</code>, USD per 1M tokens). <strong>Gemini+</strong> unlocks the Gemini 2.5 / 3 / 3.5 Flash picker for that
+        user — enforced on the server, billed at the chosen model's rate. 🧾 Bill generates a commercial invoice (JPEG / PNG / PDF) for any month.
+        ${tokensLive ? '' : '<span class="bad">Token meter unavailable — run the updated supabase/schema.sql once.</span>'}</p>
       <p class="dev-row-msg" id="dev-users-msg"></p>`;
-    host.querySelectorAll('input[data-flag]').forEach(cb => cb.addEventListener('change', async () => {
+    host.querySelectorAll('input[data-flag]:not([disabled])').forEach(cb => cb.addEventListener('change', async () => {
       const msg = host.querySelector('#dev-users-msg');
       cb.disabled = true;
       try {
@@ -729,6 +743,10 @@ const DevConsole = (() => {
         msg.textContent = 'Could not save: ' + (e.message || e); msg.className = 'dev-row-msg bad';
       }
       cb.disabled = false;
+    }));
+    host.querySelectorAll('[data-bill]').forEach(b => b.addEventListener('click', () => {
+      const u = list.find(x => x.id === b.dataset.bill);
+      if (u) Billing.openBillModal(u, tokenRows);
     }));
   }
 

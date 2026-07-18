@@ -17,6 +17,12 @@
  *   SUPABASE_URL          (your project URL)
  *   SUPABASE_ANON_KEY     (the public anon key)
  *   DEV_EMAIL             (ayeshmantha@gmail.com)
+ *   GEMINI_DEFAULT_MODEL  (optional — baseline model for non-upgraded users;
+ *                          defaults to gemini-2.5-flash)
+ *
+ * Billing: every successful call logs the provider's OWN token counts
+ * (Gemini usageMetadata / Anthropic usage) per user × day × model into
+ * ai_token_usage via the log_ai_tokens RPC — the invoice source of truth.
  */
 
 const DEV_EMAIL_FALLBACK = 'ayeshmantha@gmail.com';
@@ -46,6 +52,19 @@ export async function onRequest(context) {
   if (provider === 'claude' && !isDev) provider = 'gemini';           // silently downgrade others
   if (action === 'artifact' && !isDev) return json({ error: 'Study aids are available to the developer only.' }, 403);
 
+  // --- per-user Gemini model gate ---
+  // Higher Gemini models are opt-in per user (feature flag `gemini_advanced`
+  // granted in Users & access). Anyone else is forced onto the default model,
+  // no matter what the client sends — so billing tiers can't be bypassed.
+  const defaultGemini = env.GEMINI_DEFAULT_MODEL || 'gemini-2.5-flash';
+  let effectiveModel = model;
+  let geminiRestricted = false;
+  if (provider === 'gemini' && !isDev) {
+    const flags = await getUserFlags(token, user.id, env);
+    geminiRestricted = !flags.gemini_advanced;
+    if (geminiRestricted) effectiveModel = defaultGemini;
+  }
+
   // --- rate limit (per user per day) via Supabase RPC ---
   const dailyLimit = Number(body.dailyLimit) || 40;
   if (!isDev) {
@@ -62,22 +81,28 @@ export async function onRequest(context) {
     if (cached) return json({ text: cached, cached: true });
   }
 
+  // one model round-trip + token metering, shared by every action below
+  const run = async (p) => {
+    const r = provider === 'claude'
+      ? await callClaude(p.system, p.user, model, env)
+      : await callGemini(p.system, p.user, effectiveModel, env, geminiRestricted);
+    await logTokens(token, env, provider, r);   // true billing meter (dev included)
+    return r;
+  };
+
   try {
     if (action === 'artifact') {
-      const art = await generateArtifact({ artifact, question, provider, model, env });
-      return json({ artifact: art });
+      const art = await generateArtifact({ artifact, question, run });
+      return json({ artifact: art.artifact, model: art.model });
     }
     if (action === 'coach') {
-      const p = buildCoachPrompt(body);
-      const text = provider === 'claude' ? await callClaude(p.system, p.user, model, env) : await callGemini(p.system, p.user, model, env);
-      return json({ text });
+      const r = await run(buildCoachPrompt(body));
+      return json({ text: r.text, model: r.model });
     }
     const prompt = action === 'chat' ? buildChatPrompt(question, messages) : buildExplainPrompt(question);
-    const text = provider === 'claude'
-      ? await callClaude(prompt.system, prompt.user, model, env)
-      : await callGemini(prompt.system, prompt.user, model, env);
-    if (cacheable) await cacheSet(question.questionKey, provider, text, env);
-    return json({ text });
+    const r = await run(prompt);
+    if (cacheable) await cacheSet(question.questionKey, provider, r.text, env);
+    return json({ text: r.text, model: r.model });
   } catch (e) {
     return json({ error: String(e && e.message || e) }, 500);
   }
@@ -122,6 +147,28 @@ async function cacheSet(key, provider, body, env) {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + env.SUPABASE_ANON_KEY, Prefer: 'resolution=merge-duplicates' },
       body: JSON.stringify({ question_key: key, provider, body })
+    });
+  } catch {}
+}
+// feature flags for the caller (used by the Gemini model gate)
+async function getUserFlags(token, userId, env) {
+  try {
+    const res = await sb(`/rest/v1/profiles?id=eq.${encodeURIComponent(userId)}&select=feature_flags`, env,
+      { headers: { Authorization: 'Bearer ' + token } });
+    if (!res.ok) return {};
+    const rows = await res.json();
+    return rows[0]?.feature_flags || {};
+  } catch { return {}; }
+}
+// billing meter: record the EXACT token counts the provider reported,
+// attributed to the verified caller (auth.uid() inside the RPC). Never
+// blocks the response — a metering hiccup must not break the tutor.
+async function logTokens(token, env, provider, r) {
+  if (!r || (!r.in && !r.out)) return;
+  try {
+    await sb('/rest/v1/rpc/log_ai_tokens', env, {
+      method: 'POST', headers: { Authorization: 'Bearer ' + token },
+      body: JSON.stringify({ p_provider: provider, p_model: r.model || 'unknown', p_input: r.in | 0, p_output: r.out | 0 })
     });
   } catch {}
 }
@@ -180,20 +227,18 @@ function buildArtifactPrompt(kind, q) {
       throw new Error('Unknown study aid.');
   }
 }
-async function generateArtifact({ artifact, question, provider, model, env }) {
+async function generateArtifact({ artifact, question, run }) {
   const p = buildArtifactPrompt(artifact, question);
-  let content = provider === 'claude'
-    ? await callClaude(p.system, p.user, model, env)
-    : await callGemini(p.system, p.user, model, env);
-  content = stripFences(content).trim();
+  const r = await run(p);
+  const content = stripFences(r.text).trim();
   const slug = (question.paperTitle || 'aureum').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40);
-  return { type: artifact, mime: p.mime, filename: `${slug}-${artifact}.${p.ext}`, content };
+  return { artifact: { type: artifact, mime: p.mime, filename: `${slug}-${artifact}.${p.ext}`, content }, model: r.model };
 }
 function stripFences(s) { return s.replace(/^```[a-z]*\n?/i, '').replace(/```\s*$/, ''); }
 
 /* ---------------- model calls ---------------- */
 
-async function callGemini(system, user, model, env) {
+async function callGemini(system, user, model, env, restricted) {
   if (!env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not configured on the server.');
   // Guard against a mis-pasted secret: a real key is a single token
   // (AIza… , no spaces / newlines / punctuation). If the stored value
@@ -208,9 +253,14 @@ async function callGemini(system, user, model, env) {
     throw new Error('The GEMINI_API_KEY set in Cloudflare is not a valid key — it should be a single "AIza…" or "AQ.…" string with no spaces. Re-paste your key from https://aistudio.google.com/apikey (Settings → Variables and secrets → GEMINI_API_KEY) and redeploy.');
   }
   // Try the configured model first, then well-known fallbacks. This handles a
-  // model that isn't available on this key/region AND the case where one model
-  // has no free-tier quota but another still does.
-  const models = [model || 'gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-flash-latest', 'gemini-2.0-flash-001'];
+  // model that isn't available on this key/region AND quota exhaustion on one
+  // model while another still works. (Gemini 2.0 Flash was retired 2026-06-01,
+  // so 2.5 Flash is the baseline now.) For non-upgraded users the fallback
+  // list stays on baseline-priced models only — the gate can't be escaped
+  // through an outage.
+  const models = restricted
+    ? [model || 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-flash-latest']
+    : [model || 'gemini-2.5-flash', 'gemini-2.5-flash', 'gemini-3-flash', 'gemini-flash-latest', 'gemini-2.5-flash-lite'];
   const tried = new Set();
   let lastErr = 'unknown error';
   for (const m of models) {
@@ -231,7 +281,16 @@ async function callGemini(system, user, model, env) {
 
     if (res.ok) {
       const text = (data.candidates?.[0]?.content?.parts || []).map(p => p.text).join('') || '';
-      if (text) return text;
+      if (text) {
+        // True token counts from Google's own meter. Thinking tokens
+        // (thoughtsTokenCount, 2.5+) are billed as OUTPUT, so they count.
+        const um = data.usageMetadata || {};
+        return {
+          text, model: (data.modelVersion || m),
+          in: um.promptTokenCount || 0,
+          out: (um.candidatesTokenCount || 0) + (um.thoughtsTokenCount || 0)
+        };
+      }
       const fr = data.candidates?.[0]?.finishReason;
       lastErr = fr ? `no text (finishReason: ${fr})` : 'empty response';
       continue;
@@ -265,5 +324,7 @@ async function callClaude(system, user, model, env) {
   const data = await res.json();
   const text = (data.content || []).map(b => b.text).join('') || '';
   if (!text) throw new Error('Claude returned an empty response.');
-  return text;
+  // True token counts from Anthropic's own meter.
+  return { text, model: data.model || model || 'claude-haiku-4-5',
+    in: data.usage?.input_tokens || 0, out: data.usage?.output_tokens || 0 };
 }

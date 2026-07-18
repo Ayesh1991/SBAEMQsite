@@ -10,7 +10,6 @@ shared Google Drive folder, and imported into the site by the developer. The res
 is a Three.js + GSAP experience with two practice modes, a curriculum-mapped
 searchable library, and cross-device progress.
 
-
 ## Highlights
 
 - **Two practice modes** — *Exam mode* (timed, feedback at the end, question
