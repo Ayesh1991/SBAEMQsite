@@ -207,6 +207,21 @@ const Flashcards = (() => {
 
     function card() { return deck.content.cards.find(c => c.id === s.queue[s.i]); }
 
+    /* --- navigation + flip (buttons, keys, gestures all land here) --- */
+    const revealCard = () => {
+      s.revealed = true;
+      view.querySelector('#fc-card')?.classList.add('is-flipped');
+      const g = view.querySelector('#fc-grades'); if (g) g.hidden = false;
+    };
+    const flipToggle = () => view.querySelector('#fc-card')?.classList.toggle('is-flipped');
+    const flip = () => { if (!card()) return; if (!s.revealed) revealCard(); else flipToggle(); };
+    function nav(d) {
+      const j = s.i + d;
+      if (j < 0 || j >= s.queue.length) return;
+      s.i = j; s.revealed = false;
+      paintCard();
+    }
+
     function paintFrame() {
       view.innerHTML = `
         <section class="page narrow fc-study">
@@ -221,6 +236,20 @@ const Flashcards = (() => {
           <p class="fc-counter" id="fc-counter"></p>
           <div id="fc-stage"></div>
         </section>`;
+      // Gesture control, attached once to the persistent stage element:
+      // swipe left/right = next/back card, swipe up/down = flip, tap = flip.
+      const stage = view.querySelector('#fc-stage');
+      let tX = 0, tY = 0, tT = 0;
+      stage.addEventListener('touchstart', e => {
+        const t = e.touches[0]; tX = t.clientX; tY = t.clientY; tT = Date.now();
+      }, { passive: true });
+      stage.addEventListener('touchend', e => {
+        if (Date.now() - tT > 600) return;                       // slow drag ≠ swipe
+        const t = e.changedTouches[0];
+        const dx = t.clientX - tX, dy = t.clientY - tY;
+        if (Math.abs(dx) > 48 && Math.abs(dx) > Math.abs(dy) * 1.5) nav(dx < 0 ? 1 : -1);
+        else if (Math.abs(dy) > 48 && Math.abs(dy) > Math.abs(dx) * 1.5) flip();
+      }, { passive: true });
       paintCard();
     }
 
@@ -229,8 +258,8 @@ const Flashcards = (() => {
       const fill = view.querySelector('#fc-fill');
       const counter = view.querySelector('#fc-counter');
       const stage = view.querySelector('#fc-stage');
-      if (fill) fill.style.width = (s.total ? (s.done / s.total) * 100 : 0) + '%';
-      if (counter) counter.innerHTML = `Card <strong>${Math.min(s.done + 1, s.total)}</strong> of ${s.total} · <span class="good">${s.good} known</span> · <span class="bad">${s.again} to review</span>`;
+      if (fill) fill.style.width = Math.min(100, (s.total ? (s.done / s.total) * 100 : 0)) + '%';
+      if (counter) counter.innerHTML = `Card <strong>${Math.min(s.i + 1, s.queue.length)}</strong> of ${s.queue.length} · <span class="good">${s.good} known</span> · <span class="bad">${s.again} to review</span>`;
 
       if (!c) return paintComplete();
       const st = s.prog[c.id];
@@ -250,23 +279,29 @@ const Flashcards = (() => {
             </div>
           </div>
         </div>
+        <div class="fc-nav" id="fc-nav">
+          <button class="btn btn-ghost btn-sm" id="fc-prev" ${s.i === 0 ? 'disabled' : ''} title="Previous card (←, or swipe right)">‹ Back</button>
+          <button class="btn btn-ghost btn-sm" id="fc-flip" title="Flip the card (Space, tap, or swipe up/down)">↻ Flip</button>
+          <button class="btn btn-ghost btn-sm" id="fc-next" ${s.i >= s.queue.length - 1 ? 'disabled' : ''} title="Next card (→, or swipe left)">Next ›</button>
+        </div>
         <div class="fc-grades" id="fc-grades" ${s.revealed ? '' : 'hidden'}>
           <button class="fc-grade fc-again" data-g="again"><strong>Again</strong><span>&lt;1d</span></button>
           <button class="fc-grade fc-hard"  data-g="hard"><strong>Hard</strong><span>${previewInterval(st, 'hard')}</span></button>
           <button class="fc-grade fc-good"  data-g="good"><strong>Good</strong><span>${previewInterval(st, 'good')}</span></button>
           <button class="fc-grade fc-easy"  data-g="easy"><strong>Easy</strong><span>${previewInterval(st, 'easy')}</span></button>
         </div>
-        <p class="fc-hint muted tiny">Tap the card to flip · Space / Enter flips · 1–4 grade</p>`;
+        <p class="fc-hint muted tiny">Tap / <kbd>Space</kbd> flips · <kbd>←</kbd><kbd>→</kbd> move · swipe ⇄ next/back, ⇅ flip · <kbd>1–4</kbd> grade</p>`;
 
-      const reveal = () => { s.revealed = true; view.querySelector('#fc-card')?.classList.add('is-flipped'); const g = view.querySelector('#fc-grades'); if (g) g.hidden = false; };
       // After the answer is shown, tapping the card flips it back and forth
       // (question ↔ answer) as often as you like; the grade buttons stay put.
-      const flipToggle = () => view.querySelector('#fc-card')?.classList.toggle('is-flipped');
-      view.querySelector('#fc-reveal')?.addEventListener('click', reveal);
+      view.querySelector('#fc-reveal')?.addEventListener('click', revealCard);
       view.querySelector('#fc-card')?.addEventListener('click', e => {
         if (e.target.closest('button')) return;
-        if (!s.revealed) reveal(); else flipToggle();
+        flip();
       });
+      view.querySelector('#fc-prev')?.addEventListener('click', () => nav(-1));
+      view.querySelector('#fc-next')?.addEventListener('click', () => nav(1));
+      view.querySelector('#fc-flip')?.addEventListener('click', flip);
       view.querySelectorAll('#fc-grades .fc-grade').forEach(b => b.addEventListener('click', () => grade(b.dataset.g)));
       if (typeof gsap !== 'undefined' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
         gsap.fromTo('#fc-card', { opacity: 0, y: 18, scale: 0.98 }, { opacity: 1, y: 0, scale: 1, duration: 0.35, ease: 'power2.out' });
@@ -309,15 +344,14 @@ const Flashcards = (() => {
       view.querySelector('#fc-again-round')?.addEventListener('click', () => renderDeck(view, deckId, user));
     }
 
-    // keyboard
+    // keyboard: Space/Enter/↑/↓ flip · ←/→ back/next · 1–4 grade
     function onKey(e) {
       if (/^(input|textarea|select)$/i.test(document.activeElement?.tagName || '')) return;
-      if (e.key === ' ' || e.key === 'Enter') {
-        e.preventDefault();
-        if (!s.revealed) view.querySelector('#fc-reveal')?.click();
-        else view.querySelector('#fc-card')?.classList.toggle('is-flipped');   // flip back & forth
-        return;
+      if (e.key === ' ' || e.key === 'Enter' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault(); flip(); return;
       }
+      if (e.key === 'ArrowLeft') { e.preventDefault(); nav(-1); return; }
+      if (e.key === 'ArrowRight') { e.preventDefault(); nav(1); return; }
       if (s.revealed && /^[1-4]$/.test(e.key)) { e.preventDefault(); grade(['again', 'hard', 'good', 'easy'][Number(e.key) - 1]); }
     }
     document.addEventListener('keydown', onKey);

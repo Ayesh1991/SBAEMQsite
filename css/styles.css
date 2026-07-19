@@ -1370,3 +1370,9 @@ details[open] > summary .tw-caret { transform: rotate(90deg); }
   border-radius: 8px; padding: 6px 8px; font-size: .78rem; max-width: 220px;
 }
 .ai-feat-usage { font-size: .78rem; color: var(--ink-2); min-width: 150px; text-align: right; }
+
+/* ============================================================
+   v18 — flashcard navigation row (back / flip / next)
+   ============================================================ */
+.fc-nav { display: flex; justify-content: center; gap: 10px; margin: 14px 0 4px; }
+.fc-nav .btn[disabled] { opacity: .35; cursor: default; }

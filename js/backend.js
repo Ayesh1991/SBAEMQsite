@@ -231,21 +231,32 @@ const Backend = (() => {
     async function saveCohortScore() {}
     async function listCohortScores() { return []; }
 
-    /* flag review (local: only this device's own flags) */
+    /* flag review — merges BOTH layers: users' personal flags AND the
+       developer's global flags (question_edits), so a flag raised while
+       signed in as the developer shows up in the workshop too. */
     async function listAllFlags() {
       const e = sessionEmail(); if (!e) return [];
       const m = read(uqKey(e), {});
-      return Object.entries(m).filter(([, v]) => v.flagged && !v.resolved)
+      const out = Object.entries(m).filter(([, v]) => v.flagged && !v.resolved)
         .map(([question_key, v]) => ({ questionKey: question_key, flagNote: v.flag_note || '', userEmail: e, userName: e, updated: v.updated, resolved: !!v.resolved }));
+      const g = read('qedits', {});
+      Object.entries(g).filter(([, v]) => v.flagged).forEach(([qk, v]) =>
+        out.push({ questionKey: qk, flagNote: v.flag_note || '', userEmail: devEmail, userName: 'Developer', updated: v.updated, resolved: false }));
+      return out;
     }
     async function resolveFlags(qk) {
       const e = sessionEmail(); if (!e) return;
       const m = read(uqKey(e), {}); if (m[qk]) { m[qk].resolved = true; write(uqKey(e), m); }
+      const g = read('qedits', {}); if (g[qk]?.flagged) { g[qk].flagged = false; write('qedits', g); }
     }
     async function listGlobalFlaggedKeys() {
       const e = sessionEmail(); if (!e) return [];
       const m = read(uqKey(e), {});
-      return Object.keys(m).filter(k => m[k].flagged && !m[k].resolved);
+      const g = read('qedits', {});
+      return [...new Set([
+        ...Object.keys(m).filter(k => m[k].flagged && !m[k].resolved),
+        ...Object.keys(g).filter(k => g[k].flagged)
+      ])];
     }
 
     /* personal decks (AI flashcards from wrong answers) */
@@ -558,7 +569,11 @@ const Backend = (() => {
       return (data || []).map(r => ({ userId: r.user_id, percent: r.percent, day: r.day }));
     }
 
-    /* flag review workshop (developer — "uqe dev read/update" policies) */
+    /* flag review workshop (developer — "uqe dev read/update" policies).
+       Merges BOTH layers: users' personal flags (user_question_edits) AND
+       the developer's own global flags (question_edits) — QEdit routes a
+       signed-in developer's flag to the global layer, so without this merge
+       the developer's flags would never appear in the workshop. */
     async function listAllFlags() {
       await ensureClient();
       const { data, error } = await sb.from('user_question_edits')
@@ -567,20 +582,30 @@ const Backend = (() => {
       if (error) throw new Error(error.message);
       const { data: profs } = await sb.from('profiles').select('id, name, email');
       const who = {}; (profs || []).forEach(p => who[p.id] = p);
-      return (data || []).map(r => ({ questionKey: r.question_key, flagNote: r.flag_note || '',
+      const out = (data || []).map(r => ({ questionKey: r.question_key, flagNote: r.flag_note || '',
         userName: who[r.user_id]?.name || '', userEmail: who[r.user_id]?.email || r.user_id,
         updated: r.updated_at, resolved: !!r.resolved }));
+      const { data: glob } = await sb.from('question_edits')
+        .select('question_key, flag_note, updated_by, updated_at').eq('flagged', true);
+      (glob || []).forEach(r => out.push({ questionKey: r.question_key, flagNote: r.flag_note || '',
+        userName: 'Developer (global flag)', userEmail: r.updated_by || devEmail,
+        updated: r.updated_at, resolved: false }));
+      return out;
     }
     async function resolveFlags(qk) {
       await ensureClient();
       await sb.from('user_question_edits').update({ resolved: true }).eq('question_key', qk).eq('flagged', true);
+      // clear the developer's global flag too (its "resolved" IS unflagging);
+      // the note stays on the record for history
+      await sb.from('question_edits').update({ flagged: false }).eq('question_key', qk).eq('flagged', true);
     }
-    /* keys flagged as wrong by ANY user, not yet resolved — the simulator
-       keeps these out of new mocks (list_flagged_keys is security definer) */
+    /* keys flagged as wrong by ANYONE (users via the RPC, developer via the
+       public-readable global layer) — kept out of new mocks until resolved */
     async function listGlobalFlaggedKeys() {
       await ensureClient();
       const { data } = await sb.rpc('list_flagged_keys');
-      return data || [];
+      const { data: glob } = await sb.from('question_edits').select('question_key').eq('flagged', true);
+      return [...new Set([...(data || []), ...(glob || []).map(r => r.question_key)])];
     }
 
     /* personal decks (AI flashcards from wrong answers) */
