@@ -1167,9 +1167,20 @@ const DevConsole = (() => {
     const questions = await resolveForTagging(records);
     if (!questions.length) return 0;
     const data = await aiCall('tag', { topics, questions });
-    let rows;
-    try { rows = JSON.parse(String(data.text).replace(/^```[a-z]*\n?/i, '').replace(/```\s*$/, '')); }
-    catch { throw new Error('Tagger returned unparseable output — try again.'); }
+    // Robust JSON extraction: strip fences, then fall back to the outermost
+    // [...] block (models sometimes add prose), then salvage complete
+    // objects from a truncated array rather than losing the whole batch.
+    const stripped = String(data.text || '').replace(/^```[a-z]*\n?/i, '').replace(/```\s*$/, '').trim();
+    let rows = null;
+    try { rows = JSON.parse(stripped); } catch {
+      const m = stripped.match(/\[[\s\S]*\]/);
+      if (m) { try { rows = JSON.parse(m[0]); } catch { rows = null; } }
+      if (!rows) {
+        const objs = stripped.match(/\{[^{}]*\}/g) || [];
+        rows = objs.map(o => { try { return JSON.parse(o); } catch { return null; } }).filter(Boolean);
+      }
+    }
+    if (!Array.isArray(rows) || !rows.length) throw new Error('Tagger output was not valid JSON (usually a truncated response) — this batch will be retried on the next run.');
     const valid = (Array.isArray(rows) ? rows : []).filter(r => r.key && r.topic)
       .map(r => ({ questionKey: r.key, topic: r.topic, category: r.category || '', guideline: r.guideline || '', tags: r.tags || [], difficulty: typeof r.difficulty === 'number' ? r.difficulty : null, taggedBy: data.model || '' }));
     if (valid.length) await ctx.Backend.saveQuestionTags(valid);
@@ -1186,15 +1197,26 @@ const DevConsole = (() => {
         btn.disabled = !todo.length;
         btn.onclick = async () => {
           btn.disabled = true;
-          let done = 0;
+          let done = 0, failedBatches = 0;
           try {
             for (let i = 0; i < todo.length; i += 10) {
-              progress.textContent = `Tagging ${Math.min(i + 10, todo.length)}/${todo.length}…`;
-              done += await tagRecords(todo.slice(i, i + 10));
+              progress.textContent = `Tagging ${Math.min(i + 10, todo.length)}/${todo.length}…${failedBatches ? ` (${failedBatches} batch${failedBatches > 1 ? 'es' : ''} to retry)` : ''}`;
+              try {
+                done += await tagRecords(todo.slice(i, i + 10));
+              } catch (e) {
+                // fatal errors (auth, config, quota) stop the run; a flaky
+                // batch (truncated/unparseable output) is skipped and simply
+                // stays untagged — the next run picks it up
+                if (/sign in|Developer only|HTTP 4|quota|API_KEY|configured/i.test(String(e.message || e))) throw e;
+                failedBatches++;
+              }
             }
             if (typeof Cache !== 'undefined') Cache.bust('sim-qtags');
-            progress.innerHTML = `<span class="good">✓ ${done} questions tagged — mock selection is now tag-precise.</span>`;
-            status.textContent = 'Bank fully tagged.';
+            progress.innerHTML = failedBatches
+              ? `<span class="good">✓ ${done} questions tagged.</span> <span class="bad">${failedBatches} batch${failedBatches > 1 ? 'es' : ''} failed — click again to tag the remainder.</span>`
+              : `<span class="good">✓ ${done} questions tagged — mock selection is now tag-precise.</span>`;
+            if (!failedBatches) status.textContent = 'Bank fully tagged.';
+            btn.disabled = !failedBatches;
           } catch (e) {
             progress.innerHTML = `<span class="bad">${ctx.esc(e.message || e)} — progress is saved; run again to continue.</span>`;
             btn.disabled = false;

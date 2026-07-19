@@ -98,9 +98,12 @@ export async function onRequest(context) {
       const fc = await getFeatureConfig(env, feature);
       const p = action === 'tag' ? buildTagPrompt(body) : action === 'insights' ? buildInsightsPrompt(body) : buildAuditPrompt(body);
       const useProvider = fc.provider === 'claude' ? 'claude' : 'gemini';
+      // tagging returns ~100 tokens of JSON per question ×10, and Gemini
+      // 2.5+ thinking also bills against the cap — give batch jobs headroom
+      const maxTok = action === 'tag' ? 8000 : 2000;
       const r = useProvider === 'claude'
-        ? await callClaude(p.system, p.user, fc.model || model, env)
-        : await callGemini(p.system, p.user, fc.model || model || defaultGemini, env, false);
+        ? await callClaude(p.system, p.user, fc.model || model, env, maxTok)
+        : await callGemini(p.system, p.user, fc.model || model || defaultGemini, env, false, maxTok);
       await logShared(token, env, feature, useProvider, r);
       return json({ text: r.text, model: r.model });
     }
@@ -341,7 +344,7 @@ function stripFences(s) { return s.replace(/^```[a-z]*\n?/i, '').replace(/```\s*
 
 /* ---------------- model calls ---------------- */
 
-async function callGemini(system, user, model, env, restricted) {
+async function callGemini(system, user, model, env, restricted, maxTokens) {
   if (!env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not configured on the server.');
   // Guard against a mis-pasted secret: a real key is a single token
   // (AIza… , no spaces / newlines / punctuation). If the stored value
@@ -376,7 +379,10 @@ async function callGemini(system, user, model, env, restricted) {
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: system }] },
           contents: [{ role: 'user', parts: [{ text: user }] }],
-          generationConfig: { temperature: 0.4, maxOutputTokens: 1400 }
+          // Batch jobs (tagging) return long JSON and 2.5+ thinking tokens
+          // also count against this cap — too small silently truncates the
+          // JSON mid-array, which is unparseable downstream.
+          generationConfig: { temperature: 0.4, maxOutputTokens: maxTokens || 1400 }
         })
       });
       data = await res.json().catch(() => ({}));
@@ -416,12 +422,12 @@ function quotaHint(msg) {
   }
   return 'Gemini rate/quota limit reached. ' + msg.slice(0, 200);
 }
-async function callClaude(system, user, model, env) {
+async function callClaude(system, user, model, env, maxTokens) {
   if (!env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not configured on the server.');
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model: model || 'claude-haiku-4-5-20251001', max_tokens: 1200, system, messages: [{ role: 'user', content: user }] })
+    body: JSON.stringify({ model: model || 'claude-haiku-4-5-20251001', max_tokens: maxTokens || 1200, system, messages: [{ role: 'user', content: user }] })
   });
   if (!res.ok) throw new Error(`Claude error (HTTP ${res.status}). Check ANTHROPIC_API_KEY.`);
   const data = await res.json();
