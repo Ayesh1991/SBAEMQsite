@@ -199,7 +199,8 @@ create policy "qedits dev write" on public.question_edits for all
 -- Everyone can flag an answer they think is wrong and add a private note,
 -- without touching the developer's global question_edits. The `excluded`
 -- flag also tells the adaptive exam simulator to disregard a question when
--- scoring that user's performance.
+-- scoring that user's performance. `resolved` is set by the developer in
+-- the Question review workshop once the flag has been dealt with.
 create table if not exists public.user_question_edits (
   user_id uuid not null references auth.users(id) on delete cascade,
   question_key text not null,           -- paperId:kind:number
@@ -207,14 +208,36 @@ create table if not exists public.user_question_edits (
   flag_note text,
   explanation text,
   excluded boolean default false,       -- simulator: don't count this question for me
+  resolved boolean default false,       -- developer has reviewed/fixed this flag
   updated_at timestamptz default now(),
   primary key (user_id, question_key)
 );
+alter table public.user_question_edits add column if not exists resolved boolean default false;
 create index if not exists uqe_excluded_idx on public.user_question_edits (user_id) where excluded;
+create index if not exists uqe_flagged_idx on public.user_question_edits (question_key) where flagged and not resolved;
 alter table public.user_question_edits enable row level security;
 drop policy if exists "own uqe all" on public.user_question_edits;
+drop policy if exists "uqe dev read"   on public.user_question_edits;
+drop policy if exists "uqe dev update" on public.user_question_edits;
 create policy "own uqe all" on public.user_question_edits for all
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
+-- the developer sees every user's flags (Question review workshop) and can
+-- mark them resolved after fixing the question
+create policy "uqe dev read" on public.user_question_edits for select
+  using (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+create policy "uqe dev update" on public.user_question_edits for update
+  using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
+  with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+
+-- Any signed-in user can fetch the set of question keys currently flagged
+-- as wrong by ANY user and not yet resolved — the simulator keeps these out
+-- of new mocks until the developer fixes them. security definer so users
+-- don't need read access to each other's rows; only keys are exposed.
+create or replace function public.list_flagged_keys()
+returns setof text language sql security definer stable as $$
+  select distinct question_key from public.user_question_edits
+  where flagged and not resolved
+$$;
 
 -- ---------- 8e) FLASHCARD DECKS (developer-published, everyone reads) ----------
 create table if not exists public.flashcard_decks (
@@ -338,6 +361,143 @@ begin
     set calls         = public.ai_token_usage.calls + 1,
         input_tokens  = public.ai_token_usage.input_tokens  + excluded.input_tokens,
         output_tokens = public.ai_token_usage.output_tokens + excluded.output_tokens,
+        updated_at    = now();
+end; $$;
+
+-- ---------- 8k) QUESTION STATS (empirical difficulty — every answer, all users) ----------
+-- One row per question. Every scored answer anywhere (study, exam, simulator)
+-- increments these via the RPC below, so difficulty stops being a text
+-- heuristic and becomes measured cohort performance.
+create table if not exists public.question_stats (
+  question_key text primary key,        -- paperId:kind:number
+  attempts integer not null default 0,
+  correct integer not null default 0,
+  total_time_sec bigint not null default 0,   -- summed answering time (pacing norm)
+  updated_at timestamptz default now()
+);
+alter table public.question_stats enable row level security;
+drop policy if exists "qstats read" on public.question_stats;
+create policy "qstats read" on public.question_stats for select using (auth.role() = 'authenticated');
+-- Batched write path: one call per finished paper, an array of
+-- {k, ok, t} objects. security definer — no direct insert/update policy.
+create or replace function public.bump_question_stats(p_rows jsonb)
+returns void language plpgsql security definer as $$
+declare r jsonb;
+begin
+  if auth.uid() is null then return; end if;
+  for r in select * from jsonb_array_elements(coalesce(p_rows, '[]'::jsonb)) loop
+    insert into public.question_stats (question_key, attempts, correct, total_time_sec)
+    values (r->>'k', 1, case when (r->>'ok')::boolean then 1 else 0 end,
+            greatest(least(coalesce((r->>'t')::int, 0), 600), 0))
+    on conflict (question_key) do update
+      set attempts = public.question_stats.attempts + 1,
+          correct  = public.question_stats.correct + excluded.correct,
+          total_time_sec = public.question_stats.total_time_sec + excluded.total_time_sec,
+          updated_at = now();
+  end loop;
+end; $$;
+
+-- ---------- 8l) COHORT SCORES (anonymous mock percentages → percentile curve) ----------
+create table if not exists public.cohort_scores (
+  id bigint generated always as identity primary key,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  percent integer not null,
+  day date not null default current_date
+);
+create index if not exists cohort_day_idx on public.cohort_scores (day);
+alter table public.cohort_scores enable row level security;
+drop policy if exists "cohort read"   on public.cohort_scores;
+drop policy if exists "cohort insert" on public.cohort_scores;
+-- every signed-in user reads the whole (anonymous in the UI) distribution
+create policy "cohort read" on public.cohort_scores for select using (auth.role() = 'authenticated');
+create policy "cohort insert" on public.cohort_scores for insert with check (auth.uid() = user_id);
+
+-- ---------- 8m) QUESTION EVENTS (full interaction tracking — cohort consented) ----------
+-- Batched behavioural events: views, answer changes, strike-throughs,
+-- time-on-question, AI questions asked. Feeds the behaviour-insights AI
+-- analysis and the empirical difficulty picture.
+create table if not exists public.question_events (
+  id bigint generated always as identity primary key,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  question_key text,
+  mode text,                            -- study | exam | simulator | review
+  event text not null,                  -- view | answer | change | strike | flag | ai_ask | reveal
+  data jsonb,
+  created_at timestamptz default now()
+);
+create index if not exists qev_q_idx on public.question_events (question_key, created_at desc);
+create index if not exists qev_user_idx on public.question_events (user_id, created_at desc);
+alter table public.question_events enable row level security;
+drop policy if exists "own events insert" on public.question_events;
+drop policy if exists "events dev read"   on public.question_events;
+create policy "own events insert" on public.question_events for insert with check (auth.uid() = user_id);
+create policy "events dev read" on public.question_events for select
+  using (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+
+-- ---------- 8n) QUESTION TAGS (AI-assigned topic tags → precise selection) ----------
+create table if not exists public.question_tags (
+  question_key text primary key,        -- paperId:kind:number
+  topic text,                           -- canonical blueprint topic / theme
+  category text,
+  guideline text,                       -- e.g. "GTG 72", "NICE NG201"
+  tags jsonb default '[]'::jsonb,       -- extra keywords
+  difficulty_est real,                  -- AI's 0-1 estimate (cold-start only)
+  tagged_by text,                       -- model that produced the tag
+  updated_at timestamptz default now()
+);
+alter table public.question_tags enable row level security;
+drop policy if exists "qtags read"      on public.question_tags;
+drop policy if exists "qtags dev write" on public.question_tags;
+create policy "qtags read" on public.question_tags for select using (auth.role() = 'authenticated');
+create policy "qtags dev write" on public.question_tags for all
+  using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
+  with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+
+-- ---------- 8o) USER DECKS (personal flashcard decks, e.g. AI cards from wrong answers) ----------
+create table if not exists public.user_decks (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  id text not null,
+  meta jsonb not null,                  -- same shape as flashcard_decks.meta
+  updated_at timestamptz default now(),
+  primary key (user_id, id)
+);
+alter table public.user_decks enable row level security;
+drop policy if exists "own user_decks all" on public.user_decks;
+create policy "own user_decks all" on public.user_decks for all
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+-- ---------- 8p) AI SHARED USAGE (platform AI jobs billed as a shared pool) ----------
+-- Batch jobs the developer runs for everyone (question tagging, behaviour
+-- insights, audits) are metered here per feature × day × model, then the
+-- invoice engine splits each pool's cost across the eligible users
+-- (all users, or simulator users only — chosen per feature in the AI panel).
+create table if not exists public.ai_shared_usage (
+  feature text not null,                -- e.g. question_tagger | behaviour_insights
+  day date not null,
+  provider text not null,
+  model text not null,
+  calls integer not null default 0,
+  input_tokens bigint not null default 0,
+  output_tokens bigint not null default 0,
+  updated_at timestamptz default now(),
+  primary key (feature, day, provider, model)
+);
+alter table public.ai_shared_usage enable row level security;
+drop policy if exists "shared usage read" on public.ai_shared_usage;
+-- all signed-in users may read (their invoice shows their share transparently)
+create policy "shared usage read" on public.ai_shared_usage for select using (auth.role() = 'authenticated');
+-- writes only through the RPC, and only for the developer's account
+create or replace function public.log_ai_shared(p_feature text, p_provider text, p_model text, p_input integer, p_output integer)
+returns void language plpgsql security definer as $$
+begin
+  if auth.jwt() ->> 'email' <> 'ayeshmantha@gmail.com' then return; end if;
+  insert into public.ai_shared_usage (feature, day, provider, model, calls, input_tokens, output_tokens)
+  values (p_feature, current_date, p_provider, p_model, 1,
+          greatest(coalesce(p_input, 0), 0), greatest(coalesce(p_output, 0), 0))
+  on conflict (feature, day, provider, model) do update
+    set calls         = public.ai_shared_usage.calls + 1,
+        input_tokens  = public.ai_shared_usage.input_tokens  + excluded.input_tokens,
+        output_tokens = public.ai_shared_usage.output_tokens + excluded.output_tokens,
         updated_at    = now();
 end; $$;
 

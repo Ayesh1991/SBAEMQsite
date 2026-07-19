@@ -64,6 +64,54 @@ const Billing = (() => {
       outputTokens: lines.reduce((s, l) => s + l.outputTokens, 0) };
   }
 
+  /* ---------------- shared pools (platform AI jobs) ---------------- */
+
+  const FEATURE_LABELS = {
+    question_tagger: 'Question tagger', behaviour_insights: 'Behaviour insights',
+    question_auditor: 'Question auditor', readiness_forecaster: 'Readiness forecaster',
+    weekly_digest: 'Weekly digest', rationale_enhancer: 'Rationale enhancer'
+  };
+  const featureLabel = f => FEATURE_LABELS[f] || String(f).replace(/_/g, ' ');
+
+  /**
+   * This user's share of each shared pool for a month (null = all time).
+   * sharedCtx = { rows: listSharedUsage(), features: getAiFeatures(),
+   * users: listAllUsers() }. Split per feature: 'all' | 'simulator'
+   * (simulator-enabled users + the developer) | 'dev'.
+   */
+  function sharedLines(user, sharedCtx, month) {
+    if (!sharedCtx?.rows?.length || !sharedCtx?.users?.length) return [];
+    const devMail = (window.AUREUM_CONFIG?.developer?.email || '').toLowerCase();
+    const isDev = u => (u.email || '').toLowerCase() === devMail;
+    const pools = {};
+    sharedCtx.rows.filter(r => !month || monthKey(r.day) === month).forEach(r => {
+      pools[r.feature] = (pools[r.feature] || 0) + lineCost({ model: r.model, inputTokens: r.inputTokens, outputTokens: r.outputTokens });
+    });
+    const out = [];
+    for (const [feature, cost] of Object.entries(pools)) {
+      if (cost <= 0) continue;
+      const split = sharedCtx.features?.[feature]?.split || 'simulator';
+      let eligible = split === 'dev' ? sharedCtx.users.filter(isDev)
+        : split === 'all' ? sharedCtx.users
+        : sharedCtx.users.filter(u => isDev(u) || u.featureFlags?.simulator);
+      if (!eligible.length) eligible = sharedCtx.users.filter(isDev);
+      if (!eligible.some(u => u.id === user.id)) continue;
+      out.push({ feature, label: featureLabel(feature), n: eligible.length, cost: cost / eligible.length });
+    }
+    return out.sort((a, b) => b.cost - a.cost);
+  }
+  /** { userId: {thisMonth, allTime} } from the shared pools. */
+  function sharedTotals(sharedCtx) {
+    const cur = thisMonth();
+    const out = {};
+    (sharedCtx?.users || []).forEach(u => {
+      const m = sharedLines(u, sharedCtx, cur).reduce((s, l) => s + l.cost, 0);
+      const a = sharedLines(u, sharedCtx, null).reduce((s, l) => s + l.cost, 0);
+      if (m || a) out[u.id] = { thisMonth: m, allTime: a };
+    });
+    return out;
+  }
+
   // per-user totals for the Users table: { userId: {thisMonth, allTime} }
   function userTotals(all) {
     const cur = thisMonth();
@@ -87,15 +135,17 @@ const Billing = (() => {
 
   /* ---------------- invoice data ---------------- */
 
-  function invoice(user, allRows, month) {
+  function invoice(user, allRows, month, sharedCtx) {
     const rows = rowsFor(allRows, user.id, month || null);
     const sum = summarise(rows);
+    const shared = sharedLines(user, sharedCtx, month || null);
     const stamp = (month || thisMonth()).replace('-', '');
     return {
       number: `AUR-${stamp}-${String(user.id || '').replace(/-/g, '').slice(0, 6).toUpperCase() || 'LOCAL'}`,
       issued: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
       period: monthLabel(month),
-      user, month: month || null, sum
+      user, month: month || null, sum, shared,
+      grandTotal: sum.total + shared.reduce((s, l) => s + l.cost, 0)
     };
   }
 
@@ -109,9 +159,11 @@ const Billing = (() => {
   function invoiceSVG(inv) {
     const { user, sum } = inv;
     const providers = [...new Set(sum.lines.map(l => l.provider))];
+    const shared = inv.shared || [];
     // header/bill-to/table-head ≈ 290px, each provider block 52px + 34px per
     // line, then the total band and footer — sized to fit with no dead space.
-    const bodySpan = sum.lines.length ? providers.length * 52 + sum.lines.length * 34 : 44;
+    const bodySpan = (sum.lines.length ? providers.length * 52 + sum.lines.length * 34 : 44)
+      + (shared.length ? 52 + shared.length * 26 : 0);
     const H = Math.max(640, 290 + bodySpan + 204);
     let y = 0;
     const parts = [];
@@ -182,11 +234,25 @@ const Billing = (() => {
       y += 8;
     });
 
+    // shared platform services (this user's split of pooled AI jobs)
+    if (shared.length) {
+      y += 26;
+      parts.push(t(PAD, y, 'Platform AI services (shared pool)', 12, GOLD, { bold: true, spacing: 1 }));
+      shared.forEach(l => {
+        y += 24;
+        parts.push(t(PAD + 14, y, l.label, 12, NAVY));
+        parts.push(t(cols.rate, y, `1/${l.n} share of pool`, 10, LIGHT, { anchor: 'end' }));
+        parts.push(t(cols.amt, y, usd(l.cost, 4), 11, NAVY, { anchor: 'end', bold: true }));
+      });
+      y += 10;
+    }
+
     // total band
     y += 34;
+    const totalDue = inv.grandTotal != null ? inv.grandTotal : sum.total;
     parts.push(`<rect x="${W - PAD - 320}" y="${y - 24}" width="320" height="44" fill="${NAVY}"/>`);
     parts.push(t(W - PAD - 304, y + 4, 'TOTAL DUE', 12, '#f4c95d', { bold: true, spacing: 2 }));
-    parts.push(t(W - PAD - 14, y + 5, usd(sum.total, 2), 19, '#ffffff', { anchor: 'end', bold: true }));
+    parts.push(t(W - PAD - 14, y + 5, usd(totalDue, 2), 19, '#ffffff', { anchor: 'end', bold: true }));
 
     // footer
     const fy = H - 74;
@@ -240,7 +306,7 @@ const Billing = (() => {
     return [...set].sort().reverse();
   }
 
-  function openBillModal(user, allRows) {
+  function openBillModal(user, allRows, sharedCtx) {
     document.querySelector('.bill-overlay')?.remove();
     const months = monthsPresent(allRows, user.id);
     const overlay = document.createElement('div');
@@ -269,10 +335,10 @@ const Billing = (() => {
     let currentSVG = '', currentInv = null;
     const draw = () => {
       const m = overlay.querySelector('#bill-month').value || null;
-      currentInv = invoice(user, allRows, m);
+      currentInv = invoice(user, allRows, m, sharedCtx);
       currentSVG = invoiceSVG(currentInv);
       overlay.querySelector('#bill-preview').innerHTML = currentSVG;
-      overlay.querySelector('#bill-total').textContent = `Total due: ${usd(currentInv.sum.total, 2)}`;
+      overlay.querySelector('#bill-total').textContent = `Total due: ${usd(currentInv.grandTotal, 2)}`;
     };
     const base = () => `${currentInv.number}-${(user.name || 'user').toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
     overlay.querySelector('#bill-month').addEventListener('change', draw);
@@ -285,5 +351,5 @@ const Billing = (() => {
     draw();
   }
 
-  return { rateFor, summarise, userTotals, rowsFor, invoice, invoiceSVG, openBillModal, usd, monthLabel };
+  return { rateFor, summarise, userTotals, sharedLines, sharedTotals, rowsFor, invoice, invoiceSVG, openBillModal, usd, monthLabel };
 })();

@@ -59,9 +59,9 @@ const QEdit = (() => {
       slot.innerHTML = `
         ${banners()}
         <div class="qedit-actions">
-          <button class="btn btn-ghost btn-sm" data-qe="flag">${c && c.flagged ? '⚑ Edit flag' : '⚑ Flag answer as wrong'}</button>
+          <button class="btn btn-ghost btn-sm" data-qe="flag">${c && c.flagged ? '⚑ Edit flag' : '⚑ Flag this question as wrong'}</button>
           <button class="btn btn-ghost btn-sm" data-qe="expl">${c && c.explanation ? '✎ Edit explanation' : '✎ Add explanation'}</button>
-          <span class="qedit-tag ${dev ? '' : 'qedit-tag-me'}">${dev ? 'developer · everyone sees this' : 'private to you'}</span>
+          <span class="qedit-tag ${dev ? '' : 'qedit-tag-me'}">${dev ? 'developer · everyone sees this' : 'flags go to the editor for review — scrutiny keeps the bank sharp'}</span>
         </div>
         <div class="qedit-editor" id="qedit-editor"></div>`;
       wire();
@@ -82,7 +82,7 @@ const QEdit = (() => {
       host.innerHTML = `
         <div class="qedit-box">
           <label class="qedit-check"><input type="checkbox" id="qe-flag-on" ${c && c.flagged ? 'checked' : ''}> Mark this question's answer as wrong / disputed</label>
-          <textarea id="qe-flag-note" placeholder="Why is it wrong? Cite the guideline, e.g. 'NICE NG133 says labetalol is first-line'.">${esc(c && c.flag_note || '')}</textarea>
+          <textarea id="qe-flag-note" placeholder="Why is it wrong? Cite the guideline, e.g. 'NICE NG133 says labetalol is first-line'. Your flag goes straight to the question editor — and the question is held out of mocks until it's fixed.">${esc(c && c.flag_note || '')}</textarea>
           <div class="qedit-btns">
             <button class="btn btn-gold btn-sm" id="qe-flag-save">Save flag</button>
             <button class="btn btn-ghost btn-sm" id="qe-flag-cancel">Cancel</button>

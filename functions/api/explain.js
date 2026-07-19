@@ -91,6 +91,35 @@ export async function onRequest(context) {
   };
 
   try {
+    // ---- platform AI jobs (developer-run, billed to a shared pool) ----
+    if (action === 'tag' || action === 'insights' || action === 'audit') {
+      if (!isDev) return json({ error: 'Developer only.' }, 403);
+      const feature = { tag: 'question_tagger', insights: 'behaviour_insights', audit: 'question_auditor' }[action];
+      const fc = await getFeatureConfig(env, feature);
+      const p = action === 'tag' ? buildTagPrompt(body) : action === 'insights' ? buildInsightsPrompt(body) : buildAuditPrompt(body);
+      const useProvider = fc.provider === 'claude' ? 'claude' : 'gemini';
+      const r = useProvider === 'claude'
+        ? await callClaude(p.system, p.user, fc.model || model, env)
+        : await callGemini(p.system, p.user, fc.model || model || defaultGemini, env, false);
+      await logShared(token, env, feature, useProvider, r);
+      return json({ text: r.text, model: r.model });
+    }
+    // ---- auto-flashcards from wrong answers (per-user feature, dev-grantable) ----
+    if (action === 'flashcard') {
+      if (!isDev) {
+        const flags = await getUserFlags(token, user.id, env);
+        if (!flags.ai_flashcards) return json({ error: 'AI flashcards are not enabled for your account — ask the developer to switch them on in Users & access.' }, 403);
+      }
+      const fc = await getFeatureConfig(env, 'auto_flashcards');
+      if (fc.enabled === false) return json({ error: 'AI flashcards are currently switched off.' }, 403);
+      const p = buildFlashcardPrompt(body);
+      const useProvider = fc.provider === 'claude' ? 'claude' : 'gemini';
+      const r = useProvider === 'claude'
+        ? await callClaude(p.system, p.user, fc.model, env)
+        : await callGemini(p.system, p.user, fc.model || defaultGemini, env, false);
+      await logTokens(token, env, useProvider, r);
+      return json({ text: r.text, model: r.model });
+    }
     if (action === 'artifact') {
       const art = await generateArtifact({ artifact, question, run });
       return json({ artifact: art.artifact, model: art.model });
@@ -160,6 +189,29 @@ async function getUserFlags(token, userId, env) {
     return rows[0]?.feature_flags || {};
   } catch { return {}; }
 }
+// per-feature config from the AI systems panel (app_config id='ai_features').
+// { enabled, provider, model, split } — the panel's choice is authoritative
+// over whatever the client sends, so feature model/billing can't be forged.
+async function getFeatureConfig(env, feature) {
+  try {
+    const res = await sb(`/rest/v1/app_config?id=eq.ai_features&select=data`, env,
+      { headers: { Authorization: 'Bearer ' + env.SUPABASE_ANON_KEY } });
+    if (!res.ok) return {};
+    const rows = await res.json();
+    return (rows[0]?.data || {})[feature] || {};
+  } catch { return {}; }
+}
+// shared-pool meter for platform jobs (tagging, insights, audits) — cost is
+// split across eligible users by the invoice engine, not billed to the dev.
+async function logShared(token, env, feature, provider, r) {
+  if (!r || (!r.in && !r.out)) return;
+  try {
+    await sb('/rest/v1/rpc/log_ai_shared', env, {
+      method: 'POST', headers: { Authorization: 'Bearer ' + token },
+      body: JSON.stringify({ p_feature: feature, p_provider: provider, p_model: r.model || 'unknown', p_input: r.in | 0, p_output: r.out | 0 })
+    });
+  } catch {}
+}
 // billing meter: record the EXACT token counts the provider reported,
 // attributed to the verified caller (auth.uid() inside the RPC). Never
 // blocks the response — a metering hiccup must not break the tutor.
@@ -205,6 +257,57 @@ function buildCoachPrompt(body) {
       `(3) 3 concrete actions for tomorrow's study session.`
   };
 }
+// ---- platform-job prompts ----
+
+// Batch tagger: questions in, strict JSON out. The canonical topic list
+// comes from the blueprint so tags land exactly on the buckets the
+// simulator selects with.
+function buildTagPrompt(body) {
+  const topics = (body.topics || []).slice(0, 80);
+  const qs = (body.questions || []).slice(0, 12).map(q =>
+    `KEY: ${q.key}\nKIND: ${q.kind}\n${q.theme ? 'THEME: ' + q.theme + '\n' : ''}STEM: ${String(q.stem || '').slice(0, 500)}\n${q.lead ? 'LEAD: ' + q.lead + '\n' : ''}OPTIONS: ${(q.options || []).join(' | ').slice(0, 400)}\nRATIONALE: ${String(q.rationale || '').slice(0, 300)}`
+  ).join('\n---\n');
+  return {
+    system: PERSONA + ' You are indexing an exam question bank. You output ONLY a valid JSON array, no code fences, no commentary.',
+    user: `Canonical topic list (choose the single best match for each question; if truly none fits, invent a short sensible topic):\n${topics.join('; ')}\n\n` +
+      `Questions:\n${qs}\n\n` +
+      `For EACH question return an object: {"key": "<KEY exactly as given>", "topic": "<best canonical topic>", "category": "<Obstetrics|Gynaecology|Reproductive Medicine|Oncology|Urogynaecology|Other>", "guideline": "<the single most relevant guideline, e.g. 'GTG 72' or 'NICE NG201', or ''>", "tags": ["3-6 short keywords"], "difficulty": <0.2 easy … 0.8 very hard, your estimate>}.\n` +
+      `Return a JSON array with exactly one object per question, same order.`
+  };
+}
+// One wrong answer → 1-3 spaced-repetition cards, strict JSON.
+function buildFlashcardPrompt(body) {
+  const q = body.question || {};
+  return {
+    system: PERSONA + ' You write razor-sharp spaced-repetition flashcards. You output ONLY a valid JSON array, no code fences.',
+    user: `${qBlock(q)}\n\nThe candidate answered this WRONG. Write 1-3 flashcards that would stop them ever missing it again: ` +
+      `test the discriminating fact they missed, not trivia. Each card: {"question": "…", "answer": "…", "keyPoint": "one-line hook"}. ` +
+      `Front under 30 words, back under 45. Return a JSON array only.`
+  };
+}
+// Behaviour analysis: aggregated tracking data in, markdown insight out.
+function buildInsightsPrompt(body) {
+  return {
+    system: PERSONA + ' You are an assessment psychometrician analysing candidate behaviour data for the exam-prep platform owner.',
+    user: `Aggregated interaction data from the question bank (per-question stats, answer changes, time spent, and the literal questions candidates typed to the AI tutor):\n\n` +
+      `${String(body.data || '').slice(0, 9000)}\n\n` +
+      `Write, in under 350 words with **bold** headers: (1) which questions/topics the cohort finds hardest and WHY (use the behavioural signals — long dwell, answer changes, tutor questions); ` +
+      `(2) what the tutor questions reveal about misconceptions; (3) 3 concrete recommendations for the question bank or teaching. Be specific — name question keys and topics.`
+  };
+}
+// Flagged-question audit: the question + every user complaint + stats in,
+// a verdict and suggested fix out.
+function buildAuditPrompt(body) {
+  const q = body.question || {};
+  return {
+    system: PERSONA + ' You are the chief examiner auditing a disputed question. Be decisive and cite the specific guideline.',
+    user: `${qBlock(q)}\n\nCandidate complaints:\n${(body.complaints || []).map((c, i) => `${i + 1}. ${c}`).join('\n') || '(none given)'}\n\n` +
+      `Cohort stats: ${body.stats || 'n/a'}\n\n` +
+      `Give, in under 250 words with **bold** headers: (1) VERDICT — is the keyed answer correct per current NICE/RCOG/SLCOG guidance? ` +
+      `(2) If wrong or ambiguous: the correct answer and a corrected rationale ready to paste. (3) If the stem/options are flawed, a rewritten version. (4) Cite the guideline.`
+  };
+}
+
 function buildArtifactPrompt(kind, q) {
   const base = qBlock(q);
   switch (kind) {

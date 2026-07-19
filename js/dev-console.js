@@ -24,7 +24,8 @@ const DevConsole = (() => {
   let syllabus = null;
 
   /**
-   * Entry point. section = 'hub' | 'papers' | 'cards' | 'users' | 'blueprint'.
+   * Entry point. section = 'hub' | 'papers' | 'cards' | 'users' | 'blueprint'
+   * | 'review' (flagged-question workshop) | 'ai' (AI systems panel).
    * The hub is a card launcher; each section is its own page with a back link.
    */
   async function render(view, context, section = 'hub') {
@@ -34,6 +35,8 @@ const DevConsole = (() => {
     if (section === 'cards') return renderCardsSection(view);
     if (section === 'users') return renderUsersSection(view);
     if (section === 'blueprint') return renderBlueprintSection(view);
+    if (section === 'review') return renderReviewSection(view);
+    if (section === 'ai') return renderAiSection(view);
     return renderHub(view);
   }
 
@@ -74,6 +77,18 @@ const DevConsole = (() => {
             <p>The weights behind the adaptive simulator's daily mock. Upload a new version any time.</p>
             <span class="dev-hub-count" id="hub-bp">…</span>
           </a>
+          <a class="dev-hub-card" href="#/dev/review" style="--hub-accent:linear-gradient(135deg,#e05263,#e8a33d)">
+            <span class="dev-hub-ico">🚩</span>
+            <h3>Question review</h3>
+            <p>Every question any user flagged as wrong, with their reasoning. Edit, correct or delete — flagged questions stay out of mocks until resolved.</p>
+            <span class="dev-hub-count" id="hub-flags">…</span>
+          </a>
+          <a class="dev-hub-card" href="#/dev/ai" style="--hub-accent:linear-gradient(135deg,#7dd3fc,#a78bfa)">
+            <span class="dev-hub-ico">🤖</span>
+            <h3>AI systems</h3>
+            <p>Every AI engine on the platform: enable, pick the model, choose how the cost is split, and watch the monthly spend per system.</p>
+            <span class="dev-hub-count" id="hub-ai">…</span>
+          </a>
         </div>
       </section>`;
     ctx.FX.viewIn(view);
@@ -83,8 +98,13 @@ const DevConsole = (() => {
     try { userN = ((await ctx.Backend.listAllUsers()) || []).length + ' accounts'; } catch { userN = 'run schema.sql'; }
     let bpN = 'bundled default';
     try { const bp = await Blueprint.load(); if (bp?.sba?.length) bpN = `v${bp.version} · ${bp.sba.length}+${bp.emq.length} topics`; } catch { /* keep default */ }
+    let flagN = '—';
+    try { const fl = (await ctx.Backend.listAllFlags()) || []; const open = new Set(fl.filter(f => !f.resolved).map(f => f.questionKey)).size; flagN = open ? `${open} awaiting review` : 'all clear'; } catch { flagN = 'run schema.sql'; }
+    let aiN = '—';
+    try { const fc = (await ctx.Backend.getAiFeatures()) || {}; const live = AI_FEATURES.filter(f => f.status === 'live' && (fc[f.id]?.enabled ?? f.defaults.enabled)).length; aiN = `${live}/${AI_FEATURES.length} systems on`; } catch { aiN = '—'; }
     const put = (id, v) => { const el = view.querySelector(id); if (el) el.textContent = v; };
     put('#hub-papers', paperN); put('#hub-decks', deckN); put('#hub-users', userN); put('#hub-bp', bpN);
+    put('#hub-flags', flagN); put('#hub-ai', aiN);
   }
 
   const backLink = `<a class="link muted dev-back" href="#/dev">← Developer</a>`;
@@ -463,7 +483,8 @@ const DevConsole = (() => {
       await ctx.Backend.publishPaper(meta);
       ctx.Data.bustPapers?.();                 // new paper is instantly eligible everywhere (incl. mocks)
       if (typeof Cache !== 'undefined') Cache.bust('sim-qindex');
-      msg.textContent = '✓ Published to the library.'; msg.className = 'dev-row-msg good';
+      tagPaperQuestions(meta);                 // AI-tag the new questions in the background
+      msg.textContent = '✓ Published to the library — AI tagging runs in the background.'; msg.className = 'dev-row-msg good';
       els.row.classList.add('dev-done');
       els.row.querySelector('[data-role="approve"]').disabled = true;
       await refreshPublished(document.getElementById('view'));
@@ -676,7 +697,9 @@ const DevConsole = (() => {
     { id: 'flashcards',      label: 'Flashcards' },
     // grants the Gemini model picker (2.5 / 3 / 3.5 Flash) — enforced
     // server-side in functions/api/explain.js, billed at the model's rate
-    { id: 'gemini_advanced', label: 'Gemini+' }
+    { id: 'gemini_advanced', label: 'Gemini+' },
+    // grants AI flashcard generation from wrong answers (server-checked)
+    { id: 'ai_flashcards',   label: 'AI cards' }
   ];
 
   async function refreshUsers(view) {
@@ -695,6 +718,17 @@ const DevConsole = (() => {
     let tokenRows = [], tokensLive = true;
     try { tokenRows = (await ctx.Backend.listAiTokenUsage?.()) || []; } catch { tokensLive = false; }
     const costs = Billing.userTotals(tokenRows);
+    // shared platform pools (tagging, insights…) split per the AI panel
+    let sharedCtx = null;
+    try {
+      const [sharedRows, features] = await Promise.all([ctx.Backend.listSharedUsage?.(), ctx.Backend.getAiFeatures?.()]);
+      sharedCtx = { rows: sharedRows || [], features: features || {}, users: list };
+      const extra = Billing.sharedTotals(sharedCtx);
+      for (const uid in extra) {
+        const c = costs[uid] || (costs[uid] = { thisMonth: 0, allTime: 0 });
+        c.thisMonth += extra[uid].thisMonth; c.allTime += extra[uid].allTime;
+      }
+    } catch { sharedCtx = null; }
     const devMail = (ctx.cfg.developer.email || '').toLowerCase();
     const totalAi = Object.values(usage).reduce((s, u) => s + (u.total || 0), 0);
     const monthTotal = Object.values(costs).reduce((s, c) => s + c.thisMonth, 0);
@@ -746,8 +780,469 @@ const DevConsole = (() => {
     }));
     host.querySelectorAll('[data-bill]').forEach(b => b.addEventListener('click', () => {
       const u = list.find(x => x.id === b.dataset.bill);
-      if (u) Billing.openBillModal(u, tokenRows);
+      if (u) Billing.openBillModal(u, tokenRows, sharedCtx);
     }));
+  }
+
+  /* ================================================================
+     QUESTION REVIEW WORKSHOP — every user flag lands here.
+     Flagged questions are held out of new mocks until resolved.
+     ================================================================ */
+
+  function parseQkey(qkey) {
+    const parts = String(qkey).split(':');
+    return { paperId: parts[0], kind: parts[1], num: Number(parts[2]) };
+  }
+  // locate the editable source object behind a flattened question number
+  function locateQuestion(paper, kind, num) {
+    if (kind === 'SBA') {
+      const arr = paper.sba || paper.questions || [];
+      return arr[num - 1] ? { type: 'sba', arr, i: num - 1, q: arr[num - 1] } : null;
+    }
+    let n = 0;
+    for (const b of (paper.emq || paper.themes || [])) {
+      for (let si = 0; si < (b.stems || []).length; si++) {
+        n++;
+        if (n === num) return { type: 'emq', block: b, si, q: b.stems[si] };
+      }
+    }
+    return null;
+  }
+  const md = s => {
+    let h = ctx.esc(s);
+    h = h.replace(/^###?\s+(.+)$/gm, '<h4>$1</h4>').replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    h = h.replace(/(?:^|\n)\s*[-•]\s+(.+)/g, '\n<li>$1</li>').replace(/(<li>[\s\S]*?<\/li>)/g, m => '<ul>' + m.replace(/\n/g, '') + '</ul>');
+    return '<p>' + h.replace(/\n{2,}/g, '</p><p>').replace(/\n/g, '<br>') + '</p>';
+  };
+  async function aiCall(action, payload) {
+    const token = await ctx.Backend.getAccessToken();
+    if (!token) throw new Error('Sign in (cloud mode) to use AI systems.');
+    const res = await fetch(ctx.cfg.ai?.apiBase || '/api/explain', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify({ action, ...payload })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `AI request failed (HTTP ${res.status}).`);
+    return data;
+  }
+
+  async function renderReviewSection(view) {
+    view.innerHTML = `
+      <section class="page">
+        ${backLink}
+        <header data-animate>
+          <p class="kicker">DEVELOPER · QUESTION REVIEW</p>
+          <h1 class="page-title">Flagged questions</h1>
+          <p class="muted">Everything any user flagged as wrong, wherever they were practising. A flagged question is
+            <strong>kept out of new mocks</strong> until you fix it here and mark it resolved.</p>
+        </header>
+        <div id="qr-list" data-animate><p class="muted">Loading flags…</p></div>
+      </section>`;
+    ctx.FX.viewIn(view);
+    await refreshFlags(view);
+  }
+
+  async function refreshFlags(view) {
+    const host = view.querySelector('#qr-list');
+    let flags = [];
+    try { flags = (await ctx.Backend.listAllFlags()) || []; }
+    catch (e) { host.innerHTML = `<p class="bad">Could not load flags — ${ctx.esc(e.message || e)}<br><span class="muted tiny">Run the updated supabase/schema.sql once (uqe dev read policy).</span></p>`; return; }
+    // group by question
+    const groups = {};
+    flags.forEach(f => {
+      const g = groups[f.questionKey] || (groups[f.questionKey] = { qkey: f.questionKey, reports: [], open: false });
+      g.reports.push(f);
+      if (!f.resolved) g.open = true;
+    });
+    const openGroups = Object.values(groups).filter(g => g.open);
+    const doneCount = Object.values(groups).length - openGroups.length;
+    if (!openGroups.length) {
+      host.innerHTML = `<p class="muted card" style="padding:20px">🎉 No open flags — the bank is clean.${doneCount ? ` (${doneCount} previously resolved.)` : ''}</p>`;
+      return;
+    }
+    const papers = await ctx.Data.publishedPapers();
+    const titleOf = pid => papers.find(p => p.id === pid)?.title || pid;
+    host.innerHTML = openGroups.map((g, i) => {
+      const { paperId, kind, num } = parseQkey(g.qkey);
+      return `
+      <div class="dev-row card qr-card" data-qr="${i}">
+        <div class="dev-row-head">
+          <div>
+            <p class="dev-file">🚩 ${ctx.esc(titleOf(paperId))} · <span class="chip chip-${(kind || 'sba').toLowerCase()}">${ctx.esc(kind)}</span> Q${num}</p>
+            <p class="muted tiny">${g.reports.length} report${g.reports.length > 1 ? 's' : ''} · latest ${new Date(g.reports[0].updated || Date.now()).toLocaleDateString()}</p>
+          </div>
+          <div class="qr-actions">
+            <button class="btn btn-ghost btn-sm" data-qr-edit="${i}">✎ Open editor</button>
+            <button class="btn btn-ghost btn-sm" data-qr-audit="${i}">🤖 AI audit</button>
+            <button class="btn btn-gold btn-sm" data-qr-resolve="${i}">✓ Resolve</button>
+          </div>
+        </div>
+        <div class="qr-reports">${g.reports.map(r => `
+          <div class="qr-report ${r.resolved ? 'qr-done' : ''}">
+            <span class="qr-who">${ctx.esc(r.userName || r.userEmail)} <span class="muted tiny">${ctx.esc(r.userEmail)}</span></span>
+            <span class="qr-note">${r.flagNote ? ctx.esc(r.flagNote) : '<span class="muted">(no reason given)</span>'}</span>
+          </div>`).join('')}</div>
+        <div class="qr-editor" data-qr-host="${i}"></div>
+        <p class="dev-row-msg" data-qr-msg="${i}"></p>
+      </div>`;
+    }).join('') + (doneCount ? `<p class="muted tiny">${doneCount} previously resolved flag${doneCount > 1 ? 's' : ''} hidden.</p>` : '');
+
+    openGroups.forEach((g, i) => {
+      const msg = host.querySelector(`[data-qr-msg="${i}"]`);
+      host.querySelector(`[data-qr-edit="${i}"]`).addEventListener('click', () => openQuestionEditor(view, g, i, msg));
+      host.querySelector(`[data-qr-audit="${i}"]`).addEventListener('click', () => runAudit(host, g, i, msg));
+      host.querySelector(`[data-qr-resolve="${i}"]`).addEventListener('click', async () => {
+        if (!confirm('Mark every report on this question as resolved? It becomes eligible for mocks again.')) return;
+        try { await ctx.Backend.resolveFlags(g.qkey); msg.textContent = '✓ Resolved.'; msg.className = 'dev-row-msg good'; await refreshFlags(view); }
+        catch (e) { msg.textContent = 'Could not resolve: ' + (e.message || e); msg.className = 'dev-row-msg bad'; }
+      });
+    });
+  }
+
+  async function openQuestionEditor(view, g, i, msg) {
+    const hostEl = view.querySelector(`[data-qr-host="${i}"]`);
+    if (hostEl.dataset.open === '1') { hostEl.dataset.open = '0'; hostEl.innerHTML = ''; return; }
+    hostEl.dataset.open = '1';
+    hostEl.innerHTML = `<p class="muted">Loading question…</p>`;
+    const { paperId, kind, num } = parseQkey(g.qkey);
+    let loaded;
+    try { loaded = await ctx.Data.loadPaper(paperId); }
+    catch (e) { hostEl.innerHTML = `<p class="bad">${ctx.esc(e.message || e)}</p>`; return; }
+    const loc = locateQuestion(loaded.paper, kind, num);
+    if (!loc) { hostEl.innerHTML = `<p class="bad">Question ${num} not found in this paper (was it deleted already?).</p>`; return; }
+    const q = loc.q;
+    const options = loc.type === 'sba' ? (q.options || []) : (loc.block.options || []);
+    hostEl.innerHTML = `
+      <div class="qr-form">
+        ${loc.type === 'emq' ? `<label>Theme<input type="text" data-f="theme" value="${ctx.esc(loc.block.theme || '')}"></label>` : ''}
+        <label>Stem<textarea data-f="stem">${ctx.esc(q.stem || '')}</textarea></label>
+        ${loc.type === 'sba' ? `<label>Lead-in<input type="text" data-f="lead" value="${ctx.esc(q.lead || '')}"></label>` : ''}
+        <label>Options — one per line${loc.type === 'emq' ? ' <span class="tiny muted">(shared by every question in this EMQ theme)</span>' : ''}
+          <textarea data-f="options" class="qr-options">${ctx.esc(options.join('\n'))}</textarea></label>
+        <label>Correct answer
+          <select data-f="answer">${options.map((o, oi) => `<option value="${oi}" ${oi === q.answer ? 'selected' : ''}>${ctx.esc(String(o).slice(0, 80))}</option>`).join('')}</select>
+        </label>
+        <label>Rationale<textarea data-f="rationale">${ctx.esc(q.rationale || q.explanation || '')}</textarea></label>
+        <div class="qedit-btns">
+          <button class="btn btn-gold btn-sm" data-f="save">💾 Save &amp; resolve flags</button>
+          <button class="btn btn-ghost btn-sm" data-f="saveonly">Save only</button>
+          <button class="btn btn-ghost btn-sm qr-danger" data-f="delete">🗑 Delete question</button>
+        </div>
+        <p class="tiny muted">Deleting renumbers later questions in this paper — their notes/stats keys shift. Prefer editing.</p>
+      </div>`;
+    const val = f => hostEl.querySelector(`[data-f="${f}"]`)?.value;
+    async function republish(reason) {
+      const meta = { ...loaded.meta, content: loaded.paper, sba: ctx.Data.countSBA(loaded.paper), emq: ctx.Data.countEMQ(loaded.paper) };
+      delete meta.file;                              // backend copy overrides any bundled file
+      await ctx.Backend.publishPaper(meta);
+      ctx.Data.bustPapers?.();
+      if (typeof Cache !== 'undefined') { Cache.bust('sim-qindex'); }
+      msg.textContent = reason; msg.className = 'dev-row-msg good';
+    }
+    hostEl.querySelector('[data-f="save"]').addEventListener('click', () => saveEdit(true));
+    hostEl.querySelector('[data-f="saveonly"]').addEventListener('click', () => saveEdit(false));
+    async function saveEdit(resolve) {
+      try {
+        const opts = String(val('options') || '').split('\n').map(s => s.trim()).filter(Boolean);
+        if (opts.length < 2) throw new Error('Need at least 2 options.');
+        const ans = Math.min(Number(val('answer')) || 0, opts.length - 1);
+        q.stem = val('stem') || q.stem;
+        q.rationale = val('rationale') || '';
+        q.answer = ans;
+        if (loc.type === 'sba') { q.options = opts; q.lead = val('lead') || ''; }
+        else { loc.block.options = opts; if (val('theme')) loc.block.theme = val('theme'); }
+        await republish(resolve ? '✓ Question corrected, published to everyone, flags resolved.' : '✓ Question corrected and published.');
+        if (resolve) { await ctx.Backend.resolveFlags(g.qkey); await refreshFlags(view); }
+      } catch (e) { msg.textContent = e.message || String(e); msg.className = 'dev-row-msg bad'; }
+    }
+    hostEl.querySelector('[data-f="delete"]').addEventListener('click', async () => {
+      if (!confirm('Delete this question from the paper for EVERYONE? This cannot be undone.')) return;
+      try {
+        if (loc.type === 'sba') loc.arr.splice(loc.i, 1);
+        else { loc.block.stems.splice(loc.si, 1); if (!loc.block.stems.length) { const blocks = loaded.paper.emq || loaded.paper.themes; blocks.splice(blocks.indexOf(loc.block), 1); } }
+        await republish('✓ Question deleted from the paper.');
+        await ctx.Backend.resolveFlags(g.qkey);
+        await refreshFlags(view);
+      } catch (e) { msg.textContent = e.message || String(e); msg.className = 'dev-row-msg bad'; }
+    });
+  }
+
+  async function runAudit(host, g, i, msg) {
+    const hostEl = host.querySelector(`[data-qr-host="${i}"]`);
+    msg.textContent = 'Auditing against current guidance…'; msg.className = 'dev-row-msg muted';
+    try {
+      const { paperId, kind, num } = parseQkey(g.qkey);
+      const loaded = await ctx.Data.loadPaper(paperId);
+      const flat = ctx.Data.flatten(loaded.paper, kind).find(q => q.number === num);
+      if (!flat) throw new Error('Question not found.');
+      let stats = 'n/a';
+      try {
+        const st = ((await ctx.Backend.listQuestionStats()) || []).find(s => s.questionKey === g.qkey);
+        if (st) stats = `${st.correct}/${st.attempts} candidates correct (${Math.round(st.correct / st.attempts * 100)}%)`;
+      } catch {}
+      const data = await aiCall('audit', {
+        question: { kind, theme: flat.theme || '', stem: flat.stem, lead: flat.lead || '', options: flat.options, answer: flat.answer, rationale: flat.rationale, preLettered: flat.preLettered },
+        complaints: g.reports.map(r => `${r.userName || r.userEmail}: ${r.flagNote || '(no reason)'}`),
+        stats
+      });
+      msg.textContent = '';
+      hostEl.dataset.open = '1';
+      hostEl.innerHTML = `<div class="qr-audit"><h4>🤖 Examiner audit <span class="tiny muted">${ctx.esc(data.model || '')}</span></h4>${md(data.text)}</div>` + hostEl.innerHTML;
+    } catch (e) { msg.textContent = e.message || String(e); msg.className = 'dev-row-msg bad'; }
+  }
+
+  /* ================================================================
+     AI SYSTEMS PANEL — every AI engine: on/off, model, cost split,
+     monthly spend. The registry below is the platform's AI roadmap.
+     ================================================================ */
+
+  const MODEL_OPTIONS = [
+    { id: 'gemini|gemini-2.5-flash',          label: 'Gemini 2.5 Flash' },
+    { id: 'gemini|gemini-3-flash',            label: 'Gemini 3 Flash' },
+    { id: 'gemini|gemini-3.5-flash',          label: 'Gemini 3.5 Flash' },
+    { id: 'claude|claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
+    { id: 'claude|claude-sonnet-4-5',         label: 'Claude Sonnet 4.5' }
+  ];
+  const SPLIT_OPTIONS = [
+    { id: 'simulator', label: 'Split across simulator users' },
+    { id: 'all',       label: 'Split across all users' },
+    { id: 'dev',       label: 'Developer absorbs the cost' }
+  ];
+  const AI_FEATURES = [
+    { id: 'ai_tutor', name: '✨ AI tutor', status: 'live', billing: 'per-user',
+      desc: 'Explore-with-AI explanations and follow-up chat on every question. Each user pays for their own tokens.',
+      defaults: { enabled: true, provider: 'gemini', model: 'gemini-2.5-flash', split: 'per-user' } },
+    { id: 'ai_coach', name: '🎯 Mock coach', status: 'live', billing: 'per-user',
+      desc: 'Post-mock study plan built from per-topic scores + the blueprint\'s examiner tendencies.',
+      defaults: { enabled: true, provider: 'gemini', model: 'gemini-2.5-flash', split: 'per-user' } },
+    { id: 'auto_flashcards', name: '🃏 AI flashcards from mistakes', status: 'live', billing: 'per-user',
+      desc: 'Wrong answers become spaced-repetition cards in a personal deck. Grant per user with the AI cards flag in Users & access.',
+      defaults: { enabled: true, provider: 'gemini', model: 'gemini-2.5-flash', split: 'per-user' } },
+    { id: 'question_tagger', name: '🏷 Question tagger', status: 'live', billing: 'shared',
+      desc: 'AI classifies every bank question onto the blueprint\'s topics (+ guideline + difficulty estimate) so mock selection is exact, not keyword-guessed. Runs once per question — never re-tags.',
+      defaults: { enabled: true, provider: 'gemini', model: 'gemini-2.5-flash', split: 'simulator' } },
+    { id: 'behaviour_insights', name: '🔬 Behaviour insights', status: 'live', billing: 'shared',
+      desc: 'Analyses the tracked interaction data — dwell times, answer changes, what users literally ask the tutor — and reports what the cohort finds hard and why.',
+      defaults: { enabled: true, provider: 'claude', model: 'claude-haiku-4-5-20251001', split: 'simulator' } },
+    { id: 'question_auditor', name: '⚖️ Question auditor', status: 'live', billing: 'shared',
+      desc: 'Chief-examiner audit of flagged questions: verdict against current NICE/RCOG/SLCOG guidance + a paste-ready correction.',
+      defaults: { enabled: true, provider: 'claude', model: 'claude-haiku-4-5-20251001', split: 'dev' } },
+    { id: 'viva_examiner', name: '🎓 Viva examiner', status: 'planned', billing: 'per-user',
+      desc: 'Structured AI viva: presents a case, questions stepwise, pushes back on vague answers, scores against a rubric. The one thing candidates cannot practise alone.',
+      defaults: { enabled: false, provider: 'claude', model: 'claude-haiku-4-5-20251001', split: 'per-user' } },
+    { id: 'readiness_forecaster', name: '📈 Readiness forecaster', status: 'planned', billing: 'shared',
+      desc: 'Ability-model (Elo/Rasch) pass-probability with a confidence band, narrated weekly: "66% ± 4 — borderline; close it in 3 weeks at current pace."',
+      defaults: { enabled: false, provider: 'gemini', model: 'gemini-2.5-flash', split: 'simulator' } },
+    { id: 'weekly_digest', name: '📬 Weekly digest', status: 'planned', billing: 'shared',
+      desc: 'Sunday summary per user: readiness trend, 3 weakest topics, due flashcards, next week\'s plan.',
+      defaults: { enabled: false, provider: 'gemini', model: 'gemini-2.5-flash', split: 'all' } },
+    { id: 'rationale_enhancer', name: '📚 Rationale enhancer', status: 'planned', billing: 'shared',
+      desc: 'Upgrades thin rationales across the bank with guideline-cited explanations (batch, one-off per question).',
+      defaults: { enabled: false, provider: 'claude', model: 'claude-haiku-4-5-20251001', split: 'simulator' } }
+  ];
+
+  async function renderAiSection(view) {
+    view.innerHTML = `
+      <section class="page">
+        ${backLink}
+        <header data-animate>
+          <p class="kicker">DEVELOPER · AI SYSTEMS</p>
+          <h1 class="page-title">AI mission control</h1>
+          <p class="muted">Every AI engine on the platform. You decide: on or off, which model runs it, and who the
+            tokens are billed to. Shared jobs run <strong>once per unit of work</strong> — nothing re-analyses the same data twice.</p>
+        </header>
+        <div class="card" data-animate>
+          <h3 class="card-title">🏷 Question tagger</h3>
+          <p class="muted" id="tag-status">Checking bank…</p>
+          <div class="dev-toolbar">
+            <button class="btn btn-gold" id="tag-run" disabled>Tag remaining questions</button>
+            <span class="dev-status" id="tag-progress"></span>
+          </div>
+        </div>
+        <div class="card" data-animate>
+          <h3 class="card-title">🔬 Behaviour insights</h3>
+          <p class="muted">One click analyses the latest tracked behaviour (dwell, answer changes, tutor questions). Run it weekly, not daily — the data needs time to accumulate.</p>
+          <div class="dev-toolbar">
+            <button class="btn btn-gold" id="ins-run">Analyse behaviour data</button>
+            <span class="dev-status" id="ins-status"></span>
+          </div>
+          <div id="ins-out"></div>
+        </div>
+        <div class="card" data-animate>
+          <h3 class="card-title">Systems registry</h3>
+          <p class="muted">Changes save instantly and take effect on users' next page load. “Split” decides whose invoice carries a shared job's tokens.</p>
+          <div id="ai-feats"><p class="muted">Loading…</p></div>
+          <p class="dev-row-msg" id="ai-msg"></p>
+        </div>
+      </section>`;
+    ctx.FX.viewIn(view);
+    await refreshAiPanel(view);
+    wireTagger(view);
+    view.querySelector('#ins-run').addEventListener('click', () => runInsights(view));
+  }
+
+  async function refreshAiPanel(view) {
+    const host = view.querySelector('#ai-feats');
+    let saved = {}, shared = [];
+    try { saved = (await ctx.Backend.getAiFeatures()) || {}; } catch { saved = {}; }
+    try { shared = (await ctx.Backend.listSharedUsage()) || []; } catch { shared = []; }
+    const month = new Date().toISOString().slice(0, 7);
+    const usageOf = fid => {
+      const rows = shared.filter(r => r.feature === fid && String(r.day).slice(0, 7) === month);
+      const tok = rows.reduce((s, r) => s + r.inputTokens + r.outputTokens, 0);
+      const cost = rows.reduce((s, r) => s + (r.inputTokens / 1e6) * Billing.rateFor(r.model).in + (r.outputTokens / 1e6) * Billing.rateFor(r.model).out, 0);
+      return { tok, cost, calls: rows.reduce((s, r) => s + r.calls, 0) };
+    };
+    host.innerHTML = AI_FEATURES.map(f => {
+      const c = Object.assign({}, f.defaults, saved[f.id] || {});
+      const u = usageOf(f.id);
+      const modelId = `${c.provider}|${c.model}`;
+      const planned = f.status === 'planned';
+      return `
+        <div class="ai-feat ${planned ? 'ai-feat-planned' : ''}" data-feat="${f.id}">
+          <div class="ai-feat-main">
+            <div class="ai-feat-name">${f.name}
+              ${planned ? '<span class="qedit-tag">in development</span>' : '<span class="qedit-tag" style="background:rgba(52,211,153,.15);color:#34d399">live</span>'}
+              <span class="tiny muted">${f.billing === 'per-user' ? 'billed per user' : 'shared pool'}</span>
+            </div>
+            <p class="muted tiny">${f.desc}</p>
+          </div>
+          <div class="ai-feat-controls">
+            <label class="dev-flag" title="${planned ? 'Coming soon' : 'Enable / disable'}"><input type="checkbox" data-fc="enabled" ${c.enabled ? 'checked' : ''} ${planned ? 'disabled' : ''}><span></span></label>
+            <select data-fc="model" ${planned ? 'disabled' : ''}>${MODEL_OPTIONS.map(m => `<option value="${m.id}" ${m.id === modelId ? 'selected' : ''}>${m.label}</option>`).join('')}</select>
+            <select data-fc="split" ${planned || f.billing === 'per-user' ? 'disabled' : ''} title="${f.billing === 'per-user' ? 'Each user pays their own tokens' : 'Who carries this pool'}">
+              ${f.billing === 'per-user' ? '<option>Each user pays own use</option>' : SPLIT_OPTIONS.map(s => `<option value="${s.id}" ${s.id === c.split ? 'selected' : ''}>${s.label}</option>`).join('')}
+            </select>
+            <span class="ai-feat-usage" title="This month">${f.billing === 'per-user'
+              ? '<span class="tiny muted">see Users &amp; access</span>'
+              : `${u.calls} calls · ${(u.tok / 1000).toFixed(1)}k tok · <strong>${Billing.usd(u.cost)}</strong>`}</span>
+          </div>
+        </div>`;
+    }).join('');
+    const msg = view.querySelector('#ai-msg');
+    host.querySelectorAll('[data-fc]').forEach(el => el.addEventListener('change', async () => {
+      const row = el.closest('[data-feat]');
+      const fid = row.dataset.feat;
+      const def = AI_FEATURES.find(f => f.id === fid);
+      const [provider, model] = String(row.querySelector('[data-fc="model"]').value).split('|');
+      const rec = {
+        enabled: row.querySelector('[data-fc="enabled"]').checked,
+        provider, model,
+        split: def.billing === 'per-user' ? 'per-user' : row.querySelector('[data-fc="split"]').value
+      };
+      try {
+        const all = Object.assign({}, (await ctx.Backend.getAiFeatures()) || {});
+        all[fid] = rec;
+        await ctx.Backend.saveAiFeatures(all);
+        if (typeof Cache !== 'undefined') Cache.bust('ai-features');
+        msg.textContent = `✓ ${def.name.replace(/^\S+\s/, '')} saved.`; msg.className = 'dev-row-msg good';
+      } catch (e) { msg.textContent = 'Could not save: ' + (e.message || e); msg.className = 'dev-row-msg bad'; }
+    }));
+  }
+
+  /* ---------------- the tagger engine ---------------- */
+
+  async function untaggedRecords() {
+    const index = await Simulator.buildIndex();
+    let tagged = new Set();
+    try { tagged = new Set(((await ctx.Backend.listQuestionTags()) || []).map(t => t.questionKey)); } catch {}
+    return { index, todo: index.filter(r => !tagged.has(r.qkey)), taggedCount: tagged.size };
+  }
+  // resolve records → compact question payloads for the tag prompt
+  async function resolveForTagging(records) {
+    const byPaper = {};
+    records.forEach(r => (byPaper[r.paperId] || (byPaper[r.paperId] = [])).push(r));
+    const out = [];
+    for (const pid of Object.keys(byPaper)) {
+      let loaded; try { loaded = await ctx.Data.loadPaper(pid); } catch { continue; }
+      const flat = {};
+      ['SBA', 'EMQ'].forEach(kind => ctx.Data.flatten(loaded.paper, kind).forEach(q => flat[`${pid}:${kind}:${q.number}`] = q));
+      byPaper[pid].forEach(r => { const q = flat[r.qkey]; if (q) out.push({ key: r.qkey, kind: q.kind, theme: q.theme || '', stem: q.stem, lead: q.lead || '', options: q.options, rationale: q.rationale || '' }); });
+    }
+    return out;
+  }
+  async function tagRecords(records) {
+    const bp = await Blueprint.load();
+    const topics = [...(bp.sba || []).map(b => b.subcategory || b.category), ...(bp.emq || []).map(b => b.theme)].filter(Boolean);
+    const questions = await resolveForTagging(records);
+    if (!questions.length) return 0;
+    const data = await aiCall('tag', { topics, questions });
+    let rows;
+    try { rows = JSON.parse(String(data.text).replace(/^```[a-z]*\n?/i, '').replace(/```\s*$/, '')); }
+    catch { throw new Error('Tagger returned unparseable output — try again.'); }
+    const valid = (Array.isArray(rows) ? rows : []).filter(r => r.key && r.topic)
+      .map(r => ({ questionKey: r.key, topic: r.topic, category: r.category || '', guideline: r.guideline || '', tags: r.tags || [], difficulty: typeof r.difficulty === 'number' ? r.difficulty : null, taggedBy: data.model || '' }));
+    if (valid.length) await ctx.Backend.saveQuestionTags(valid);
+    return valid.length;
+  }
+  function wireTagger(view) {
+    const status = view.querySelector('#tag-status');
+    const progress = view.querySelector('#tag-progress');
+    const btn = view.querySelector('#tag-run');
+    (async () => {
+      try {
+        const { index, todo, taggedCount } = await untaggedRecords();
+        status.innerHTML = `<strong>${taggedCount}</strong> of ${index.length} bank questions tagged · <strong>${todo.length}</strong> remaining. Tagging runs in batches of 10 and each question is only ever tagged once.`;
+        btn.disabled = !todo.length;
+        btn.onclick = async () => {
+          btn.disabled = true;
+          let done = 0;
+          try {
+            for (let i = 0; i < todo.length; i += 10) {
+              progress.textContent = `Tagging ${Math.min(i + 10, todo.length)}/${todo.length}…`;
+              done += await tagRecords(todo.slice(i, i + 10));
+            }
+            if (typeof Cache !== 'undefined') Cache.bust('sim-qtags');
+            progress.innerHTML = `<span class="good">✓ ${done} questions tagged — mock selection is now tag-precise.</span>`;
+            status.textContent = 'Bank fully tagged.';
+          } catch (e) {
+            progress.innerHTML = `<span class="bad">${ctx.esc(e.message || e)} — progress is saved; run again to continue.</span>`;
+            btn.disabled = false;
+          }
+        };
+      } catch (e) { status.innerHTML = `<span class="bad">${ctx.esc(e.message || e)}</span>`; }
+    })();
+  }
+  // fire-and-forget: tag a paper's questions right after it is published,
+  // so new papers enter the bank already classified
+  async function tagPaperQuestions(meta) {
+    try {
+      const recs = [];
+      const paper = meta.content;
+      ctx.Data.flatten(paper, 'SBA').forEach(q => recs.push({ paperId: meta.id, qkey: `${meta.id}:SBA:${q.number}` }));
+      ctx.Data.flatten(paper, 'EMQ').forEach(q => recs.push({ paperId: meta.id, qkey: `${meta.id}:EMQ:${q.number}` }));
+      for (let i = 0; i < recs.length; i += 10) await tagRecords(recs.slice(i, i + 10));
+      if (typeof Cache !== 'undefined') Cache.bust('sim-qtags');
+    } catch { /* tagging failures never block publishing; the runner catches up */ }
+  }
+
+  /* ---------------- behaviour insights runner ---------------- */
+
+  async function runInsights(view) {
+    const status = view.querySelector('#ins-status'), out = view.querySelector('#ins-out');
+    status.textContent = 'Collecting behaviour data…';
+    try {
+      const events = (await ctx.Backend.listRecentEvents?.(1500)) || [];
+      if (events.length < 30) throw new Error(`Only ${events.length} tracked events so far — let the cohort practise a few days first.`);
+      // aggregate client-side so ONE compact payload goes to the model
+      const agg = {};
+      events.forEach(e => {
+        if (!e.question_key) return;
+        const a = agg[e.question_key] || (agg[e.question_key] = { dwell: 0, dwellN: 0, changes: 0, strikes: 0, asks: [] });
+        if (e.event === 'dwell') { a.dwell += e.data?.t || 0; a.dwellN++; }
+        if (e.event === 'change') a.changes++;
+        if (e.event === 'strike') a.strikes++;
+        if (e.event === 'ai_ask' && e.data?.q && a.asks.length < 4) a.asks.push(e.data.q);
+      });
+      const lines = Object.entries(agg)
+        .map(([k, a]) => ({ k, score: a.changes * 3 + a.strikes + (a.dwellN ? a.dwell / a.dwellN / 30 : 0) + a.asks.length * 2, a }))
+        .sort((x, y) => y.score - x.score).slice(0, 30)
+        .map(({ k, a }) => `${k} · avg dwell ${a.dwellN ? Math.round(a.dwell / a.dwellN) : '?'}s · ${a.changes} answer changes · ${a.strikes} strikes${a.asks.length ? ' · tutor asked: "' + a.asks.join('" | "') + '"' : ''}`);
+      status.textContent = 'Analysing with AI…';
+      const data = await aiCall('insights', { data: lines.join('\n') });
+      status.innerHTML = `<span class="good">✓ Analysis of ${events.length} events (${data.model || ''})</span>`;
+      out.innerHTML = `<div class="ai-body qr-audit">${md(data.text)}</div>`;
+    } catch (e) { status.innerHTML = `<span class="bad">${ctx.esc(e.message || e)}</span>`; out.innerHTML = ''; }
   }
 
   /* ---------------- Drive access ---------------- */

@@ -23,12 +23,24 @@ const AI = (() => {
     return userKnown;
   }
 
+  // AI-systems panel switch (app_config 'ai_features'). Default = on, so a
+  // missing/failed config never disables the tutor. Cached 10 min on-device.
+  async function featureOn(id) {
+    try {
+      const feats = (typeof Cache !== 'undefined')
+        ? await Cache.wrap('ai-features', 10 * 60 * 1000, () => Backend.getAiFeatures())
+        : await Backend.getAiFeatures();
+      return (feats?.[id]?.enabled) !== false;
+    } catch { return true; }
+  }
+
   async function attach(slot, ctx) {
     if (!slot || !cfg().enabled) return;
     if (Backend.mode !== 'cloud') {
       slot.innerHTML = `<p class="ai-note">✨ Explore with AI activates on the deployed site (needs the cloud backend).</p>`;
       return;
     }
+    if (!(await featureOn('ai_tutor'))) return;      // switched off in AI systems
     slot.innerHTML = `<button class="btn btn-ai" data-ai-open>✨ Explore with AI</button>`;
     slot.querySelector('[data-ai-open]').addEventListener('click', () => openPanel(slot, ctx));
   }
@@ -125,6 +137,7 @@ const AI = (() => {
     const max = maxFollowups(st);
     if (st.follow >= max) return;
     input.value = '';
+    try { if (typeof Track !== 'undefined') Track.log('ai_ask', ctx.questionKey, 'ai', { q: q.slice(0, 300) }); } catch {}
     const msgs = panel.querySelector('#ai-messages');
     st.messages.push({ role: 'user', content: q });
     msgs.insertAdjacentHTML('beforeend', `<div class="ai-msg ai-msg-user">${esc(q)}</div>`);
@@ -377,5 +390,5 @@ const AI = (() => {
     return '<p>' + h + '</p>';
   }
 
-  return { attach, renderSavedItem, kindIcon, kindLabel };
+  return { attach, renderSavedItem, kindIcon, kindLabel, featureOn };
 })();

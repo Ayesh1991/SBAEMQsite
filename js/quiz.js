@@ -48,7 +48,12 @@ const Quiz = (() => {
       notes: {},
       saveTimer: null,
       simulator: !!opts.simulator,                 // adaptive-mock mode: real per-question keys + exclude control
-      flawed: new Set(resume?.flawed || [])        // indices the candidate marked as flawed (not scored)
+      flawed: new Set(resume?.flawed || []),       // indices the candidate marked as flawed (not scored)
+      // CBT extras: per-question dwell time (pacing + empirical difficulty)
+      // and per-question struck-out options (real exam elimination technique)
+      qTime: resume?.qTime?.length === questions.length ? resume.qTime.slice() : new Array(questions.length).fill(0),
+      qEnter: Date.now(),
+      strikes: questions.map((_, i) => new Set(resume?.strikes?.[i] || []))
     };
     if (state.mode === 'exam' && state.timeLimitSec > 0 && state.remaining == null) state.remaining = state.timeLimitSec;
     if (state.mode === 'exam' && state.remaining != null) state.timerId = setInterval(tick, 1000);
@@ -92,9 +97,18 @@ const Quiz = (() => {
   // so notes / AI / flawed-exclusions map back to the real question across mocks.
   function questionKey(i) { return state.questions[i]._qkey || `${state.loaded.meta.id}:${state.kind}:${state.questions[i].number}`; }
 
+  // bank the time spent on the current question before leaving it
+  function bankTime() {
+    if (!state) return;
+    state.qTime[state.index] += Math.round((Date.now() - state.qEnter) / 1000);
+    state.qEnter = Date.now();
+  }
+  const track = (event, data) => { try { if (typeof Track !== 'undefined') Track.log(event, questionKey(state.index), state.simulator ? 'simulator' : state.mode, data); } catch {} };
+
   function snapshot() {
     return {
       answers: state.answers, revealed: state.revealed, flags: [...state.flags], flawed: [...state.flawed],
+      qTime: state.qTime, strikes: state.strikes.map(s => [...s]),
       index: state.index, remaining: state.remaining,
       mode: state.mode, kind: state.kind,
       paperTitle: state.loaded.paper.topic || state.loaded.meta.title,
@@ -184,6 +198,8 @@ const Quiz = (() => {
       </div>`;
 
     state.container.querySelector('#q-options').addEventListener('click', e => {
+      const st = e.target.closest('[data-strike]');
+      if (st) { e.stopPropagation(); toggleStrike(Number(st.dataset.strike)); return; }
       const btn = e.target.closest('.q-option'); if (btn && !btn.disabled) choose(Number(btn.dataset.idx));
     });
     state.container.querySelectorAll('[data-goto]').forEach(b => b.addEventListener('click', () => goto(Number(b.dataset.goto))));
@@ -206,12 +222,17 @@ const Quiz = (() => {
   function optionHTML(q, i, opt) {
     const chosen = state.answers[state.index] === i;
     const revealed = state.revealed[state.index];
+    const struck = state.strikes[state.index].has(i);
     let cls = 'q-option';
     if (chosen) cls += ' selected';
+    if (struck && !revealed) cls += ' struck';
     if (revealed) { if (i === q.answer) cls += ' correct'; else if (chosen) cls += ' incorrect'; }
     const letter = q.preLettered ? '' : `<span class="q-letter">${LETTERS[i]}</span>`;
     const mark = revealed ? (i === q.answer ? '<span class="opt-mark good">✓</span>' : (chosen ? '<span class="opt-mark bad">✗</span>' : '')) : '';
-    return `<button class="${cls}" data-idx="${i}" ${revealed ? 'disabled' : ''}>${letter}<span class="q-text">${esc(opt)}</span>${mark}</button>`;
+    // CBT elimination: strike out options you've ruled out (exam mode only)
+    const strike = (!revealed && state.mode === 'exam')
+      ? `<span class="q-strikebtn" data-strike="${i}" title="${struck ? 'Un-strike' : 'Strike out this option (elimination)'}" role="button">✂</span>` : '';
+    return `<button class="${cls}" data-idx="${i}" ${revealed ? 'disabled' : ''}>${letter}<span class="q-text">${esc(opt)}</span>${mark}${strike}</button>`;
   }
 
   function navigatorHTML() {
@@ -246,12 +267,28 @@ const Quiz = (() => {
 
   /* ---------------- interactions ---------------- */
 
+  function toggleStrike(i) {
+    const s = state.strikes[state.index];
+    const on = !s.has(i);
+    if (on) s.add(i); else s.delete(i);
+    track('strike', { opt: i, on });
+    const q = state.questions[state.index];
+    const wrap = state.container.querySelector('#q-options');
+    if (wrap) wrap.innerHTML = q.options.map((opt, oi) => optionHTML(q, oi, opt)).join('');
+    autosave();
+  }
+
   function choose(idx) {
     if (state.revealed[state.index]) return;
+    const prev = state.answers[state.index];
     state.answers[state.index] = idx;
+    state.strikes[state.index].delete(idx);          // picking an option un-strikes it
+    track(prev == null ? 'answer' : 'change', { chosen: idx, from: prev, t: state.qTime[state.index] + Math.round((Date.now() - state.qEnter) / 1000) });
 
     if (state.mode === 'study') {
       state.revealed[state.index] = true;
+      const q0 = state.questions[state.index];
+      track('reveal', { correct: idx === q0.answer });
       const wrap = state.container.querySelector('#q-options');
       const q = state.questions[state.index];
       wrap.innerHTML = q.options.map((opt, i) => optionHTML(q, i, opt)).join('');
@@ -358,7 +395,9 @@ const Quiz = (() => {
   /* ---------------- navigation ---------------- */
 
   function toggleFlag() {
-    if (state.flags.has(state.index)) state.flags.delete(state.index); else state.flags.add(state.index);
+    const on = !state.flags.has(state.index);
+    if (on) state.flags.add(state.index); else state.flags.delete(state.index);
+    track('flag', { on });
     autosave(); render();
   }
   // Simulator: mark a question as flawed/below-standard so it is disregarded when
@@ -366,11 +405,19 @@ const Quiz = (() => {
   function toggleFlawed() {
     const i = state.index, on = !state.flawed.has(i);
     if (on) state.flawed.add(i); else state.flawed.delete(i);
+    track('flawed', { on });
     try { Backend.saveUserQuestionEdit?.(questionKey(i), { excluded: on }); } catch {}
     autosave(); render();
   }
   function go(d) { goto(state.index + d); }
-  function goto(i) { if (i >= 0 && i < state.questions.length) { state.index = i; autosave(); render(); } }
+  function goto(i) {
+    if (i >= 0 && i < state.questions.length && i !== state.index) {
+      const dwell = state.qTime[state.index] + Math.round((Date.now() - state.qEnter) / 1000);
+      if (dwell >= 2) track('dwell', { t: dwell, answered: state.answers[state.index] != null });
+      bankTime();
+      state.index = i; autosave(); render();
+    }
+  }
 
   function autosaveNow() { if (state?.sessionKey && Backend.saveSession) Backend.saveSession(state.sessionKey, snapshot()).catch(() => {}); }
 
@@ -380,13 +427,20 @@ const Quiz = (() => {
       const unanswered = answers.filter(a => a === null).length;
       if (!timedOut && unanswered > 0 && !confirm(`${unanswered} question${unanswered > 1 ? 's' : ''} unanswered. Submit anyway?`)) return;
     }
+    bankTime();                                        // close the last question's clock
     let correct = 0, scored = 0;
     const detail = questions.map((q, i) => {
       const ok = answers[i] === q.answer;
       const excluded = state.flawed.has(i);            // simulator: flawed questions don't count
       if (!excluded) { scored++; if (ok) correct++; }
-      return { chosen: answers[i], correct: q.answer, isCorrect: ok, excluded, qkey: questionKey(i), bucket: q.bucket || '', kind: q.kind };
+      return { chosen: answers[i], correct: q.answer, isCorrect: ok, excluded, qkey: questionKey(i), bucket: q.bucket || '', kind: q.kind, timeSec: state.qTime[i] || 0 };
     });
+    // feed the cohort-wide empirical difficulty meter (fire-and-forget)
+    try {
+      const rows = detail.filter(d => d.chosen != null && !d.excluded).map(d => ({ k: d.qkey, ok: d.isCorrect, t: d.timeSec }));
+      if (rows.length && Backend.bumpQuestionStats) Backend.bumpQuestionStats(rows).catch(() => {});
+    } catch {}
+    try { if (typeof Track !== 'undefined') Track.flush(); } catch {}
     const meta = state.loaded.meta, path = state.loaded.path;
     const attempt = {
       paperId: meta.id, paperTitle: state.loaded.paper.topic || meta.title,

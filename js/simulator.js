@@ -68,30 +68,83 @@ const Simulator = (() => {
     return { qkey: `${p.id}:${kind}:${q.number}`, paperId: p.id, paperTitle: p.title, number: q.number, kind, category, group, text, difficulty: difficultyOf(q) };
   }
 
+  /* ---------------- empirical enrichment (stats + AI tags) ---------------- */
+
+  const STATS_TTL = 10 * 60 * 1000;
+  async function loadStats() {
+    const loader = async () => {
+      const rows = (Backend.listQuestionStats ? await Backend.listQuestionStats().catch(() => []) : []) || [];
+      const map = {}; rows.forEach(r => map[r.questionKey] = r); return map;
+    };
+    return (typeof Cache !== 'undefined') ? Cache.wrap('sim-qstats', STATS_TTL, loader) : loader();
+  }
+  async function loadTags() {
+    const loader = async () => {
+      const rows = (Backend.listQuestionTags ? await Backend.listQuestionTags().catch(() => []) : []) || [];
+      const map = {}; rows.forEach(r => map[r.questionKey] = r); return map;
+    };
+    return (typeof Cache !== 'undefined') ? Cache.wrap('sim-qtags', STATS_TTL, loader) : loader();
+  }
+  /**
+   * Difficulty ladder: cohort-measured wrong-rate (once ≥5 attempts, weight
+   * grows with evidence) > AI tagger's estimate > the text heuristic.
+   * Tags also sharpen matching: the tagged topic/keywords join the match
+   * text and carry an exact-topic marker used by the selector.
+   */
+  function enrich(index, stats, tags) {
+    return index.map(r => {
+      const out = { ...r };
+      const tg = tags[r.qkey];
+      if (tg) {
+        out.tagTopic = tg.topic || '';
+        out.text = [tg.topic, tg.category, ...(tg.tags || [])].filter(Boolean).join(' ') + ' ' + r.text;
+        if (tg.difficulty != null) out.difficulty = clamp((r.difficulty + Number(tg.difficulty)) / 2, 0.1, 0.9);
+      }
+      const st = stats[r.qkey];
+      if (st && st.attempts >= 5) {
+        const empirical = clamp(1 - st.correct / st.attempts, 0.05, 0.95);
+        const w = Math.min(1, st.attempts / 20);       // full trust at 20 attempts
+        out.difficulty = clamp(out.difficulty * (1 - w) + empirical * w, 0.05, 0.95);
+        out.attempts = st.attempts;
+        out.avgTime = st.attempts ? st.totalTimeSec / st.attempts : 0;
+      }
+      return out;
+    });
+  }
+
   /* ---------------- history / adaptation ---------------- */
 
   async function loadHistory() {
     const mocks = (Backend.listMockResults ? await Backend.listMockResults().catch(() => []) : []) || [];
     const excludedArr = (Backend.listExcludedQuestions ? await Backend.listExcludedQuestions().catch(() => []) : []) || [];
-    const excluded = new Set(excludedArr);
+    // questions flagged as wrong by ANYONE and not yet fixed by the developer
+    // stay out of every new mock (see the Question review workshop)
+    const flaggedArr = (Backend.listGlobalFlaggedKeys ? await Backend.listGlobalFlaggedKeys().catch(() => []) : []) || [];
+    const excluded = new Set([...excludedArr, ...flaggedArr]);
     const seen = new Set();
     const bucketAgg = {};
+    // Recency-decayed accuracy: a mock's evidence halves every 14 days, so
+    // the weakness profile tracks the candidate you are NOW, not the one
+    // who sat a paper two months ago.
+    const HALF_LIFE_DAYS = 14;
     mocks.forEach(m => {
       (m.questionKeys || []).forEach(k => seen.add(k));
+      const ageDays = Math.max(0, (Date.now() - new Date(m.date || Date.now()).getTime()) / 86400000);
+      const w = Math.pow(0.5, ageDays / HALF_LIFE_DAYS);
       for (const b in (m.buckets || {})) {
-        const s = m.buckets[b]; const agg = bucketAgg[b] || (bucketAgg[b] = { seen: 0, correct: 0 });
-        agg.seen += s.seen || 0; agg.correct += s.correct || 0;
+        const s = m.buckets[b]; const agg = bucketAgg[b] || (bucketAgg[b] = { seen: 0, correct: 0, rawSeen: 0 });
+        agg.seen += (s.seen || 0) * w; agg.correct += (s.correct || 0) * w; agg.rawSeen += s.seen || 0;
       }
     });
     const recent = mocks.slice(0, 3);
     const acc = recent.length ? recent.reduce((a, m) => a + (m.percent || 0), 0) / recent.length / 100 : 0.5;
-    return { seen, excluded, bucketAgg, targetDifficulty: clamp(0.35 + acc * 0.4, 0.3, 0.8), mocks };
+    return { seen, excluded, flagged: new Set(flaggedArr), bucketAgg, targetDifficulty: clamp(0.35 + acc * 0.4, 0.3, 0.8), mocks };
   }
 
   function perfFactor(label, hist) {
     const a = hist.bucketAgg[label];
-    if (!a || a.seen < 3) return 1;                 // not enough evidence yet
-    const acc = a.correct / a.seen;
+    if (!a || (a.rawSeen || 0) < 3) return 1;       // not enough evidence yet
+    const acc = a.seen > 0 ? a.correct / a.seen : 0.65;   // decayed = recent-you
     return clamp(1 + (0.65 - acc) * 0.8, 0.7, 1.5); // weaker topic → sampled more
   }
 
@@ -110,7 +163,15 @@ const Simulator = (() => {
       const chosen = [];
       const used = new Set();
 
+      // AI-tagged questions match their bucket EXACTLY (+4) — keyword
+      // affinity is only the fallback for untagged questions.
+      const tagHit = (b, r) => {
+        if (!r.tagTopic) return 0;
+        const t = Blueprint.normStr(r.tagTopic), k = Blueprint.normStr(keyOf(b));
+        return t && k && (t === k || t.includes(k) || k.includes(t)) ? 4 : 0;
+      };
       const scoreFor = (b, r) =>
+        tagHit(b, r) +
         Blueprint.affinity(b.areas, keyOf(b), r.text) * 1.4 +
         (Blueprint.boostFor(bp, r.text) - 1) * 2 +
         (1 - Math.abs(r.difficulty - hist.targetDifficulty)) * 0.8 +
@@ -177,7 +238,8 @@ const Simulator = (() => {
         <div id="sim-body"><p class="muted">Preparing the engine…</p></div>
       </section>`;
 
-    const [bp, index, hist] = await Promise.all([Blueprint.load(), buildIndex(), loadHistory()]);
+    const [bp, rawIndex, hist, stats, tags] = await Promise.all([Blueprint.load(), buildIndex(), loadHistory(), loadStats(), loadTags()]);
+    const index = enrich(rawIndex, stats, tags);
     const body = view.querySelector('#sim-body');
 
     const sbaTotal = index.filter(r => r.kind === 'SBA').length;
@@ -208,10 +270,13 @@ const Simulator = (() => {
         </div>
         <div class="sim-hero-side">
           <div class="sim-stat"><strong>${sbaTotal + emqTotal}</strong><span>Questions indexed</span></div>
+          <div class="sim-stat"><strong>${Object.keys(tags).length}</strong><span>AI-tagged</span></div>
           <div class="sim-stat"><strong>${hist.mocks.length}</strong><span>Mocks taken</span></div>
           <div class="sim-stat"><strong>${last ? last.percent + '%' : '—'}</strong><span>Last score</span></div>
         </div>
       </div>
+
+      ${masteryHeatmapHTML(bp, hist)}
 
       ${weak.length ? `
         <div class="card" data-animate>
@@ -249,12 +314,49 @@ const Simulator = (() => {
     });
   }
 
+  /* ---------------- syllabus mastery heatmap ---------------- */
+
+  // One cell per blueprint bucket, coloured by the candidate's
+  // recency-decayed accuracy. Grey = untested; that IS the signal.
+  function masteryHeatmapHTML(bp, hist) {
+    const cells = [
+      ...(bp.sba || []).map(b => ({ label: b.subcategory || b.category, kind: 'SBA' })),
+      ...(bp.emq || []).map(b => ({ label: b.theme, kind: 'EMQ' }))
+    ].map(c => {
+      const a = hist.bucketAgg[c.label];
+      const pct = a && a.seen > 0 && (a.rawSeen || 0) >= 1 ? Math.round((a.correct / a.seen) * 100) : null;
+      return { ...c, pct, n: a ? (a.rawSeen || 0) : 0 };
+    });
+    if (!cells.length) return '';
+    const tone = p => p == null ? 'hm-none' : p < 50 ? 'hm-bad' : p < 70 ? 'hm-mid' : 'hm-good';
+    return `
+      <div class="card" data-animate>
+        <h3 class="card-title">Syllabus mastery map</h3>
+        <p class="muted">Recency-weighted accuracy per blueprint topic (last ~2 weeks count double). Grey cells are untested — they're the hidden risk.</p>
+        <div class="sim-heatmap">${cells.map(c => `
+          <div class="hm-cell ${tone(c.pct)}" title="${esc(c.label)} · ${c.pct == null ? 'not tested yet' : c.pct + '% (' + c.n + ' scored)'}">
+            <span class="hm-pct">${c.pct == null ? '·' : c.pct}</span>
+            <span class="hm-label">${esc(c.label)}</span>
+            <span class="hm-kind">${c.kind}</span>
+          </div>`).join('')}</div>
+        <div class="palette-legend hm-legend">
+          <span><i class="dot" style="background:#e05263"></i>&lt;50%</span>
+          <span><i class="dot" style="background:#e8a33d"></i>50–69%</span>
+          <span><i class="dot" style="background:#34d399"></i>≥70%</span>
+          <span><i class="dot" style="background:#3a405e"></i>Untested</span>
+        </div>
+      </div>`;
+  }
+
   /* ---------------- run (#/simulator/run) ---------------- */
 
   async function startRun(view, user) {
     view.innerHTML = `<section class="page narrow"><header data-animate><p class="kicker">ADAPTIVE SIMULATOR</p><h1 class="page-title">Building your mock…</h1><p class="muted">Sampling the blueprint across the live bank.</p></header></section>`;
     let bp, index, hist;
-    try { [bp, index, hist] = await Promise.all([Blueprint.load(), buildIndex(), loadHistory()]); }
+    try {
+      const [b, raw, h, stats, tags] = await Promise.all([Blueprint.load(), buildIndex(), loadHistory(), loadStats(), loadTags()]);
+      bp = b; hist = h; index = enrich(raw, stats, tags);
+    }
     catch (e) { view.innerHTML = `<section class="page narrow"><p class="bad">Could not prepare the mock: ${esc(e.message || e)}</p><a class="btn btn-ghost" href="#/simulator">Back</a></section>`; return; }
 
     const plan = select(bp, index, hist);
@@ -305,8 +407,10 @@ const Simulator = (() => {
       percent: attempt.percent, durationSec: attempt.durationSec, timedOut: attempt.timedOut,
       questionKeys: questions.map(q => q._qkey), excludedKeys: attempt.excludedKeys || [],
       buckets, bySection, sbaCount: counts.sba, emqCount: counts.emq, blueprintVersion: bp.version,
-      detail: attempt.detail.map(d => ({ qkey: d.qkey, bucket: d.bucket, kind: d.kind, isCorrect: d.isCorrect, excluded: d.excluded, chosen: d.chosen, correct: d.correct }))
+      detail: attempt.detail.map(d => ({ qkey: d.qkey, bucket: d.bucket, kind: d.kind, isCorrect: d.isCorrect, excluded: d.excluded, chosen: d.chosen, correct: d.correct, timeSec: d.timeSec || 0 }))
     };
+    // anonymous score into the cohort distribution (percentile curve)
+    try { Backend.saveCohortScore?.(result.percent).catch?.(() => {}); } catch {}
     try { return await Backend.saveMockResult(result); } catch { return null; }
   }
 
@@ -352,6 +456,9 @@ const Simulator = (() => {
             </div>`).join('')}</div>
         </div>
 
+        ${pacingHTML(mock)}
+        <div id="sim-cohort"></div>
+
         <div class="card sim-coach" data-animate>
           <div class="sim-coach-head">
             <h3 class="card-title">AI coaching plan</h3>
@@ -372,15 +479,81 @@ const Simulator = (() => {
     FX.scoreReveal(document.getElementById('score-big'), mock.percent);
     if (mock.percent >= 70) FX.confetti(view.querySelector('.results-head'));
 
+    // hide the coach if it's switched off in the AI systems panel
+    try {
+      if (typeof AI !== 'undefined' && AI.featureOn && !(await AI.featureOn('ai_coach'))) view.querySelector('.sim-coach')?.remove();
+    } catch { /* default: keep it */ }
+
     // coach provider toggle + generate
     view.querySelectorAll('#coach-prov .ai-prov').forEach(b => b.addEventListener('click', () => {
       view.querySelectorAll('#coach-prov .ai-prov').forEach(x => x.classList.toggle('active', x === b));
       coachProvider = b.dataset.prov;
     }));
-    view.querySelector('#coach-go').addEventListener('click', () => runCoach(view, mock, bp, bucketRows, sec));
+    view.querySelector('#coach-go')?.addEventListener('click', () => runCoach(view, mock, bp, bucketRows, sec));
+
+    // cohort percentile curve (async — needs the shared score table)
+    renderCohort(view.querySelector('#sim-cohort'), mock);
 
     // review (resolve the questions from cache)
-    renderReview(view.querySelector('#sim-review'), mock);
+    const canAiCards = !!(user && (user.isDeveloper || user.featureFlags?.ai_flashcards));
+    renderReview(view.querySelector('#sim-review'), mock, canAiCards);
+  }
+
+  /* ---------------- pacing analysis ---------------- */
+
+  function pacingHTML(mock) {
+    const rows = (mock.detail || []).filter(d => d.timeSec > 0);
+    if (rows.length < 5) return '';                  // older mocks have no timing
+    const scored = rows.filter(d => !d.excluded);
+    const totalSec = rows.reduce((s, d) => s + d.timeSec, 0);
+    const avg = Math.round(totalSec / rows.length);
+    // real paper budget: 120 min / 60 q = 120 s per question
+    const budget = 120;
+    const rushedWrong = scored.filter(d => d.chosen != null && !d.isCorrect && d.timeSec < 15).length;
+    const perBucket = {};
+    scored.forEach(d => { const b = perBucket[d.bucket || '(other)'] || (perBucket[d.bucket || '(other)'] = { t: 0, n: 0 }); b.t += d.timeSec; b.n++; });
+    const slowest = Object.entries(perBucket).map(([label, b]) => ({ label, avg: Math.round(b.t / b.n) }))
+      .sort((x, y) => y.avg - x.avg).slice(0, 3);
+    const longest = [...scored].sort((x, y) => y.timeSec - x.timeSec)[0];
+    const pace = avg <= budget ? `on pace (budget ${budget}s/question)` : `<span class="bad">${avg - budget}s/question over the 2-hour budget</span>`;
+    return `
+      <div class="card" data-animate>
+        <h3 class="card-title">Pacing analysis</h3>
+        <p class="muted">Average <strong>${avg}s</strong> per question — ${pace}.</p>
+        <div class="sim-pacing">
+          ${slowest.map(s => `<div class="sim-pace-row"><span>${esc(s.label)}</span><div class="sim-weak-bar"><span class="${s.avg > budget ? 'bad' : ''}" style="width:${Math.min(100, (s.avg / (budget * 2)) * 100)}%"></span></div><span class="sim-weak-pct">${s.avg}s avg</span></div>`).join('')}
+        </div>
+        ${rushedWrong ? `<p class="muted">⚡ <strong class="bad">${rushedWrong}</strong> wrong answer${rushedWrong > 1 ? 's' : ''} given in under 15 seconds — slow down: cheap marks are leaking on rushed guesses.</p>` : ''}
+        ${longest && longest.timeSec > budget * 2 ? `<p class="muted">🐢 Longest single question: <strong>${Math.round(longest.timeSec / 60)}m ${longest.timeSec % 60}s</strong> — in the real exam, flag it and move on.</p>` : ''}
+      </div>`;
+  }
+
+  /* ---------------- cohort percentile ---------------- */
+
+  async function renderCohort(host, mock) {
+    if (!host) return;
+    let scores = [];
+    try { scores = (await Backend.listCohortScores?.()) || []; } catch { scores = []; }
+    if (scores.length < 4) return;                   // needs a real distribution
+    const values = scores.map(s => s.percent);
+    const below = values.filter(v => v < mock.percent).length;
+    const pctile = Math.round((below / values.length) * 100);
+    const bins = new Array(10).fill(0);
+    values.forEach(v => bins[Math.min(9, Math.floor(v / 10))]++);
+    const maxBin = Math.max(...bins, 1);
+    const W = 520, H = 130, bw = W / 10;
+    const bars = bins.map((n, i) => {
+      const h = Math.round((n / maxBin) * (H - 30));
+      const mine = Math.min(9, Math.floor(mock.percent / 10)) === i;
+      return `<rect x="${i * bw + 3}" y="${H - 18 - h}" width="${bw - 6}" height="${h}" rx="3" fill="${mine ? '#f4c95d' : '#3a4a7a'}"/>` +
+        `<text x="${i * bw + bw / 2}" y="${H - 4}" text-anchor="middle" font-size="9" fill="#8a92ad">${i * 10}</text>`;
+    }).join('');
+    host.innerHTML = `
+      <div class="card" data-animate>
+        <h3 class="card-title">Where you stand in the cohort</h3>
+        <p class="muted">You scored higher than <strong class="good">${pctile}%</strong> of the ${values.length} mock sittings recorded on this platform (anonymous, last 4 months). Gold bar = your band.</p>
+        <svg class="sim-cohort-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="Cohort score distribution">${bars}</svg>
+      </div>`;
   }
 
   async function runCoach(view, mock, bp, bucketRows, sec) {
@@ -417,11 +590,21 @@ const Simulator = (() => {
     }
   }
 
-  async function renderReview(host, mock) {
+  async function renderReview(host, mock, canAiCards) {
     const recs = (mock.detail || []).map(d => ({ paperId: String(d.qkey).split(':')[0], qkey: d.qkey, kind: d.kind, paperTitle: '' }));
     const dict = await resolve(recs);
     if (!Object.keys(dict).length) { host.innerHTML = `<p class="muted">The questions in this mock are no longer available to review (unpublished).</p>`; return; }
-    host.innerHTML = (mock.detail || []).map((d, i) => {
+    const wrong = (mock.detail || []).filter(d => !d.excluded && !d.isCorrect && dict[d.qkey]);
+    const cardsBar = canAiCards && wrong.length ? `
+      <div class="card sim-aicards" data-animate>
+        <div class="sim-aicards-row">
+          <div><h3 class="card-title">🃏 Turn mistakes into flashcards</h3>
+          <p class="muted">AI writes spaced-repetition cards from your ${wrong.length} wrong answer${wrong.length > 1 ? 's' : ''} and files them in your personal “From my mistakes” deck.</p></div>
+          <button class="btn btn-gold" id="sim-gen-cards">Generate ${Math.min(wrong.length, 12)} card set${wrong.length > 1 ? 's' : ''}</button>
+        </div>
+        <p class="dev-row-msg" id="sim-cards-msg"></p>
+      </div>` : '';
+    host.innerHTML = cardsBar + (mock.detail || []).map((d, i) => {
       const q = dict[d.qkey];
       if (!q) return '';
       const L = q.preLettered ? '' : Quiz.LETTERS[q.answer] + '. ';
@@ -455,6 +638,48 @@ const Simulator = (() => {
         AI.attach(slot, { questionKey: d.qkey, kind: q.kind, theme: q.theme || '', stem: q.stem, lead: q.lead || '', options: q.options, answer: q.answer, chosen: d.chosen, rationale: q.rationale || '', hook: q.hook || '', reference: q.reference || '', paperTitle: q._paperTitle || 'Mock', preLettered: q.preLettered });
       });
     }
+    host.querySelector('#sim-gen-cards')?.addEventListener('click', e => generateAiCards(e.target, host.querySelector('#sim-cards-msg'), wrong, dict));
+  }
+
+  /* ---------------- AI flashcards from wrong answers ---------------- */
+
+  async function generateAiCards(btn, msg, wrong, dict) {
+    btn.disabled = true;
+    const items = wrong.slice(0, 12);                // cost guard per run
+    const made = [];
+    try {
+      const token = await Backend.getAccessToken();
+      if (!token) throw new Error('Sign in first.');
+      for (let i = 0; i < items.length; i++) {
+        msg.textContent = `Writing cards… ${i + 1}/${items.length}`; msg.className = 'dev-row-msg muted';
+        const q = dict[items[i].qkey];
+        const res = await fetch(window.AUREUM_CONFIG?.ai?.apiBase || '/api/explain', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+          body: JSON.stringify({ action: 'flashcard', dailyLimit: window.AUREUM_CONFIG?.ai?.dailyLimit,
+            question: { kind: q.kind, theme: q.theme || '', stem: q.stem, lead: q.lead || '', options: q.options, answer: q.answer, chosen: items[i].chosen, rationale: q.rationale || '', preLettered: q.preLettered } })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `Card generation failed (HTTP ${res.status}).`);
+        let cards = [];
+        try { cards = JSON.parse(String(data.text).replace(/^```[a-z]*\n?/i, '').replace(/```\s*$/, '')); } catch { cards = []; }
+        (Array.isArray(cards) ? cards : []).forEach((c, ci) => {
+          if (c.question && c.answer) made.push({ id: `${items[i].qkey}#${ci}`, question: c.question, answer: c.answer, keyPoint: c.keyPoint || '' });
+        });
+      }
+      if (!made.length) throw new Error('The AI returned no usable cards — try again.');
+      // merge into the personal deck (dedupe by card id → re-running is safe)
+      const decks = (await Backend.listUserDecks?.()) || [];
+      const ex = decks.find(d => d.id === 'deck-ai-mistakes');
+      const have = new Map((ex?.content?.cards || []).map(c => [c.id, c]));
+      made.forEach(c => have.set(c.id, c));
+      const cards = [...have.values()];
+      await Backend.saveUserDeck({ id: 'deck-ai-mistakes', title: 'From my mistakes (AI)', source: 'AI-generated from your wrong answers', cardCount: cards.length, personal: true, content: { topic: 'From my mistakes', cards } });
+      msg.innerHTML = `✓ ${made.length} card${made.length > 1 ? 's' : ''} added — deck now ${cards.length} cards. <a class="link" href="#/cards/deck-ai-mistakes">Open deck →</a>`;
+      msg.className = 'dev-row-msg good';
+    } catch (e) {
+      msg.textContent = e.message || String(e); msg.className = 'dev-row-msg bad';
+    }
+    btn.disabled = false;
   }
 
   function mdBlock(md) {

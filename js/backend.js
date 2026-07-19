@@ -213,6 +213,54 @@ const Backend = (() => {
     async function listAiUsage() { return {}; }        // local mode has no AI backend
     async function listAiTokenUsage() { return []; }   // local mode has no token meter
 
+    /* tracking + empirical stats (local: stats aggregate on-device, events dropped) */
+    async function logEvents() {}
+    async function listRecentEvents() { return []; }
+    async function bumpQuestionStats(rows) {
+      const m = read('qstats', {});
+      (rows || []).forEach(r => {
+        const s = m[r.k] || (m[r.k] = { attempts: 0, correct: 0, time: 0 });
+        s.attempts++; if (r.ok) s.correct++; s.time += r.t || 0;
+      });
+      write('qstats', m);
+    }
+    async function listQuestionStats() {
+      const m = read('qstats', {});
+      return Object.entries(m).map(([k, s]) => ({ questionKey: k, attempts: s.attempts, correct: s.correct, totalTimeSec: s.time }));
+    }
+    async function saveCohortScore() {}
+    async function listCohortScores() { return []; }
+
+    /* flag review (local: only this device's own flags) */
+    async function listAllFlags() {
+      const e = sessionEmail(); if (!e) return [];
+      const m = read(uqKey(e), {});
+      return Object.entries(m).filter(([, v]) => v.flagged && !v.resolved)
+        .map(([question_key, v]) => ({ questionKey: question_key, flagNote: v.flag_note || '', userEmail: e, userName: e, updated: v.updated, resolved: !!v.resolved }));
+    }
+    async function resolveFlags(qk) {
+      const e = sessionEmail(); if (!e) return;
+      const m = read(uqKey(e), {}); if (m[qk]) { m[qk].resolved = true; write(uqKey(e), m); }
+    }
+    async function listGlobalFlaggedKeys() {
+      const e = sessionEmail(); if (!e) return [];
+      const m = read(uqKey(e), {});
+      return Object.keys(m).filter(k => m[k].flagged && !m[k].resolved);
+    }
+
+    /* personal decks (AI flashcards from wrong answers) */
+    const udKey = e => 'userdecks.' + e;
+    async function saveUserDeck(meta) { const e = sessionEmail(); if (!e) return null; const l = read(udKey(e), []); const i = l.findIndex(d => d.id === meta.id); if (i >= 0) l[i] = meta; else l.push(meta); write(udKey(e), l); return meta; }
+    async function listUserDecks() { const e = sessionEmail(); return e ? read(udKey(e), []) : []; }
+    async function deleteUserDeck(id) { const e = sessionEmail(); if (!e) return; write(udKey(e), read(udKey(e), []).filter(d => d.id !== id)); }
+
+    /* AI feature registry + shared pools + tags (local mirrors) */
+    async function getAiFeatures() { return read('aifeatures', {}); }
+    async function saveAiFeatures(data) { write('aifeatures', data); return data; }
+    async function listSharedUsage() { return []; }
+    async function saveQuestionTags(rows) { const m = read('qtags', {}); (rows || []).forEach(r => m[r.questionKey] = r); write('qtags', m); }
+    async function listQuestionTags() { return Object.values(read('qtags', {})); }
+
     /* AI (local mode has no server function — the app disables AI in local) */
     async function getAccessToken() { return null; }
 
@@ -228,7 +276,10 @@ const Backend = (() => {
       getFlashcardDecks, publishFlashcardDeck, unpublishFlashcardDeck,
       getCardProgress, saveCardProgress, listAllCardProgress,
       getBlueprint, saveBlueprint, saveMockResult, listMockResults, getMockResult,
-      listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, listAiUsage, listAiTokenUsage, getAccessToken };
+      listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, listAiUsage, listAiTokenUsage,
+      logEvents, listRecentEvents, bumpQuestionStats, listQuestionStats, saveCohortScore, listCohortScores,
+      listAllFlags, resolveFlags, listGlobalFlaggedKeys, saveUserDeck, listUserDecks, deleteUserDeck,
+      getAiFeatures, saveAiFeatures, listSharedUsage, saveQuestionTags, listQuestionTags, getAccessToken };
   })();
 
   /* ================= SUPABASE BACKEND ================= */
@@ -474,6 +525,112 @@ const Backend = (() => {
       return out;
     }
 
+    /* tracking + empirical stats */
+    async function logEvents(batch) {
+      await ensureClient(); const id = await uid(); if (!id || !batch?.length) return;
+      await sb.from('question_events').insert(batch.map(e => ({ user_id: id, question_key: e.question_key, mode: e.mode, event: e.event, data: e.data })));
+    }
+    async function bumpQuestionStats(rows) {
+      await ensureClient(); const id = await uid(); if (!id || !rows?.length) return;
+      await sb.rpc('bump_question_stats', { p_rows: rows });
+    }
+    /* latest tracked events (developer — behaviour-insights analysis) */
+    async function listRecentEvents(limit = 1500) {
+      await ensureClient();
+      const { data } = await sb.from('question_events')
+        .select('question_key, mode, event, data, created_at')
+        .order('created_at', { ascending: false }).limit(limit);
+      return data || [];
+    }
+    async function listQuestionStats() {
+      await ensureClient();
+      const { data } = await sb.from('question_stats').select('question_key, attempts, correct, total_time_sec');
+      return (data || []).map(r => ({ questionKey: r.question_key, attempts: r.attempts, correct: r.correct, totalTimeSec: r.total_time_sec }));
+    }
+    async function saveCohortScore(percent) {
+      await ensureClient(); const id = await uid(); if (!id) return;
+      await sb.from('cohort_scores').insert({ user_id: id, percent: Math.round(percent) });
+    }
+    async function listCohortScores(days = 120) {
+      await ensureClient();
+      const cutoff = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+      const { data } = await sb.from('cohort_scores').select('user_id, percent, day').gte('day', cutoff);
+      return (data || []).map(r => ({ userId: r.user_id, percent: r.percent, day: r.day }));
+    }
+
+    /* flag review workshop (developer — "uqe dev read/update" policies) */
+    async function listAllFlags() {
+      await ensureClient();
+      const { data, error } = await sb.from('user_question_edits')
+        .select('user_id, question_key, flag_note, resolved, updated_at')
+        .eq('flagged', true).order('updated_at', { ascending: false });
+      if (error) throw new Error(error.message);
+      const { data: profs } = await sb.from('profiles').select('id, name, email');
+      const who = {}; (profs || []).forEach(p => who[p.id] = p);
+      return (data || []).map(r => ({ questionKey: r.question_key, flagNote: r.flag_note || '',
+        userName: who[r.user_id]?.name || '', userEmail: who[r.user_id]?.email || r.user_id,
+        updated: r.updated_at, resolved: !!r.resolved }));
+    }
+    async function resolveFlags(qk) {
+      await ensureClient();
+      await sb.from('user_question_edits').update({ resolved: true }).eq('question_key', qk).eq('flagged', true);
+    }
+    /* keys flagged as wrong by ANY user, not yet resolved — the simulator
+       keeps these out of new mocks (list_flagged_keys is security definer) */
+    async function listGlobalFlaggedKeys() {
+      await ensureClient();
+      const { data } = await sb.rpc('list_flagged_keys');
+      return data || [];
+    }
+
+    /* personal decks (AI flashcards from wrong answers) */
+    async function saveUserDeck(meta) {
+      await ensureClient(); const id = await uid(); if (!id) return null;
+      await sb.from('user_decks').upsert({ user_id: id, id: meta.id, meta, updated_at: new Date().toISOString() }, { onConflict: 'user_id,id' });
+      return meta;
+    }
+    async function listUserDecks() {
+      await ensureClient(); const id = await uid(); if (!id) return [];
+      const { data } = await sb.from('user_decks').select('meta').eq('user_id', id);
+      return (data || []).map(r => r.meta);
+    }
+    async function deleteUserDeck(deckId) {
+      await ensureClient(); const id = await uid(); if (!id) return;
+      await sb.from('user_decks').delete().eq('user_id', id).eq('id', deckId);
+    }
+
+    /* AI feature registry (app_config), shared pools, question tags */
+    async function getAiFeatures() {
+      await ensureClient();
+      const { data } = await sb.from('app_config').select('data').eq('id', 'ai_features').single();
+      return data?.data || {};
+    }
+    async function saveAiFeatures(cfgData) {
+      await ensureClient();
+      await sb.from('app_config').upsert({ id: 'ai_features', data: cfgData, updated_at: new Date().toISOString() });
+      return cfgData;
+    }
+    async function listSharedUsage() {
+      await ensureClient();
+      const { data } = await sb.from('ai_shared_usage').select('feature, day, provider, model, calls, input_tokens, output_tokens');
+      return (data || []).map(r => ({ feature: r.feature, day: r.day, provider: r.provider, model: r.model,
+        calls: r.calls || 0, inputTokens: r.input_tokens || 0, outputTokens: r.output_tokens || 0 }));
+    }
+    async function saveQuestionTags(rows) {
+      await ensureClient(); if (!rows?.length) return;
+      await sb.from('question_tags').upsert(rows.map(r => ({
+        question_key: r.questionKey, topic: r.topic || '', category: r.category || '',
+        guideline: r.guideline || '', tags: r.tags || [], difficulty_est: r.difficulty ?? null,
+        tagged_by: r.taggedBy || '', updated_at: new Date().toISOString()
+      })));
+    }
+    async function listQuestionTags() {
+      await ensureClient();
+      const { data } = await sb.from('question_tags').select('question_key, topic, category, guideline, tags, difficulty_est');
+      return (data || []).map(r => ({ questionKey: r.question_key, topic: r.topic, category: r.category,
+        guideline: r.guideline, tags: r.tags || [], difficulty: r.difficulty_est }));
+    }
+
     /* True token meter, one row per user × day × provider × model
        (developer — "tokens dev read" policy; users see only their own rows).
        Feeds the Users panel cost columns and the invoice generator. */
@@ -500,7 +657,10 @@ const Backend = (() => {
       getFlashcardDecks, publishFlashcardDeck, unpublishFlashcardDeck,
       getCardProgress, saveCardProgress, listAllCardProgress,
       getBlueprint, saveBlueprint, saveMockResult, listMockResults, getMockResult,
-      listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, listAiUsage, listAiTokenUsage, getAccessToken };
+      listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, listAiUsage, listAiTokenUsage,
+      logEvents, listRecentEvents, bumpQuestionStats, listQuestionStats, saveCohortScore, listCohortScores,
+      listAllFlags, resolveFlags, listGlobalFlaggedKeys, saveUserDeck, listUserDecks, deleteUserDeck,
+      getAiFeatures, saveAiFeatures, listSharedUsage, saveQuestionTags, listQuestionTags, getAccessToken };
   })();
 
   const impl = useCloud ? Cloud : Local;

@@ -1292,3 +1292,81 @@ details[open] > summary .tw-caret { transform: rotate(90deg); }
   .bill-overlay { padding: 8px; }
   .bill-modal-head { flex-wrap: wrap; }
 }
+
+/* ============================================================
+   v16 — CBT exam mode, learning engine, review workshop, AI panel
+   ============================================================ */
+
+/* option strike-through (elimination) */
+.q-option { position: relative; }
+.q-option.struck .q-text { text-decoration: line-through; opacity: .38; }
+.q-option.struck .q-letter { opacity: .38; }
+.q-strikebtn {
+  position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+  font-size: .78rem; opacity: 0; padding: 4px 6px; border-radius: 6px; color: var(--ink-3);
+  transition: opacity .15s ease;
+}
+.q-option:hover .q-strikebtn, .q-option:focus-visible .q-strikebtn { opacity: .75; }
+.q-strikebtn:hover { opacity: 1 !important; background: rgba(255,255,255,.08); }
+.q-option.struck .q-strikebtn { opacity: .9; }
+@media (pointer: coarse) { .q-strikebtn { opacity: .5; } }
+
+/* syllabus mastery heatmap */
+.sim-heatmap { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; margin-top: 14px; }
+.hm-cell {
+  border-radius: 10px; padding: 10px 10px 8px; min-height: 74px;
+  display: flex; flex-direction: column; gap: 2px; border: 1px solid rgba(255,255,255,.06);
+  background: rgba(255,255,255,.03);
+}
+.hm-pct { font-weight: 700; font-size: 1.05rem; }
+.hm-label { font-size: .66rem; line-height: 1.25; color: var(--ink-2); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.hm-kind { font-size: .58rem; letter-spacing: .08em; color: var(--ink-3); margin-top: auto; }
+.hm-none .hm-pct { color: var(--ink-3); }
+.hm-bad  { background: rgba(224,82,99,.14);  border-color: rgba(224,82,99,.35); }
+.hm-bad .hm-pct { color: #e05263; }
+.hm-mid  { background: rgba(232,163,61,.12); border-color: rgba(232,163,61,.32); }
+.hm-mid .hm-pct { color: #e8a33d; }
+.hm-good { background: rgba(52,211,153,.10); border-color: rgba(52,211,153,.30); }
+.hm-good .hm-pct { color: #34d399; }
+.hm-legend { margin-top: 12px; }
+
+/* pacing + cohort */
+.sim-pacing { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; }
+.sim-pace-row { display: grid; grid-template-columns: minmax(120px, 1fr) 2fr auto; align-items: center; gap: 10px; font-size: .85rem; }
+.sim-cohort-svg { width: 100%; height: auto; margin-top: 10px; }
+.sim-aicards-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+
+/* question review workshop */
+.qr-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.qr-reports { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.qr-report { display: flex; gap: 12px; font-size: .84rem; padding: 8px 12px; border-radius: 8px; background: rgba(224,82,99,.07); border-left: 3px solid rgba(224,82,99,.5); }
+.qr-report.qr-done { opacity: .5; border-left-color: rgba(52,211,153,.5); background: rgba(52,211,153,.06); }
+.qr-who { min-width: 160px; font-weight: 600; display: flex; flex-direction: column; }
+.qr-note { color: var(--ink-2); }
+.qr-form { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+.qr-form label { display: flex; flex-direction: column; gap: 4px; font-size: .78rem; color: var(--ink-3); }
+.qr-form input, .qr-form textarea, .qr-form select {
+  background: rgba(255,255,255,.05); color: inherit; border: 1px solid rgba(255,255,255,.14);
+  border-radius: 8px; padding: 8px 10px; font: inherit; font-size: .88rem;
+}
+.qr-form textarea { min-height: 70px; resize: vertical; }
+.qr-form .qr-options { min-height: 110px; }
+.qr-danger { color: #e05263; }
+.qr-audit { margin-top: 12px; padding: 14px 16px; border-radius: 10px; background: rgba(125,211,252,.06); border: 1px solid rgba(125,211,252,.2); }
+.qr-audit h4 { margin-bottom: 8px; }
+
+/* AI systems panel */
+.ai-feat {
+  display: flex; justify-content: space-between; gap: 16px; align-items: center;
+  padding: 14px 4px; border-bottom: 1px solid rgba(255,255,255,.07); flex-wrap: wrap;
+}
+.ai-feat:last-child { border-bottom: none; }
+.ai-feat-planned { opacity: .55; }
+.ai-feat-main { flex: 1 1 320px; min-width: 260px; }
+.ai-feat-name { font-weight: 600; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ai-feat-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ai-feat-controls select {
+  background: rgba(255,255,255,.05); color: inherit; border: 1px solid rgba(255,255,255,.14);
+  border-radius: 8px; padding: 6px 8px; font-size: .78rem; max-width: 220px;
+}
+.ai-feat-usage { font-size: .78rem; color: var(--ink-2); min-width: 150px; text-align: right; }

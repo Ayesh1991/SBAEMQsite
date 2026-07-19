@@ -33,7 +33,7 @@
     { re: /^#\/simulator$/, fn: renderSimHome },
     { re: /^#\/simulator\/run$/, fn: renderSimRun },
     { re: /^#\/simulator\/result\/([^/]+)$/, fn: renderSimResult },
-    { re: /^#\/dev(?:\/(papers|cards|users|blueprint))?$/, fn: renderDev }
+    { re: /^#\/dev(?:\/(papers|cards|users|blueprint|review|ai))?$/, fn: renderDev }
   ];
   const devOnly = user => !!(user && (user.email === cfg.developer.email || sessionStorage.getItem('aureum-dev') === '1'));
 
