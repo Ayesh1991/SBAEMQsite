@@ -1003,12 +1003,13 @@ const DevConsole = (() => {
      monthly spend. The registry below is the platform's AI roadmap.
      ================================================================ */
 
+  // labels carry the $/1M in-out rates so model choices are informed ones
   const MODEL_OPTIONS = [
-    { id: 'gemini|gemini-2.5-flash',          label: 'Gemini 2.5 Flash' },
-    { id: 'gemini|gemini-3-flash',            label: 'Gemini 3 Flash' },
-    { id: 'gemini|gemini-3.5-flash',          label: 'Gemini 3.5 Flash' },
-    { id: 'claude|claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
-    { id: 'claude|claude-sonnet-4-5',         label: 'Claude Sonnet 4.5' }
+    { id: 'gemini|gemini-2.5-flash',          label: 'Gemini 2.5 Flash · $0.30/$2.50' },
+    { id: 'gemini|gemini-3-flash',            label: 'Gemini 3 Flash · $0.50/$3.00' },
+    { id: 'gemini|gemini-3.5-flash',          label: 'Gemini 3.5 Flash · $1.50/$9.00' },
+    { id: 'claude|claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 · $1.00/$5.00' },
+    { id: 'claude|claude-sonnet-4-5',         label: 'Claude Sonnet 4.5 · $3.00/$15.00' }
   ];
   const SPLIT_OPTIONS = [
     { id: 'simulator', label: 'Split across simulator users' },
@@ -1063,6 +1064,7 @@ const DevConsole = (() => {
           <p class="muted" id="tag-status">Checking bank…</p>
           <div class="dev-toolbar">
             <button class="btn btn-gold" id="tag-run" disabled>Tag remaining questions</button>
+            <button class="btn btn-ghost" id="tag-stop" hidden>⏸ Stop</button>
             <span class="dev-status" id="tag-progress"></span>
           </div>
         </div>
@@ -1198,43 +1200,61 @@ const DevConsole = (() => {
     const status = view.querySelector('#tag-status');
     const progress = view.querySelector('#tag-progress');
     const btn = view.querySelector('#tag-run');
+    const stopBtn = view.querySelector('#tag-stop');
+    let stopReq = false;
+    stopBtn.addEventListener('click', () => { stopReq = true; stopBtn.disabled = true; stopBtn.textContent = 'Stopping after this batch…'; });
     (async () => {
       try {
         const { index, todo, taggedCount } = await untaggedRecords();
         status.innerHTML = `<strong>${taggedCount}</strong> of ${index.length} bank questions tagged · <strong>${todo.length}</strong> remaining. Tagging runs in batches of 10 and each question is only ever tagged once.`;
         btn.disabled = !todo.length;
         btn.onclick = async () => {
-          btn.disabled = true;
-          // live meter: exact provider-reported tokens per batch → dollars
-          let done = 0, failedBatches = 0, tokIn = 0, tokOut = 0, costUsd = 0;
+          btn.disabled = true; stopReq = false;
+          stopBtn.hidden = false; stopBtn.disabled = false; stopBtn.textContent = '⏸ Stop';
+          // the model the panel has configured — anything else serving is an alarm
+          let selModel = 'gemini-2.5-flash';
+          try { selModel = ((await ctx.Backend.getAiFeatures())?.question_tagger?.model) || selModel; } catch {}
+          // live meter: exact provider-reported tokens per batch → dollars,
+          // plus WHICH model actually answered (red if not the selected one)
+          let done = 0, failedBatches = 0, tokIn = 0, tokOut = 0, costUsd = 0, served = '';
           const fmtTok = n => n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : (n / 1e3).toFixed(1) + 'k';
-          const meter = () => `<strong>${fmtTok(tokIn + tokOut)}</strong> tokens · <strong class="dev-cost">${Billing.usd(costUsd, costUsd < 1 ? 3 : 2)}</strong>`;
+          const meter = () => {
+            const ok = !served || served.startsWith(selModel);
+            return `<strong>${fmtTok(tokIn + tokOut)}</strong> tokens · <strong class="dev-cost">${Billing.usd(costUsd, costUsd < 1 ? 3 : 2)}</strong>` +
+              (served ? ` · <span class="${ok ? 'muted' : 'bad'}">${ok ? '' : '⚠ served by '}${ctx.esc(served)}</span>` : '');
+          };
           try {
             for (let i = 0; i < todo.length; i += 10) {
+              if (stopReq) break;
               progress.innerHTML = `Tagging ${Math.min(i + 10, todo.length)}/${todo.length}… · ${meter()}${failedBatches ? ` · <span class="bad">${failedBatches} to retry</span>` : ''}`;
               try {
                 const r = await tagRecords(todo.slice(i, i + 10));
                 done += r.n; tokIn += r.tokIn; tokOut += r.tokOut;
+                if (r.model) served = r.model;
                 const rate = Billing.rateFor(r.model);
                 costUsd += (r.tokIn / 1e6) * rate.in + (r.tokOut / 1e6) * rate.out;
               } catch (e) {
-                // fatal errors (auth, config, quota) stop the run; a flaky
-                // batch (truncated/unparseable output) is skipped and simply
+                // fatal errors (auth, config, quota, unavailable model) stop
+                // the run; a flaky batch (truncated output) is skipped and
                 // stays untagged — the next run picks it up
-                if (/sign in|Developer only|HTTP 4|quota|API_KEY|configured/i.test(String(e.message || e))) throw e;
+                if (/sign in|Developer only|HTTP 4|quota|API_KEY|configured|not found|not supported/i.test(String(e.message || e))) throw e;
                 failedBatches++;
               }
             }
             if (typeof Cache !== 'undefined') Cache.bust('sim-qtags');
-            progress.innerHTML = (failedBatches
-              ? `<span class="good">✓ ${done} questions tagged.</span> <span class="bad">${failedBatches} batch${failedBatches > 1 ? 'es' : ''} failed — click again to tag the remainder.</span>`
-              : `<span class="good">✓ ${done} questions tagged — mock selection is now tag-precise.</span>`) + ` · ${meter()}`;
-            if (!failedBatches) status.textContent = 'Bank fully tagged.';
-            btn.disabled = !failedBatches;
+            progress.innerHTML = (stopReq
+              ? `<span class="muted">⏸ Stopped — ${done} tagged this run, progress saved. Click “Tag remaining questions” to resume.</span>`
+              : failedBatches
+                ? `<span class="good">✓ ${done} questions tagged.</span> <span class="bad">${failedBatches} batch${failedBatches > 1 ? 'es' : ''} failed — click again to tag the remainder.</span>`
+                : `<span class="good">✓ ${done} questions tagged — mock selection is now tag-precise.</span>`) + ` · ${meter()}`;
+            if (!failedBatches && !stopReq) status.textContent = 'Bank fully tagged.';
+            btn.disabled = !failedBatches && !stopReq && true;
+            if (stopReq || failedBatches) btn.disabled = false;
           } catch (e) {
             progress.innerHTML = `<span class="bad">${ctx.esc(e.message || e)} — progress is saved; run again to continue.</span> · ${meter()}`;
             btn.disabled = false;
           }
+          stopBtn.hidden = true;
         };
       } catch (e) { status.innerHTML = `<span class="bad">${ctx.esc(e.message || e)}</span>`; }
     })();

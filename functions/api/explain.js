@@ -107,9 +107,10 @@ export async function onRequest(context) {
       // tagging returns ~100 tokens of JSON per question ×10, and Gemini
       // 2.5+ thinking also bills against the cap — give batch jobs headroom
       const maxTok = action === 'tag' ? 8000 : 2000;
+      // strict: the model picked in the AI systems panel, or fail loudly
       const r = useProvider === 'claude'
         ? await callClaude(p.system, p.user, fc.model || model, env, maxTok)
-        : await callGemini(p.system, p.user, fc.model || model || defaultGemini, env, false, maxTok);
+        : await callGemini(p.system, p.user, fc.model || model || defaultGemini, env, false, maxTok, true);
       await logShared(token, env, feature, useProvider, r);
       // usage goes back to the panel so the runner can show live cost
       return json({ text: r.text, model: r.model, usage: { in: r.in || 0, out: r.out || 0 } });
@@ -351,7 +352,7 @@ function stripFences(s) { return s.replace(/^```[a-z]*\n?/i, '').replace(/```\s*
 
 /* ---------------- model calls ---------------- */
 
-async function callGemini(system, user, model, env, restricted, maxTokens) {
+async function callGemini(system, user, model, env, restricted, maxTokens, strict) {
   if (!env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not configured on the server.');
   // Guard against a mis-pasted secret: a real key is a single token
   // (AIza… , no spaces / newlines / punctuation). If the stored value
@@ -371,9 +372,17 @@ async function callGemini(system, user, model, env, restricted, maxTokens) {
   // so 2.5 Flash is the baseline now.) For non-upgraded users the fallback
   // list stays on baseline-priced models only — the gate can't be escaped
   // through an outage.
-  const models = restricted
-    ? [model || 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-flash-latest']
-    : [model || 'gemini-2.5-flash', 'gemini-2.5-flash', 'gemini-3-flash', 'gemini-flash-latest', 'gemini-2.5-flash-lite'];
+  // STRICT mode (platform batch jobs): exactly the configured model or a
+  // clear error — never a silent substitute. The fallback chain once
+  // escalated a failing 2.5-flash request to gemini-flash-latest, which
+  // Google resolved to 3.5 Flash at ~5x the price; billing was honest but
+  // the model choice wasn't. Interactive calls keep fallbacks for
+  // resilience (restricted users only onto baseline-priced models).
+  const models = strict
+    ? [model || 'gemini-2.5-flash']
+    : restricted
+      ? [model || 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-flash-latest']
+      : [model || 'gemini-2.5-flash', 'gemini-2.5-flash', 'gemini-3-flash', 'gemini-flash-latest', 'gemini-2.5-flash-lite'];
   const tried = new Set();
   let lastErr = 'unknown error';
   for (const m of models) {
