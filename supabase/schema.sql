@@ -34,15 +34,22 @@ alter table public.profiles add column if not exists feature_flags jsonb default
 -- "flashcards": true}) — toggled from their Profile tab, no grant needed.
 alter table public.profiles add column if not exists prefs jsonb default '{}'::jsonb;
 
+-- status: registration approval — 'pending' (new sign-ups wait for the
+-- developer), 'approved' (full access), 'denied'. The column is added with
+-- default 'approved' so EXISTING users keep access, then the default flips
+-- to 'pending' so every future sign-up awaits approval.
+alter table public.profiles add column if not exists status text not null default 'approved';
+alter table public.profiles alter column status set default 'pending';
+
 -- Users may update their own profile row (name, position, prefs…) but any
--- attempt to change feature_flags by a non-developer is silently reverted —
--- that column is the developer's alone (Gemini access, model tiers, AI cards).
+-- attempt to change feature_flags OR status by a non-developer is silently
+-- reverted — those columns are the developer's alone.
 create or replace function public.protect_feature_flags()
 returns trigger language plpgsql security definer as $$
 begin
-  if coalesce(auth.jwt() ->> 'email', '') <> 'ayeshmantha@gmail.com'
-     and new.feature_flags is distinct from old.feature_flags then
-    new.feature_flags := old.feature_flags;
+  if coalesce(auth.jwt() ->> 'email', '') <> 'ayeshmantha@gmail.com' then
+    if new.feature_flags is distinct from old.feature_flags then new.feature_flags := old.feature_flags; end if;
+    if new.status is distinct from old.status then new.status := old.status; end if;
   end if;
   return new;
 end $$;
@@ -559,6 +566,50 @@ begin
         output_tokens = public.ai_shared_usage.output_tokens + excluded.output_tokens,
         updated_at    = now();
 end; $$;
+
+-- ---------- 8q) QUESTION EDIT PROPOSALS (peer review → developer approval) ----------
+-- Any signed-in user can review a flagged question and PROPOSE a corrected
+-- version. Nothing changes for anyone until the developer approves it in
+-- the Question review workshop (which shows the flaggers' and reviewer's
+-- identities). status: pending | approved | rejected.
+create table if not exists public.question_edit_proposals (
+  id bigint generated always as identity primary key,
+  question_key text not null,           -- paperId:kind:number
+  reviewer_id uuid not null references auth.users(id) on delete cascade,
+  proposed jsonb not null,              -- { stem, lead, theme, options[], answer, rationale }
+  note text,                            -- reviewer's reasoning / guideline cite
+  status text not null default 'pending',
+  decided_at timestamptz,
+  created_at timestamptz default now()
+);
+create index if not exists qep_status_idx on public.question_edit_proposals (status, created_at desc);
+alter table public.question_edit_proposals enable row level security;
+drop policy if exists "qep own insert" on public.question_edit_proposals;
+drop policy if exists "qep own read"   on public.question_edit_proposals;
+drop policy if exists "qep dev read"   on public.question_edit_proposals;
+drop policy if exists "qep dev update" on public.question_edit_proposals;
+create policy "qep own insert" on public.question_edit_proposals for insert
+  with check (auth.uid() = reviewer_id);
+create policy "qep own read" on public.question_edit_proposals for select using (auth.uid() = reviewer_id);
+create policy "qep dev read" on public.question_edit_proposals for select
+  using (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+create policy "qep dev update" on public.question_edit_proposals for update
+  using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
+  with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+
+-- Flagged questions WITH their (anonymous) reasons, for the peer-review tab:
+-- keys + notes only — flaggers' identities are visible to the developer alone.
+create or replace function public.list_flagged_details()
+returns table (question_key text, notes text[]) language sql security definer stable as $$
+  select question_key,
+         array_remove(array_agg(distinct nullif(trim(flag_note), '')), null)
+  from (
+    select question_key, flag_note from public.user_question_edits where flagged and not resolved
+    union all
+    select question_key, flag_note from public.question_edits where flagged
+  ) f
+  group by question_key
+$$;
 
 -- ---------- 9) Auto-create a profile row on sign-up ----------
 create or replace function public.handle_new_user()

@@ -136,6 +136,14 @@ export async function onRequest(context) {
       await logTokens(token, env, useProvider, r, 'flashcards');
       return json({ text: r.text, model: r.model });
     }
+    // ---- Paper architect: map a user's search words onto the bank's AI
+    // tags (Design a paper). Per-user billed; usage returned for instant
+    // on-screen token/cost display.
+    if (action === 'termmap') {
+      const p = buildTermMapPrompt(body);
+      const r = await run(p, 'paper_architect');
+      return json({ text: r.text, model: r.model, usage: { in: r.in || 0, out: r.out || 0 } });
+    }
     if (action === 'artifact') {
       const art = await generateArtifact({ artifact, question, run: p => run(p, 'study_aids') });
       return json({ artifact: art.artifact, model: art.model });
@@ -301,6 +309,21 @@ function buildFlashcardPrompt(body) {
       `Front under 30 words, back under 45. Return a JSON array only.`
   };
 }
+// Paper architect: translate the candidate's search words into the exact
+// vocabulary of the bank's AI tags, strict JSON out.
+function buildTermMapPrompt(body) {
+  const terms = (body.terms || []).slice(0, 12);
+  const vocab = (body.vocabulary || []).slice(0, 250);
+  return {
+    system: PERSONA + ' You map exam-revision search terms onto an index vocabulary. You output ONLY a valid JSON object, no code fences.',
+    user: `Index vocabulary (topics and keywords that actually exist in the question bank):\n${vocab.join('; ')}\n\n` +
+      `Candidate's search terms:\n${terms.map((t, i) => `${i + 1}. ${t}`).join('\n')}\n\n` +
+      `For EACH term, list the 1-5 vocabulary entries (verbatim from the list above) that mean the same thing — expand abbreviations ` +
+      `(e.g. "magsulphate" → magnesium sulphate entries, "PIH" → pregnancy-induced hypertension entries). Only use entries from the vocabulary. ` +
+      `Return: {"<term exactly as given>": ["entry", …], …} — an empty array if nothing fits.`
+  };
+}
+
 // Behaviour analysis: aggregated tracking data in, markdown insight out.
 function buildInsightsPrompt(body) {
   return {

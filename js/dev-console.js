@@ -408,8 +408,11 @@ const DevConsole = (() => {
     published = await ctx.Data.publishedPapers();
     const publishedKeys = new Set(published.map(p => p.driveKey).filter(Boolean));
     const publishedTitles = new Set(published.map(p => (p.title || '').toLowerCase()));
+    let declined = [];
+    try { declined = (await ctx.Backend.getDeclinedPapers()) || []; } catch { declined = []; }
+    const declinedSet = new Set(declined);
 
-    const newFiles = driveFiles.filter(f => !publishedKeys.has(f.key) && !publishedTitles.has((f.title || '').toLowerCase()));
+    const newFiles = driveFiles.filter(f => !publishedKeys.has(f.key) && !publishedTitles.has((f.title || '').toLowerCase()) && !declinedSet.has(f.key));
     status.innerHTML = `${driveFiles.length} JSON file${driveFiles.length !== 1 ? 's' : ''} in Drive · <strong>${newFiles.length} new</strong> to index`;
 
     if (!newFiles.length) { list.innerHTML = `<p class="muted card" style="padding:20px">All Drive papers are already indexed. 🎉</p>`; return; }
@@ -440,6 +443,7 @@ const DevConsole = (() => {
           <label>Section <select data-role="sec" data-i="${i}"></select></label>
           <label>Topic <select data-role="top" data-i="${i}"></select></label>
           <button class="btn btn-gold btn-sm" data-role="approve" data-i="${i}">Approve & publish</button>
+          <button class="btn btn-ghost btn-sm qr-danger" data-role="decline" data-i="${i}">Decline & remove</button>
         </div>
         <p class="dev-row-msg" data-role="msg" data-i="${i}"></p>
       </div>`;
@@ -467,6 +471,14 @@ const DevConsole = (() => {
     fillSections(catSel.value);
 
     row.querySelector('[data-role="approve"]').addEventListener('click', () => approve(f, i, { catSel, secSel, topSel, row }));
+    row.querySelector('[data-role="decline"]')?.addEventListener('click', async () => {
+      if (!confirm(`Decline "${f.title}"?\n\nIt will NOT be published and will NEVER appear in future Drive scans. This cannot be undone from the console.`)) return;
+      try {
+        await ctx.Backend.declinePaper(f.key);
+        row.classList.add('dev-done');
+        row.innerHTML = `<p class="muted">🚫 Declined — this file won't appear in future scans.</p>`;
+      } catch (e) { alert('Could not decline: ' + (e.message || e)); }
+    });
   }
 
   async function approve(f, i, els) {
@@ -738,7 +750,16 @@ const DevConsole = (() => {
     const devMail = (ctx.cfg.developer.email || '').toLowerCase();
     const totalAi = Object.values(usage).reduce((s, u) => s + (u.total || 0), 0);
     const monthTotal = Object.values(costs).reduce((s, c) => s + c.thisMonth, 0);
+    let regOpen = true;
+    try { regOpen = await ctx.Backend.getRegistrationOpen(); } catch { regOpen = true; }
+    const pendingN = list.filter(u => u.status === 'pending').length;
     host.innerHTML = `
+      <div class="dev-reg">
+        <label class="dev-flag"><input type="checkbox" id="reg-open" ${regOpen ? 'checked' : ''}><span></span></label>
+        <span>New registrations are <strong id="reg-state">${regOpen ? 'OPEN' : 'CLOSED'}</strong>
+          <span class="muted tiny">— when closed, the sign-up form is hidden. Every new account still needs your approval below.</span></span>
+        ${pendingN ? `<span class="chip pr-st-pending">${pendingN} awaiting approval</span>` : ''}
+      </div>
       <div class="dev-users-stats">
         <div><strong>${list.length}</strong><span>Accounts</span></div>
         <div><strong>${list.reduce((s, u) => s + (u.xp || 0), 0)}</strong><span>Total XP</span></div>
@@ -746,15 +767,20 @@ const DevConsole = (() => {
         <div><strong>${Billing.usd(monthTotal)}</strong><span>AI cost this month</span></div>
       </div>
       <div class="table-scroll"><table class="table dev-users-table">
-        <thead><tr><th>Name</th><th>Email</th><th>XP</th><th>AI today</th><th>AI total</th><th>Cost (month)</th><th>Cost (all)</th>${FEATURES.map(f => `<th>${f.label}</th>`).join('')}<th>Self-enabled</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Email</th><th>Status</th><th>XP</th><th>AI today</th><th>AI total</th><th>Cost (month)</th><th>Cost (all)</th>${FEATURES.map(f => `<th>${f.label}</th>`).join('')}<th>Self-enabled</th><th></th></tr></thead>
         <tbody>${list.map(u => {
           const isDev = (u.email || '').toLowerCase() === devMail;
           const ai = usage[u.id] || { total: 0, today: 0 };
           const c = costs[u.id] || { thisMonth: 0, allTime: 0 };
           const self = [u.prefs?.simulator ? 'Sim' : null, u.prefs?.flashcards ? 'Cards' : null].filter(Boolean).join(' · ') || '—';
+          const stBadge = isDev ? '<span class="tiny muted">owner</span>'
+            : u.status === 'pending' ? `<span class="chip pr-st-pending">Awaiting approval</span> <button class="link-btn" data-approve="${ctx.esc(u.id)}">approve</button> · <button class="link-btn" data-deny="${ctx.esc(u.id)}">deny</button>`
+            : u.status === 'denied' ? `<span class="chip pr-st-rejected">Access denied</span> <button class="link-btn" data-approve="${ctx.esc(u.id)}">approve</button>`
+            : `<span class="chip pr-st-approved">Approved</span> <button class="link-btn" data-deny="${ctx.esc(u.id)}">revoke</button>`;
           return `<tr class="${isDev ? 'dev-users-me' : ''}">
             <td>${ctx.esc(u.name || '')}${isDev ? ' <span class="qedit-tag">developer</span>' : ''}</td>
             <td class="muted">${ctx.esc(u.email || '')}</td>
+            <td>${stBadge}</td>
             <td class="muted">${u.xp || 0}</td>
             <td class="muted">${ai.today}</td>
             <td class="muted">${ai.total}</td>
@@ -792,6 +818,18 @@ const DevConsole = (() => {
     host.querySelectorAll('[data-bill]').forEach(b => b.addEventListener('click', () => {
       const u = list.find(x => x.id === b.dataset.bill);
       if (u) Billing.openBillModal(u, tokenRows, sharedCtx);
+    }));
+    host.querySelector('#reg-open')?.addEventListener('change', async e => {
+      try { await ctx.Backend.setRegistrationOpen(e.target.checked);
+        host.querySelector('#reg-state').textContent = e.target.checked ? 'OPEN' : 'CLOSED'; }
+      catch (e2) { e.target.checked = !e.target.checked; alert('Could not save: ' + (e2.message || e2)); }
+    });
+    host.querySelectorAll('[data-approve]').forEach(b => b.addEventListener('click', async () => {
+      await ctx.Backend.setUserStatus(b.dataset.approve, 'approved'); await refreshUsers(view);
+    }));
+    host.querySelectorAll('[data-deny]').forEach(b => b.addEventListener('click', async () => {
+      if (!confirm('Deny this account access to the platform?')) return;
+      await ctx.Backend.setUserStatus(b.dataset.deny, 'denied'); await refreshUsers(view);
     }));
   }
 
@@ -847,10 +885,104 @@ const DevConsole = (() => {
           <p class="muted">Everything any user flagged as wrong, wherever they were practising. A flagged question is
             <strong>kept out of new mocks</strong> until you fix it here and mark it resolved.</p>
         </header>
+        <div id="qr-props" data-animate></div>
         <div id="qr-list" data-animate><p class="muted">Loading flags…</p></div>
       </section>`;
     ctx.FX.viewIn(view);
+    await refreshProposals(view);
     await refreshFlags(view);
+  }
+
+  /* ---- community proposals: peer-reviewed fixes awaiting the owner ---- */
+
+  async function refreshProposals(view) {
+    const host = view.querySelector('#qr-props');
+    if (!host) return;
+    let props = [];
+    try { props = ((await ctx.Backend.listProposals()) || []).filter(p => p.status === 'pending'); }
+    catch { host.innerHTML = ''; return; }
+    if (!props.length) { host.innerHTML = ''; return; }
+    let flags = [];
+    try { flags = (await ctx.Backend.listAllFlags()) || []; } catch { flags = []; }
+    const flaggersOf = qk => flags.filter(f => f.questionKey === qk)
+      .map(f => `${f.userName || f.userEmail} <span class="muted tiny">${ctx.esc(f.userEmail)}</span>`);
+    const papers = await ctx.Data.publishedPapers();
+    const titleOf = pid => papers.find(p => p.id === pid)?.title || pid;
+
+    host.innerHTML = `
+      <div class="card">
+        <h3 class="card-title">🤝 Community proposals awaiting your approval (${props.length})</h3>
+        <p class="muted">Peer-reviewed fixes. Nothing has changed yet — approving publishes the proposed version to everyone
+          and resolves the flags; rejecting discards it.</p>
+        ${props.map((pr, i) => {
+          const { paperId, kind, num } = parseQkey(pr.questionKey);
+          const pd = pr.proposed || {};
+          return `
+          <div class="dev-row qr-card" data-prop="${i}">
+            <div class="dev-row-head">
+              <div>
+                <p class="dev-file">✎ ${ctx.esc(titleOf(paperId))} · <span class="chip chip-${(kind || 'sba').toLowerCase()}">${ctx.esc(kind)}</span> Q${num}</p>
+                <p class="muted tiny">Reviewed by <strong>${ctx.esc(pr.reviewerName || pr.reviewerEmail)}</strong> <span class="muted">${ctx.esc(pr.reviewerEmail)}</span> · ${new Date(pr.created).toLocaleDateString()}</p>
+                <p class="muted tiny">Flagged by: ${flaggersOf(pr.questionKey).join(' · ') || '<span class="muted">(flag records resolved/unavailable)</span>'}</p>
+              </div>
+              <div class="qr-actions">
+                <button class="btn btn-gold btn-sm" data-prop-ok="${i}">✓ Approve &amp; publish</button>
+                <button class="btn btn-ghost btn-sm qr-danger" data-prop-no="${i}">Reject</button>
+              </div>
+            </div>
+            <div class="qr-prop-body">
+              <p class="qr-prop-note">💬 <em>${ctx.esc(pr.note || '(no reasoning given)')}</em></p>
+              ${pd.theme ? `<p class="tiny"><strong>Theme:</strong> ${ctx.esc(pd.theme)}</p>` : ''}
+              <p class="tiny"><strong>Stem:</strong> ${ctx.esc(pd.stem || '')}</p>
+              <p class="tiny"><strong>Options:</strong> ${(pd.options || []).map((o, oi) => `${oi === pd.answer ? '<strong class="good">' : ''}${ctx.esc(o)}${oi === pd.answer ? ' ✓</strong>' : ''}`).join(' · ')}</p>
+              ${pd.rationale ? `<p class="tiny"><strong>Rationale:</strong> ${ctx.esc(pd.rationale)}</p>` : ''}
+            </div>
+            <p class="dev-row-msg" data-prop-msg="${i}"></p>
+          </div>`;
+        }).join('')}
+      </div>`;
+
+    props.forEach((pr, i) => {
+      const msg = host.querySelector(`[data-prop-msg="${i}"]`);
+      host.querySelector(`[data-prop-ok="${i}"]`).addEventListener('click', async e => {
+        if (!confirm('Approve this proposal? The corrected question publishes to EVERYONE and the flags resolve.')) return;
+        e.target.disabled = true;
+        try {
+          await applyProposal(pr);
+          await ctx.Backend.setProposalStatus(pr.id, 'approved');
+          await ctx.Backend.resolveFlags(pr.questionKey);
+          msg.textContent = '✓ Published and resolved.'; msg.className = 'dev-row-msg good';
+          await refreshProposals(view); await refreshFlags(view);
+        } catch (err) { msg.textContent = err.message || String(err); msg.className = 'dev-row-msg bad'; e.target.disabled = false; }
+      });
+      host.querySelector(`[data-prop-no="${i}"]`).addEventListener('click', async () => {
+        if (!confirm('Reject this proposal? The reviewer will see it as rejected; the flag stays open.')) return;
+        await ctx.Backend.setProposalStatus(pr.id, 'rejected');
+        await refreshProposals(view);
+      });
+    });
+  }
+
+  async function applyProposal(pr) {
+    const { paperId, kind, num } = parseQkey(pr.questionKey);
+    const loaded = await ctx.Data.loadPaper(paperId);
+    const loc = locateQuestion(loaded.paper, kind, num);
+    if (!loc) throw new Error('Question not found in the paper (was it deleted?).');
+    const pd = pr.proposed || {};
+    const q = loc.q;
+    if (pd.stem) q.stem = pd.stem;
+    q.rationale = pd.rationale || q.rationale || '';
+    if (Array.isArray(pd.options) && pd.options.length >= 2) {
+      if (loc.type === 'sba') q.options = pd.options; else loc.block.options = pd.options;
+      q.answer = Math.min(Number(pd.answer) || 0, pd.options.length - 1);
+    } else if (Number.isInteger(pd.answer)) q.answer = pd.answer;
+    if (loc.type === 'sba' && pd.lead != null) q.lead = pd.lead;
+    if (loc.type === 'emq' && pd.theme) loc.block.theme = pd.theme;
+    const meta = { ...loaded.meta, content: loaded.paper, sba: ctx.Data.countSBA(loaded.paper), emq: ctx.Data.countEMQ(loaded.paper) };
+    delete meta.file;
+    await ctx.Backend.publishPaper(meta);
+    ctx.Data.bustPapers?.();
+    if (typeof Cache !== 'undefined') Cache.bust('sim-qindex');
   }
 
   async function refreshFlags(view) {

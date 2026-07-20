@@ -28,6 +28,7 @@
     { re: /^#\/profile$/, fn: renderProfile },
     { re: /^#\/studio$/, fn: renderStudio },
     { re: /^#\/review$/, fn: renderReview },
+    { re: /^#\/peer$/, fn: renderPeerReview },
     { re: /^#\/cards$/, fn: renderCards },
     { re: /^#\/cards\/([^/]+)$/, fn: renderDeck },
     { re: /^#\/simulator$/, fn: renderSimHome },
@@ -41,10 +42,17 @@
   async function route() {
     Quiz.destroy();
     const hash = location.hash || '#/';
+    // Supabase recovery links land with tokens in the hash — let the client
+    // consume them and wait for the PASSWORD_RECOVERY event (below).
+    if (/access_token=|type=recovery/.test(hash)) { renderResetPassword(); return; }
     const match = routes.find(r => r.re.test(hash));
     if (!match) { location.hash = '#/'; return; }
     const user = await Backend.currentUser();
     if (!match.public && !user) { location.hash = '#/auth'; return; }
+    // registration approval gate: pending/denied accounts see only a notice
+    if (user && !devOnly(user) && user.status && user.status !== 'approved' && !match.public) {
+      renderApprovalGate(user); return;
+    }
     await syncExamDate(user);
 
     ThreeBG.setMood(match.fn === renderLanding ? 'hero' : 'interior');
@@ -78,6 +86,7 @@
           <a href="#/dashboard" class="${location.hash === '#/dashboard' ? 'active' : ''}">Dashboard</a>
           <a href="#/library" class="${location.hash.startsWith('#/library') || location.hash.startsWith('#/paper') ? 'active' : ''}">Library</a>
           <a href="#/studio" class="${location.hash === '#/studio' ? 'active' : ''}">Studio</a>
+          <a href="#/peer" class="${location.hash === '#/peer' ? 'active' : ''}">Peer review</a>
           ${(isDev || (user.featureFlags?.flashcards && user.prefs?.flashcards)) ? `<a href="#/cards" class="${location.hash.startsWith('#/cards') ? 'active' : ''}">Flashcards</a>` : ''}
           ${(isDev || (user.featureFlags?.simulator && user.prefs?.simulator)) ? `<a href="#/simulator" class="${location.hash.startsWith('#/simulator') ? 'active' : ''}">Simulator</a>` : ''}
           ${isDev ? `<a href="#/dev" class="${location.hash.startsWith('#/dev') ? 'active' : ''}">Developer</a>` : ''}
@@ -214,11 +223,114 @@
 
   /* ================= auth ================= */
 
+  function renderResetPassword() {
+    renderNav(null);
+    view.innerHTML = `
+      <section class="page narrow auth-page" data-animate>
+        <div class="auth-card">
+          <h1 class="page-title">Choose a new password</h1>
+          <p class="muted">You followed a valid reset link — set your new password below.</p>
+          <form id="reset-form" novalidate>
+            <label class="field"><span>New password</span>
+              <input type="password" name="p1" autocomplete="new-password" placeholder="At least 8 characters" required></label>
+            <label class="field"><span>Confirm new password</span>
+              <input type="password" name="p2" autocomplete="new-password" placeholder="Repeat it" required></label>
+            <p class="form-error" id="reset-error" role="alert" hidden></p>
+            <button class="btn btn-gold btn-block" type="submit">Set new password</button>
+          </form>
+        </div>
+      </section>`;
+    FX.viewIn(view);
+    view.querySelector('#reset-form').addEventListener('submit', async e => {
+      e.preventDefault();
+      const f = new FormData(e.target), errBox = view.querySelector('#reset-error');
+      errBox.hidden = true;
+      if (String(f.get('p1')).length < 8) { errBox.textContent = 'Password must be at least 8 characters.'; errBox.hidden = false; return; }
+      if (f.get('p1') !== f.get('p2')) { errBox.textContent = 'The two passwords do not match.'; errBox.hidden = false; return; }
+      const btn = e.target.querySelector('button'); btn.disabled = true;
+      try {
+        await Backend.updatePassword(f.get('p1'));
+        view.querySelector('.auth-card').innerHTML = `
+          <div class="verify-icon">🔐</div>
+          <h1 class="page-title">Password updated</h1>
+          <p class="muted">You're signed in with your new password.</p>
+          <a class="btn btn-gold btn-block" href="#/dashboard">Go to dashboard</a>`;
+        history.replaceState(null, '', location.pathname + '#/dashboard');
+      } catch (err) { errBox.textContent = err.message; errBox.hidden = false; btn.disabled = false; }
+    });
+  }
+
+  function renderApprovalGate(user) {
+    renderNav(null);
+    const denied = user.status === 'denied';
+    view.innerHTML = `
+      <section class="page narrow auth-page" data-animate>
+        <div class="auth-card verify-card">
+          <div class="verify-icon">${denied ? '⛔' : '⏳'}</div>
+          <h1 class="page-title">${denied ? 'Access denied' : 'Awaiting approval'}</h1>
+          <p class="muted">${denied
+            ? 'Your account has not been approved for this platform. If you believe this is a mistake, contact the site owner.'
+            : 'Your account is created — the site owner reviews every new registration. You\'ll have full access as soon as they approve you.'}</p>
+          <button class="btn btn-ghost btn-block" id="gate-signout">Sign out</button>
+        </div>
+      </section>`;
+    FX.viewIn(view);
+    view.querySelector('#gate-signout').addEventListener('click', async () => { await Backend.signOut(); location.hash = '#/'; });
+  }
+
   async function renderAuth() {
     if (await Backend.currentUser()) { location.hash = '#/dashboard'; return; }
     let mode = 'signin';
+    let regOpen = true;
+    try { regOpen = await Backend.getRegistrationOpen(); } catch { regOpen = true; }
 
     function paint() {
+      if (mode === 'signup' && !regOpen) {
+        view.innerHTML = `
+          <section class="page narrow auth-page" data-animate>
+            <div class="auth-card verify-card">
+              <div class="verify-icon">🚪</div>
+              <h1 class="page-title">Registrations are closed</h1>
+              <p class="muted">New accounts are currently by invitation from the site owner. If you've been invited, ask them to open registration for you.</p>
+              <button class="btn btn-gold btn-block" id="reg-back">Back to sign in</button>
+            </div>
+          </section>`;
+        view.querySelector('#reg-back').addEventListener('click', () => { mode = 'signin'; paint(); FX.viewIn(view); });
+        return;
+      }
+      if (mode === 'forgot') {
+        view.innerHTML = `
+          <section class="page narrow auth-page" data-animate>
+            <div class="auth-card">
+              <h1 class="page-title">Reset your password</h1>
+              <p class="muted">Enter your account email — we'll send you a secure link to set a new password.</p>
+              <form id="forgot-form" novalidate>
+                <label class="field"><span>Email address</span>
+                  <input type="email" name="email" autocomplete="email" placeholder="you@example.com" required></label>
+                <p class="form-error" id="forgot-error" role="alert" hidden></p>
+                <button class="btn btn-gold btn-block" type="submit">Send reset link</button>
+              </form>
+              <p class="auth-swap"><a href="#" id="forgot-back">← Back to sign in</a></p>
+            </div>
+          </section>`;
+        view.querySelector('#forgot-back').addEventListener('click', e => { e.preventDefault(); mode = 'signin'; paint(); FX.viewIn(view); });
+        view.querySelector('#forgot-form').addEventListener('submit', async e => {
+          e.preventDefault();
+          const errBox = view.querySelector('#forgot-error');
+          const email = new FormData(e.target).get('email');
+          const btn = e.target.querySelector('button'); btn.disabled = true;
+          try {
+            await Backend.requestPasswordReset(email);
+            view.querySelector('.auth-card').innerHTML = `
+              <div class="verify-icon">📮</div>
+              <h1 class="page-title">Check your inbox</h1>
+              <p class="muted">If an account exists for <strong>${esc(email)}</strong>, a password-reset link is on its way.
+                Open it on this device to choose a new password.</p>
+              <p class="tiny muted">The link can take a minute — check spam too.</p>`;
+          } catch (err) { errBox.textContent = err.message; errBox.hidden = false; btn.disabled = false; }
+        });
+        return;
+      }
       view.innerHTML = `
         <section class="page narrow auth-page" data-animate>
           <div class="auth-card">
@@ -242,11 +354,12 @@
               <button class="btn btn-gold btn-block" type="submit">${mode === 'signin' ? 'Sign in' : 'Create account'}</button>
             </form>
             <p class="auth-swap">${mode === 'signin'
-              ? `New here? <a href="#" id="auth-toggle">Create an account</a>`
+              ? `New here? <a href="#" id="auth-toggle">Create an account</a> · <a href="#" id="auth-forgot">Forgot password?</a>`
               : `Already registered? <a href="#" id="auth-toggle">Sign in</a>`}</p>
           </div>
         </section>`;
       document.getElementById('auth-toggle').addEventListener('click', e => { e.preventDefault(); mode = mode === 'signin' ? 'signup' : 'signin'; paint(); FX.viewIn(view); });
+      document.getElementById('auth-forgot')?.addEventListener('click', e => { e.preventDefault(); mode = 'forgot'; paint(); FX.viewIn(view); });
       document.getElementById('auth-form').addEventListener('submit', async e => {
         e.preventDefault();
         const f = new FormData(e.target), errBox = document.getElementById('auth-error');
@@ -851,6 +964,19 @@
             </table></div>` : `<p class="muted">Nothing yet — your history builds as you complete sets.</p>`}
         </div>
 
+        <div class="card" data-animate>
+          <h3 class="card-title">Change password</h3>
+          <form id="pw-form" class="pw-form" novalidate>
+            <label class="field"><span>New password</span>
+              <input type="password" name="p1" autocomplete="new-password" placeholder="At least 8 characters" required></label>
+            <label class="field"><span>Confirm new password</span>
+              <input type="password" name="p2" autocomplete="new-password" placeholder="Repeat it" required></label>
+            <p class="form-error" id="pw-error" role="alert" hidden></p>
+            <button class="btn btn-primary" type="submit">Update password</button>
+            <p class="save-note" id="pw-note" hidden>Password updated ✓</p>
+          </form>
+        </div>
+
         <div class="card danger-zone" data-animate>
           <h3 class="card-title">Data</h3>
           <p class="muted">${Backend.mode === 'cloud' ? 'Synced to your account across devices.' : 'Stored in this browser.'}</p>
@@ -872,6 +998,18 @@
     }));
 
     renderAiUsage(view.querySelector('#ai-usage-body'), user);
+
+    view.querySelector('#pw-form')?.addEventListener('submit', async e => {
+      e.preventDefault();
+      const f = new FormData(e.target), errBox = view.querySelector('#pw-error'), note = view.querySelector('#pw-note');
+      errBox.hidden = true; note.hidden = true;
+      if (String(f.get('p1')).length < 8) { errBox.textContent = 'Password must be at least 8 characters.'; errBox.hidden = false; return; }
+      if (f.get('p1') !== f.get('p2')) { errBox.textContent = 'The two passwords do not match.'; errBox.hidden = false; return; }
+      const btn = e.target.querySelector('button[type=submit]'); btn.disabled = true;
+      try { await Backend.updatePassword(f.get('p1')); e.target.reset(); note.hidden = false; setTimeout(() => note.hidden = true, 2500); }
+      catch (err) { errBox.textContent = err.message; errBox.hidden = false; }
+      btn.disabled = false;
+    });
 
     view.querySelector('#position-picker').addEventListener('click', async e => {
       const btn = e.target.closest('.pos-btn'); if (!btn) return;
@@ -962,6 +1100,113 @@
       <p class="tiny muted aiu-note">💡 <strong>Personal</strong> costs (tutor, coach, flashcards) are your own token use. <strong>Shared</strong> costs are your equal fraction of platform-wide AI jobs (e.g. question tagging), split across eligible users — never marked up.</p>`;
 
     host.querySelector('#aiu-bill').addEventListener('click', () => Billing.openBillModal(user, myRows, sharedCtx));
+  }
+
+  /* ================= peer review (open to every user) ================= */
+
+  async function renderPeerReview(user) {
+    view.innerHTML = `
+      <section class="page">
+        <header data-animate>
+          <p class="kicker">PEER REVIEW · OPEN TO EVERYONE</p>
+          <h1 class="page-title">Review flagged questions</h1>
+          <p class="muted">Questions the cohort flagged as wrong, waiting for a fix. Propose a corrected version —
+            cite the guideline — and it goes to the site owner for approval. <strong>Nothing changes for anyone
+            until they approve it</strong>, and approved fixes carry your name.</p>
+        </header>
+        <div id="pr-mine"></div>
+        <div id="pr-list" data-animate><p class="muted">Loading flagged questions…</p></div>
+      </section>`;
+    FX.viewIn(view);
+
+    // my earlier proposals + their status
+    try {
+      const mine = await Backend.listMyProposals();
+      if (mine.length) {
+        view.querySelector('#pr-mine').innerHTML = `
+          <div class="card" data-animate>
+            <details class="dev-collapse"><summary><span class="card-title">My proposals (${mine.length})</span><span class="dc-caret">▸</span></summary>
+              ${mine.map(m => `<p class="pr-mine-row"><span class="chip pr-st-${esc(m.status)}">${esc(m.status)}</span>
+                <code>${esc(m.questionKey)}</code> <span class="muted tiny">${new Date(m.created).toLocaleDateString()}</span></p>`).join('')}
+            </details>
+          </div>`;
+      }
+    } catch { /* optional */ }
+
+    const host = view.querySelector('#pr-list');
+    let flags = [];
+    try { flags = await Backend.listFlaggedDetails(); } catch (e) {
+      host.innerHTML = `<p class="bad">Could not load flagged questions — ${esc(e.message || e)}</p>`; return;
+    }
+    if (!flags.length) { host.innerHTML = `<p class="muted card" style="padding:20px">🎉 Nothing is flagged right now — the bank is clean. Flag any question you doubt while practising and it will appear here.</p>`; return; }
+
+    const papers = await Data.publishedPapers();
+    const titleOf = pid => papers.find(p => p.id === pid)?.title || pid;
+    host.innerHTML = flags.map((f, i) => {
+      const [pid, kind, num] = String(f.questionKey).split(':');
+      return `
+        <div class="dev-row card" data-pr="${i}">
+          <div class="dev-row-head">
+            <div>
+              <p class="dev-file">🚩 ${esc(titleOf(pid))} · <span class="chip chip-${(kind || 'sba').toLowerCase()}">${esc(kind)}</span> Q${num}</p>
+              ${(f.notes || []).length ? `<p class="muted tiny">Flagged because: ${f.notes.map(esc).join(' · ')}</p>` : '<p class="muted tiny">No reason given.</p>'}
+            </div>
+            <button class="btn btn-gold btn-sm" data-pr-open="${i}">✎ Review &amp; propose a fix</button>
+          </div>
+          <div class="qr-editor" data-pr-host="${i}"></div>
+          <p class="dev-row-msg" data-pr-msg="${i}"></p>
+        </div>`;
+    }).join('');
+
+    flags.forEach((f, i) => {
+      view.querySelector(`[data-pr-open="${i}"]`).addEventListener('click', () => openProposalEditor(f, i));
+    });
+
+    async function openProposalEditor(f, i) {
+      const hostEl = view.querySelector(`[data-pr-host="${i}"]`);
+      const msg = view.querySelector(`[data-pr-msg="${i}"]`);
+      if (hostEl.dataset.open === '1') { hostEl.dataset.open = '0'; hostEl.innerHTML = ''; return; }
+      hostEl.dataset.open = '1';
+      hostEl.innerHTML = `<p class="muted">Loading question…</p>`;
+      const [pid, kind, numS] = String(f.questionKey).split(':');
+      let flat;
+      try {
+        const loaded = await Data.loadPaper(pid);
+        flat = Data.flatten(loaded.paper, kind).find(q => q.number === Number(numS));
+      } catch (e) { hostEl.innerHTML = `<p class="bad">${esc(e.message || e)}</p>`; return; }
+      if (!flat) { hostEl.innerHTML = `<p class="bad">Question not found (it may have been fixed already).</p>`; return; }
+      hostEl.innerHTML = `
+        <div class="qr-form">
+          ${flat.theme ? `<label>Theme<input type="text" data-p="theme" value="${esc(flat.theme)}"></label>` : ''}
+          <label>Stem<textarea data-p="stem">${esc(flat.stem)}</textarea></label>
+          ${flat.lead ? `<label>Lead-in<input type="text" data-p="lead" value="${esc(flat.lead)}"></label>` : ''}
+          <label>Options — one per line<textarea data-p="options" class="qr-options">${esc(flat.options.join('\n'))}</textarea></label>
+          <label>Correct answer
+            <select data-p="answer">${flat.options.map((o, oi) => `<option value="${oi}" ${oi === flat.answer ? 'selected' : ''}>${esc(String(o).slice(0, 80))}</option>`).join('')}</select></label>
+          <label>Rationale<textarea data-p="rationale">${esc(flat.rationale || '')}</textarea></label>
+          <label>Why is your version right? Cite the guideline (required)
+            <textarea data-p="note" placeholder="e.g. NICE NG133 (2023) recommends labetalol first-line…"></textarea></label>
+          <div class="qedit-btns">
+            <button class="btn btn-gold btn-sm" data-p="send">📤 Send to the owner for approval</button>
+          </div>
+        </div>`;
+      const val = k => hostEl.querySelector(`[data-p="${k}"]`)?.value;
+      hostEl.querySelector('[data-p="send"]').addEventListener('click', async ev => {
+        const note = String(val('note') || '').trim();
+        if (note.length < 10) { msg.textContent = 'Please cite why your version is correct — the owner approves on that basis.'; msg.className = 'dev-row-msg bad'; return; }
+        const opts = String(val('options') || '').split('\n').map(x => x.trim()).filter(Boolean);
+        if (opts.length < 2) { msg.textContent = 'Need at least 2 options.'; msg.className = 'dev-row-msg bad'; return; }
+        ev.target.disabled = true;
+        try {
+          await Backend.submitProposal({ questionKey: f.questionKey, note,
+            proposed: { stem: val('stem'), lead: val('lead') || '', theme: val('theme') || '',
+              options: opts, answer: Math.min(Number(val('answer')) || 0, opts.length - 1), rationale: val('rationale') || '' } });
+          msg.textContent = '✓ Sent — the owner will review your proposal. Thank you for sharpening the bank.';
+          msg.className = 'dev-row-msg good';
+          hostEl.dataset.open = '0'; hostEl.innerHTML = '';
+        } catch (e) { msg.textContent = e.message || String(e); msg.className = 'dev-row-msg bad'; ev.target.disabled = false; }
+      });
+    }
   }
 
   /* ================= studio (private AI gallery) ================= */
@@ -1224,6 +1469,7 @@
 
   /* ================= boot ================= */
 
+  try { Backend.onPasswordRecovery?.(() => renderResetPassword()); } catch { /* optional */ }
   window.addEventListener('hashchange', route);
   window.addEventListener('DOMContentLoaded', async () => {
     const canvas = document.getElementById('bg-canvas');

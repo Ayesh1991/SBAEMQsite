@@ -1452,3 +1452,30 @@ details[open] > summary .tw-caret { transform: rotate(90deg); }
   .dp-row { grid-template-columns: 1fr auto; }
   .dp-found { grid-column: 1 / -1; }
 }
+
+/* ============================================================
+   v27 — boolean design search, peer review, registration control
+   ============================================================ */
+.dp-help { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px;
+  padding: 10px 14px; border-radius: 10px; background: rgba(125,211,252,.06); border: 1px solid rgba(125,211,252,.18); font-size: .82rem; }
+.dp-help-chip { font-weight: 700; color: #7dd3fc; letter-spacing: .04em; font-size: .72rem; text-transform: uppercase; }
+.dp-help code { background: rgba(255,255,255,.07); padding: 3px 8px; border-radius: 6px; font-size: .8rem; }
+.dp-options { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin: 14px 0 4px; }
+.dp-opt { display: flex; align-items: center; gap: 8px; font-size: .85rem; cursor: pointer; }
+.dp-ai-note { color: var(--ink-2); }
+.dp-ai-modal { max-width: 560px; }
+.dp-ai-body { padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+.dp-ai-terms { display: flex; gap: 6px; flex-wrap: wrap; }
+.dp-ai-model { display: flex; align-items: center; gap: 10px; font-size: .85rem; }
+.dp-ai-model select { background: rgba(255,255,255,.05); color: inherit; border: 1px solid rgba(255,255,255,.14); border-radius: 8px; padding: 8px 10px; font: inherit; }
+
+.pr-st-pending  { background: rgba(232,163,61,.15); color: #e8a33d; }
+.pr-st-approved { background: rgba(52,211,153,.15); color: #34d399; }
+.pr-st-rejected { background: rgba(224,82,99,.15);  color: #e05263; }
+.pr-mine-row { display: flex; gap: 10px; align-items: center; padding: 6px 0; font-size: .86rem; }
+.qr-prop-body { margin-top: 10px; padding: 12px 14px; border-radius: 10px; background: rgba(255,255,255,.03); border: 1px solid rgba(255,255,255,.07); }
+.qr-prop-note { margin-bottom: 8px; color: var(--ink-2); }
+
+.dev-reg { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px;
+  padding: 12px 16px; border-radius: 12px; background: rgba(244,201,93,.06); border: 1px solid rgba(244,201,93,.2); }
+.pw-form { max-width: 420px; }

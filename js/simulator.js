@@ -260,7 +260,7 @@ const Simulator = (() => {
       <div class="sim-hero card" data-animate>
         <div class="sim-hero-main">
           <p class="sim-hero-kicker">Blueprint v${bp.version || 1}${bp.updated ? ' · ' + esc(bp.updated) : ''} · ${bp.sba.length} SBA topics · ${bp.emq.length} EMQ themes</p>
-          <h2>${hist.mocks.length ? `Mock #${hist.mocks.length + 1}` : 'Your first mock'}</h2>
+          <h2>${hist.mocks.filter(m => !m.custom).length ? `Mock #${hist.mocks.filter(m => !m.custom).length + 1}` : 'Your first mock'}</h2>
           <p class="muted">${enough
             ? `Ready — ${unseenSba} SBA & ${unseenEmq} EMQ still unseen in the bank.`
             : `<span class="bad">Not enough unseen questions yet.</span> Publish more papers (or clear a flaw exclusion). SBA unseen: ${unseenSba}, EMQ unseen: ${unseenEmq}.`}</p>
@@ -272,7 +272,8 @@ const Simulator = (() => {
         <div class="sim-hero-side">
           <div class="sim-stat"><strong>${sbaTotal + emqTotal}</strong><span>Questions indexed</span></div>
           <div class="sim-stat"><strong>${Object.keys(tags).length}</strong><span>AI-tagged</span></div>
-          <div class="sim-stat"><strong>${hist.mocks.length}</strong><span>Mocks taken</span></div>
+          <div class="sim-stat"><strong>${hist.mocks.filter(m => !m.custom).length}</strong><span>Mocks taken</span></div>
+          <div class="sim-stat"><strong>${hist.mocks.filter(m => m.custom).length}</strong><span>Designed papers</span></div>
           <div class="sim-stat"><strong>${last ? last.percent + '%' : '—'}</strong><span>Last score</span></div>
         </div>
       </div>
@@ -298,7 +299,7 @@ const Simulator = (() => {
             <thead><tr><th>#</th><th>Date</th><th>Score</th><th>SBA/EMQ</th><th>Excluded</th><th></th></tr></thead>
             <tbody>${hist.mocks.slice(0, 8).map((m, i) => `
               <tr>
-                <td>${m.custom ? '🎨' : hist.mocks.length - i}</td>
+                <td>${m.custom ? '🎨' : 'Mock ' + hist.mocks.slice(i).filter(x => !x.custom).length}</td>
                 <td class="muted">${new Date(m.date).toLocaleDateString()}</td>
                 <td><strong class="${m.percent >= 70 ? 'good' : m.percent >= 50 ? '' : 'bad'}">${m.percent}%</strong> <span class="muted">(${m.correct}/${m.scored})</span></td>
                 <td class="muted">${m.sbaCount || 0}/${m.emqCount || 0}</td>
@@ -338,6 +339,65 @@ const Simulator = (() => {
   }
 
   /* ---------------- Design a paper (#/simulator/design) ---------------- */
+
+  /* ---- boolean query engine (AND / OR / NOT, quotes for phrases) ---- */
+
+  function parseBool(q) {
+    const toks = String(q).match(/"[^"]+"|\(|\)|\S+/g) || [];
+    let i = 0;
+    const peek = () => toks[i], eat = () => toks[i++];
+    function expr() {                                    // OR — lowest binding
+      let n = term2();
+      while (peek() && /^or$/i.test(peek())) { eat(); n = { op: 'or', a: n, b: term2() }; }
+      return n;
+    }
+    function term2() {                                   // AND (implicit between words)
+      let n = factor();
+      while (peek() && !/^or$/i.test(peek()) && peek() !== ')') {
+        if (/^and$/i.test(peek())) eat();
+        n = { op: 'and', a: n, b: factor() };
+      }
+      return n;
+    }
+    function factor() {
+      if (peek() && /^not$/i.test(peek())) { eat(); return { op: 'not', a: factor() }; }
+      if (peek() === '(') { eat(); const n = expr(); if (peek() === ')') eat(); return n; }
+      const t = eat();
+      return { op: 'term', t: t == null ? '' : t.replace(/^"|"$/g, '') };
+    }
+    return expr();
+  }
+  // syn: AI term-map { lowercased user term -> [bank vocabulary strings] }
+  function evalBool(node, hay, syn) {
+    if (!node) return false;
+    switch (node.op) {
+      case 'term': {
+        const t = Blueprint.normStr(node.t);
+        if (!t) return true;
+        if (hay.includes(t)) return true;
+        const alts = syn && syn[node.t.toLowerCase().trim()];
+        return !!(alts && alts.some(a => hay.includes(Blueprint.normStr(a))));
+      }
+      case 'not': return !evalBool(node.a, hay, syn);
+      case 'and': return evalBool(node.a, hay, syn) && evalBool(node.b, hay, syn);
+      case 'or':  return evalBool(node.a, hay, syn) || evalBool(node.b, hay, syn);
+    }
+    return false;
+  }
+  const looksBoolean = q => /\b(and|or|not)\b|"|\(/i.test(q);
+
+  // "PGIM-standard" quality: AI-classified, difficulty in the discriminating
+  // exam band (~0.55), examiner high-yield (blueprint priority), and
+  // empirically vetted by real attempts. Used to pick the BEST questions
+  // whenever a topic has more than the candidate asked for.
+  function quality(r, bp) {
+    let q = 0;
+    if (r.tagTopic) q += 1.2;
+    q += 1 - Math.abs(((r.difficulty ?? 0.5) - 0.55)) * 2;
+    if (bp) q += (Blueprint.boostFor(bp, r.text) - 1) * 1.5;
+    if ((r.attempts || 0) >= 5) q += 0.4;
+    return q;
+  }
 
   // Tag-first topic matching: the enriched record text starts with the AI
   // tag (topic + category + keywords), so tagged questions rank naturally;
@@ -386,13 +446,62 @@ const Simulator = (() => {
     }
     const body = view.querySelector('#dp-body');
     const taggedCount = index.filter(r => r.tagTopic).length;
+    const bp = await Blueprint.load().catch(() => null);
+    // everything this candidate has ever answered (mocks + library papers)
+    const answered = new Set(hist.seen);
+    try {
+      const prog = await Backend.getProgress();
+      (prog.attempts || []).forEach(a => (a.detail || []).forEach(d => { if (d.qkey && d.chosen != null) answered.add(d.qkey); }));
+    } catch { /* optional */ }
+
+    const st2 = { syn: null, synCost: '', hideAnswered: false };
+    // one row's matches, honouring boolean syntax, AI synonym map,
+    // the flawed/flagged exclusions and the hide-answered toggle
+    function rowMatches(kind, query) {
+      let list;
+      if (looksBoolean(query)) {
+        const ast = parseBool(query);
+        list = [];
+        for (const r of index) {
+          if (r.kind !== kind || hist.excluded.has(r.qkey)) continue;
+          if (evalBool(ast, Blueprint.normStr(r.text), st2.syn)) list.push({ r, score: 1 });
+        }
+      } else {
+        list = topicMatches(index, kind, query, hist.excluded);
+        if (st2.syn) {
+          // fuzzy mode also benefits from the AI map: retry unmatched synonyms
+          const have = new Set(list.map(x => x.r.qkey));
+          for (const [term, alts] of Object.entries(st2.syn)) {
+            if (!Blueprint.normStr(query).includes(Blueprint.normStr(term))) continue;
+            for (const alt of alts) {
+              topicMatches(index, kind, alt, hist.excluded).forEach(x => {
+                if (!have.has(x.r.qkey)) { have.add(x.r.qkey); list.push(x); }
+              });
+            }
+          }
+        }
+      }
+      if (st2.hideAnswered) list = list.filter(x => !answered.has(x.r.qkey));
+      return list;
+    }
 
     body.innerHTML = `
       ${modeSwitcherHTML('design')}
       <div class="card dp-card" data-animate>
         <div class="dp-meta muted tiny">${index.length} questions in the bank · ${taggedCount} AI-tagged for precise matching</div>
+        <div class="dp-help">
+          <span class="dp-help-chip">Boolean search:</span>
+          <code>preeclampsia AND magsulphate NOT "preterm labour"</code>
+          <span class="muted tiny">· plain words work too · quotes keep phrases together · brackets group</span>
+        </div>
         <div id="dp-rows"></div>
         <button class="btn btn-ghost btn-sm" id="dp-add">＋ Add another topic</button>
+        <div class="dp-options">
+          <label class="dp-opt"><input type="checkbox" id="dp-hide-answered">
+            <span>Hide questions I've already answered <span class="muted tiny">(${answered.size} in your history)</span></span></label>
+          <button class="btn btn-ghost btn-sm" id="dp-ai-map">🤖 Match my words to bank tags (AI)</button>
+          <span class="dp-ai-note tiny" id="dp-ai-note"></span>
+        </div>
         <div class="dp-footer">
           <div class="dp-totals" id="dp-totals"></div>
           <button class="btn btn-gold btn-lg" id="dp-build" disabled>Build my paper →</button>
@@ -428,8 +537,8 @@ const Simulator = (() => {
         const found = el.querySelector('[data-found]');
         if (!st.query) { st.matches = { SBA: 0, EMQ: 0 }; found.textContent = 'type a topic…'; found.className = 'dp-found'; updateTotals(); return; }
         st.matches = {
-          SBA: topicMatches(index, 'SBA', st.query, hist.excluded).length,
-          EMQ: topicMatches(index, 'EMQ', st.query, hist.excluded).length
+          SBA: rowMatches('SBA', st.query).length,
+          EMQ: rowMatches('EMQ', st.query).length
         };
         const shortS = st.sba > st.matches.SBA, shortE = st.emq > st.matches.EMQ;
         found.innerHTML = `<strong>${st.matches.SBA}</strong> SBA · <strong>${st.matches.EMQ}</strong> EMQ in bank` +
@@ -440,9 +549,11 @@ const Simulator = (() => {
       el.querySelector('.dp-topic').addEventListener('input', () => { clearTimeout(deb); deb = setTimeout(refresh, 300); });
       el.querySelectorAll('.dp-sba, .dp-emq').forEach(i => i.addEventListener('input', () => { clearTimeout(deb); deb = setTimeout(refresh, 200); }));
       el.querySelector('.dp-del').addEventListener('click', () => { rowState.delete(id); el.remove(); updateTotals(); });
+      rowState.get(id).refresh = refresh;
       if (preset) refresh();
       return el;
     }
+    const refreshAllRows = () => rowState.forEach(st => st.refresh && st.refresh());
 
     function updateTotals() {
       let reqS = 0, reqE = 0, getS = 0, getE = 0, topics = 0;
@@ -465,12 +576,40 @@ const Simulator = (() => {
     updateTotals();
     body.querySelector('#dp-add').addEventListener('click', () => addRow(''));
 
+    body.querySelector('#dp-hide-answered').addEventListener('change', e => {
+      st2.hideAnswered = e.target.checked;
+      refreshAllRows();
+    });
+    body.querySelector('#dp-ai-map').addEventListener('click', () =>
+      openTermMapModal(index, [...rowState.values()], st2, body.querySelector('#dp-ai-note'), refreshAllRows));
+
     buildBtn.addEventListener('click', async () => {
       buildBtn.disabled = true;
       const msg = body.querySelector('#dp-msg');
       msg.textContent = 'Assembling your paper…'; msg.className = 'dev-row-msg muted';
       try {
-        await startDesignedRun(view, user, index, hist, [...rowState.values()].filter(st => st.query && (st.sba || st.emq)));
+        // ONE QUESTION ONCE: `used` de-duplicates across every row, so a
+        // question matching both "eclampsia" and "magnesium" appears once.
+        // When more questions exist than asked for, the BEST are chosen:
+        // unseen first, then PGIM-standard quality, then match strength.
+        const used = new Set();
+        const picked = [];
+        const topicNames = [];
+        for (const st of [...rowState.values()].filter(x => x.query && (x.sba || x.emq))) {
+          topicNames.push(st.query);
+          for (const [kind, want] of [['SBA', st.sba], ['EMQ', st.emq]]) {
+            if (!want) continue;
+            rowMatches(kind, st.query)
+              .filter(x => !used.has(x.r.qkey))
+              .sort((a, b) =>
+                (hist.seen.has(a.r.qkey) - hist.seen.has(b.r.qkey)) ||
+                (quality(b.r, bp) - quality(a.r, bp)) ||
+                (b.score - a.score))
+              .slice(0, want)
+              .forEach(x => { used.add(x.r.qkey); picked.push({ ...x.r, bucket: st.query }); });
+          }
+        }
+        await startDesignedRun(view, user, picked, topicNames);
       } catch (e) {
         msg.textContent = e.message || String(e); msg.className = 'dev-row-msg bad';
         buildBtn.disabled = false;
@@ -478,23 +617,80 @@ const Simulator = (() => {
     });
   }
 
-  async function startDesignedRun(view, user, index, hist, rows) {
-    const used = new Set();
-    const picked = [];
-    const topicNames = [];
-    for (const st of rows) {
-      topicNames.push(st.query);
-      for (const [kind, want] of [['SBA', st.sba], ['EMQ', st.emq]]) {
-        if (!want) continue;
-        const ranked = topicMatches(index, kind, st.query, hist.excluded)
-          .filter(x => !used.has(x.r.qkey))
-          // targeted revision: unseen first, then best-matching
-          .sort((a, b) => (hist.seen.has(a.r.qkey) - hist.seen.has(b.r.qkey)) || (b.score - a.score))
-          .slice(0, want);
-        ranked.forEach(x => { used.add(x.r.qkey); picked.push({ ...x.r, bucket: st.query }); });
+  /* ---- Paper architect: AI maps the user's words onto the bank's tags.
+     Runs ONLY after explicit approval in a popup (with Gemini model choice)
+     and shows the exact tokens + dollars the call cost, billed to the user. */
+  function openTermMapModal(index, rows, st2, noteEl, refreshAllRows) {
+    document.querySelector('.bill-overlay')?.remove();
+    const terms = [...new Set(rows.filter(r => r.query).flatMap(r =>
+      r.query.split(/\b(?:and|or|not)\b|[()]/gi).map(t => t.replace(/"/g, '').trim()).filter(t => t.length > 2)
+    ))].slice(0, 12);
+    if (!terms.length) { noteEl.textContent = 'Type at least one topic first.'; return; }
+    const models = (window.AUREUM_CONFIG?.ai?.geminiModels) || [];
+    const overlay = document.createElement('div');
+    overlay.className = 'bill-overlay';
+    overlay.innerHTML = `
+      <div class="bill-modal dp-ai-modal" role="dialog" aria-label="AI term matching">
+        <div class="bill-modal-head"><strong>🤖 Paper architect — match your words to the bank's AI tags</strong>
+          <button class="ai-x" data-x aria-label="Close">✕</button></div>
+        <div class="dp-ai-body">
+          <p class="muted">The AI will translate these search terms into the exact vocabulary used by the question tags
+            (e.g. “magsulphate” → “magnesium sulphate”), so your searches find everything they should.</p>
+          <div class="dp-ai-terms">${terms.map(t => `<span class="chip">${esc(t)}</span>`).join(' ')}</div>
+          <label class="dp-ai-model">Model
+            <select id="tm-model">${models.map(m => `<option value="${m.id}">${esc(m.label)}</option>`).join('')}</select>
+          </label>
+          <p class="tiny muted">One small AI call, billed to <strong>your</strong> account as “Paper architect” — typically well under a cent.
+            The exact tokens and cost appear here the moment it finishes.</p>
+          <div class="bill-actions">
+            <button class="btn btn-gold btn-sm" id="tm-go">Approve &amp; run</button>
+            <button class="btn btn-ghost btn-sm" data-x>Cancel</button>
+            <span class="dev-status" id="tm-status"></span>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelectorAll('[data-x]').forEach(b => b.addEventListener('click', () => overlay.remove()));
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+    overlay.querySelector('#tm-go').addEventListener('click', async e => {
+      e.target.disabled = true;
+      const status = overlay.querySelector('#tm-status');
+      status.textContent = 'Mapping…';
+      try {
+        // the bank's actual vocabulary: distinct tag topics + keywords
+        const vocab = [...new Set(index.flatMap(r => r.tagTopic ? [r.tagTopic] : []))].slice(0, 250);
+        const token = await Backend.getAccessToken();
+        if (!token) throw new Error('Sign in first.');
+        const res = await fetch(window.AUREUM_CONFIG?.ai?.apiBase || '/api/explain', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+          body: JSON.stringify({ action: 'termmap', model: overlay.querySelector('#tm-model').value,
+            dailyLimit: window.AUREUM_CONFIG?.ai?.dailyLimit, terms, vocabulary: vocab })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `AI mapping failed (HTTP ${res.status}).`);
+        let map;
+        try { map = JSON.parse(String(data.text).replace(/^```[a-z]*\n?/i, '').replace(/```\s*$/, '')); }
+        catch { throw new Error('The AI returned an unreadable mapping — try again.'); }
+        const syn = {};
+        Object.entries(map || {}).forEach(([k, v]) => { if (Array.isArray(v) && v.length) syn[k.toLowerCase().trim()] = v; });
+        st2.syn = Object.keys(syn).length ? syn : st2.syn;
+        // instant, exact billing transparency
+        const u = data.usage || {};
+        const rate = Billing.rateFor(data.model);
+        const cost = (u.in / 1e6) * rate.in + (u.out / 1e6) * rate.out;
+        st2.synCost = `${(u.in || 0) + (u.out || 0)} tokens · ${Billing.usd(cost, 4)} (${data.model || ''})`;
+        noteEl.innerHTML = `<span class="good">✓ ${Object.keys(syn).length} term${Object.keys(syn).length !== 1 ? 's' : ''} mapped</span> · ${esc(st2.synCost)}`;
+        refreshAllRows();
+        overlay.remove();
+      } catch (err) {
+        status.innerHTML = `<span class="bad">${esc(err.message || err)}</span>`;
+        e.target.disabled = false;
       }
-    }
-    if (picked.length < 1) throw new Error('No matching questions found for these topics — try broader wording.');
+    });
+  }
+
+  async function startDesignedRun(view, user, picked, topicNames) {
+    if (picked.length < 1) throw new Error('No matching questions found for these topics — try broader wording, or the AI term matcher.');
 
     const dict = await resolve(picked);
     const questions = picked.map(r => dict[r.qkey]).filter(Boolean)

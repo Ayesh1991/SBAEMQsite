@@ -85,6 +85,16 @@ const Backend = (() => {
       return publicUser(u);
     }
     async function signOut() { del('session'); }
+    async function requestPasswordReset() { throw new Error('Password recovery by email works on the deployed (cloud) site.'); }
+    async function updatePassword(newPassword) {
+      const e = sessionEmail(); const all = users();
+      if (!e || !all[e]) throw new Error('Not signed in.');
+      if (String(newPassword).length < 8) throw new Error('Password must be at least 8 characters.');
+      const salt = randomSalt();
+      all[e].salt = salt; all[e].passHash = await sha256(salt + newPassword);
+      write('users', all);
+    }
+    function onPasswordRecovery() {}
     async function currentUser() {
       const email = sessionEmail(); const u = email ? users()[email] : null;
       return u ? publicUser(u) : null;
@@ -274,6 +284,39 @@ const Backend = (() => {
     async function listUserDecks() { const e = sessionEmail(); return e ? read(udKey(e), []) : []; }
     async function deleteUserDeck(id) { const e = sessionEmail(); if (!e) return; write(udKey(e), read(udKey(e), []).filter(d => d.id !== id)); }
 
+    /* registration + user status (local: always open/approved) */
+    async function getRegistrationOpen() { return read('regopen', true); }
+    async function setRegistrationOpen(open) { write('regopen', !!open); }
+    async function setUserStatus(userId, status) {
+      const all = users(); const u = Object.values(all).find(x => x.id === userId || x.email === userId);
+      if (u) { u.status = status; write('users', all); }
+    }
+
+    /* peer-review proposals (local mirror) */
+    async function submitProposal(pr) {
+      const e = sessionEmail(); if (!e) throw new Error('Sign in first.');
+      const l = read('proposals', []);
+      l.unshift({ id: Date.now(), questionKey: pr.questionKey, proposed: pr.proposed, note: pr.note || '',
+        reviewerEmail: e, reviewerName: e, status: 'pending', created: Date.now() });
+      write('proposals', l);
+    }
+    async function listMyProposals() { const e = sessionEmail(); return read('proposals', []).filter(x => x.reviewerEmail === e); }
+    async function listProposals() { return read('proposals', []); }
+    async function setProposalStatus(id, status) {
+      const l = read('proposals', []); const x = l.find(y => y.id === id);
+      if (x) { x.status = status; write('proposals', l); }
+    }
+    async function listFlaggedDetails() {
+      const keys = await listGlobalFlaggedKeys();
+      const e = sessionEmail(); const m = e ? read(uqKey(e), {}) : {};
+      const g = read('qedits', {});
+      return keys.map(k => ({ questionKey: k, notes: [m[k]?.flag_note, g[k]?.flag_note].filter(Boolean) }));
+    }
+
+    /* declined drive papers (never publish, never re-show) */
+    async function getDeclinedPapers() { return read('declined', []); }
+    async function declinePaper(key) { const l = read('declined', []); if (!l.includes(key)) l.push(key); write('declined', l); }
+
     /* AI feature registry + shared pools + tags (local mirrors) */
     async function getAiFeatures() { return read('aifeatures', {}); }
     async function saveAiFeatures(data) { write('aifeatures', data); return data; }
@@ -284,9 +327,10 @@ const Backend = (() => {
     /* AI (local mode has no server function — the app disables AI in local) */
     async function getAccessToken() { return null; }
 
-    function publicUser(u) { return { id: u.id, name: u.name, email: u.email, position: u.position, createdAt: u.createdAt, isDeveloper: norm(u.email) === devEmail, featureFlags: u.featureFlags || {}, prefs: u.prefs || {} }; }
+    function publicUser(u) { return { id: u.id, name: u.name, email: u.email, position: u.position, createdAt: u.createdAt, isDeveloper: norm(u.email) === devEmail, featureFlags: u.featureFlags || {}, prefs: u.prefs || {}, status: u.status || 'approved' }; }
 
-    return { init, signUp, signIn, signOut, currentUser, updateProfile,
+    return { init, signUp, signIn, signOut, requestPasswordReset, updatePassword, onPasswordRecovery, currentUser, updateProfile,
+      getRegistrationOpen, setRegistrationOpen, setUserStatus, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
       getProgress, recordAttempt, getAttempt, resetProgress,
       getPublishedPapers, publishPaper, unpublishPaper,
       getExamDate, setExamDate, saveSession, loadSession, clearSession, listSessions,
@@ -352,6 +396,21 @@ const Backend = (() => {
       return currentUser();
     }
     async function signOut() { await ensureClient(); await sb.auth.signOut(); }
+    async function requestPasswordReset(email) {
+      await ensureClient();
+      const redirectTo = location.origin + location.pathname;
+      const { error } = await sb.auth.resetPasswordForEmail(norm(email), { redirectTo });
+      if (error) throw new Error(error.message);
+    }
+    async function updatePassword(newPassword) {
+      await ensureClient();
+      const { error } = await sb.auth.updateUser({ password: newPassword });
+      if (error) throw new Error(error.message);
+    }
+    /* fires when the user lands here from a recovery email link */
+    function onPasswordRecovery(cb) {
+      ensureClient().then(() => sb.auth.onAuthStateChange(ev => { if (ev === 'PASSWORD_RECOVERY') cb(); })).catch(() => {});
+    }
 
     async function currentUser() {
       await ensureClient();
@@ -366,7 +425,8 @@ const Backend = (() => {
         createdAt: data.user.created_at,
         isDeveloper: norm(data.user.email) === devEmail,
         featureFlags: prof?.feature_flags || {},
-        prefs: prof?.prefs || {}
+        prefs: prof?.prefs || {},
+        status: prof?.status || 'approved'
       };
     }
     async function updateProfile(patch) {
@@ -537,8 +597,8 @@ const Backend = (() => {
     /* users & feature flags (developer — RLS "profiles dev read/update" policies) */
     async function listAllUsers() {
       await ensureClient();
-      const { data } = await sb.from('profiles').select('id,name,email,position,xp,created_at,feature_flags,prefs').order('created_at', { ascending: true });
-      return (data || []).map(r => ({ id: r.id, name: r.name, email: r.email, position: r.position, xp: r.xp || 0, createdAt: r.created_at, featureFlags: r.feature_flags || {}, prefs: r.prefs || {} }));
+      const { data } = await sb.from('profiles').select('id,name,email,position,xp,created_at,feature_flags,prefs,status').order('created_at', { ascending: true });
+      return (data || []).map(r => ({ id: r.id, name: r.name, email: r.email, position: r.position, xp: r.xp || 0, createdAt: r.created_at, featureFlags: r.feature_flags || {}, prefs: r.prefs || {}, status: r.status || 'approved' }));
     }
     async function setUserFeature(userId, flag, on) {
       await ensureClient();
@@ -695,6 +755,71 @@ const Backend = (() => {
         guideline: r.guideline, tags: r.tags || [], difficulty: r.difficulty_est }));
     }
 
+    /* registration control + user approval status (dev-only writes: the
+       protect trigger reverts non-dev changes to profiles.status) */
+    async function getRegistrationOpen() {
+      await ensureClient();
+      const { data } = await sb.from('app_config').select('data').eq('id', 'registration').single();
+      return data?.data?.open !== false;
+    }
+    async function setRegistrationOpen(open) {
+      await ensureClient();
+      await sb.from('app_config').upsert({ id: 'registration', data: { open: !!open }, updated_at: new Date().toISOString() });
+    }
+    async function setUserStatus(userId, status) {
+      await ensureClient();
+      await sb.from('profiles').update({ status }).eq('id', userId);
+    }
+
+    /* peer-review proposals: any user proposes, the developer decides */
+    async function submitProposal(pr) {
+      await ensureClient(); const id = await uid(); if (!id) throw new Error('Sign in first.');
+      const { error } = await sb.from('question_edit_proposals')
+        .insert({ question_key: pr.questionKey, reviewer_id: id, proposed: pr.proposed, note: pr.note || '' });
+      if (error) throw new Error(error.message);
+    }
+    async function listMyProposals() {
+      await ensureClient(); const id = await uid(); if (!id) return [];
+      const { data } = await sb.from('question_edit_proposals').select('id, question_key, proposed, note, status, created_at')
+        .eq('reviewer_id', id).order('created_at', { ascending: false });
+      return (data || []).map(r => ({ id: r.id, questionKey: r.question_key, proposed: r.proposed, note: r.note, status: r.status, created: r.created_at }));
+    }
+    async function listProposals() {
+      await ensureClient();
+      const { data, error } = await sb.from('question_edit_proposals')
+        .select('id, question_key, reviewer_id, proposed, note, status, created_at')
+        .order('created_at', { ascending: false });
+      if (error) throw new Error(error.message);
+      const { data: profs } = await sb.from('profiles').select('id, name, email');
+      const who = {}; (profs || []).forEach(x => who[x.id] = x);
+      return (data || []).map(r => ({ id: r.id, questionKey: r.question_key, proposed: r.proposed, note: r.note || '',
+        status: r.status, created: r.created_at,
+        reviewerName: who[r.reviewer_id]?.name || '', reviewerEmail: who[r.reviewer_id]?.email || r.reviewer_id }));
+    }
+    async function setProposalStatus(id, status) {
+      await ensureClient();
+      await sb.from('question_edit_proposals').update({ status, decided_at: new Date().toISOString() }).eq('id', id);
+    }
+    /* flagged questions + anonymous reasons for the peer-review tab */
+    async function listFlaggedDetails() {
+      await ensureClient();
+      const { data } = await sb.rpc('list_flagged_details');
+      return (data || []).map(r => ({ questionKey: r.question_key, notes: r.notes || [] }));
+    }
+
+    /* declined drive papers: never publish, never re-show in scans */
+    async function getDeclinedPapers() {
+      await ensureClient();
+      const { data } = await sb.from('app_config').select('data').eq('id', 'declined_papers').single();
+      return data?.data?.keys || [];
+    }
+    async function declinePaper(key) {
+      await ensureClient();
+      const keys = await getDeclinedPapers();
+      if (!keys.includes(key)) keys.push(key);
+      await sb.from('app_config').upsert({ id: 'declined_papers', data: { keys }, updated_at: new Date().toISOString() });
+    }
+
     /* True token meter, one row per user × day × provider × model
        (developer — "tokens dev read" policy; users see only their own rows).
        Feeds the Users panel cost columns and the invoice generator. */
@@ -727,7 +852,8 @@ const Backend = (() => {
     /* AI auth token for the Cloudflare function */
     async function getAccessToken() { await ensureClient(); const { data } = await sb.auth.getSession(); return data.session?.access_token || null; }
 
-    return { init, signUp, signIn, signOut, currentUser, updateProfile,
+    return { init, signUp, signIn, signOut, requestPasswordReset, updatePassword, onPasswordRecovery, currentUser, updateProfile,
+      getRegistrationOpen, setRegistrationOpen, setUserStatus, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
       getProgress, recordAttempt, getAttempt, resetProgress,
       getPublishedPapers, publishPaper, unpublishPaper,
       getExamDate, setExamDate, saveSession, loadSession, clearSession, listSessions,
