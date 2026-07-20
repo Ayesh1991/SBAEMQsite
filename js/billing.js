@@ -99,10 +99,13 @@ const Billing = (() => {
     sharedCtx.rows.filter(r => !month || monthKey(r.day) === month).forEach(r => {
       pools[r.feature] = (pools[r.feature] || 0) + lineCost({ model: r.model, inputTokens: r.inputTokens, outputTokens: r.outputTokens });
     });
+    // "simulator" eligibility = the developer's GRANT (featureFlags), not the
+    // per-session activation (prefs) — the grant is stable; the activation
+    // self-expires every 5 idle minutes and must not flicker billing.
     const selfMode = !!sharedCtx.counts;
     const meEligible = split => selfMode
       ? (split === 'dev' ? isDev(user) : split === 'all' ? true
-          : (isDev(user) || user.featureFlags?.simulator || user.prefs?.simulator))
+          : (isDev(user) || !!user.featureFlags?.simulator))
       : null;
     const out = [];
     for (const [feature, cost] of Object.entries(pools)) {
@@ -117,7 +120,7 @@ const Billing = (() => {
       if (!sharedCtx.users?.length) continue;
       let eligible = split === 'dev' ? sharedCtx.users.filter(isDev)
         : split === 'all' ? sharedCtx.users
-        : sharedCtx.users.filter(u => isDev(u) || u.featureFlags?.simulator || u.prefs?.simulator);
+        : sharedCtx.users.filter(u => isDev(u) || u.featureFlags?.simulator);
       if (!eligible.length) eligible = sharedCtx.users.filter(isDev);
       if (!eligible.some(u => u.id === user.id)) continue;
       out.push({ feature, label: featureLabel(feature), n: eligible.length, cost: cost / eligible.length });

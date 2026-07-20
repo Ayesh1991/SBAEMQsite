@@ -256,6 +256,7 @@ const Simulator = (() => {
 
     const last = hist.mocks[0];
     body.innerHTML = `
+      ${modeSwitcherHTML('mock')}
       <div class="sim-hero card" data-animate>
         <div class="sim-hero-main">
           <p class="sim-hero-kicker">Blueprint v${bp.version || 1}${bp.updated ? ' · ' + esc(bp.updated) : ''} · ${bp.sba.length} SBA topics · ${bp.emq.length} EMQ themes</p>
@@ -297,7 +298,7 @@ const Simulator = (() => {
             <thead><tr><th>#</th><th>Date</th><th>Score</th><th>SBA/EMQ</th><th>Excluded</th><th></th></tr></thead>
             <tbody>${hist.mocks.slice(0, 8).map((m, i) => `
               <tr>
-                <td>${hist.mocks.length - i}</td>
+                <td>${m.custom ? '🎨' : hist.mocks.length - i}</td>
                 <td class="muted">${new Date(m.date).toLocaleDateString()}</td>
                 <td><strong class="${m.percent >= 70 ? 'good' : m.percent >= 50 ? '' : 'bad'}">${m.percent}%</strong> <span class="muted">(${m.correct}/${m.scored})</span></td>
                 <td class="muted">${m.sbaCount || 0}/${m.emqCount || 0}</td>
@@ -315,6 +316,209 @@ const Simulator = (() => {
       // cache window — "rebuild" should mean fully fresh, not just papers.
       if (typeof Cache !== 'undefined') { Cache.bust('sim-qtags'); Cache.bust('sim-qstats'); }
       await buildIndex(true); renderHome(view, user);
+    });
+  }
+
+  /* ---------------- mode switcher (Mock papers ⟷ Design a paper) ---------------- */
+
+  function modeSwitcherHTML(active) {
+    return `
+      <div class="sim-modes" data-animate>
+        <a class="sim-mode-card ${active === 'mock' ? 'active' : ''}" href="#/simulator">
+          <span class="sim-mode-ico">🎯</span>
+          <span class="sim-mode-name">Mock papers</span>
+          <span class="sim-mode-desc">Blueprint-shaped 30+30 daily mock, adapted to your performance.</span>
+        </a>
+        <a class="sim-mode-card ${active === 'design' ? 'active' : ''}" href="#/simulator/design">
+          <span class="sim-mode-ico">🎨</span>
+          <span class="sim-mode-name">Design a paper</span>
+          <span class="sim-mode-desc">Pick your topics and exact SBA/EMQ counts — the bank is AI-tagged, so search is precise.</span>
+        </a>
+      </div>`;
+  }
+
+  /* ---------------- Design a paper (#/simulator/design) ---------------- */
+
+  // Tag-first topic matching: the enriched record text starts with the AI
+  // tag (topic + category + keywords), so tagged questions rank naturally;
+  // untagged ones can still match on their own text. At least half the
+  // typed words must hit — "pre eclampsia magnesium sulphate" won't drag
+  // in every obstetric question that merely says "magnesium".
+  function topicMatches(index, kind, query, excluded) {
+    const words = Blueprint.normStr(query).split(' ').filter(w => w.length > 2);
+    if (!words.length) return [];
+    const scored = [];
+    for (const r of index) {
+      if (r.kind !== kind || excluded.has(r.qkey)) continue;
+      const hay = Blueprint.normStr(r.text);
+      const tagHay = r.tagTopic ? Blueprint.normStr(r.tagTopic + ' ' + r.text.slice(0, 80)) : '';
+      let hits = 0, score = 0;
+      for (const w of words) {
+        if (hay.includes(w)) { hits++; score += tagHay.includes(w) ? 2.2 : 1; }
+      }
+      if (hits < Math.ceil(words.length / 2)) continue;
+      scored.push({ r, score: score + (hits === words.length ? 1.5 : 0) });
+    }
+    return scored.sort((a, b) => b.score - a.score);
+  }
+
+  async function renderDesign(view, user) {
+    view.innerHTML = `
+      <section class="page">
+        <header data-animate>
+          <p class="kicker">SIMULATOR · DESIGN A PAPER</p>
+          <h1 class="page-title">Build your own paper</h1>
+          <p class="muted">Type the exact areas you want drilled and how many questions of each kind. The engine searches the
+            AI-tagged bank and assembles a real exam — it <strong>never invents questions</strong>: if a topic has fewer than
+            you asked for, the paper honestly ships with what exists.</p>
+        </header>
+        <div id="dp-body"><p class="muted">Indexing the bank…</p></div>
+      </section>`;
+    FX.viewIn(view);
+
+    let index, hist;
+    try {
+      const [raw, h, stats, tags] = await Promise.all([buildIndex(), loadHistory(), loadStats(), loadTags()]);
+      hist = h; index = enrich(raw, stats, tags);
+    } catch (e) {
+      view.querySelector('#dp-body').innerHTML = `<p class="bad">Could not index the bank: ${esc(e.message || e)}</p>`;
+      return;
+    }
+    const body = view.querySelector('#dp-body');
+    const taggedCount = index.filter(r => r.tagTopic).length;
+
+    body.innerHTML = `
+      ${modeSwitcherHTML('design')}
+      <div class="card dp-card" data-animate>
+        <div class="dp-meta muted tiny">${index.length} questions in the bank · ${taggedCount} AI-tagged for precise matching</div>
+        <div id="dp-rows"></div>
+        <button class="btn btn-ghost btn-sm" id="dp-add">＋ Add another topic</button>
+        <div class="dp-footer">
+          <div class="dp-totals" id="dp-totals"></div>
+          <button class="btn btn-gold btn-lg" id="dp-build" disabled>Build my paper →</button>
+        </div>
+        <p class="dev-row-msg" id="dp-msg"></p>
+      </div>`;
+
+    const rowsHost = body.querySelector('#dp-rows');
+    const totalsEl = body.querySelector('#dp-totals');
+    const buildBtn = body.querySelector('#dp-build');
+    let rowSeq = 0;
+    const rowState = new Map();   // rowId -> { query, sba, emq, matches: {SBA, EMQ} }
+
+    function addRow(preset) {
+      const id = 'r' + (++rowSeq);
+      const el = document.createElement('div');
+      el.className = 'dp-row';
+      el.dataset.row = id;
+      el.innerHTML = `
+        <input type="text" class="dp-topic" placeholder="e.g. pre-eclampsia magnesium sulphate" value="${esc(preset || '')}" aria-label="Topic or sub-topic">
+        <label class="dp-count">SBA <input type="number" class="dp-sba" min="0" max="60" value="5"></label>
+        <label class="dp-count">EMQ <input type="number" class="dp-emq" min="0" max="60" value="0"></label>
+        <span class="dp-found" data-found>type a topic…</span>
+        <button class="dp-del" title="Remove this topic" aria-label="Remove">✕</button>`;
+      rowsHost.appendChild(el);
+      rowState.set(id, { query: preset || '', sba: 5, emq: 0, matches: { SBA: 0, EMQ: 0 } });
+      let deb;
+      const refresh = () => {
+        const st = rowState.get(id); if (!st) return;
+        st.query = el.querySelector('.dp-topic').value.trim();
+        st.sba = Math.max(0, Math.min(60, Number(el.querySelector('.dp-sba').value) || 0));
+        st.emq = Math.max(0, Math.min(60, Number(el.querySelector('.dp-emq').value) || 0));
+        const found = el.querySelector('[data-found]');
+        if (!st.query) { st.matches = { SBA: 0, EMQ: 0 }; found.textContent = 'type a topic…'; found.className = 'dp-found'; updateTotals(); return; }
+        st.matches = {
+          SBA: topicMatches(index, 'SBA', st.query, hist.excluded).length,
+          EMQ: topicMatches(index, 'EMQ', st.query, hist.excluded).length
+        };
+        const shortS = st.sba > st.matches.SBA, shortE = st.emq > st.matches.EMQ;
+        found.innerHTML = `<strong>${st.matches.SBA}</strong> SBA · <strong>${st.matches.EMQ}</strong> EMQ in bank` +
+          ((shortS || shortE) ? ` <span class="bad">— fewer than asked</span>` : ` <span class="good">✓</span>`);
+        found.className = 'dp-found on';
+        updateTotals();
+      };
+      el.querySelector('.dp-topic').addEventListener('input', () => { clearTimeout(deb); deb = setTimeout(refresh, 300); });
+      el.querySelectorAll('.dp-sba, .dp-emq').forEach(i => i.addEventListener('input', () => { clearTimeout(deb); deb = setTimeout(refresh, 200); }));
+      el.querySelector('.dp-del').addEventListener('click', () => { rowState.delete(id); el.remove(); updateTotals(); });
+      if (preset) refresh();
+      return el;
+    }
+
+    function updateTotals() {
+      let reqS = 0, reqE = 0, getS = 0, getE = 0, topics = 0;
+      rowState.forEach(st => {
+        if (!st.query) return;
+        topics++;
+        reqS += st.sba; reqE += st.emq;
+        getS += Math.min(st.sba, st.matches.SBA); getE += Math.min(st.emq, st.matches.EMQ);
+      });
+      const total = getS + getE;
+      const mins = Math.min(180, Math.max(10, Math.round(total * 2)));
+      totalsEl.innerHTML = topics
+        ? `<strong>${getS}</strong>/${reqS} SBA · <strong>${getE}</strong>/${reqE} EMQ · ${topics} topic${topics > 1 ? 's' : ''} · ⏱ ${mins} min`
+        : `<span class="muted">Add at least one topic with a question count.</span>`;
+      buildBtn.disabled = total < 1;
+    }
+
+    addRow('');
+    addRow('');
+    updateTotals();
+    body.querySelector('#dp-add').addEventListener('click', () => addRow(''));
+
+    buildBtn.addEventListener('click', async () => {
+      buildBtn.disabled = true;
+      const msg = body.querySelector('#dp-msg');
+      msg.textContent = 'Assembling your paper…'; msg.className = 'dev-row-msg muted';
+      try {
+        await startDesignedRun(view, user, index, hist, [...rowState.values()].filter(st => st.query && (st.sba || st.emq)));
+      } catch (e) {
+        msg.textContent = e.message || String(e); msg.className = 'dev-row-msg bad';
+        buildBtn.disabled = false;
+      }
+    });
+  }
+
+  async function startDesignedRun(view, user, index, hist, rows) {
+    const used = new Set();
+    const picked = [];
+    const topicNames = [];
+    for (const st of rows) {
+      topicNames.push(st.query);
+      for (const [kind, want] of [['SBA', st.sba], ['EMQ', st.emq]]) {
+        if (!want) continue;
+        const ranked = topicMatches(index, kind, st.query, hist.excluded)
+          .filter(x => !used.has(x.r.qkey))
+          // targeted revision: unseen first, then best-matching
+          .sort((a, b) => (hist.seen.has(a.r.qkey) - hist.seen.has(b.r.qkey)) || (b.score - a.score))
+          .slice(0, want);
+        ranked.forEach(x => { used.add(x.r.qkey); picked.push({ ...x.r, bucket: st.query }); });
+      }
+    }
+    if (picked.length < 1) throw new Error('No matching questions found for these topics — try broader wording.');
+
+    const dict = await resolve(picked);
+    const questions = picked.map(r => dict[r.qkey]).filter(Boolean)
+      .map((q, i) => ({ ...q, number: i + 1 }));
+    if (questions.length < 1) throw new Error('Could not load the matched questions — try again.');
+
+    const sbaN = questions.filter(q => q.kind === 'SBA').length;
+    const emqN = questions.length - sbaN;
+    const loaded = {
+      meta: { id: 'design-' + Date.now().toString(36), title: 'Designed paper', categoryId: null, topicId: null },
+      paper: { topic: 'Designed paper · ' + topicNames.slice(0, 3).join(', ') + (topicNames.length > 3 ? '…' : '') },
+      path: { category: { title: 'Design a paper' }, topic: null }
+    };
+    view.innerHTML = '';
+    Quiz.start(view, loaded, questions, {
+      mode: 'exam', kind: 'MIX', sessionKey: null, simulator: true,
+      timeLimitMinutes: Math.min(180, Math.max(10, Math.round(questions.length * 2))),
+      onFinish: async (attempt) => {
+        const bp = await Blueprint.load().catch(() => ({ version: 0 }));
+        const mock = await saveMock(attempt, bp, { sba: sbaN, emq: emqN }, questions, { custom: true, topics: topicNames });
+        try { if (typeof ReviewQueue !== 'undefined') ReviewQueue.addFromAttempt(attempt); } catch { /* optional */ }
+        location.hash = mock ? '#/simulator/result/' + encodeURIComponent(mock.id) : '#/simulator';
+      },
+      onQuit: () => { location.hash = '#/simulator/design'; }
     });
   }
 
@@ -396,7 +600,7 @@ const Simulator = (() => {
     });
   }
 
-  async function saveMock(attempt, bp, counts, questions) {
+  async function saveMock(attempt, bp, counts, questions, opts = {}) {
     const buckets = {};
     attempt.detail.forEach(d => {
       if (d.excluded) return;
@@ -413,8 +617,10 @@ const Simulator = (() => {
       buckets, bySection, sbaCount: counts.sba, emqCount: counts.emq, blueprintVersion: bp.version,
       detail: attempt.detail.map(d => ({ qkey: d.qkey, bucket: d.bucket, kind: d.kind, isCorrect: d.isCorrect, excluded: d.excluded, chosen: d.chosen, correct: d.correct, timeSec: d.timeSec || 0 }))
     };
-    // anonymous score into the cohort distribution (percentile curve)
-    try { Backend.saveCohortScore?.(result.percent).catch?.(() => {}); } catch {}
+    if (opts.custom) { result.custom = true; result.topics = opts.topics || []; }
+    // anonymous score into the cohort distribution (percentile curve) —
+    // custom-designed papers stay out: their difficulty isn't comparable
+    try { if (!opts.custom) Backend.saveCohortScore?.(result.percent).catch?.(() => {}); } catch {}
     try { return await Backend.saveMockResult(result); } catch { return null; }
   }
 
@@ -435,7 +641,8 @@ const Simulator = (() => {
     view.innerHTML = `
       <section class="page narrow results-page">
         <header class="results-head" data-animate>
-          <p class="kicker">Adaptive mock · ${new Date(mock.date).toLocaleDateString()} · ${Math.floor(mock.durationSec / 60)}m</p>
+          <p class="kicker">${mock.custom ? '🎨 Designed paper' : 'Adaptive mock'} · ${new Date(mock.date).toLocaleDateString()} · ${Math.floor(mock.durationSec / 60)}m</p>
+          ${mock.custom && (mock.topics || []).length ? `<p class="muted tiny">Topics: ${(mock.topics || []).map(esc).join(' · ')}</p>` : ''}
           <div class="score-hero"><span id="score-big">0%</span></div>
           <p class="verdict ${verdict.c}">${verdict.t}</p>
           <p class="muted">${mock.correct} of ${mock.scored} scored correct${(mock.excludedKeys || []).length ? ` · ${(mock.excludedKeys || []).length} excluded as flawed` : ''}</p>
@@ -535,7 +742,7 @@ const Simulator = (() => {
   /* ---------------- cohort percentile ---------------- */
 
   async function renderCohort(host, mock) {
-    if (!host) return;
+    if (!host || mock.custom) return;   // designed papers aren't comparable
     let scores = [];
     try { scores = (await Backend.listCohortScores?.()) || []; } catch { scores = []; }
     if (scores.length < 4) return;                   // needs a real distribution
@@ -695,5 +902,5 @@ const Simulator = (() => {
     return '<p>' + h + '</p>';
   }
 
-  return { renderHome, startRun, renderResult, buildIndex, select, loadHistory };
+  return { renderHome, startRun, renderResult, renderDesign, buildIndex, select, loadHistory };
 })();

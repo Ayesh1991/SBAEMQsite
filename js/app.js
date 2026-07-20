@@ -32,6 +32,7 @@
     { re: /^#\/cards\/([^/]+)$/, fn: renderDeck },
     { re: /^#\/simulator$/, fn: renderSimHome },
     { re: /^#\/simulator\/run$/, fn: renderSimRun },
+    { re: /^#\/simulator\/design$/, fn: renderSimDesign },
     { re: /^#\/simulator\/result\/([^/]+)$/, fn: renderSimResult },
     { re: /^#\/dev(?:\/(papers|cards|users|blueprint|review|ai))?$/, fn: renderDev }
   ];
@@ -47,6 +48,7 @@
     await syncExamDate(user);
 
     ThreeBG.setMood(match.fn === renderLanding ? 'hero' : 'interior');
+    { const rf = routeFlag?.(); if (rf) touchUse(rf); }   // visiting the tab counts as using it
     renderNav(user);
     view.className = 'view';
     window.scrollTo(0, 0);
@@ -76,8 +78,8 @@
           <a href="#/dashboard" class="${location.hash === '#/dashboard' ? 'active' : ''}">Dashboard</a>
           <a href="#/library" class="${location.hash.startsWith('#/library') || location.hash.startsWith('#/paper') ? 'active' : ''}">Library</a>
           <a href="#/studio" class="${location.hash === '#/studio' ? 'active' : ''}">Studio</a>
-          ${(isDev || user.prefs?.flashcards || user.featureFlags?.flashcards) ? `<a href="#/cards" class="${location.hash.startsWith('#/cards') ? 'active' : ''}">Flashcards</a>` : ''}
-          ${(isDev || user.prefs?.simulator || user.featureFlags?.simulator) ? `<a href="#/simulator" class="${location.hash.startsWith('#/simulator') ? 'active' : ''}">Simulator</a>` : ''}
+          ${(isDev || (user.featureFlags?.flashcards && user.prefs?.flashcards)) ? `<a href="#/cards" class="${location.hash.startsWith('#/cards') ? 'active' : ''}">Flashcards</a>` : ''}
+          ${(isDev || (user.featureFlags?.simulator && user.prefs?.simulator)) ? `<a href="#/simulator" class="${location.hash.startsWith('#/simulator') ? 'active' : ''}">Simulator</a>` : ''}
           ${isDev ? `<a href="#/dev" class="${location.hash.startsWith('#/dev') ? 'active' : ''}">Developer</a>` : ''}
           <a href="#/profile" class="${location.hash === '#/profile' ? 'active' : ''}">Profile</a>
           <button class="btn btn-ghost btn-sm" id="nav-logout">Sign out</button>
@@ -795,21 +797,25 @@
           <p class="save-note" id="pos-note" hidden>Saved ✓</p>
         </div>
 
+        ${(isGranted(user, 'simulator') || isGranted(user, 'flashcards')) ? `
         <div class="card" data-animate>
           <h3 class="card-title">Study tools</h3>
-          <p class="muted">Switch on the advanced tools when you're ready for them — they appear instantly in the top navigation.</p>
+          <p class="muted">The site owner has approved these tools for your account. Switch one on to use it —
+            it turns itself off after <strong>5 minutes</strong> away, so come back here to re-activate for each session.</p>
           <div class="pref-toggles">
+            ${isGranted(user, 'simulator') ? `
             <label class="pref-toggle">
-              <span><strong>🎯 Adaptive simulator</strong><br><span class="muted tiny">Daily blueprint-shaped mock exams, tuned to your performance.</span></span>
-              <label class="dev-flag"><input type="checkbox" data-pref="simulator" ${(user.prefs?.simulator || user.featureFlags?.simulator) ? 'checked' : ''}><span></span></label>
-            </label>
+              <span><strong>🎯 Adaptive simulator</strong><br><span class="muted tiny">Daily blueprint-shaped mocks + design your own custom papers.</span></span>
+              <label class="dev-flag"><input type="checkbox" data-pref="simulator" ${user.prefs?.simulator ? 'checked' : ''}><span></span></label>
+            </label>` : ''}
+            ${isGranted(user, 'flashcards') ? `
             <label class="pref-toggle">
               <span><strong>🃏 Flashcards</strong><br><span class="muted tiny">Spaced-repetition decks with tap-to-flip and swipe gestures.</span></span>
-              <label class="dev-flag"><input type="checkbox" data-pref="flashcards" ${(user.prefs?.flashcards || user.featureFlags?.flashcards) ? 'checked' : ''}><span></span></label>
-            </label>
+              <label class="dev-flag"><input type="checkbox" data-pref="flashcards" ${user.prefs?.flashcards ? 'checked' : ''}><span></span></label>
+            </label>` : ''}
           </div>
           <p class="save-note" id="pref-note" hidden>Saved ✓</p>
-        </div>
+        </div>` : ''}
 
         <div class="card" data-animate id="ai-usage-card">
           <h3 class="card-title">AI usage &amp; billing</h3>
@@ -857,6 +863,7 @@
       cb.disabled = true;
       try {
         await Backend.setPref(cb.dataset.pref, cb.checked);
+        if (cb.checked) touchUse(cb.dataset.pref);          // start the 5-min activity clock
         const fresh = await Backend.currentUser();          // re-read → nav updates instantly
         renderNav(fresh);
         const note = view.querySelector('#pref-note'); note.hidden = false; setTimeout(() => note.hidden = true, 1800);
@@ -1138,11 +1145,40 @@
     });
   }
 
-  /* ================= flashcards & simulator (self-service via Profile) ================= */
+  /* ================= flashcards & simulator (two-key access) ================= */
 
-  // A user sees these tabs when THEY switch them on in Profile (prefs) —
-  // legacy developer grants (featureFlags) keep working so nobody loses access.
-  const canUse = (user, flag) => devOnly(user) || !!user?.prefs?.[flag] || !!user?.featureFlags?.[flag];
+  // TWO KEYS turn these tabs on:
+  //   1. the developer's GRANT (featureFlags — trigger-protected, only the
+  //      dev can set it). Without it the toggle isn't even visible.
+  //   2. the user's own ACTIVATION (prefs — flipped in Profile).
+  // The activation self-expires after 5 minutes of not using the tab
+  // (idle sweep below), so each session starts from Profile.
+  const canUse = (user, flag) => devOnly(user) || (!!user?.featureFlags?.[flag] && !!user?.prefs?.[flag]);
+  const isGranted = (user, flag) => devOnly(user) || !!user?.featureFlags?.[flag];
+
+  /* ---- 5-minute inactivity auto-disable ---- */
+  const IDLE_MS = 5 * 60 * 1000;
+  const lastUseKey = f => 'aureum.lastuse.' + f;
+  const touchUse = f => { try { localStorage.setItem(lastUseKey(f), String(Date.now())); } catch { /* ignore */ } };
+  const lastUse = f => { try { return Number(localStorage.getItem(lastUseKey(f))) || 0; } catch { return 0; } };
+  const routeFlag = () => location.hash.startsWith('#/simulator') ? 'simulator'
+    : location.hash.startsWith('#/cards') ? 'flashcards' : null;
+  // any interaction while ON the tab keeps it alive (incl. mid-mock)
+  ['click', 'keydown', 'pointerdown'].forEach(ev =>
+    document.addEventListener(ev, () => { const f = routeFlag(); if (f) touchUse(f); }, { passive: true, capture: true }));
+  async function idleSweep() {
+    let user; try { user = await Backend.currentUser(); } catch { return; }
+    if (!user || devOnly(user)) return;
+    for (const f of ['simulator', 'flashcards']) {
+      // only sweep while the user is AWAY from the tab — never yank it mid-use
+      if (user.prefs?.[f] && routeFlag() !== f && Date.now() - (lastUse(f) || 0) > IDLE_MS) {
+        try { await Backend.setPref(f, false); } catch { continue; }
+        user = await Backend.currentUser().catch(() => user);
+        renderNav(user);
+      }
+    }
+  }
+  setInterval(idleSweep, 60 * 1000);
   async function renderReview(user) { await ReviewQueue.renderRun(view, user); }
   function renderLocked(title) {
     view.innerHTML = `
@@ -1159,6 +1195,7 @@
   async function renderDeck(deckId, user) { if (!canUse(user, 'flashcards')) return renderLocked('Flashcards'); await Flashcards.renderDeck(view, deckId, user); }
   async function renderSimHome(user) { if (!canUse(user, 'simulator')) return renderLocked('The adaptive simulator'); await Simulator.renderHome(view, user); }
   async function renderSimRun(user) { if (!canUse(user, 'simulator')) return renderLocked('The adaptive simulator'); await Simulator.startRun(view, user); }
+  async function renderSimDesign(user) { if (!canUse(user, 'simulator')) return renderLocked('The adaptive simulator'); await Simulator.renderDesign(view, user); }
   async function renderSimResult(id, user) { if (!canUse(user, 'simulator')) return renderLocked('The adaptive simulator'); await Simulator.renderResult(view, id, user); }
 
   function renderDevGate(user) {

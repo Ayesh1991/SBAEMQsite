@@ -418,7 +418,6 @@ returns jsonb language sql security definer stable as $$
     'all', greatest((select count(*) from public.profiles), 1),
     'simulator', greatest((select count(*) from public.profiles
         where coalesce((feature_flags ->> 'simulator')::boolean, false)
-           or coalesce((prefs ->> 'simulator')::boolean, false)
            or lower(email) = 'ayeshmantha@gmail.com'), 1),
     'dev', 1
   );

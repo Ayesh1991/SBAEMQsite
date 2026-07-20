@@ -1403,3 +1403,52 @@ details[open] > summary .tw-caret { transform: rotate(90deg); }
 .aiu-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 18px; }
 .aiu-note { margin-top: 12px; line-height: 1.5; }
 @media (max-width: 560px) { .aiu-mech { grid-template-columns: 1fr auto; } .aiu-mech .aiu-bar { display: none; } }
+
+/* ============================================================
+   v26 — simulator mode switcher + Design a paper
+   ============================================================ */
+.sim-modes { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; margin-bottom: 18px; }
+.sim-mode-card {
+  display: flex; flex-direction: column; gap: 6px; padding: 18px 20px;
+  border-radius: 14px; border: 1px solid rgba(255,255,255,.09);
+  background: rgba(255,255,255,.03); text-decoration: none; color: inherit;
+  transition: transform .18s ease, border-color .18s ease, background .18s ease;
+}
+.sim-mode-card:hover { transform: translateY(-2px); border-color: rgba(244,201,93,.45); }
+.sim-mode-card.active {
+  border-color: rgba(244,201,93,.65);
+  background: linear-gradient(135deg, rgba(244,201,93,.10), rgba(232,163,61,.05));
+  box-shadow: 0 6px 28px rgba(244,201,93,.08);
+}
+.sim-mode-ico { font-size: 1.5rem; }
+.sim-mode-name { font-weight: 700; font-size: 1.02rem; }
+.sim-mode-desc { font-size: .8rem; color: var(--ink-2); line-height: 1.45; }
+
+.dp-card { position: relative; }
+.dp-meta { margin-bottom: 14px; }
+.dp-row {
+  display: grid; grid-template-columns: minmax(200px, 2.2fr) auto auto minmax(140px, 1.2fr) auto;
+  gap: 10px; align-items: center; padding: 10px 0;
+  border-bottom: 1px dashed rgba(255,255,255,.08);
+}
+.dp-topic {
+  background: rgba(255,255,255,.05); color: inherit; border: 1px solid rgba(255,255,255,.14);
+  border-radius: 10px; padding: 10px 12px; font: inherit; font-size: .92rem; width: 100%;
+}
+.dp-topic:focus { outline: none; border-color: rgba(244,201,93,.55); }
+.dp-count { display: flex; align-items: center; gap: 6px; font-size: .74rem; letter-spacing: .05em; color: var(--ink-3); }
+.dp-count input {
+  width: 58px; background: rgba(255,255,255,.05); color: inherit; text-align: center;
+  border: 1px solid rgba(255,255,255,.14); border-radius: 8px; padding: 8px 4px; font: inherit;
+}
+.dp-found { font-size: .78rem; color: var(--ink-3); }
+.dp-found.on { color: var(--ink-2); }
+.dp-del { background: none; border: none; color: var(--ink-3); cursor: pointer; font-size: .9rem; padding: 6px; border-radius: 8px; }
+.dp-del:hover { color: #e05263; background: rgba(224,82,99,.1); }
+#dp-add { margin: 14px 0 4px; }
+.dp-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-top: 16px; }
+.dp-totals { font-size: .92rem; color: var(--ink-2); }
+@media (max-width: 640px) {
+  .dp-row { grid-template-columns: 1fr auto; }
+  .dp-found { grid-column: 1 / -1; }
+}

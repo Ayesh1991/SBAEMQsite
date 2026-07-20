@@ -692,17 +692,20 @@ const DevConsole = (() => {
 
   /* ---------------- users & feature flags ---------------- */
 
-  // Developer-granted AI access flags (server-enforced; the feature_flags
-  // column is trigger-protected so users cannot self-grant). Simulator and
-  // Flashcards are SELF-SERVICE now — users switch them on in their own
-  // Profile tab — so they appear below as a read-only status, not a toggle.
+  // Developer-granted flags (server/trigger-protected — users cannot
+  // self-grant). Simulator/Flashcards use TWO keys: your grant here makes
+  // the toggle appear in the user's Profile; they still activate it per
+  // session there (and it self-expires after 5 idle minutes).
   const FEATURES = [
     // master switch: without it a user has NO AI at all
     { id: 'gemini',          label: 'Gemini' },
-    // unlocks the Gemini 2.5 / 3 / 3.5 model picker
+    // unlocks the Gemini model picker
     { id: 'gemini_advanced', label: 'Gemini+' },
     // AI flashcard generation from wrong answers
-    { id: 'ai_flashcards',   label: 'AI cards' }
+    { id: 'ai_flashcards',   label: 'AI cards' },
+    // approval for the two opt-in tabs (toggle visibility in their Profile)
+    { id: 'simulator',       label: 'Simulator' },
+    { id: 'flashcards',      label: 'Flashcards' }
   ];
 
   async function refreshUsers(view) {
@@ -748,7 +751,7 @@ const DevConsole = (() => {
           const isDev = (u.email || '').toLowerCase() === devMail;
           const ai = usage[u.id] || { total: 0, today: 0 };
           const c = costs[u.id] || { thisMonth: 0, allTime: 0 };
-          const self = [(u.prefs?.simulator || u.featureFlags?.simulator) ? 'Sim' : null, (u.prefs?.flashcards || u.featureFlags?.flashcards) ? 'Cards' : null].filter(Boolean).join(' · ') || '—';
+          const self = [u.prefs?.simulator ? 'Sim' : null, u.prefs?.flashcards ? 'Cards' : null].filter(Boolean).join(' · ') || '—';
           return `<tr class="${isDev ? 'dev-users-me' : ''}">
             <td>${ctx.esc(u.name || '')}${isDev ? ' <span class="qedit-tag">developer</span>' : ''}</td>
             <td class="muted">${ctx.esc(u.email || '')}</td>
@@ -766,9 +769,10 @@ const DevConsole = (() => {
         }).join('')}</tbody>
       </table></div>
       <p class="tiny muted"><strong>Gemini</strong> is the master AI switch — a user with it OFF has no AI at all (server-enforced; the flag column is
-        database-protected so nobody can self-grant). <strong>Gemini+</strong> adds the 2.5 / 3 / 3.5 Flash model picker; <strong>AI cards</strong> allows
-        flashcard generation from wrong answers. <em>Self-enabled</em> shows which optional tabs (Simulator / Flashcards) the user switched on in their own
-        Profile. Costs come from <strong>true token counts</strong> per user × model × day (rates in <code>config.js → ai.pricing</code>).
+        database-protected so nobody can self-grant). <strong>Gemini+</strong> adds the model picker; <strong>AI cards</strong> allows flashcard generation
+        from wrong answers. <strong>Simulator / Flashcards</strong> are your APPROVAL — only then does the switch appear in that user's Profile, where they
+        activate it per session (it self-expires after 5 idle minutes; <em>Self-enabled</em> shows who has it active right now). Costs come from
+        <strong>true token counts</strong> per user × model × day (rates in <code>config.js → ai.pricing</code>).
         🧾 Bill generates a commercial invoice (JPEG / PNG / PDF) for any month.
         ${tokensLive ? '' : '<span class="bad">Token meter unavailable — run the updated supabase/schema.sql once.</span>'}</p>
       <p class="dev-row-msg" id="dev-users-msg"></p>`;
