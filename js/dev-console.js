@@ -1005,9 +1005,9 @@ const DevConsole = (() => {
 
   // labels carry the $/1M in-out rates so model choices are informed ones
   const MODEL_OPTIONS = [
-    { id: 'gemini|gemini-2.5-flash',          label: 'Gemini 2.5 Flash · $0.30/$2.50' },
-    { id: 'gemini|gemini-3-flash',            label: 'Gemini 3 Flash · $0.50/$3.00' },
+    { id: 'gemini|gemini-3.1-flash-lite',     label: 'Gemini 3.1 Flash-Lite · $0.25/$1.50' },
     { id: 'gemini|gemini-3.5-flash',          label: 'Gemini 3.5 Flash · $1.50/$9.00' },
+    { id: 'gemini|gemini-3.1-pro',            label: 'Gemini 3.1 Pro · $2.00/$12.00' },
     { id: 'claude|claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 · $1.00/$5.00' },
     { id: 'claude|claude-sonnet-4-5',         label: 'Claude Sonnet 4.5 · $3.00/$15.00' }
   ];
@@ -1019,16 +1019,16 @@ const DevConsole = (() => {
   const AI_FEATURES = [
     { id: 'ai_tutor', name: '✨ AI tutor', status: 'live', billing: 'per-user',
       desc: 'Explore-with-AI explanations and follow-up chat on every question. Each user pays for their own tokens.',
-      defaults: { enabled: true, provider: 'gemini', model: 'gemini-2.5-flash', split: 'per-user' } },
+      defaults: { enabled: true, provider: 'gemini', model: 'gemini-3.1-flash-lite', split: 'per-user' } },
     { id: 'ai_coach', name: '🎯 Mock coach', status: 'live', billing: 'per-user',
       desc: 'Post-mock study plan built from per-topic scores + the blueprint\'s examiner tendencies.',
-      defaults: { enabled: true, provider: 'gemini', model: 'gemini-2.5-flash', split: 'per-user' } },
+      defaults: { enabled: true, provider: 'gemini', model: 'gemini-3.1-flash-lite', split: 'per-user' } },
     { id: 'auto_flashcards', name: '🃏 AI flashcards from mistakes', status: 'live', billing: 'per-user',
       desc: 'Wrong answers become spaced-repetition cards in a personal deck. Grant per user with the AI cards flag in Users & access.',
-      defaults: { enabled: true, provider: 'gemini', model: 'gemini-2.5-flash', split: 'per-user' } },
+      defaults: { enabled: true, provider: 'gemini', model: 'gemini-3.1-flash-lite', split: 'per-user' } },
     { id: 'question_tagger', name: '🏷 Question tagger', status: 'live', billing: 'shared',
       desc: 'AI classifies every bank question onto the blueprint\'s topics (+ guideline + difficulty estimate) so mock selection is exact, not keyword-guessed. Runs once per question — never re-tags.',
-      defaults: { enabled: true, provider: 'gemini', model: 'gemini-2.5-flash', split: 'simulator' } },
+      defaults: { enabled: true, provider: 'gemini', model: 'gemini-3.1-flash-lite', split: 'simulator' } },
     { id: 'behaviour_insights', name: '🔬 Behaviour insights', status: 'live', billing: 'shared',
       desc: 'Analyses the tracked interaction data — dwell times, answer changes, what users literally ask the tutor — and reports what the cohort finds hard and why.',
       defaults: { enabled: true, provider: 'claude', model: 'claude-haiku-4-5-20251001', split: 'simulator' } },
@@ -1040,10 +1040,10 @@ const DevConsole = (() => {
       defaults: { enabled: false, provider: 'claude', model: 'claude-haiku-4-5-20251001', split: 'per-user' } },
     { id: 'readiness_forecaster', name: '📈 Readiness forecaster', status: 'planned', billing: 'shared',
       desc: 'Ability-model (Elo/Rasch) pass-probability with a confidence band, narrated weekly: "66% ± 4 — borderline; close it in 3 weeks at current pace."',
-      defaults: { enabled: false, provider: 'gemini', model: 'gemini-2.5-flash', split: 'simulator' } },
+      defaults: { enabled: false, provider: 'gemini', model: 'gemini-3.1-flash-lite', split: 'simulator' } },
     { id: 'weekly_digest', name: '📬 Weekly digest', status: 'planned', billing: 'shared',
       desc: 'Sunday summary per user: readiness trend, 3 weakest topics, due flashcards, next week\'s plan.',
-      defaults: { enabled: false, provider: 'gemini', model: 'gemini-2.5-flash', split: 'all' } },
+      defaults: { enabled: false, provider: 'gemini', model: 'gemini-3.1-flash-lite', split: 'all' } },
     { id: 'rationale_enhancer', name: '📚 Rationale enhancer', status: 'planned', billing: 'shared',
       desc: 'Upgrades thin rationales across the bank with guideline-cited explanations (batch, one-off per question).',
       defaults: { enabled: false, provider: 'claude', model: 'claude-haiku-4-5-20251001', split: 'simulator' } }
@@ -1102,8 +1102,12 @@ const DevConsole = (() => {
       const cost = rows.reduce((s, r) => s + (r.inputTokens / 1e6) * Billing.rateFor(r.model).in + (r.outputTokens / 1e6) * Billing.rateFor(r.model).out, 0);
       return { tok, cost, calls: rows.reduce((s, r) => s + r.calls, 0) };
     };
+    // Google retired 1.x/2.x and gemini-3-flash for new keys — a stale saved
+    // choice migrates to the feature default (the server does the same).
+    const retired = m => /^gemini-(1|2)[.\-]/.test(m || '') || m === 'gemini-3-flash';
     host.innerHTML = AI_FEATURES.map(f => {
       const c = Object.assign({}, f.defaults, saved[f.id] || {});
+      if (c.provider === 'gemini' && retired(c.model)) c.model = f.defaults.model;
       const u = usageOf(f.id);
       const modelId = `${c.provider}|${c.model}`;
       const planned = f.status === 'planned';
@@ -1216,8 +1220,11 @@ const DevConsole = (() => {
           btn.disabled = true; stopReq = false;
           stopBtn.hidden = false; stopBtn.disabled = false; stopBtn.textContent = '⏸ Stop';
           // the model the panel has configured — anything else serving is an alarm
-          let selModel = 'gemini-2.5-flash';
-          try { selModel = ((await ctx.Backend.getAiFeatures())?.question_tagger?.model) || selModel; } catch {}
+          let selModel = 'gemini-3.1-flash-lite';
+          try {
+            const saved = (await ctx.Backend.getAiFeatures())?.question_tagger?.model;
+            if (saved && !(/^gemini-(1|2)[.\-]/.test(saved) || saved === 'gemini-3-flash')) selModel = saved;
+          } catch {}
           // live meter: exact provider-reported tokens per batch → dollars,
           // plus WHICH model actually answered (red if not the selected one)
           let done = 0, failedBatches = 0, tokIn = 0, tokOut = 0, costUsd = 0, served = '';

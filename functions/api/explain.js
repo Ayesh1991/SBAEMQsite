@@ -59,8 +59,11 @@ export async function onRequest(context) {
   // pinned to the default model no matter what the client sends — so
   // access and billing tiers can't be bypassed. (feature_flags is
   // trigger-protected in Postgres: only the developer can change it.)
-  const defaultGemini = env.GEMINI_DEFAULT_MODEL || 'gemini-2.5-flash';
-  let effectiveModel = model;
+  const defaultGemini = env.GEMINI_DEFAULT_MODEL || 'gemini-3.1-flash-lite';
+  // Google retired the 1.x/2.x lines and gemini-3-flash for new keys — any
+  // stored/requested retired id silently becomes the current default so a
+  // stale saved config can never resurrect a dead (or mis-priced) model.
+  let effectiveModel = modernGemini(model) || model;
   let geminiRestricted = false;
   if (!isDev) {
     const flags = await getUserFlags(token, user.id, env);
@@ -108,9 +111,10 @@ export async function onRequest(context) {
       // 2.5+ thinking also bills against the cap — give batch jobs headroom
       const maxTok = action === 'tag' ? 8000 : 2000;
       // strict: the model picked in the AI systems panel, or fail loudly
+      // (a retired Gemini id stored in the panel migrates to the default)
       const r = useProvider === 'claude'
         ? await callClaude(p.system, p.user, fc.model || model, env, maxTok)
-        : await callGemini(p.system, p.user, fc.model || model || defaultGemini, env, false, maxTok, true);
+        : await callGemini(p.system, p.user, modernGemini(fc.model) || modernGemini(model) || defaultGemini, env, false, maxTok, true);
       await logShared(token, env, feature, useProvider, r);
       // usage goes back to the panel so the runner can show live cost
       return json({ text: r.text, model: r.model, usage: { in: r.in || 0, out: r.out || 0 } });
@@ -352,6 +356,14 @@ function stripFences(s) { return s.replace(/^```[a-z]*\n?/i, '').replace(/```\s*
 
 /* ---------------- model calls ---------------- */
 
+// null when the id is retired for new API keys (Google's July 2026 line-up:
+// 3.1 Flash-Lite / 3.5 Flash / 3.1 Pro) — callers substitute the default.
+function modernGemini(m) {
+  if (!m) return null;
+  if (/^gemini-(1|2)[.\-]/.test(m) || m === 'gemini-3-flash') return null;
+  return m;
+}
+
 async function callGemini(system, user, model, env, restricted, maxTokens, strict) {
   if (!env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not configured on the server.');
   // Guard against a mis-pasted secret: a real key is a single token
@@ -379,27 +391,32 @@ async function callGemini(system, user, model, env, restricted, maxTokens, stric
   // the model choice wasn't. Interactive calls keep fallbacks for
   // resilience (restricted users only onto baseline-priced models).
   const models = strict
-    ? [model || 'gemini-2.5-flash']
+    ? [modernGemini(model) || 'gemini-3.1-flash-lite']
     : restricted
-      ? [model || 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-flash-latest']
-      : [model || 'gemini-2.5-flash', 'gemini-2.5-flash', 'gemini-3-flash', 'gemini-flash-latest', 'gemini-2.5-flash-lite'];
+      ? [modernGemini(model) || 'gemini-3.1-flash-lite', 'gemini-3.5-flash']
+      : [modernGemini(model) || 'gemini-3.1-flash-lite', 'gemini-3.5-flash'];
   const tried = new Set();
   let lastErr = 'unknown error';
-  for (const m of models) {
+  let noThink = false;    // set when a model rejects thinkingConfig → retry bare
+  const queue = [...models];
+  while (queue.length) {
+    const m = queue.shift();
     if (tried.has(m)) continue; tried.add(m);
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${encodeURIComponent(key)}`;
     let res, data;
     // Batch jobs (tagging) return long JSON — too small a cap silently
     // truncates the JSON mid-array, which is unparseable downstream.
     const gc = { temperature: 0.4, maxOutputTokens: maxTokens || 1400 };
-    // COST CONTROL: 2.5+ models "think" by DEFAULT and every thinking token
-    // is billed as OUTPUT (2.5 Flash: up to 24,576 per call — ~30× the cost
-    // of the visible answer; Gemini 3 defaults to level "high"). Nothing on
-    // this site needs hidden reasoning, so 2.5 gets thinking OFF and 3.x
-    // gets the minimum level. (2.5: thinkingBudget; 3.x: thinkingLevel —
-    // mixing the two fields errors, hence the branch.)
-    if (/^gemini-2\.5/.test(m)) gc.thinkingConfig = { thinkingBudget: 0 };
-    else if (/^gemini-3/.test(m)) gc.thinkingConfig = { thinkingLevel: 'low' };
+    // COST CONTROL: modern Gemini models "think" by DEFAULT and every hidden
+    // thinking token is billed as OUTPUT (this once multiplied real costs
+    // ~30×). Nothing on this site needs hidden reasoning: 2.x gets thinking
+    // OFF (thinkingBudget) and 3.x gets the minimum level (thinkingLevel —
+    // the two fields must not be mixed). If a model rejects the field
+    // (e.g. a lite variant that never thinks), we retry it once without.
+    if (!noThink) {
+      if (/^gemini-2\.5/.test(m)) gc.thinkingConfig = { thinkingBudget: 0 };
+      else if (/^gemini-3/.test(m)) gc.thinkingConfig = { thinkingLevel: 'low' };
+    }
     try {
       res = await fetch(url, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -430,6 +447,11 @@ async function callGemini(system, user, model, env, restricted, maxTokens, stric
     }
     // surface Google's real message (e.g. "API key not valid", "API not enabled")
     lastErr = data.error?.message || `HTTP ${res.status}`;
+    // model rejected the thinking field → retry the SAME model once without
+    if (!noThink && gc.thinkingConfig && /thinking/i.test(lastErr)) {
+      noThink = true; tried.delete(m); queue.unshift(m);
+      continue;
+    }
     const modelIssue = res.status === 404 || /not found|not supported|unknown name|unsupported|is not found/i.test(lastErr);
     const quota = res.status === 429 || /quota|exceeded|resource_exhausted/i.test(lastErr);
     if (quota) { lastErr = quotaHint(lastErr); continue; }  // another model may still have free quota

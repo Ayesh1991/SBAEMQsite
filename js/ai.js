@@ -59,7 +59,7 @@ const AI = (() => {
     // model; the server re-checks the flag, so this is UX, not the gate.
     const advanced = dev || !!u?.featureFlags?.gemini_advanced;
     const modelPicker = `<select class="ai-model" id="ai-model" title="Gemini model">
-            ${(cfg().geminiModels || [{ id: cfg().geminiModel || 'gemini-2.5-flash', label: 'Gemini Flash' }]).map(m => `<option value="${m.id}" ${m.id === (cfg().geminiModel) ? 'selected' : ''}>${m.label}</option>`).join('')}
+            ${(cfg().geminiModels || [{ id: cfg().geminiModel || 'gemini-3.1-flash-lite', label: 'Gemini Flash' }]).map(m => `<option value="${m.id}" ${m.id === (cfg().geminiModel) ? 'selected' : ''}>${m.label}</option>`).join('')}
           </select>`;
     slot.innerHTML = `
       <div class="ai-panel" data-animate>
@@ -102,7 +102,7 @@ const AI = (() => {
       </div>`;
 
     const panel = slot.querySelector('.ai-panel');
-    const st = { provider: dev ? 'claude' : 'gemini', geminiModel: cfg().geminiModel || 'gemini-2.5-flash', messages: [], follow: 0, dev };
+    const st = { provider: dev ? 'claude' : 'gemini', geminiModel: cfg().geminiModel || 'gemini-3.1-flash-lite', messages: [], follow: 0, dev };
 
     panel.querySelector('[data-ai-close]').addEventListener('click', () => attach(slot, ctx));
     panel.querySelectorAll('.ai-prov').forEach(b => b.addEventListener('click', () => {
