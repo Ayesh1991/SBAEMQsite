@@ -373,16 +373,24 @@ async function callGemini(system, user, model, env, restricted, maxTokens) {
     if (tried.has(m)) continue; tried.add(m);
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${encodeURIComponent(key)}`;
     let res, data;
+    // Batch jobs (tagging) return long JSON — too small a cap silently
+    // truncates the JSON mid-array, which is unparseable downstream.
+    const gc = { temperature: 0.4, maxOutputTokens: maxTokens || 1400 };
+    // COST CONTROL: 2.5+ models "think" by DEFAULT and every thinking token
+    // is billed as OUTPUT (2.5 Flash: up to 24,576 per call — ~30× the cost
+    // of the visible answer; Gemini 3 defaults to level "high"). Nothing on
+    // this site needs hidden reasoning, so 2.5 gets thinking OFF and 3.x
+    // gets the minimum level. (2.5: thinkingBudget; 3.x: thinkingLevel —
+    // mixing the two fields errors, hence the branch.)
+    if (/^gemini-2\.5/.test(m)) gc.thinkingConfig = { thinkingBudget: 0 };
+    else if (/^gemini-3/.test(m)) gc.thinkingConfig = { thinkingLevel: 'low' };
     try {
       res = await fetch(url, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: system }] },
           contents: [{ role: 'user', parts: [{ text: user }] }],
-          // Batch jobs (tagging) return long JSON and 2.5+ thinking tokens
-          // also count against this cap — too small silently truncates the
-          // JSON mid-array, which is unparseable downstream.
-          generationConfig: { temperature: 0.4, maxOutputTokens: maxTokens || 1400 }
+          generationConfig: gc
         })
       });
       data = await res.json().catch(() => ({}));
