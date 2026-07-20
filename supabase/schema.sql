@@ -25,8 +25,30 @@ create table if not exists public.profiles (
 alter table public.profiles add column if not exists exam_date date;
 
 -- feature_flags: developer-granted per-user access to advanced features
--- (e.g. {"simulator": true, "flashcards": true}). Empty = defaults only.
+-- (e.g. {"gemini": true, "gemini_advanced": true, "ai_flashcards": true}).
+-- Empty = defaults only. Protected by the trigger below so ONLY the
+-- developer can change it — users cannot self-grant AI access.
 alter table public.profiles add column if not exists feature_flags jsonb default '{}'::jsonb;
+
+-- prefs: the user's OWN self-service switches (e.g. {"simulator": true,
+-- "flashcards": true}) — toggled from their Profile tab, no grant needed.
+alter table public.profiles add column if not exists prefs jsonb default '{}'::jsonb;
+
+-- Users may update their own profile row (name, position, prefs…) but any
+-- attempt to change feature_flags by a non-developer is silently reverted —
+-- that column is the developer's alone (Gemini access, model tiers, AI cards).
+create or replace function public.protect_feature_flags()
+returns trigger language plpgsql security definer as $$
+begin
+  if coalesce(auth.jwt() ->> 'email', '') <> 'ayeshmantha@gmail.com'
+     and new.feature_flags is distinct from old.feature_flags then
+    new.feature_flags := old.feature_flags;
+  end if;
+  return new;
+end $$;
+drop trigger if exists protect_feature_flags on public.profiles;
+create trigger protect_feature_flags before update on public.profiles
+  for each row execute function public.protect_feature_flags();
 
 alter table public.profiles enable row level security;
 drop policy if exists "own profile read"   on public.profiles;

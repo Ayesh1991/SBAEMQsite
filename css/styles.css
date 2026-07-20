@@ -1376,3 +1376,14 @@ details[open] > summary .tw-caret { transform: rotate(90deg); }
    ============================================================ */
 .fc-nav { display: flex; justify-content: center; gap: 10px; margin: 14px 0 4px; }
 .fc-nav .btn[disabled] { opacity: .35; cursor: default; }
+
+/* ============================================================
+   v19 — profile self-service toggles (Simulator / Flashcards)
+   ============================================================ */
+.pref-toggles { display: flex; flex-direction: column; gap: 12px; margin-top: 14px; }
+.pref-toggle {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 12px 14px; border-radius: 12px; cursor: pointer;
+  background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08);
+}
+.pref-toggle:hover { border-color: rgba(244,201,93,.35); }

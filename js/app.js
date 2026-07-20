@@ -76,8 +76,8 @@
           <a href="#/dashboard" class="${location.hash === '#/dashboard' ? 'active' : ''}">Dashboard</a>
           <a href="#/library" class="${location.hash.startsWith('#/library') || location.hash.startsWith('#/paper') ? 'active' : ''}">Library</a>
           <a href="#/studio" class="${location.hash === '#/studio' ? 'active' : ''}">Studio</a>
-          ${(isDev || user.featureFlags?.flashcards) ? `<a href="#/cards" class="${location.hash.startsWith('#/cards') ? 'active' : ''}">Flashcards</a>` : ''}
-          ${(isDev || user.featureFlags?.simulator) ? `<a href="#/simulator" class="${location.hash.startsWith('#/simulator') ? 'active' : ''}">Simulator</a>` : ''}
+          ${(isDev || user.prefs?.flashcards || user.featureFlags?.flashcards) ? `<a href="#/cards" class="${location.hash.startsWith('#/cards') ? 'active' : ''}">Flashcards</a>` : ''}
+          ${(isDev || user.prefs?.simulator || user.featureFlags?.simulator) ? `<a href="#/simulator" class="${location.hash.startsWith('#/simulator') ? 'active' : ''}">Simulator</a>` : ''}
           ${isDev ? `<a href="#/dev" class="${location.hash.startsWith('#/dev') ? 'active' : ''}">Developer</a>` : ''}
           <a href="#/profile" class="${location.hash === '#/profile' ? 'active' : ''}">Profile</a>
           <button class="btn btn-ghost btn-sm" id="nav-logout">Sign out</button>
@@ -796,6 +796,22 @@
         </div>
 
         <div class="card" data-animate>
+          <h3 class="card-title">Study tools</h3>
+          <p class="muted">Switch on the advanced tools when you're ready for them — they appear instantly in the top navigation.</p>
+          <div class="pref-toggles">
+            <label class="pref-toggle">
+              <span><strong>🎯 Adaptive simulator</strong><br><span class="muted tiny">Daily blueprint-shaped mock exams, tuned to your performance.</span></span>
+              <label class="dev-flag"><input type="checkbox" data-pref="simulator" ${(user.prefs?.simulator || user.featureFlags?.simulator) ? 'checked' : ''}><span></span></label>
+            </label>
+            <label class="pref-toggle">
+              <span><strong>🃏 Flashcards</strong><br><span class="muted tiny">Spaced-repetition decks with tap-to-flip and swipe gestures.</span></span>
+              <label class="dev-flag"><input type="checkbox" data-pref="flashcards" ${(user.prefs?.flashcards || user.featureFlags?.flashcards) ? 'checked' : ''}><span></span></label>
+            </label>
+          </div>
+          <p class="save-note" id="pref-note" hidden>Saved ✓</p>
+        </div>
+
+        <div class="card" data-animate>
           <h3 class="card-title">Mastery tiers</h3>
           <ol class="ladder">
             ${Progression.TIERS.map((T, i) => `
@@ -831,6 +847,17 @@
           <button class="btn btn-danger" id="reset-progress">Reset all progress</button>
         </div>
       </section>`;
+
+    view.querySelectorAll('input[data-pref]').forEach(cb => cb.addEventListener('change', async () => {
+      cb.disabled = true;
+      try {
+        await Backend.setPref(cb.dataset.pref, cb.checked);
+        const fresh = await Backend.currentUser();          // re-read → nav updates instantly
+        renderNav(fresh);
+        const note = view.querySelector('#pref-note'); note.hidden = false; setTimeout(() => note.hidden = true, 1800);
+      } catch (e2) { cb.checked = !cb.checked; alert('Could not save: ' + (e2.message || e2)); }
+      cb.disabled = false;
+    }));
 
     view.querySelector('#position-picker').addEventListener('click', async e => {
       const btn = e.target.closest('.pos-btn'); if (!btn) return;
@@ -1028,9 +1055,11 @@
     });
   }
 
-  /* ================= flashcards & simulator (developer + flag-granted users) ================= */
+  /* ================= flashcards & simulator (self-service via Profile) ================= */
 
-  const canUse = (user, flag) => devOnly(user) || !!user?.featureFlags?.[flag];
+  // A user sees these tabs when THEY switch them on in Profile (prefs) —
+  // legacy developer grants (featureFlags) keep working so nobody loses access.
+  const canUse = (user, flag) => devOnly(user) || !!user?.prefs?.[flag] || !!user?.featureFlags?.[flag];
   async function renderReview(user) { await ReviewQueue.renderRun(view, user); }
   function renderLocked(title) {
     view.innerHTML = `

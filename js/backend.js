@@ -210,6 +210,13 @@ const Backend = (() => {
       if (!u) return; (u.featureFlags || (u.featureFlags = {}))[flag] = !!on; if (!on) delete u.featureFlags[flag];
       write('users', all);
     }
+    /* self-service switches (Simulator / Flashcards) from the Profile tab */
+    async function setPref(flag, on) {
+      const e = sessionEmail(); if (!e) return;
+      const all = users(); const u = all[e]; if (!u) return;
+      (u.prefs || (u.prefs = {}))[flag] = !!on; if (!on) delete u.prefs[flag];
+      write('users', all);
+    }
     async function listAiUsage() { return {}; }        // local mode has no AI backend
     async function listAiTokenUsage() { return []; }   // local mode has no token meter
 
@@ -275,7 +282,7 @@ const Backend = (() => {
     /* AI (local mode has no server function — the app disables AI in local) */
     async function getAccessToken() { return null; }
 
-    function publicUser(u) { return { id: u.id, name: u.name, email: u.email, position: u.position, createdAt: u.createdAt, isDeveloper: norm(u.email) === devEmail, featureFlags: u.featureFlags || {} }; }
+    function publicUser(u) { return { id: u.id, name: u.name, email: u.email, position: u.position, createdAt: u.createdAt, isDeveloper: norm(u.email) === devEmail, featureFlags: u.featureFlags || {}, prefs: u.prefs || {} }; }
 
     return { init, signUp, signIn, signOut, currentUser, updateProfile,
       getProgress, recordAttempt, getAttempt, resetProgress,
@@ -287,7 +294,7 @@ const Backend = (() => {
       getFlashcardDecks, publishFlashcardDeck, unpublishFlashcardDeck,
       getCardProgress, saveCardProgress, listAllCardProgress,
       getBlueprint, saveBlueprint, saveMockResult, listMockResults, getMockResult,
-      listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, listAiUsage, listAiTokenUsage,
+      listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, setPref, listAiUsage, listAiTokenUsage,
       logEvents, listRecentEvents, bumpQuestionStats, listQuestionStats, saveCohortScore, listCohortScores,
       listAllFlags, resolveFlags, listGlobalFlaggedKeys, saveUserDeck, listUserDecks, deleteUserDeck,
       getAiFeatures, saveAiFeatures, listSharedUsage, saveQuestionTags, listQuestionTags, getAccessToken };
@@ -340,7 +347,8 @@ const Backend = (() => {
         examDate: prof?.exam_date || null,
         createdAt: data.user.created_at,
         isDeveloper: norm(data.user.email) === devEmail,
-        featureFlags: prof?.feature_flags || {}
+        featureFlags: prof?.feature_flags || {},
+        prefs: prof?.prefs || {}
       };
     }
     async function updateProfile(patch) {
@@ -511,8 +519,8 @@ const Backend = (() => {
     /* users & feature flags (developer — RLS "profiles dev read/update" policies) */
     async function listAllUsers() {
       await ensureClient();
-      const { data } = await sb.from('profiles').select('id,name,email,position,xp,created_at,feature_flags').order('created_at', { ascending: true });
-      return (data || []).map(r => ({ id: r.id, name: r.name, email: r.email, position: r.position, xp: r.xp || 0, createdAt: r.created_at, featureFlags: r.feature_flags || {} }));
+      const { data } = await sb.from('profiles').select('id,name,email,position,xp,created_at,feature_flags,prefs').order('created_at', { ascending: true });
+      return (data || []).map(r => ({ id: r.id, name: r.name, email: r.email, position: r.position, xp: r.xp || 0, createdAt: r.created_at, featureFlags: r.feature_flags || {}, prefs: r.prefs || {} }));
     }
     async function setUserFeature(userId, flag, on) {
       await ensureClient();
@@ -520,6 +528,14 @@ const Backend = (() => {
       const flags = Object.assign({}, data?.feature_flags);
       if (on) flags[flag] = true; else delete flags[flag];
       await sb.from('profiles').update({ feature_flags: flags }).eq('id', userId);
+    }
+    /* self-service switches (Simulator / Flashcards) — the user's own row */
+    async function setPref(flag, on) {
+      await ensureClient(); const id = await uid(); if (!id) return;
+      const { data } = await sb.from('profiles').select('prefs').eq('id', id).single();
+      const prefs = Object.assign({}, data?.prefs);
+      if (on) prefs[flag] = true; else delete prefs[flag];
+      await sb.from('profiles').update({ prefs }).eq('id', id);
     }
     /* AI usage per user (developer — "usage dev read" policy). Returns
        { userId: { total, today } } aggregated from the daily counters. */
@@ -682,7 +698,7 @@ const Backend = (() => {
       getFlashcardDecks, publishFlashcardDeck, unpublishFlashcardDeck,
       getCardProgress, saveCardProgress, listAllCardProgress,
       getBlueprint, saveBlueprint, saveMockResult, listMockResults, getMockResult,
-      listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, listAiUsage, listAiTokenUsage,
+      listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, setPref, listAiUsage, listAiTokenUsage,
       logEvents, listRecentEvents, bumpQuestionStats, listQuestionStats, saveCohortScore, listCohortScores,
       listAllFlags, resolveFlags, listGlobalFlaggedKeys, saveUserDeck, listUserDecks, deleteUserDeck,
       getAiFeatures, saveAiFeatures, listSharedUsage, saveQuestionTags, listQuestionTags, getAccessToken };

@@ -41,6 +41,13 @@ const AI = (() => {
       return;
     }
     if (!(await featureOn('ai_tutor'))) return;      // switched off in AI systems
+    // Gemini access is developer-granted per user (server-enforced too) —
+    // without it, show why instead of a button that would only error.
+    const u0 = await getUser();
+    if (u0 && !u0.isDeveloper && !u0.featureFlags?.gemini) {
+      slot.innerHTML = `<p class="ai-note">✨ The AI tutor is enabled per user — ask the site owner for Gemini access.</p>`;
+      return;
+    }
     slot.innerHTML = `<button class="btn btn-ai" data-ai-open>✨ Explore with AI</button>`;
     slot.querySelector('[data-ai-open]').addEventListener('click', () => openPanel(slot, ctx));
   }

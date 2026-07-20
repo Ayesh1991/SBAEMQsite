@@ -93,7 +93,7 @@ const Billing = (() => {
       const split = sharedCtx.features?.[feature]?.split || 'simulator';
       let eligible = split === 'dev' ? sharedCtx.users.filter(isDev)
         : split === 'all' ? sharedCtx.users
-        : sharedCtx.users.filter(u => isDev(u) || u.featureFlags?.simulator);
+        : sharedCtx.users.filter(u => isDev(u) || u.featureFlags?.simulator || u.prefs?.simulator);
       if (!eligible.length) eligible = sharedCtx.users.filter(isDev);
       if (!eligible.some(u => u.id === user.id)) continue;
       out.push({ feature, label: featureLabel(feature), n: eligible.length, cost: cost / eligible.length });

@@ -692,13 +692,16 @@ const DevConsole = (() => {
 
   /* ---------------- users & feature flags ---------------- */
 
+  // Developer-granted AI access flags (server-enforced; the feature_flags
+  // column is trigger-protected so users cannot self-grant). Simulator and
+  // Flashcards are SELF-SERVICE now — users switch them on in their own
+  // Profile tab — so they appear below as a read-only status, not a toggle.
   const FEATURES = [
-    { id: 'simulator',       label: 'Simulator' },
-    { id: 'flashcards',      label: 'Flashcards' },
-    // grants the Gemini model picker (2.5 / 3 / 3.5 Flash) — enforced
-    // server-side in functions/api/explain.js, billed at the model's rate
+    // master switch: without it a user has NO AI at all
+    { id: 'gemini',          label: 'Gemini' },
+    // unlocks the Gemini 2.5 / 3 / 3.5 model picker
     { id: 'gemini_advanced', label: 'Gemini+' },
-    // grants AI flashcard generation from wrong answers (server-checked)
+    // AI flashcard generation from wrong answers
     { id: 'ai_flashcards',   label: 'AI cards' }
   ];
 
@@ -740,11 +743,12 @@ const DevConsole = (() => {
         <div><strong>${Billing.usd(monthTotal)}</strong><span>AI cost this month</span></div>
       </div>
       <div class="table-scroll"><table class="table dev-users-table">
-        <thead><tr><th>Name</th><th>Email</th><th>XP</th><th>AI today</th><th>AI total</th><th>Cost (month)</th><th>Cost (all)</th>${FEATURES.map(f => `<th>${f.label}</th>`).join('')}<th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Email</th><th>XP</th><th>AI today</th><th>AI total</th><th>Cost (month)</th><th>Cost (all)</th>${FEATURES.map(f => `<th>${f.label}</th>`).join('')}<th>Self-enabled</th><th></th></tr></thead>
         <tbody>${list.map(u => {
           const isDev = (u.email || '').toLowerCase() === devMail;
           const ai = usage[u.id] || { total: 0, today: 0 };
           const c = costs[u.id] || { thisMonth: 0, allTime: 0 };
+          const self = [(u.prefs?.simulator || u.featureFlags?.simulator) ? 'Sim' : null, (u.prefs?.flashcards || u.featureFlags?.flashcards) ? 'Cards' : null].filter(Boolean).join(' · ') || '—';
           return `<tr class="${isDev ? 'dev-users-me' : ''}">
             <td>${ctx.esc(u.name || '')}${isDev ? ' <span class="qedit-tag">developer</span>' : ''}</td>
             <td class="muted">${ctx.esc(u.email || '')}</td>
@@ -753,16 +757,19 @@ const DevConsole = (() => {
             <td class="muted">${ai.total}</td>
             <td class="dev-cost">${Billing.usd(c.thisMonth)}</td>
             <td class="muted">${Billing.usd(c.allTime)}</td>
-            ${FEATURES.map(f => `<td>${isDev && f.id !== 'gemini_advanced'
+            ${FEATURES.map(f => `<td>${isDev
               ? '<span class="tiny muted">always</span>'
-              : `<label class="dev-flag"><input type="checkbox" data-uid="${ctx.esc(u.id)}" data-flag="${f.id}" ${(isDev && f.id === 'gemini_advanced') || u.featureFlags?.[f.id] ? 'checked' : ''} ${isDev ? 'disabled' : ''}><span></span></label>`}</td>`).join('')}
+              : `<label class="dev-flag"><input type="checkbox" data-uid="${ctx.esc(u.id)}" data-flag="${f.id}" ${u.featureFlags?.[f.id] ? 'checked' : ''}><span></span></label>`}</td>`).join('')}
+            <td class="muted tiny">${self}</td>
             <td><button class="btn btn-ghost btn-sm" data-bill="${ctx.esc(u.id)}" title="Generate this user's invoice">🧾 Bill</button></td>
           </tr>`;
         }).join('')}</tbody>
       </table></div>
-      <p class="tiny muted">Costs come from <strong>true token counts</strong> reported by Google/Anthropic per call, metered per user × model × day
-        (rates in <code>config.js → ai.pricing</code>, USD per 1M tokens). <strong>Gemini+</strong> unlocks the Gemini 2.5 / 3 / 3.5 Flash picker for that
-        user — enforced on the server, billed at the chosen model's rate. 🧾 Bill generates a commercial invoice (JPEG / PNG / PDF) for any month.
+      <p class="tiny muted"><strong>Gemini</strong> is the master AI switch — a user with it OFF has no AI at all (server-enforced; the flag column is
+        database-protected so nobody can self-grant). <strong>Gemini+</strong> adds the 2.5 / 3 / 3.5 Flash model picker; <strong>AI cards</strong> allows
+        flashcard generation from wrong answers. <em>Self-enabled</em> shows which optional tabs (Simulator / Flashcards) the user switched on in their own
+        Profile. Costs come from <strong>true token counts</strong> per user × model × day (rates in <code>config.js → ai.pricing</code>).
+        🧾 Bill generates a commercial invoice (JPEG / PNG / PDF) for any month.
         ${tokensLive ? '' : '<span class="bad">Token meter unavailable — run the updated supabase/schema.sql once.</span>'}</p>
       <p class="dev-row-msg" id="dev-users-msg"></p>`;
     host.querySelectorAll('input[data-flag]:not([disabled])').forEach(cb => cb.addEventListener('change', async () => {
@@ -1165,7 +1172,7 @@ const DevConsole = (() => {
     const bp = await Blueprint.load();
     const topics = [...(bp.sba || []).map(b => b.subcategory || b.category), ...(bp.emq || []).map(b => b.theme)].filter(Boolean);
     const questions = await resolveForTagging(records);
-    if (!questions.length) return 0;
+    if (!questions.length) return { n: 0, tokIn: 0, tokOut: 0, model: '' };
     const data = await aiCall('tag', { topics, questions });
     // Robust JSON extraction: strip fences, then fall back to the outermost
     // [...] block (models sometimes add prose), then salvage complete
@@ -1184,7 +1191,8 @@ const DevConsole = (() => {
     const valid = (Array.isArray(rows) ? rows : []).filter(r => r.key && r.topic)
       .map(r => ({ questionKey: r.key, topic: r.topic, category: r.category || '', guideline: r.guideline || '', tags: r.tags || [], difficulty: typeof r.difficulty === 'number' ? r.difficulty : null, taggedBy: data.model || '' }));
     if (valid.length) await ctx.Backend.saveQuestionTags(valid);
-    return valid.length;
+    const u = data.usage || {};
+    return { n: valid.length, tokIn: u.in || 0, tokOut: u.out || 0, model: data.model || '' };
   }
   function wireTagger(view) {
     const status = view.querySelector('#tag-status');
@@ -1197,12 +1205,18 @@ const DevConsole = (() => {
         btn.disabled = !todo.length;
         btn.onclick = async () => {
           btn.disabled = true;
-          let done = 0, failedBatches = 0;
+          // live meter: exact provider-reported tokens per batch → dollars
+          let done = 0, failedBatches = 0, tokIn = 0, tokOut = 0, costUsd = 0;
+          const fmtTok = n => n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : (n / 1e3).toFixed(1) + 'k';
+          const meter = () => `<strong>${fmtTok(tokIn + tokOut)}</strong> tokens · <strong class="dev-cost">${Billing.usd(costUsd, costUsd < 1 ? 3 : 2)}</strong>`;
           try {
             for (let i = 0; i < todo.length; i += 10) {
-              progress.textContent = `Tagging ${Math.min(i + 10, todo.length)}/${todo.length}…${failedBatches ? ` (${failedBatches} batch${failedBatches > 1 ? 'es' : ''} to retry)` : ''}`;
+              progress.innerHTML = `Tagging ${Math.min(i + 10, todo.length)}/${todo.length}… · ${meter()}${failedBatches ? ` · <span class="bad">${failedBatches} to retry</span>` : ''}`;
               try {
-                done += await tagRecords(todo.slice(i, i + 10));
+                const r = await tagRecords(todo.slice(i, i + 10));
+                done += r.n; tokIn += r.tokIn; tokOut += r.tokOut;
+                const rate = Billing.rateFor(r.model);
+                costUsd += (r.tokIn / 1e6) * rate.in + (r.tokOut / 1e6) * rate.out;
               } catch (e) {
                 // fatal errors (auth, config, quota) stop the run; a flaky
                 // batch (truncated/unparseable output) is skipped and simply
@@ -1212,13 +1226,13 @@ const DevConsole = (() => {
               }
             }
             if (typeof Cache !== 'undefined') Cache.bust('sim-qtags');
-            progress.innerHTML = failedBatches
+            progress.innerHTML = (failedBatches
               ? `<span class="good">✓ ${done} questions tagged.</span> <span class="bad">${failedBatches} batch${failedBatches > 1 ? 'es' : ''} failed — click again to tag the remainder.</span>`
-              : `<span class="good">✓ ${done} questions tagged — mock selection is now tag-precise.</span>`;
+              : `<span class="good">✓ ${done} questions tagged — mock selection is now tag-precise.</span>`) + ` · ${meter()}`;
             if (!failedBatches) status.textContent = 'Bank fully tagged.';
             btn.disabled = !failedBatches;
           } catch (e) {
-            progress.innerHTML = `<span class="bad">${ctx.esc(e.message || e)} — progress is saved; run again to continue.</span>`;
+            progress.innerHTML = `<span class="bad">${ctx.esc(e.message || e)} — progress is saved; run again to continue.</span> · ${meter()}`;
             btn.disabled = false;
           }
         };
@@ -1233,7 +1247,7 @@ const DevConsole = (() => {
       const paper = meta.content;
       ctx.Data.flatten(paper, 'SBA').forEach(q => recs.push({ paperId: meta.id, qkey: `${meta.id}:SBA:${q.number}` }));
       ctx.Data.flatten(paper, 'EMQ').forEach(q => recs.push({ paperId: meta.id, qkey: `${meta.id}:EMQ:${q.number}` }));
-      for (let i = 0; i < recs.length; i += 10) await tagRecords(recs.slice(i, i + 10));
+      for (let i = 0; i < recs.length; i += 10) { try { await tagRecords(recs.slice(i, i + 10)); } catch { /* runner catches up */ } }
       if (typeof Cache !== 'undefined') Cache.bust('sim-qtags');
     } catch { /* tagging failures never block publishing; the runner catches up */ }
   }

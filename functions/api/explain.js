@@ -52,15 +52,21 @@ export async function onRequest(context) {
   if (provider === 'claude' && !isDev) provider = 'gemini';           // silently downgrade others
   if (action === 'artifact' && !isDev) return json({ error: 'Study aids are available to the developer only.' }, 403);
 
-  // --- per-user Gemini model gate ---
-  // Higher Gemini models are opt-in per user (feature flag `gemini_advanced`
-  // granted in Users & access). Anyone else is forced onto the default model,
-  // no matter what the client sends — so billing tiers can't be bypassed.
+  // --- per-user AI access gates ---
+  // Gemini access itself is developer-granted per user (flag `gemini` in
+  // Users & access): without it, a non-dev caller gets NO AI at all. On top
+  // of that, higher Gemini models need `gemini_advanced`; everyone else is
+  // pinned to the default model no matter what the client sends — so
+  // access and billing tiers can't be bypassed. (feature_flags is
+  // trigger-protected in Postgres: only the developer can change it.)
   const defaultGemini = env.GEMINI_DEFAULT_MODEL || 'gemini-2.5-flash';
   let effectiveModel = model;
   let geminiRestricted = false;
-  if (provider === 'gemini' && !isDev) {
+  if (!isDev) {
     const flags = await getUserFlags(token, user.id, env);
+    if (!flags.gemini) {
+      return json({ error: 'AI access is not enabled for your account yet — ask the developer to switch on Gemini for you in Users & access.' }, 403);
+    }
     geminiRestricted = !flags.gemini_advanced;
     if (geminiRestricted) effectiveModel = defaultGemini;
   }
@@ -105,7 +111,8 @@ export async function onRequest(context) {
         ? await callClaude(p.system, p.user, fc.model || model, env, maxTok)
         : await callGemini(p.system, p.user, fc.model || model || defaultGemini, env, false, maxTok);
       await logShared(token, env, feature, useProvider, r);
-      return json({ text: r.text, model: r.model });
+      // usage goes back to the panel so the runner can show live cost
+      return json({ text: r.text, model: r.model, usage: { in: r.in || 0, out: r.out || 0 } });
     }
     // ---- auto-flashcards from wrong answers (per-user feature, dev-grantable) ----
     if (action === 'flashcard') {
