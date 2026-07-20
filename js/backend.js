@@ -219,6 +219,8 @@ const Backend = (() => {
     }
     async function listAiUsage() { return {}; }        // local mode has no AI backend
     async function listAiTokenUsage() { return []; }   // local mode has no token meter
+    async function listMyTokenUsage() { return []; }
+    async function getEligibleCounts() { return { all: 1, simulator: 1, dev: 1 }; }
 
     /* tracking + empirical stats (local: stats aggregate on-device, events dropped) */
     async function logEvents() {}
@@ -294,7 +296,7 @@ const Backend = (() => {
       getFlashcardDecks, publishFlashcardDeck, unpublishFlashcardDeck,
       getCardProgress, saveCardProgress, listAllCardProgress,
       getBlueprint, saveBlueprint, saveMockResult, listMockResults, getMockResult,
-      listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, setPref, listAiUsage, listAiTokenUsage,
+      listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, setPref, listAiUsage, listAiTokenUsage, listMyTokenUsage, getEligibleCounts,
       logEvents, listRecentEvents, bumpQuestionStats, listQuestionStats, saveCohortScore, listCohortScores,
       listAllFlags, resolveFlags, listGlobalFlaggedKeys, saveUserDeck, listUserDecks, deleteUserDeck,
       getAiFeatures, saveAiFeatures, listSharedUsage, saveQuestionTags, listQuestionTags, getAccessToken };
@@ -699,10 +701,27 @@ const Backend = (() => {
     async function listAiTokenUsage() {
       await ensureClient();
       const rows = await pageAll(() => sb.from('ai_token_usage')
-        .select('user_id, day, provider, model, calls, input_tokens, output_tokens')
+        .select('user_id, day, provider, model, feature, calls, input_tokens, output_tokens')
         .order('day').order('user_id').order('provider').order('model'));
-      return rows.map(r => ({ userId: r.user_id, day: r.day, provider: r.provider, model: r.model,
+      return rows.map(r => ({ userId: r.user_id, day: r.day, provider: r.provider, model: r.model, feature: r.feature || 'tutor',
         calls: r.calls || 0, inputTokens: r.input_tokens || 0, outputTokens: r.output_tokens || 0 }));
+    }
+    /* the signed-in user's OWN metered tokens (RLS "own tokens read"); the
+       eq() is belt-and-braces on top of the row-level policy. */
+    async function listMyTokenUsage() {
+      await ensureClient(); const id = await uid(); if (!id) return [];
+      const rows = await pageAll(() => sb.from('ai_token_usage')
+        .select('day, provider, model, feature, calls, input_tokens, output_tokens')
+        .eq('user_id', id).order('day'));
+      return rows.map(r => ({ userId: id, day: r.day, provider: r.provider, model: r.model, feature: r.feature || 'tutor',
+        calls: r.calls || 0, inputTokens: r.input_tokens || 0, outputTokens: r.output_tokens || 0 }));
+    }
+    /* eligible-user counts per shared-split policy (no PII) for a user's own
+       share of the shared pools */
+    async function getEligibleCounts() {
+      await ensureClient();
+      try { const { data } = await sb.rpc('ai_eligible_counts'); return data || { all: 1, simulator: 1, dev: 1 }; }
+      catch { return { all: 1, simulator: 1, dev: 1 }; }
     }
 
     /* AI auth token for the Cloudflare function */
@@ -718,7 +737,7 @@ const Backend = (() => {
       getFlashcardDecks, publishFlashcardDeck, unpublishFlashcardDeck,
       getCardProgress, saveCardProgress, listAllCardProgress,
       getBlueprint, saveBlueprint, saveMockResult, listMockResults, getMockResult,
-      listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, setPref, listAiUsage, listAiTokenUsage,
+      listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, setPref, listAiUsage, listAiTokenUsage, listMyTokenUsage, getEligibleCounts,
       logEvents, listRecentEvents, bumpQuestionStats, listQuestionStats, saveCohortScore, listCohortScores,
       listAllFlags, resolveFlags, listGlobalFlaggedKeys, saveUserDeck, listUserDecks, deleteUserDeck,
       getAiFeatures, saveAiFeatures, listSharedUsage, saveQuestionTags, listQuestionTags, getAccessToken };

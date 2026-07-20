@@ -310,6 +310,10 @@ const Simulator = (() => {
     body.querySelector('#sim-start')?.addEventListener('click', () => { location.hash = '#/simulator/run'; });
     body.querySelector('#sim-rebuild')?.addEventListener('click', async e => {
       e.target.disabled = true; e.target.textContent = '↻ Rebuilding…';
+      // Also drop the cached AI tags/stats (10-min TTL) so freshly-tagged
+      // questions are picked up immediately instead of waiting out the
+      // cache window — "rebuild" should mean fully fresh, not just papers.
+      if (typeof Cache !== 'undefined') { Cache.bust('sim-qtags'); Cache.bust('sim-qstats'); }
       await buildIndex(true); renderHome(view, user);
     });
   }

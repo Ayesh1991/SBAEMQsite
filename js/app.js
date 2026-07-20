@@ -811,6 +811,11 @@
           <p class="save-note" id="pref-note" hidden>Saved ✓</p>
         </div>
 
+        <div class="card" data-animate id="ai-usage-card">
+          <h3 class="card-title">AI usage &amp; billing</h3>
+          <div id="ai-usage-body"><p class="muted">Loading your AI usage…</p></div>
+        </div>
+
         <div class="card" data-animate>
           <h3 class="card-title">Mastery tiers</h3>
           <ol class="ladder">
@@ -859,6 +864,8 @@
       cb.disabled = false;
     }));
 
+    renderAiUsage(view.querySelector('#ai-usage-body'), user);
+
     view.querySelector('#position-picker').addEventListener('click', async e => {
       const btn = e.target.closest('.pos-btn'); if (!btn) return;
       view.querySelectorAll('.pos-btn').forEach(b => b.classList.toggle('active', b === btn));
@@ -872,6 +879,82 @@
     view.querySelector('#reset-progress').addEventListener('click', async () => {
       if (confirm('Erase all attempts, XP and streaks? This cannot be undone.')) { await Backend.resetProgress(); route(); }
     });
+  }
+
+  /* ================= profile: AI usage & billing ================= */
+
+  async function renderAiUsage(host, user) {
+    if (!host) return;
+    if (Backend.mode !== 'cloud') {
+      host.innerHTML = `<p class="muted">AI usage tracking runs on the live site (cloud backend). Nothing is metered in local mode.</p>`;
+      return;
+    }
+    let myRows = [], counts = { all: 1, simulator: 1, dev: 1 }, sharedRows = [], features = {};
+    try {
+      [myRows, counts, sharedRows, features] = await Promise.all([
+        Backend.listMyTokenUsage(),
+        Backend.getEligibleCounts(),
+        Backend.listSharedUsage().catch(() => []),
+        Backend.getAiFeatures().catch(() => ({}))
+      ]);
+    } catch (e) {
+      host.innerHTML = `<p class="bad">Could not load your AI usage — ${esc(e.message || e)}<br>
+        <span class="muted tiny">If this is a fresh deployment, the updated supabase/schema.sql needs to be run once.</span></p>`;
+      return;
+    }
+    const sharedCtx = { rows: sharedRows, features, counts, selfUser: user };
+    const month = new Date().toISOString().slice(0, 7);
+    const sumM = Billing.mySummary(user, myRows, sharedCtx, month);
+    const sumAll = Billing.mySummary(user, myRows, sharedCtx, null);
+
+    if (!myRows.length && !sumAll.sharedTotal) {
+      host.innerHTML = `<p class="muted">You haven't used any AI features yet — ask the tutor a question, generate flashcards, or run a mock coach, and your metered usage and cost will appear here.</p>`;
+      return;
+    }
+
+    // combined mechanism list (personal + your share of shared pools), all-time
+    const mechAll = [
+      ...sumAll.personal.map(l => ({ ...l, kind: 'personal' })),
+      ...sumAll.shared.map(l => ({ feature: l.feature, label: l.label, icon: Billing.featureIcon(l.feature), cost: l.cost, n: l.n, kind: 'shared' }))
+    ].sort((a, b) => b.cost - a.cost);
+
+    // 30-day cost sparkline (personal spend)
+    const series = Billing.dailyCost(myRows, 30);
+    const maxDay = Math.max(...series.map(d => d.cost), 0.0001);
+    const spark = series.map((d, i) => {
+      const h = Math.max(1, Math.round((d.cost / maxDay) * 42));
+      return `<rect x="${i * 8}" y="${46 - h}" width="6" height="${h}" rx="1.5" fill="${d.cost > 0 ? '#f4c95d' : '#3a405e'}"><title>${d.day}: ${Billing.usd(d.cost, 4)}</title></rect>`;
+    }).join('');
+
+    host.innerHTML = `
+      <p class="muted">Every AI call you make is metered from the provider's own token counts — the same billing-grade data behind your invoice. Nothing here is estimated.</p>
+      <div class="dev-users-stats aiu-stats">
+        <div><strong>${Billing.usd(sumM.total)}</strong><span>This month</span></div>
+        <div><strong>${Billing.usd(sumAll.total)}</strong><span>All time</span></div>
+        <div><strong>${Billing.fmtInt(sumM.tokens)}</strong><span>Tokens this month</span></div>
+        <div><strong>${Billing.fmtInt(sumM.calls)}</strong><span>AI calls this month</span></div>
+      </div>
+
+      <h4 class="aiu-sub">Where your spend goes${' '}<span class="muted tiny">(all time)</span></h4>
+      <div class="aiu-mechs">
+        ${mechAll.length ? mechAll.map(l => `
+          <div class="aiu-mech">
+            <span class="aiu-mech-name">${l.icon} ${esc(l.label)}${l.kind === 'shared' ? ` <span class="muted tiny">shared · your 1/${l.n}</span>` : ''}</span>
+            <div class="aiu-bar"><span style="width:${Math.round((l.cost / (mechAll[0].cost || 1)) * 100)}%"></span></div>
+            <span class="aiu-mech-cost">${Billing.usd(l.cost, l.cost < 0.1 ? 4 : 2)}</span>
+          </div>`).join('') : `<p class="muted">No spend yet.</p>`}
+      </div>
+
+      <h4 class="aiu-sub">Last 30 days</h4>
+      <svg class="aiu-spark" viewBox="0 0 240 48" preserveAspectRatio="none" role="img" aria-label="Daily AI cost, last 30 days">${spark}</svg>
+
+      <div class="aiu-actions">
+        <button class="btn btn-gold btn-sm" id="aiu-bill">🧾 Generate my invoice</button>
+        <span class="muted tiny">Downloadable as JPEG / PNG / PDF, any month.</span>
+      </div>
+      <p class="tiny muted aiu-note">💡 <strong>Personal</strong> costs (tutor, coach, flashcards) are your own token use. <strong>Shared</strong> costs are your equal fraction of platform-wide AI jobs (e.g. question tagging), split across eligible users — never marked up.</p>`;
+
+    host.querySelector('#aiu-bill').addEventListener('click', () => Billing.openBillModal(user, myRows, sharedCtx));
   }
 
   /* ================= studio (private AI gallery) ================= */

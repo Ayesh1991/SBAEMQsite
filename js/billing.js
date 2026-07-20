@@ -67,30 +67,54 @@ const Billing = (() => {
   /* ---------------- shared pools (platform AI jobs) ---------------- */
 
   const FEATURE_LABELS = {
+    // shared pools
     question_tagger: 'Question tagger', behaviour_insights: 'Behaviour insights',
     question_auditor: 'Question auditor', readiness_forecaster: 'Readiness forecaster',
-    weekly_digest: 'Weekly digest', rationale_enhancer: 'Rationale enhancer'
+    weekly_digest: 'Weekly digest', rationale_enhancer: 'Rationale enhancer',
+    // personal mechanisms (what a user spends their own tokens on)
+    tutor: 'AI tutor', coach: 'Mock coach', flashcards: 'AI flashcards', study_aids: 'Study aids'
   };
+  const FEATURE_ICON = { tutor: '✨', coach: '🎯', flashcards: '🃏', study_aids: '📄',
+    question_tagger: '🏷', behaviour_insights: '🔬', question_auditor: '⚖️' };
   const featureLabel = f => FEATURE_LABELS[f] || String(f).replace(/_/g, ' ');
+  const featureIcon = f => FEATURE_ICON[f] || '•';
 
   /**
    * This user's share of each shared pool for a month (null = all time).
-   * sharedCtx = { rows: listSharedUsage(), features: getAiFeatures(),
-   * users: listAllUsers() }. Split per feature: 'all' | 'simulator'
-   * (simulator-enabled users + the developer) | 'dev'.
+   *
+   * Two modes:
+   *  • DEVELOPER (full roster): sharedCtx = { rows, features, users } —
+   *    eligibility is derived by filtering the user list.
+   *  • SELF (a user viewing their own bill): sharedCtx = { rows, features,
+   *    counts, selfUser } — the user can't read other profiles, so the
+   *    server returns just the eligible COUNTS per split policy, and the
+   *    viewer's own eligibility is decided from their own flags/prefs.
+   * Split per feature: 'all' | 'simulator' (simulator users + dev) | 'dev'.
    */
   function sharedLines(user, sharedCtx, month) {
-    if (!sharedCtx?.rows?.length || !sharedCtx?.users?.length) return [];
+    if (!sharedCtx?.rows?.length) return [];
     const devMail = (window.AUREUM_CONFIG?.developer?.email || '').toLowerCase();
     const isDev = u => (u.email || '').toLowerCase() === devMail;
     const pools = {};
     sharedCtx.rows.filter(r => !month || monthKey(r.day) === month).forEach(r => {
       pools[r.feature] = (pools[r.feature] || 0) + lineCost({ model: r.model, inputTokens: r.inputTokens, outputTokens: r.outputTokens });
     });
+    const selfMode = !!sharedCtx.counts;
+    const meEligible = split => selfMode
+      ? (split === 'dev' ? isDev(user) : split === 'all' ? true
+          : (isDev(user) || user.featureFlags?.simulator || user.prefs?.simulator))
+      : null;
     const out = [];
     for (const [feature, cost] of Object.entries(pools)) {
       if (cost <= 0) continue;
       const split = sharedCtx.features?.[feature]?.split || 'simulator';
+      if (selfMode) {
+        if (!meEligible(split)) continue;
+        const n = Math.max(1, sharedCtx.counts[split] || 1);
+        out.push({ feature, label: featureLabel(feature), n, cost: cost / n });
+        continue;
+      }
+      if (!sharedCtx.users?.length) continue;
       let eligible = split === 'dev' ? sharedCtx.users.filter(isDev)
         : split === 'all' ? sharedCtx.users
         : sharedCtx.users.filter(u => isDev(u) || u.featureFlags?.simulator || u.prefs?.simulator);
@@ -110,6 +134,48 @@ const Billing = (() => {
       if (m || a) out[u.id] = { thisMonth: m, allTime: a };
     });
     return out;
+  }
+
+  /* ---------------- a single user's own view ---------------- */
+
+  // Personal spend grouped by MECHANISM (tutor / coach / flashcards …).
+  // rows are this user's ai_token_usage rows (each carries a `feature`).
+  function personalByFeature(rows, month) {
+    const map = {};
+    (rows || []).filter(r => !month || monthKey(r.day) === month).forEach(r => {
+      const k = r.feature || 'tutor';
+      const l = map[k] || (map[k] = { feature: k, label: featureLabel(k), icon: featureIcon(k), calls: 0, inputTokens: 0, outputTokens: 0, cost: 0 });
+      l.calls += r.calls; l.inputTokens += r.inputTokens; l.outputTokens += r.outputTokens;
+      l.cost += lineCost(r);
+    });
+    return Object.values(map).sort((a, b) => b.cost - a.cost);
+  }
+
+  // Last `days` of daily total cost (personal only) for a sparkline.
+  function dailyCost(rows, days = 30) {
+    const byDay = {};
+    (rows || []).forEach(r => { byDay[r.day] = (byDay[r.day] || 0) + lineCost(r); });
+    const out = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
+      out.push({ day: d, cost: byDay[d] || 0 });
+    }
+    return out;
+  }
+
+  // A full self-summary: personal mechanisms + shared-pool shares + totals,
+  // for a month (null = all-time). sharedCtx uses the counts (self) mode.
+  function mySummary(user, myRows, sharedCtx, month) {
+    const personal = personalByFeature(myRows, month);
+    const shared = sharedLines(user, sharedCtx, month || null);
+    const personalTotal = personal.reduce((s, l) => s + l.cost, 0);
+    const sharedTotal = shared.reduce((s, l) => s + l.cost, 0);
+    return {
+      personal, shared,
+      personalTotal, sharedTotal, total: personalTotal + sharedTotal,
+      calls: personal.reduce((s, l) => s + l.calls, 0),
+      tokens: personal.reduce((s, l) => s + l.inputTokens + l.outputTokens, 0)
+    };
   }
 
   // per-user totals for the Users table: { userId: {thisMonth, allTime} }
@@ -351,5 +417,7 @@ const Billing = (() => {
     draw();
   }
 
-  return { rateFor, summarise, userTotals, sharedLines, sharedTotals, rowsFor, invoice, invoiceSVG, openBillModal, usd, monthLabel };
+  return { rateFor, summarise, userTotals, sharedLines, sharedTotals,
+    personalByFeature, dailyCost, mySummary, featureLabel, featureIcon,
+    rowsFor, invoice, invoiceSVG, openBillModal, usd, fmtInt, monthLabel };
 })();

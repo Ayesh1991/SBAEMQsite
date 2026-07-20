@@ -90,12 +90,13 @@ export async function onRequest(context) {
     if (cached) return json({ text: cached, cached: true });
   }
 
-  // one model round-trip + token metering, shared by every action below
-  const run = async (p) => {
+  // one model round-trip + token metering, shared by every action below.
+  // `feature` records WHICH mechanism spent the tokens (per-user breakdown).
+  const run = async (p, feature = 'tutor') => {
     const r = provider === 'claude'
       ? await callClaude(p.system, p.user, model, env)
       : await callGemini(p.system, p.user, effectiveModel, env, geminiRestricted);
-    await logTokens(token, env, provider, r);   // true billing meter (dev included)
+    await logTokens(token, env, provider, r, feature);   // true billing meter (dev included)
     return r;
   };
 
@@ -132,19 +133,19 @@ export async function onRequest(context) {
       const r = useProvider === 'claude'
         ? await callClaude(p.system, p.user, fc.model, env)
         : await callGemini(p.system, p.user, fc.model || defaultGemini, env, false);
-      await logTokens(token, env, useProvider, r);
+      await logTokens(token, env, useProvider, r, 'flashcards');
       return json({ text: r.text, model: r.model });
     }
     if (action === 'artifact') {
-      const art = await generateArtifact({ artifact, question, run });
+      const art = await generateArtifact({ artifact, question, run: p => run(p, 'study_aids') });
       return json({ artifact: art.artifact, model: art.model });
     }
     if (action === 'coach') {
-      const r = await run(buildCoachPrompt(body));
+      const r = await run(buildCoachPrompt(body), 'coach');
       return json({ text: r.text, model: r.model });
     }
     const prompt = action === 'chat' ? buildChatPrompt(question, messages) : buildExplainPrompt(question);
-    const r = await run(prompt);
+    const r = await run(prompt, 'tutor');
     if (cacheable) await cacheSet(question.questionKey, provider, r.text, env);
     return json({ text: r.text, model: r.model });
   } catch (e) {
@@ -230,12 +231,12 @@ async function logShared(token, env, feature, provider, r) {
 // billing meter: record the EXACT token counts the provider reported,
 // attributed to the verified caller (auth.uid() inside the RPC). Never
 // blocks the response — a metering hiccup must not break the tutor.
-async function logTokens(token, env, provider, r) {
+async function logTokens(token, env, provider, r, feature) {
   if (!r || (!r.in && !r.out)) return;
   try {
     await sb('/rest/v1/rpc/log_ai_tokens', env, {
       method: 'POST', headers: { Authorization: 'Bearer ' + token },
-      body: JSON.stringify({ p_provider: provider, p_model: r.model || 'unknown', p_input: r.in | 0, p_output: r.out | 0 })
+      body: JSON.stringify({ p_provider: provider, p_model: r.model || 'unknown', p_input: r.in | 0, p_output: r.out | 0, p_feature: feature || 'tutor' })
     });
   } catch {}
 }

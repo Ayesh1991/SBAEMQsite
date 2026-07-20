@@ -346,20 +346,36 @@ create policy "own review all" on public.review_items for all
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
 -- ---------- 8j) AI TOKEN USAGE (true token metering → per-user billing) ----------
--- One row per user × day × provider × model, incremented by the server
--- function with the EXACT token counts each API reported (Gemini
+-- One row per user × day × provider × model × feature, incremented by the
+-- server with the EXACT token counts each API reported (Gemini
 -- usageMetadata / Anthropic usage). This is the billing source of truth.
+-- `feature` records WHICH mechanism spent it (tutor / coach / flashcards /
+-- study_aids) so a user can see their own spend broken down by activity.
 create table if not exists public.ai_token_usage (
   user_id uuid not null references auth.users(id) on delete cascade,
   day date not null,
   provider text not null,               -- 'gemini' | 'claude'
-  model text not null,                  -- exact model id that answered (e.g. gemini-2.5-flash)
+  model text not null,                  -- exact model id that answered
   calls integer not null default 0,
   input_tokens bigint not null default 0,
   output_tokens bigint not null default 0,
   updated_at timestamptz default now(),
   primary key (user_id, day, provider, model)
 );
+-- add the feature column + fold it into the primary key (safe on existing
+-- data: every current row gets feature='tutor', so the wider key stays
+-- unique). Guarded so re-running the whole file is idempotent.
+alter table public.ai_token_usage add column if not exists feature text not null default 'tutor';
+do $$
+begin
+  if not exists (
+    select 1 from information_schema.key_column_usage
+    where table_schema = 'public' and constraint_name = 'ai_token_usage_pkey' and column_name = 'feature'
+  ) then
+    alter table public.ai_token_usage drop constraint if exists ai_token_usage_pkey;
+    alter table public.ai_token_usage add primary key (user_id, day, provider, model, feature);
+  end if;
+end $$;
 create index if not exists atu_day_idx on public.ai_token_usage (day);
 alter table public.ai_token_usage enable row level security;
 drop policy if exists "own tokens read" on public.ai_token_usage;
@@ -371,20 +387,42 @@ create policy "tokens dev read" on public.ai_token_usage for select
 
 -- Writes happen ONLY through this RPC (no insert/update policies above), so
 -- a client can never inflate or shrink its own meter. security definer +
--- auth.uid() ties the row to the verified caller.
-create or replace function public.log_ai_tokens(p_provider text, p_model text, p_input integer, p_output integer)
+-- auth.uid() ties the row to the verified caller. Two signatures: the
+-- 5-arg one carries the feature; the old 4-arg one delegates as 'tutor'
+-- so an un-migrated deployment keeps working.
+create or replace function public.log_ai_tokens(p_provider text, p_model text, p_input integer, p_output integer, p_feature text)
 returns void language plpgsql security definer as $$
 begin
   if auth.uid() is null then return; end if;
-  insert into public.ai_token_usage (user_id, day, provider, model, calls, input_tokens, output_tokens)
-  values (auth.uid(), current_date, p_provider, p_model, 1,
+  insert into public.ai_token_usage (user_id, day, provider, model, feature, calls, input_tokens, output_tokens)
+  values (auth.uid(), current_date, p_provider, p_model, coalesce(nullif(p_feature, ''), 'tutor'), 1,
           greatest(coalesce(p_input, 0), 0), greatest(coalesce(p_output, 0), 0))
-  on conflict (user_id, day, provider, model) do update
+  on conflict (user_id, day, provider, model, feature) do update
     set calls         = public.ai_token_usage.calls + 1,
         input_tokens  = public.ai_token_usage.input_tokens  + excluded.input_tokens,
         output_tokens = public.ai_token_usage.output_tokens + excluded.output_tokens,
         updated_at    = now();
 end; $$;
+create or replace function public.log_ai_tokens(p_provider text, p_model text, p_input integer, p_output integer)
+returns void language plpgsql security definer as $$
+begin
+  perform public.log_ai_tokens(p_provider, p_model, p_input, p_output, 'tutor');
+end; $$;
+
+-- Eligible-user COUNTS per shared-cost split policy, so a normal user can
+-- compute their 1/N share of a shared pool WITHOUT reading anyone else's
+-- profile (returns only counts — no PII). security definer + stable.
+create or replace function public.ai_eligible_counts()
+returns jsonb language sql security definer stable as $$
+  select jsonb_build_object(
+    'all', greatest((select count(*) from public.profiles), 1),
+    'simulator', greatest((select count(*) from public.profiles
+        where coalesce((feature_flags ->> 'simulator')::boolean, false)
+           or coalesce((prefs ->> 'simulator')::boolean, false)
+           or lower(email) = 'ayeshmantha@gmail.com'), 1),
+    'dev', 1
+  );
+$$;
 
 -- ---------- 8k) QUESTION STATS (empirical difficulty — every answer, all users) ----------
 -- One row per question. Every scored answer anywhere (study, exam, simulator)

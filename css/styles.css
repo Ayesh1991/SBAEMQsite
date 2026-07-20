@@ -1387,3 +1387,19 @@ details[open] > summary .tw-caret { transform: rotate(90deg); }
   background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08);
 }
 .pref-toggle:hover { border-color: rgba(244,201,93,.35); }
+
+/* ============================================================
+   v25 — profile AI usage & billing
+   ============================================================ */
+.aiu-stats { margin: 14px 0 6px; }
+.aiu-sub { font-size: .82rem; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-3); margin: 20px 0 10px; }
+.aiu-mechs { display: flex; flex-direction: column; gap: 8px; }
+.aiu-mech { display: grid; grid-template-columns: minmax(150px, 1.4fr) 2fr auto; align-items: center; gap: 12px; font-size: .88rem; }
+.aiu-mech-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aiu-bar { height: 8px; border-radius: 5px; background: rgba(255,255,255,.06); overflow: hidden; }
+.aiu-bar span { display: block; height: 100%; border-radius: 5px; background: linear-gradient(90deg,#f4c95d,#e8a33d); }
+.aiu-mech-cost { font-weight: 600; color: var(--gold, #f4c95d); white-space: nowrap; }
+.aiu-spark { width: 100%; height: 48px; }
+.aiu-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 18px; }
+.aiu-note { margin-top: 12px; line-height: 1.5; }
+@media (max-width: 560px) { .aiu-mech { grid-template-columns: 1fr auto; } .aiu-mech .aiu-bar { display: none; } }
