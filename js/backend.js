@@ -316,6 +316,22 @@ const Backend = (() => {
     async function uid() { const { data } = await sb.auth.getUser(); return data.user ? data.user.id : null; }
     async function init() { await ensureClient(); }
 
+    /* PostgREST silently caps every select at ~1000 rows. Any read that can
+       exceed that (question tags/stats, token meters, events, cohort scores)
+       MUST page through — the cap once made the tagger believe questions
+       beyond row 1000 were untagged and re-bill them. `build` returns a
+       fresh query (with a stable order) for each page. */
+    async function pageAll(build) {
+      const out = [];
+      for (let from = 0; ; from += 1000) {
+        const { data, error } = await build().range(from, from + 999);
+        if (error) throw new Error(error.message);
+        out.push(...(data || []));
+        if (!data || data.length < 1000) break;
+      }
+      return out;
+    }
+
     async function signUp({ name, email, password, position }) {
       await ensureClient();
       const { data, error } = await sb.auth.signUp({ email: norm(email), password, options: { data: { name, position: position || 'Registrar' } } });
@@ -571,8 +587,9 @@ const Backend = (() => {
     }
     async function listQuestionStats() {
       await ensureClient();
-      const { data } = await sb.from('question_stats').select('question_key, attempts, correct, total_time_sec');
-      return (data || []).map(r => ({ questionKey: r.question_key, attempts: r.attempts, correct: r.correct, totalTimeSec: r.total_time_sec }));
+      const rows = await pageAll(() => sb.from('question_stats')
+        .select('question_key, attempts, correct, total_time_sec').order('question_key'));
+      return rows.map(r => ({ questionKey: r.question_key, attempts: r.attempts, correct: r.correct, totalTimeSec: r.total_time_sec }));
     }
     async function saveCohortScore(percent) {
       await ensureClient(); const id = await uid(); if (!id) return;
@@ -581,8 +598,8 @@ const Backend = (() => {
     async function listCohortScores(days = 120) {
       await ensureClient();
       const cutoff = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
-      const { data } = await sb.from('cohort_scores').select('user_id, percent, day').gte('day', cutoff);
-      return (data || []).map(r => ({ userId: r.user_id, percent: r.percent, day: r.day }));
+      const rows = await pageAll(() => sb.from('cohort_scores').select('user_id, percent, day').gte('day', cutoff).order('id'));
+      return rows.map(r => ({ userId: r.userId ?? r.user_id, percent: r.percent, day: r.day }));
     }
 
     /* flag review workshop (developer — "uqe dev read/update" policies).
@@ -653,22 +670,26 @@ const Backend = (() => {
     }
     async function listSharedUsage() {
       await ensureClient();
-      const { data } = await sb.from('ai_shared_usage').select('feature, day, provider, model, calls, input_tokens, output_tokens');
-      return (data || []).map(r => ({ feature: r.feature, day: r.day, provider: r.provider, model: r.model,
+      const rows = await pageAll(() => sb.from('ai_shared_usage')
+        .select('feature, day, provider, model, calls, input_tokens, output_tokens')
+        .order('feature').order('day').order('provider').order('model'));
+      return rows.map(r => ({ feature: r.feature, day: r.day, provider: r.provider, model: r.model,
         calls: r.calls || 0, inputTokens: r.input_tokens || 0, outputTokens: r.output_tokens || 0 }));
     }
     async function saveQuestionTags(rows) {
       await ensureClient(); if (!rows?.length) return;
-      await sb.from('question_tags').upsert(rows.map(r => ({
+      const { error } = await sb.from('question_tags').upsert(rows.map(r => ({
         question_key: r.questionKey, topic: r.topic || '', category: r.category || '',
         guideline: r.guideline || '', tags: r.tags || [], difficulty_est: r.difficulty ?? null,
         tagged_by: r.taggedBy || '', updated_at: new Date().toISOString()
       })));
+      if (error) throw new Error('Could not save tags: ' + error.message);
     }
     async function listQuestionTags() {
       await ensureClient();
-      const { data } = await sb.from('question_tags').select('question_key, topic, category, guideline, tags, difficulty_est');
-      return (data || []).map(r => ({ questionKey: r.question_key, topic: r.topic, category: r.category,
+      const rows = await pageAll(() => sb.from('question_tags')
+        .select('question_key, topic, category, guideline, tags, difficulty_est').order('question_key'));
+      return rows.map(r => ({ questionKey: r.question_key, topic: r.topic, category: r.category,
         guideline: r.guideline, tags: r.tags || [], difficulty: r.difficulty_est }));
     }
 
@@ -677,11 +698,10 @@ const Backend = (() => {
        Feeds the Users panel cost columns and the invoice generator. */
     async function listAiTokenUsage() {
       await ensureClient();
-      const { data, error } = await sb.from('ai_token_usage')
+      const rows = await pageAll(() => sb.from('ai_token_usage')
         .select('user_id, day, provider, model, calls, input_tokens, output_tokens')
-        .order('day', { ascending: true });
-      if (error) throw new Error(error.message);
-      return (data || []).map(r => ({ userId: r.user_id, day: r.day, provider: r.provider, model: r.model,
+        .order('day').order('user_id').order('provider').order('model'));
+      return rows.map(r => ({ userId: r.user_id, day: r.day, provider: r.provider, model: r.model,
         calls: r.calls || 0, inputTokens: r.input_tokens || 0, outputTokens: r.output_tokens || 0 }));
     }
 

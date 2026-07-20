@@ -1237,7 +1237,7 @@ const DevConsole = (() => {
                 // fatal errors (auth, config, quota, unavailable model) stop
                 // the run; a flaky batch (truncated output) is skipped and
                 // stays untagged — the next run picks it up
-                if (/sign in|Developer only|HTTP 4|quota|API_KEY|configured|not found|not supported/i.test(String(e.message || e))) throw e;
+                if (/sign in|Developer only|HTTP 4|quota|API_KEY|configured|not found|not supported|Could not save/i.test(String(e.message || e))) throw e;
                 failedBatches++;
               }
             }
