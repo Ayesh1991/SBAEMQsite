@@ -34,6 +34,7 @@
     { re: /^#\/simulator$/, fn: renderSimHome },
     { re: /^#\/simulator\/run$/, fn: renderSimRun },
     { re: /^#\/simulator\/design$/, fn: renderSimDesign },
+    { re: /^#\/simulator\/search$/, fn: renderSimSearch },
     { re: /^#\/simulator\/result\/([^/]+)$/, fn: renderSimResult },
     { re: /^#\/dev(?:\/(papers|cards|users|blueprint|review|ai))?$/, fn: renderDev }
   ];
@@ -1441,6 +1442,7 @@
   async function renderSimHome(user) { if (!canUse(user, 'simulator')) return renderLocked('The adaptive simulator'); await Simulator.renderHome(view, user); }
   async function renderSimRun(user) { if (!canUse(user, 'simulator')) return renderLocked('The adaptive simulator'); await Simulator.startRun(view, user); }
   async function renderSimDesign(user) { if (!canUse(user, 'simulator')) return renderLocked('The adaptive simulator'); await Simulator.renderDesign(view, user); }
+  async function renderSimSearch(user) { if (!canUse(user, 'simulator')) return renderLocked('The adaptive simulator'); await Simulator.renderSearch(view, user); }
   async function renderSimResult(id, user) { if (!canUse(user, 'simulator')) return renderLocked('The adaptive simulator'); await Simulator.renderResult(view, id, user); }
 
   function renderDevGate(user) {

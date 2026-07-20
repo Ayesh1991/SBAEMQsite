@@ -324,7 +324,7 @@ const Simulator = (() => {
 
   function modeSwitcherHTML(active) {
     return `
-      <div class="sim-modes" data-animate>
+      <div class="sim-modes sim-modes-3" data-animate>
         <a class="sim-mode-card ${active === 'mock' ? 'active' : ''}" href="#/simulator">
           <span class="sim-mode-ico">🎯</span>
           <span class="sim-mode-name">Mock papers</span>
@@ -334,6 +334,11 @@ const Simulator = (() => {
           <span class="sim-mode-ico">🎨</span>
           <span class="sim-mode-name">Design a paper</span>
           <span class="sim-mode-desc">Pick your topics and exact SBA/EMQ counts — the bank is AI-tagged, so search is precise.</span>
+        </a>
+        <a class="sim-mode-card ${active === 'search' ? 'active' : ''}" href="#/simulator/search">
+          <span class="sim-mode-ico">🔎</span>
+          <span class="sim-mode-name">Advanced search</span>
+          <span class="sim-mode-desc">A database-style query builder — AND / OR / NOT — to pinpoint questions and collect them into a paper.</span>
         </a>
       </div>`;
   }
@@ -447,61 +452,15 @@ const Simulator = (() => {
     const body = view.querySelector('#dp-body');
     const taggedCount = index.filter(r => r.tagTopic).length;
     const bp = await Blueprint.load().catch(() => null);
-    // everything this candidate has ever answered (mocks + library papers)
-    const answered = new Set(hist.seen);
-    try {
-      const prog = await Backend.getProgress();
-      (prog.attempts || []).forEach(a => (a.detail || []).forEach(d => { if (d.qkey && d.chosen != null) answered.add(d.qkey); }));
-    } catch { /* optional */ }
-
-    const st2 = { syn: null, synCost: '', hideAnswered: false };
-    // one row's matches, honouring boolean syntax, AI synonym map,
-    // the flawed/flagged exclusions and the hide-answered toggle
-    function rowMatches(kind, query) {
-      let list;
-      if (looksBoolean(query)) {
-        const ast = parseBool(query);
-        list = [];
-        for (const r of index) {
-          if (r.kind !== kind || hist.excluded.has(r.qkey)) continue;
-          if (evalBool(ast, Blueprint.normStr(r.text), st2.syn)) list.push({ r, score: 1 });
-        }
-      } else {
-        list = topicMatches(index, kind, query, hist.excluded);
-        if (st2.syn) {
-          // fuzzy mode also benefits from the AI map: retry unmatched synonyms
-          const have = new Set(list.map(x => x.r.qkey));
-          for (const [term, alts] of Object.entries(st2.syn)) {
-            if (!Blueprint.normStr(query).includes(Blueprint.normStr(term))) continue;
-            for (const alt of alts) {
-              topicMatches(index, kind, alt, hist.excluded).forEach(x => {
-                if (!have.has(x.r.qkey)) { have.add(x.r.qkey); list.push(x); }
-              });
-            }
-          }
-        }
-      }
-      if (st2.hideAnswered) list = list.filter(x => !answered.has(x.r.qkey));
-      return list;
-    }
 
     body.innerHTML = `
       ${modeSwitcherHTML('design')}
       <div class="card dp-card" data-animate>
         <div class="dp-meta muted tiny">${index.length} questions in the bank · ${taggedCount} AI-tagged for precise matching</div>
-        <div class="dp-help">
-          <span class="dp-help-chip">Boolean search:</span>
-          <code>preeclampsia AND magsulphate NOT "preterm labour"</code>
-          <span class="muted tiny">· plain words work too · quotes keep phrases together · brackets group</span>
-        </div>
         <div id="dp-rows"></div>
         <button class="btn btn-ghost btn-sm" id="dp-add">＋ Add another topic</button>
-        <div class="dp-options">
-          <label class="dp-opt"><input type="checkbox" id="dp-hide-answered">
-            <span>Hide questions I've already answered <span class="muted tiny">(${answered.size} in your history)</span></span></label>
-          <button class="btn btn-ghost btn-sm" id="dp-ai-map">🤖 Match my words to bank tags (AI)</button>
-          <span class="dp-ai-note tiny" id="dp-ai-note"></span>
-        </div>
+        <p class="dp-hint-search tiny muted">Want AND / OR / NOT and a query builder? Try
+          <a class="link" href="#/simulator/search">Advanced search →</a></p>
         <div class="dp-footer">
           <div class="dp-totals" id="dp-totals"></div>
           <button class="btn btn-gold btn-lg" id="dp-build" disabled>Build my paper →</button>
@@ -537,8 +496,8 @@ const Simulator = (() => {
         const found = el.querySelector('[data-found]');
         if (!st.query) { st.matches = { SBA: 0, EMQ: 0 }; found.textContent = 'type a topic…'; found.className = 'dp-found'; updateTotals(); return; }
         st.matches = {
-          SBA: rowMatches('SBA', st.query).length,
-          EMQ: rowMatches('EMQ', st.query).length
+          SBA: topicMatches(index, 'SBA', st.query, hist.excluded).length,
+          EMQ: topicMatches(index, 'EMQ', st.query, hist.excluded).length
         };
         const shortS = st.sba > st.matches.SBA, shortE = st.emq > st.matches.EMQ;
         found.innerHTML = `<strong>${st.matches.SBA}</strong> SBA · <strong>${st.matches.EMQ}</strong> EMQ in bank` +
@@ -549,11 +508,9 @@ const Simulator = (() => {
       el.querySelector('.dp-topic').addEventListener('input', () => { clearTimeout(deb); deb = setTimeout(refresh, 300); });
       el.querySelectorAll('.dp-sba, .dp-emq').forEach(i => i.addEventListener('input', () => { clearTimeout(deb); deb = setTimeout(refresh, 200); }));
       el.querySelector('.dp-del').addEventListener('click', () => { rowState.delete(id); el.remove(); updateTotals(); });
-      rowState.get(id).refresh = refresh;
       if (preset) refresh();
       return el;
     }
-    const refreshAllRows = () => rowState.forEach(st => st.refresh && st.refresh());
 
     function updateTotals() {
       let reqS = 0, reqE = 0, getS = 0, getE = 0, topics = 0;
@@ -576,13 +533,6 @@ const Simulator = (() => {
     updateTotals();
     body.querySelector('#dp-add').addEventListener('click', () => addRow(''));
 
-    body.querySelector('#dp-hide-answered').addEventListener('change', e => {
-      st2.hideAnswered = e.target.checked;
-      refreshAllRows();
-    });
-    body.querySelector('#dp-ai-map').addEventListener('click', () =>
-      openTermMapModal(index, [...rowState.values()], st2, body.querySelector('#dp-ai-note'), refreshAllRows));
-
     buildBtn.addEventListener('click', async () => {
       buildBtn.disabled = true;
       const msg = body.querySelector('#dp-msg');
@@ -599,7 +549,7 @@ const Simulator = (() => {
           topicNames.push(st.query);
           for (const [kind, want] of [['SBA', st.sba], ['EMQ', st.emq]]) {
             if (!want) continue;
-            rowMatches(kind, st.query)
+            topicMatches(index, kind, st.query, hist.excluded)
               .filter(x => !used.has(x.r.qkey))
               .sort((a, b) =>
                 (hist.seen.has(a.r.qkey) - hist.seen.has(b.r.qkey)) ||
@@ -615,6 +565,235 @@ const Simulator = (() => {
         buildBtn.disabled = false;
       }
     });
+  }
+
+  /* ================================================================
+     ADVANCED SEARCH (#/simulator/search) — a PubMed-style boolean query
+     builder. Compose AND/OR/NOT expressions, see live counts, then add
+     the matches to a "paper basket" and build one paper from several
+     searches. The bank is AI-tagged, so tag terms match precisely.
+     ================================================================ */
+
+  async function renderSearch(view, user) {
+    view.innerHTML = `
+      <section class="page">
+        <header data-animate>
+          <p class="kicker">SIMULATOR · ADVANCED SEARCH</p>
+          <h1 class="page-title">Advanced question search</h1>
+          <p class="muted">A database-style query builder. Add terms with <strong>AND</strong>, <strong>OR</strong> and
+            <strong>NOT</strong>, see exactly how many questions match, then collect them into a paper — run as many
+            searches as you like and the basket keeps them (each question only once). Never invents questions.</p>
+        </header>
+        <div id="as-body"><p class="muted">Indexing the bank…</p></div>
+      </section>`;
+    FX.viewIn(view);
+
+    let index, hist;
+    try {
+      const [raw, h, stats, tags] = await Promise.all([buildIndex(), loadHistory(), loadStats(), loadTags()]);
+      hist = h; index = enrich(raw, stats, tags);
+    } catch (e) {
+      view.querySelector('#as-body').innerHTML = `<p class="bad">Could not index the bank: ${esc(e.message || e)}</p>`;
+      return;
+    }
+    const bp = await Blueprint.load().catch(() => null);
+    const answered = new Set(hist.seen);
+    try {
+      const prog = await Backend.getProgress();
+      (prog.attempts || []).forEach(a => (a.detail || []).forEach(d => { if (d.qkey && d.chosen != null) answered.add(d.qkey); }));
+    } catch { /* optional */ }
+
+    // vocabulary for autocomplete + AI mapping: distinct AI-tag topics
+    const vocab = [...new Set(index.flatMap(r => r.tagTopic ? [r.tagTopic] : []))].sort();
+    const body = view.querySelector('#as-body');
+
+    const state = { syn: null, hideAnswered: false, basket: new Map() /* qkey -> rec */, results: [] };
+
+    body.innerHTML = `
+      ${modeSwitcherHTML('search')}
+      <div class="card as-card" data-animate>
+        <div class="dp-meta muted tiny">${index.length} questions · ${index.filter(r => r.tagTopic).length} AI-tagged · type a term and pick an operator</div>
+
+        <div class="as-builder">
+          <label class="as-field">Field
+            <select id="as-scope">
+              <option value="all">All text</option>
+              <option value="tag">AI topic tag only</option>
+            </select>
+          </label>
+          <input type="text" id="as-term" list="as-vocab" placeholder="Enter a search term — e.g. magnesium sulphate" autocomplete="off">
+          <datalist id="as-vocab">${vocab.slice(0, 400).map(v => `<option value="${esc(v)}">`).join('')}</datalist>
+          <div class="as-ops">
+            <button class="btn btn-ghost btn-sm" data-op="AND">＋ AND</button>
+            <button class="btn btn-ghost btn-sm" data-op="OR">＋ OR</button>
+            <button class="btn btn-ghost btn-sm" data-op="NOT">＋ NOT</button>
+          </div>
+        </div>
+
+        <label class="as-qlabel">Query</label>
+        <textarea id="as-query" class="as-query" placeholder='e.g. ("pre-eclampsia" OR eclampsia) AND magnesium NOT "preterm labour"' spellcheck="false"></textarea>
+        <div class="as-actions">
+          <button class="btn btn-ghost btn-sm" id="as-clear">Clear</button>
+          <button class="btn btn-ghost btn-sm" id="as-ai">🤖 Match my words to tags (AI)</button>
+          <span class="dp-ai-note tiny" id="as-ai-note"></span>
+          <button class="btn btn-gold" id="as-run">🔎 Search</button>
+        </div>
+        <label class="dp-opt as-hide"><input type="checkbox" id="as-hide"><span>Hide questions I've already answered <span class="muted tiny">(${answered.size} in history)</span></span></label>
+
+        <div id="as-results" class="as-results"></div>
+      </div>
+
+      <div class="card as-basket-card" data-animate>
+        <div class="as-basket-head">
+          <h3 class="card-title">🧺 Paper basket <span id="as-basket-count" class="muted">(empty)</span></h3>
+          <div>
+            <button class="btn btn-ghost btn-sm" id="as-basket-clear">Empty basket</button>
+            <button class="btn btn-gold" id="as-build" disabled>Build paper from basket →</button>
+          </div>
+        </div>
+        <div id="as-basket" class="as-basket"></div>
+        <p class="dev-row-msg" id="as-msg"></p>
+      </div>`;
+
+    const termEl = body.querySelector('#as-term');
+    const queryEl = body.querySelector('#as-query');
+    const resultsEl = body.querySelector('#as-results');
+
+    // quote a multi-word term so it stays a phrase; scope tag: prefix
+    function fielded(raw) {
+      const t = raw.trim();
+      if (!t) return '';
+      const q = /\s/.test(t) ? `"${t}"` : t;
+      return body.querySelector('#as-scope').value === 'tag' ? 'tag:' + q : q;
+    }
+    body.querySelectorAll('[data-op]').forEach(b => b.addEventListener('click', () => {
+      const piece = fielded(termEl.value);
+      if (!piece) { termEl.focus(); return; }
+      const cur = queryEl.value.trim();
+      queryEl.value = cur ? `(${cur}) ${b.dataset.op} ${piece}` : piece;
+      termEl.value = ''; termEl.focus();
+    }));
+    termEl.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); body.querySelector('[data-op="AND"]').click(); } });
+    body.querySelector('#as-clear').addEventListener('click', () => { queryEl.value = ''; resultsEl.innerHTML = ''; });
+    body.querySelector('#as-hide').addEventListener('change', e => { state.hideAnswered = e.target.checked; if (queryEl.value.trim()) runSearch(); });
+    body.querySelector('#as-ai').addEventListener('click', () => {
+      const terms = (queryEl.value.match(/"[^"]+"|[A-Za-z][\w-]+/g) || [])
+        .filter(t => !/^(and|or|not|tag)$/i.test(t)).map(t => t.replace(/"/g, ''));
+      openTermMapModal(index, [{ query: [...new Set(terms)].join(' ') }], state, body.querySelector('#as-ai-note'), () => { if (queryEl.value.trim()) runSearch(); });
+    });
+    body.querySelector('#as-run').addEventListener('click', runSearch);
+
+    // evaluate the boolean query against the bank (tag: fields honoured)
+    function search(query) {
+      const ast = parseBool(query);
+      const out = { SBA: [], EMQ: [] };
+      for (const r of index) {
+        if (hist.excluded.has(r.qkey)) continue;
+        if (state.hideAnswered && answered.has(r.qkey)) continue;
+        const hay = Blueprint.normStr(r.text);
+        const tagHay = Blueprint.normStr(r.tagTopic || '');
+        if (evalBoolField(ast, hay, tagHay, state.syn)) (out[r.kind] || (out[r.kind] = [])).push(r);
+      }
+      return out;
+    }
+
+    function runSearch() {
+      const q = queryEl.value.trim();
+      if (!q) { resultsEl.innerHTML = `<p class="muted">Compose a query above, then Search.</p>`; return; }
+      let res;
+      try { res = search(q); } catch (e) { resultsEl.innerHTML = `<p class="bad">Query error: ${esc(e.message || e)}</p>`; return; }
+      state.results = res;
+      const nS = res.SBA.length, nE = res.EMQ.length;
+      const inBasket = k => state.basket.has(k);
+      const newS = res.SBA.filter(r => !inBasket(r.qkey)).length, newE = res.EMQ.filter(r => !inBasket(r.qkey)).length;
+      resultsEl.innerHTML = `
+        <div class="as-res-head">
+          <span><strong>${nS}</strong> SBA · <strong>${nE}</strong> EMQ match</span>
+          <span class="muted tiny">${nS + nE ? `${newS + newE} not yet in your basket` : 'nothing matched — try broader terms or the AI matcher'}</span>
+        </div>
+        ${(nS + nE) ? `
+        <div class="as-add">
+          <label>Add SBA <input type="number" id="as-add-sba" min="0" max="${nS}" value="${Math.min(nS, 10)}"></label>
+          <label>Add EMQ <input type="number" id="as-add-emq" min="0" max="${nE}" value="${Math.min(nE, 10)}"></label>
+          <button class="btn btn-gold btn-sm" id="as-add-btn">＋ Add to basket</button>
+          <span class="muted tiny">best-quality, unseen-first</span>
+        </div>
+        <div class="as-preview">${[...res.SBA.slice(0, 4), ...res.EMQ.slice(0, 2)].map(r =>
+          `<div class="as-prev-row"><span class="chip chip-${r.kind.toLowerCase()}">${r.kind}</span> ${esc((dictStemPeek(r)) || r.tagTopic || r.group || '')}</div>`).join('')}</div>
+        ` : ''}`;
+      body.querySelector('#as-add-btn')?.addEventListener('click', () => {
+        const wantS = Math.max(0, Math.min(nS, Number(body.querySelector('#as-add-sba').value) || 0));
+        const wantE = Math.max(0, Math.min(nE, Number(body.querySelector('#as-add-emq').value) || 0));
+        addToBasket(res.SBA, wantS); addToBasket(res.EMQ, wantE);
+        paintBasket(); runSearch();
+      });
+    }
+
+    function addToBasket(pool, want) {
+      if (!want) return;
+      pool.filter(r => !state.basket.has(r.qkey))
+        .sort((a, b) => (hist.seen.has(a.qkey) - hist.seen.has(b.qkey)) || (quality(b, bp) - quality(a, bp)))
+        .slice(0, want)
+        .forEach(r => state.basket.set(r.qkey, { ...r, bucket: 'Advanced search' }));
+    }
+
+    function paintBasket() {
+      const n = state.basket.size;
+      const recs = [...state.basket.values()];
+      const nS = recs.filter(r => r.kind === 'SBA').length, nE = n - nS;
+      body.querySelector('#as-basket-count').textContent = n ? `— ${nS} SBA · ${nE} EMQ · ⏱ ${Math.min(180, Math.max(10, Math.round(n * 2)))} min` : '(empty)';
+      body.querySelector('#as-build').disabled = n < 1;
+      body.querySelector('#as-basket').innerHTML = n ? recs.map(r =>
+        `<div class="as-basket-row"><span class="chip chip-${r.kind.toLowerCase()}">${r.kind}</span>
+          <span class="as-basket-topic">${esc(dictStemPeek(r) || r.tagTopic || r.group || r.qkey)}</span>
+          <button class="dp-del" data-drop="${esc(r.qkey)}" title="Remove">✕</button></div>`).join('')
+        : `<p class="muted">Empty — run a search and add matches.</p>`;
+      body.querySelectorAll('[data-drop]').forEach(b => b.addEventListener('click', () => { state.basket.delete(b.dataset.drop); paintBasket(); }));
+    }
+    // cheap stem peek from the enriched text (no extra fetch); collapse the
+    // repeated tag/theme prefix so EMQ labels read cleanly
+    function dictStemPeek(r) {
+      let t = (r.text || '').replace(/\s+/g, ' ').trim();
+      t = t.replace(/\b(\w[\w-]+(?:\s+\w[\w-]+){0,3})\s+\1\b/gi, '$1');   // drop immediate phrase repeats
+      return t.length > 72 ? t.slice(0, 72) + '…' : t;
+    }
+
+    body.querySelector('#as-basket-clear').addEventListener('click', () => { state.basket.clear(); paintBasket(); });
+    body.querySelector('#as-build').addEventListener('click', async () => {
+      const msg = body.querySelector('#as-msg');
+      body.querySelector('#as-build').disabled = true;
+      msg.textContent = 'Assembling your paper…'; msg.className = 'dev-row-msg muted';
+      try {
+        const picked = [...state.basket.values()];
+        const terms = (queryEl.value.trim() ? [queryEl.value.trim()] : ['Advanced search']);
+        await startDesignedRun(view, user, picked, terms);
+      } catch (e) { msg.textContent = e.message || String(e); msg.className = 'dev-row-msg bad'; body.querySelector('#as-build').disabled = false; }
+    });
+
+    paintBasket();
+    runSearch();
+  }
+  // boolean eval with tag: field support — a `tag:term` node must hit the
+  // tag haystack specifically; plain terms hit the full text (or synonyms).
+  function evalBoolField(node, hay, tagHay, syn) {
+    if (!node) return false;
+    switch (node.op) {
+      case 'term': {
+        let raw = node.t || '';
+        const tagOnly = /^tag:/i.test(raw);
+        if (tagOnly) raw = raw.replace(/^tag:/i, '');
+        const t = Blueprint.normStr(raw);
+        if (!t) return true;
+        const target = tagOnly ? tagHay : hay;
+        if (target.includes(t)) return true;
+        const alts = syn && syn[raw.toLowerCase().trim()];
+        return !!(alts && alts.some(a => target.includes(Blueprint.normStr(a))));
+      }
+      case 'not': return !evalBoolField(node.a, hay, tagHay, syn);
+      case 'and': return evalBoolField(node.a, hay, tagHay, syn) && evalBoolField(node.b, hay, tagHay, syn);
+      case 'or':  return evalBoolField(node.a, hay, tagHay, syn) || evalBoolField(node.b, hay, tagHay, syn);
+    }
+    return false;
   }
 
   /* ---- Paper architect: AI maps the user's words onto the bank's tags.
@@ -1098,5 +1277,5 @@ const Simulator = (() => {
     return '<p>' + h + '</p>';
   }
 
-  return { renderHome, startRun, renderResult, renderDesign, buildIndex, select, loadHistory };
+  return { renderHome, startRun, renderResult, renderDesign, renderSearch, buildIndex, select, loadHistory };
 })();
