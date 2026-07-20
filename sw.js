@@ -17,7 +17,7 @@
    activation then drops every older cache.
    ============================================================ */
 
-const VERSION = 'aureum-v21';
+const VERSION = 'aureum-v22';
 const CORE = ['/', '/index.html', '/manifest.webmanifest'];
 
 self.addEventListener('install', e => {

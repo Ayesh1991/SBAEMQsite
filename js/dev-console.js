@@ -1189,7 +1189,11 @@ const DevConsole = (() => {
         rows = objs.map(o => { try { return JSON.parse(o); } catch { return null; } }).filter(Boolean);
       }
     }
-    if (!Array.isArray(rows) || !rows.length) throw new Error('Tagger output was not valid JSON (usually a truncated response) — this batch will be retried on the next run.');
+    if (!Array.isArray(rows) || !rows.length) {
+      // show what actually came back — a blind "unparseable" hides the cause
+      const peek = stripped.slice(0, 140).replace(/\s+/g, ' ');
+      throw new Error(`Tagger output was not parseable JSON. The model returned: "${peek || '(empty response)'}…"`);
+    }
     const valid = (Array.isArray(rows) ? rows : []).filter(r => r.key && r.topic)
       .map(r => ({ questionKey: r.key, topic: r.topic, category: r.category || '', guideline: r.guideline || '', tags: r.tags || [], difficulty: typeof r.difficulty === 'number' ? r.difficulty : null, taggedBy: data.model || '' }));
     if (valid.length) await ctx.Backend.saveQuestionTags(valid);
@@ -1217,6 +1221,7 @@ const DevConsole = (() => {
           // live meter: exact provider-reported tokens per batch → dollars,
           // plus WHICH model actually answered (red if not the selected one)
           let done = 0, failedBatches = 0, tokIn = 0, tokOut = 0, costUsd = 0, served = '';
+          let lastErr = '', consecFails = 0;   // circuit breaker: 3 identical fails in a row = stop
           const fmtTok = n => n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : (n / 1e3).toFixed(1) + 'k';
           const meter = () => {
             const ok = !served || served.startsWith(selModel);
@@ -1233,19 +1238,24 @@ const DevConsole = (() => {
                 if (r.model) served = r.model;
                 const rate = Billing.rateFor(r.model);
                 costUsd += (r.tokIn / 1e6) * rate.in + (r.tokOut / 1e6) * rate.out;
+                consecFails = 0;
               } catch (e) {
                 // fatal errors (auth, config, quota, unavailable model) stop
                 // the run; a flaky batch (truncated output) is skipped and
-                // stays untagged — the next run picks it up
-                if (/sign in|Developer only|HTTP 4|quota|API_KEY|configured|not found|not supported|Could not save/i.test(String(e.message || e))) throw e;
-                failedBatches++;
+                // stays untagged — the next run picks it up. But 3 failures
+                // IN A ROW means something systematic: stop and say why
+                // instead of spinning through hundreds of doomed batches.
+                lastErr = String(e.message || e);
+                if (/sign in|Developer only|HTTP 4|quota|API_KEY|configured|not found|not supported|Could not save/i.test(lastErr)) throw e;
+                failedBatches++; consecFails++;
+                if (consecFails >= 3) throw new Error(`${consecFails} batches in a row failed with: ${lastErr}`);
               }
             }
             if (typeof Cache !== 'undefined') Cache.bust('sim-qtags');
             progress.innerHTML = (stopReq
               ? `<span class="muted">⏸ Stopped — ${done} tagged this run, progress saved. Click “Tag remaining questions” to resume.</span>`
               : failedBatches
-                ? `<span class="good">✓ ${done} questions tagged.</span> <span class="bad">${failedBatches} batch${failedBatches > 1 ? 'es' : ''} failed — click again to tag the remainder.</span>`
+                ? `<span class="good">✓ ${done} questions tagged.</span> <span class="bad">${failedBatches} batch${failedBatches > 1 ? 'es' : ''} failed${lastErr ? ` (last error: ${ctx.esc(lastErr)})` : ''} — click again to tag the remainder.</span>`
                 : `<span class="good">✓ ${done} questions tagged — mock selection is now tag-precise.</span>`) + ` · ${meter()}`;
             if (!failedBatches && !stopReq) status.textContent = 'Bank fully tagged.';
             btn.disabled = !failedBatches && !stopReq && true;
