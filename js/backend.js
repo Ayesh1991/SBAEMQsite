@@ -321,6 +321,19 @@ const Backend = (() => {
     async function getDeclinedPapers() { return read('declined', []); }
     async function declinePaper(key) { const l = read('declined', []); if (!l.includes(key)) l.push(key); write('declined', l); }
 
+    /* essay papers (dev-published) + per-user essay feedback */
+    async function getEssayPapers() { return read('essaypapers', []); }
+    async function publishEssayPaper(meta) { const l = read('essaypapers', []); const i = l.findIndex(x => x.id === meta.id); if (i >= 0) l[i] = meta; else l.push(meta); write('essaypapers', l); return meta; }
+    async function unpublishEssayPaper(id) { write('essaypapers', read('essaypapers', []).filter(x => x.id !== id)); }
+    const efKey = e => 'essayfb.' + e;
+    async function saveEssayFeedback(fb) {
+      const e = sessionEmail(); if (!e) return null;
+      const m = read(efKey(e), {}); m[fb.code] = Object.assign({ created: Date.now() }, fb); write(efKey(e), m); return m[fb.code];
+    }
+    async function listEssayFeedback() { const e = sessionEmail(); if (!e) return []; return Object.values(read(efKey(e), {})); }
+    async function getEssayFeedback(code) { const e = sessionEmail(); if (!e) return null; return read(efKey(e), {})[code] || null; }
+    async function deleteEssayFeedback(code) { const e = sessionEmail(); if (!e) return; const m = read(efKey(e), {}); delete m[code]; write(efKey(e), m); }
+
     /* AI feature registry + shared pools + tags (local mirrors) */
     async function getAiFeatures() { return read('aifeatures', {}); }
     async function saveAiFeatures(data) { write('aifeatures', data); return data; }
@@ -335,6 +348,7 @@ const Backend = (() => {
 
     return { init, signUp, signIn, signOut, requestPasswordReset, updatePassword, onPasswordRecovery, currentUser, updateProfile,
       getRegistrationOpen, setRegistrationOpen, setUserStatus, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
+      getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
       getPublishedPapers, publishPaper, unpublishPaper,
       getExamDate, setExamDate, saveSession, loadSession, clearSession, listSessions,
@@ -829,6 +843,32 @@ const Backend = (() => {
       await sb.from('app_config').upsert({ id: 'declined_papers', data: { keys }, updated_at: new Date().toISOString() });
     }
 
+    /* essay papers (dev-published, everyone reads) */
+    async function getEssayPapers() { await ensureClient(); const { data } = await sb.from('essay_papers').select('meta'); return (data || []).map(r => r.meta); }
+    async function publishEssayPaper(meta) { await ensureClient(); await sb.from('essay_papers').upsert({ id: meta.id, meta }); return meta; }
+    async function unpublishEssayPaper(id) { await ensureClient(); await sb.from('essay_papers').delete().eq('id', id); }
+    /* per-user essay feedback */
+    async function saveEssayFeedback(fb) {
+      await ensureClient(); const id = await uid(); if (!id) return null;
+      const row = { user_id: id, code: fb.code, data: fb, paper: fb.paper || String(fb.code || '').split('-')[0], percent: fb.score?.percent ?? null, band: fb.score?.band ?? null, created_at: new Date().toISOString() };
+      await sb.from('essay_feedback').upsert(row, { onConflict: 'user_id,code' });
+      return fb;
+    }
+    async function listEssayFeedback() {
+      await ensureClient(); const id = await uid(); if (!id) return [];
+      const { data } = await sb.from('essay_feedback').select('data, created_at').eq('user_id', id).order('created_at', { ascending: false });
+      return (data || []).map(r => Object.assign({ created: r.created_at }, r.data));
+    }
+    async function getEssayFeedback(code) {
+      await ensureClient(); const id = await uid(); if (!id) return null;
+      const { data } = await sb.from('essay_feedback').select('data').eq('user_id', id).eq('code', code).single();
+      return data?.data || null;
+    }
+    async function deleteEssayFeedback(code) {
+      await ensureClient(); const id = await uid(); if (!id) return;
+      await sb.from('essay_feedback').delete().eq('user_id', id).eq('code', code);
+    }
+
     /* True token meter, one row per user × day × provider × model
        (developer — "tokens dev read" policy; users see only their own rows).
        Feeds the Users panel cost columns and the invoice generator. */
@@ -863,6 +903,7 @@ const Backend = (() => {
 
     return { init, signUp, signIn, signOut, requestPasswordReset, updatePassword, onPasswordRecovery, currentUser, updateProfile,
       getRegistrationOpen, setRegistrationOpen, setUserStatus, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
+      getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
       getPublishedPapers, publishPaper, unpublishPaper,
       getExamDate, setExamDate, saveSession, loadSession, clearSession, listSessions,

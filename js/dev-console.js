@@ -37,6 +37,7 @@ const DevConsole = (() => {
     if (section === 'blueprint') return renderBlueprintSection(view);
     if (section === 'review') return renderReviewSection(view);
     if (section === 'ai') return renderAiSection(view);
+    if (section === 'essays') return renderEssaysSection(view);
     return renderHub(view);
   }
 
@@ -89,6 +90,12 @@ const DevConsole = (() => {
             <p>Every AI engine on the platform: enable, pick the model, choose how the cost is split, and watch the monthly spend per system.</p>
             <span class="dev-hub-count" id="hub-ai">…</span>
           </a>
+          <a class="dev-hub-card" href="#/dev/essays" style="--hub-accent:linear-gradient(135deg,#f4c95d,#a78bfa)">
+            <span class="dev-hub-ico">📝</span>
+            <h3>Essay importer</h3>
+            <p>Scan Drive for structured-essay mock papers (SAQ/SEQ), validate and publish to the Essay section.</p>
+            <span class="dev-hub-count" id="hub-essays">…</span>
+          </a>
         </div>
       </section>`;
     ctx.FX.viewIn(view);
@@ -102,9 +109,11 @@ const DevConsole = (() => {
     try { const fl = (await ctx.Backend.listAllFlags()) || []; const open = new Set(fl.filter(f => !f.resolved).map(f => f.questionKey)).size; flagN = open ? `${open} awaiting review` : 'all clear'; } catch { flagN = 'run schema.sql'; }
     let aiN = '—';
     try { const fc = (await ctx.Backend.getAiFeatures()) || {}; const live = AI_FEATURES.filter(f => f.status === 'live' && (fc[f.id]?.enabled ?? f.defaults.enabled)).length; aiN = `${live}/${AI_FEATURES.length} systems on`; } catch { aiN = '—'; }
+    let essayN = '—';
+    try { essayN = ((await ctx.Backend.getEssayPapers()) || []).length + ' papers'; } catch { essayN = 'run schema.sql'; }
     const put = (id, v) => { const el = view.querySelector(id); if (el) el.textContent = v; };
     put('#hub-papers', paperN); put('#hub-decks', deckN); put('#hub-users', userN); put('#hub-bp', bpN);
-    put('#hub-flags', flagN); put('#hub-ai', aiN);
+    put('#hub-flags', flagN); put('#hub-ai', aiN); put('#hub-essays', essayN);
   }
 
   const backLink = `<a class="link muted dev-back" href="#/dev">← Developer</a>`;
@@ -1484,6 +1493,131 @@ const DevConsole = (() => {
       status.innerHTML = `<span class="good">✓ Analysis of ${events.length} events (${data.model || ''})</span>`;
       out.innerHTML = `<div class="ai-body qr-audit">${md(data.text)}</div>`;
     } catch (e) { status.innerHTML = `<span class="bad">${ctx.esc(e.message || e)}</span>`; out.innerHTML = ''; }
+  }
+
+  /* ================================================================
+     ESSAY IMPORTER — publish structured-essay mock papers (SAQ/SEQ)
+     ================================================================ */
+
+  function validateEssayPaper(d) {
+    const e = [];
+    if (!d || typeof d !== 'object') return ['File is not a JSON object.'];
+    if (!Array.isArray(d.sections) || !d.sections.length) e.push('Missing "sections" array.');
+    const qs = (d.sections || []).flatMap(s => s.questions || []);
+    if (!qs.length) e.push('No questions found in any section.');
+    qs.forEach((q, i) => { if (!q.code) e.push(`Question ${i + 1}: missing "code".`); if (!q.stem) e.push(`Question ${i + 1}: missing "stem".`); });
+    return e;
+  }
+  function essayId(d) { return 'essay-' + (d.paperNumber != null ? 'p' + d.paperNumber : slug(d.paperLabel || 'paper')); }
+
+  async function renderEssaysSection(view) {
+    const { esc } = ctx;
+    view.innerHTML = `
+      <section class="page">
+        ${backLink}
+        <header data-animate>
+          <p class="kicker">DEVELOPER · ESSAY IMPORTER</p>
+          <h1 class="page-title">Essay mock papers</h1>
+          <p class="muted">Structured-essay papers (SAQ/SEQ) in <code>ogr-essay-paper-v1</code> JSON. Source folder:
+            <code>${esc(ctx.cfg.drive.essayFolderId || '(set drive.essayFolderId)')}</code>. Published papers appear in
+            <strong>Library → Essay</strong>.</p>
+        </header>
+        <div class="dev-toolbar" data-animate>
+          <button class="btn btn-gold" id="es-scan">Scan Drive for essay papers</button>
+          <span class="dev-status" id="es-status"></span>
+        </div>
+        <div id="es-list" data-animate></div>
+
+        <div class="card" data-animate>
+          <details class="dev-collapse">
+            <summary><span class="card-title">Published essay papers (<span id="es-pub-count">…</span>)</span><span class="dc-caret">▸</span></summary>
+            <div id="es-published"></div>
+          </details>
+        </div>
+
+        <div class="card" data-animate>
+          <details class="dev-collapse">
+            <summary><span class="card-title">Paste a paper manually</span><span class="dc-caret">▸</span></summary>
+            <textarea id="es-paste" class="dev-textarea" placeholder='{ "paperNumber": 1, "paperLabel": "Mock Paper 1", "sections": [ … ] }'></textarea>
+            <button class="btn btn-primary" id="es-paste-btn" style="margin-top:12px">Validate &amp; publish</button>
+            <div id="es-paste-result"></div>
+          </details>
+        </div>
+      </section>`;
+    view.querySelector('#es-scan').addEventListener('click', scanEssays);
+    view.querySelector('#es-paste-btn').addEventListener('click', pasteEssay);
+    await refreshEssayPublished(view);
+    ctx.FX.viewIn(view);
+  }
+
+  async function refreshEssayPublished(view) {
+    const list = (await ctx.Backend.getEssayPapers().catch(() => [])) || [];
+    const host = view.querySelector('#es-published'), count = view.querySelector('#es-pub-count');
+    if (count) count.textContent = list.length;
+    host.innerHTML = list.length ? `<div class="table-scroll"><table class="table">
+      <thead><tr><th>#</th><th>Label</th><th>Questions</th><th></th></tr></thead>
+      <tbody>${list.sort((a, b) => (a.paperNumber || 0) - (b.paperNumber || 0)).map(p => `<tr>
+        <td>${p.paperNumber || ''}</td><td>${ctx.esc(p.paperLabel || '')}</td>
+        <td class="muted">${(p.sections || []).reduce((n, s) => n + (s.questions || []).length, 0)}</td>
+        <td><button class="link-btn" data-unpub-essay="${ctx.esc(p.id)}">unpublish</button></td></tr>`).join('')}</tbody>
+    </table></div>` : `<p class="muted">No essay papers published yet.</p>`;
+    host.querySelectorAll('[data-unpub-essay]').forEach(b => b.addEventListener('click', async () => {
+      if (confirm('Unpublish this essay paper?')) { await ctx.Backend.unpublishEssayPaper(b.dataset.unpubEssay); if (typeof Essay !== 'undefined') Essay.bustPapers(); await refreshEssayPublished(view); }
+    }));
+  }
+
+  async function scanEssays() {
+    const status = document.getElementById('es-status'), list = document.getElementById('es-list');
+    status.textContent = 'Scanning…'; list.innerHTML = '';
+    let files = [];
+    try {
+      const base = ctx.cfg.drive.apiBase, fid = ctx.cfg.drive.essayFolderId;
+      const res = await fetch(`${base}?action=list&folderId=${encodeURIComponent(fid)}`, { cache: 'no-cache' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      files = data.files || [];
+    } catch (e) { status.innerHTML = `<span class="bad">${ctx.esc(e.message || e)}</span>`; return; }
+
+    const published = (await ctx.Backend.getEssayPapers().catch(() => [])) || [];
+    const pubIds = new Set(published.map(p => p.id));
+    const staged = [];
+    for (const f of files) {
+      let doc = f.paper || f.deck || null;
+      if (!doc && f.id) { try { const r = await fetch(`${ctx.cfg.drive.apiBase}?action=file&id=${encodeURIComponent(f.id)}`); doc = await r.json(); } catch { doc = null; } }
+      // route by content: only essay PAPERS here (feedback JSONs are skipped)
+      if (doc && Array.isArray(doc.sections) && validateEssayPaper(doc).length === 0) {
+        doc.id = essayId(doc);
+        if (!pubIds.has(doc.id)) staged.push(doc);
+      }
+    }
+    status.innerHTML = `${files.length} file${files.length !== 1 ? 's' : ''} · <strong>${staged.length} new essay paper${staged.length !== 1 ? 's' : ''}</strong>`;
+    if (!staged.length) { list.innerHTML = `<p class="muted">No new essay papers found (already published, or the folder holds only feedback JSONs).</p>`; return; }
+    list.innerHTML = staged.map((d, i) => `
+      <div class="dev-row card" data-ei="${i}">
+        <div class="dev-row-head">
+          <div><p class="dev-file">📝 ${ctx.esc(d.paperLabel || ('Paper ' + d.paperNumber))}</p>
+            <p class="muted tiny">${(d.sections || []).reduce((n, s) => n + (s.questions || []).length, 0)} questions · ${d.durationHours || 3} h</p></div>
+          <button class="btn btn-gold btn-sm" data-es-approve="${i}">Publish</button>
+        </div><p class="dev-row-msg" data-es-msg="${i}"></p>
+      </div>`).join('');
+    staged.forEach((d, i) => document.querySelector(`[data-es-approve="${i}"]`).addEventListener('click', async e => {
+      const msg = document.querySelector(`[data-es-msg="${i}"]`);
+      e.target.disabled = true; msg.textContent = 'Publishing…'; msg.className = 'dev-row-msg muted';
+      try { await ctx.Backend.publishEssayPaper(d); if (typeof Essay !== 'undefined') Essay.bustPapers();
+        msg.textContent = '✓ Published to Library → Essay.'; msg.className = 'dev-row-msg good';
+        await refreshEssayPublished(document.getElementById('view'));
+      } catch (err) { msg.textContent = err.message || String(err); msg.className = 'dev-row-msg bad'; e.target.disabled = false; }
+    }));
+  }
+
+  async function pasteEssay() {
+    const ta = document.getElementById('es-paste'), out = document.getElementById('es-paste-result');
+    let d; try { d = JSON.parse(ta.value); } catch (e) { out.innerHTML = `<p class="bad">Invalid JSON: ${ctx.esc(e.message)}</p>`; return; }
+    const errs = validateEssayPaper(d); if (errs.length) { out.innerHTML = `<p class="bad">${errs.map(ctx.esc).join('<br>')}</p>`; return; }
+    d.id = essayId(d);
+    try { await ctx.Backend.publishEssayPaper(d); if (typeof Essay !== 'undefined') Essay.bustPapers();
+      out.innerHTML = `<p class="good">✓ Published “${ctx.esc(d.paperLabel || d.id)}”.</p>`; await refreshEssayPublished(document.getElementById('view'));
+    } catch (e) { out.innerHTML = `<p class="bad">${ctx.esc(e.message || e)}</p>`; }
   }
 
   /* ---------------- Drive access ---------------- */

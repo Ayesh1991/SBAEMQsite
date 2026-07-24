@@ -611,6 +611,44 @@ returns table (question_key text, notes text[]) language sql security definer st
   group by question_key
 $$;
 
+-- ---------- 8r) ESSAY PAPERS (developer-published SAQ/SEQ mock papers) ----------
+create table if not exists public.essay_papers (
+  id text primary key,
+  meta jsonb not null,                  -- { id, paperNumber, paperLabel, sections[…], … }
+  updated_at timestamptz default now()
+);
+alter table public.essay_papers enable row level security;
+drop policy if exists "essay papers read"  on public.essay_papers;
+drop policy if exists "essay papers write" on public.essay_papers;
+create policy "essay papers read" on public.essay_papers for select using (true);
+create policy "essay papers write" on public.essay_papers for all
+  using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
+  with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+
+-- ---------- 8s) ESSAY FEEDBACK (per-user corrected-answer reports) ----------
+-- The marking is done in a separate Claude project that returns a JSON
+-- report (schema ogr-essay-feedback-v1); each user uploads their own here
+-- (the developer's are auto-imported from Drive). One row per question code
+-- per user, latest upload wins.
+create table if not exists public.essay_feedback (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  code text not null,                   -- question code, e.g. M03-Q5
+  data jsonb not null,                  -- the full feedback report
+  paper text,                           -- derived paper id (M03)
+  percent integer,                      -- quick-access score for lists/graphs
+  band text,
+  created_at timestamptz default now(),
+  primary key (user_id, code)
+);
+create index if not exists ef_user_idx on public.essay_feedback (user_id, created_at desc);
+alter table public.essay_feedback enable row level security;
+drop policy if exists "own essay feedback all" on public.essay_feedback;
+drop policy if exists "essay feedback dev read" on public.essay_feedback;
+create policy "own essay feedback all" on public.essay_feedback for all
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "essay feedback dev read" on public.essay_feedback for select
+  using (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+
 -- ---------- 9) Auto-create a profile row on sign-up ----------
 create or replace function public.handle_new_user()
 returns trigger language plpgsql security definer as $$

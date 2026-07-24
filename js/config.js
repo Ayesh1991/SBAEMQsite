@@ -35,6 +35,10 @@ window.AUREUM_CONFIG = {
     // AUREUM Bridge app: Flashcards/, Infographics/, DOCx/). Keep this folder
     // link-shared as "Anyone with the link — Viewer".
     flashcardFolderId: '1ksGV_wYzWemBDFMCtiQwZdiYnDr2OI1Y',
+    // Essay mock papers (ogr-essay-paper-v1) AND corrected-feedback JSONs
+    // (ogr-essay-feedback-v1) share this folder — the importer routes each
+    // file by its schema. Share as "Anyone with the link — Viewer".
+    essayFolderId: '1EwsaTMnAcHbStoINKdhTq7ig87qBUiK8',
     apiBase: '/api/drive'
   },
 

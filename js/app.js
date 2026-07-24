@@ -22,6 +22,11 @@
     { re: /^#\/auth$/, fn: renderAuth, public: true },
     { re: /^#\/dashboard$/, fn: renderDashboard },
     { re: /^#\/library$/, fn: renderLibrary },
+    { re: /^#\/library\/essay$/, fn: (u) => Essay.renderList(view, u) },
+    { re: /^#\/library\/essay\/how$/, fn: (u) => Essay.renderHow(view, u) },
+    { re: /^#\/library\/essay\/feedback\/([^/]+)$/, fn: (code, u) => Essay.renderFeedback(view, code, u) },
+    { re: /^#\/library\/essay\/([^/]+)\/write\/(\d+)$/, fn: (id, qi, u) => Essay.renderWrite(view, id, qi, u) },
+    { re: /^#\/library\/essay\/([^/]+)$/, fn: (id, u) => Essay.renderPaper(view, id, u) },
     { re: /^#\/paper\/([^/]+)$/, fn: renderPaper },
     { re: /^#\/quiz\/([^/]+)\/(SBA|EMQ)\/(exam|study)$/, fn: renderQuiz },
     { re: /^#\/results\/([^/]+)$/, fn: renderResults },
@@ -38,7 +43,7 @@
     { re: /^#\/mistakes$/, fn: renderMistakes },
     { re: /^#\/mistakes\/deck\/([^/]+)$/, fn: renderMistakeDeck },
     { re: /^#\/simulator\/result\/([^/]+)$/, fn: renderSimResult },
-    { re: /^#\/dev(?:\/(papers|cards|users|blueprint|review|ai))?$/, fn: renderDev }
+    { re: /^#\/dev(?:\/(papers|cards|users|blueprint|review|ai|essays))?$/, fn: renderDev }
   ];
   const devOnly = user => !!(user && (user.email === cfg.developer.email || sessionStorage.getItem('aureum-dev') === '1'));
 
@@ -60,6 +65,7 @@
 
     ThreeBG.setMood(match.fn === renderLanding ? 'hero' : 'interior');
     { const rf = routeFlag?.(); if (rf) touchUse(rf); }   // visiting the tab counts as using it
+    window.__aureumUser = user;
     renderNav(user);
     view.className = 'view';
     window.scrollTo(0, 0);
@@ -93,9 +99,7 @@
           <a href="#/library" class="${location.hash.startsWith('#/library') || location.hash.startsWith('#/paper') ? 'active' : ''}">Library</a>
           <a href="#/studio" class="${location.hash === '#/studio' ? 'active' : ''}">Studio</a>
           <a href="#/peer" class="${location.hash === '#/peer' ? 'active' : ''}">Peer review</a>
-          ${fcOn ? `<a href="#/cards" class="${location.hash.startsWith('#/cards') ? 'active' : ''}">Flashcards</a>` : ''}
           ${simOn ? `<a href="#/simulator" class="${location.hash.startsWith('#/simulator') ? 'active' : ''}">Simulator</a>` : ''}
-          ${simOn ? `<a href="#/mistakes" class="${location.hash.startsWith('#/mistakes') ? 'active' : ''}">My mistakes</a>` : ''}
           ${isDev ? `<a href="#/dev" class="${location.hash.startsWith('#/dev') ? 'active' : ''}">Developer<span class="nav-badge" id="nav-dev-badge" hidden></span></a>` : ''}
           <a href="#/profile" class="${location.hash === '#/profile' ? 'active' : ''}">Profile</a>
           <button class="btn btn-ghost btn-sm" id="nav-logout">Sign out</button>
@@ -563,7 +567,28 @@
   };
   function catMeta(id) { return CAT_META[id] || { letter: (id || '?')[0].toUpperCase(), grad: 'var(--grad)', glow: 'rgba(94,234,212,0.3)' }; }
 
+  // Library is a HUB: Question bank + Essay + (Flashcards, My mistakes when
+  // enabled) share a sub-nav. This shell renders that bar around any inner
+  // library page; Essay.js reaches it via window.__aureumLibraryShell.
+  function librarySubnav(active, user) {
+    const u = user || window.__aureumUser;
+    const fcOn = u && (devOnly(u) || (isPaid(u) && u.featureFlags?.flashcards && u.prefs?.flashcards));
+    const simOn = u && (devOnly(u) || (isPaid(u) && u.featureFlags?.simulator && u.prefs?.simulator));
+    const tab = (id, href, label) => `<a class="lib-tab ${active === id ? 'active' : ''}" href="${href}">${label}</a>`;
+    return `<div class="lib-subnav" data-animate>
+      ${tab('bank', '#/library', 'Question bank')}
+      ${tab('essay', '#/library/essay', 'Essay')}
+      ${fcOn ? tab('cards', '#/cards', 'Flashcards') : ''}
+      ${simOn ? tab('mistakes', '#/mistakes', 'My mistakes') : ''}
+    </div>`;
+  }
+  function libraryShell(active, inner, user) {
+    return `<section class="page">${librarySubnav(active, user)}${inner}</section>`;
+  }
+  window.__aureumLibraryShell = (active, inner) => libraryShell(active, inner);
+
   async function renderLibrary(user) {
+    window.__aureumUser = user;
     const [syllabus, papers, progress] = await Promise.all([Data.loadSyllabus(), Data.publishedPapers(), Backend.getProgress()]);
     const pStats = Progression.paperStats(progress);
 
@@ -580,6 +605,7 @@
 
     view.innerHTML = `
       <section class="page">
+        ${librarySubnav('bank', user)}
         <header data-animate>
           <p class="kicker">QUESTION LIBRARY</p>
           <h1 class="page-title">Choose a paper</h1>
@@ -1234,6 +1260,7 @@
         </header>
         <div id="mk-body"><p class="muted">Analysing your history…</p></div>
       </section>`;
+    injectLibNav('mistakes', user);
     FX.viewIn(view);
 
     let mocks = [], decks = [], hist = null;
@@ -1635,7 +1662,14 @@
         </div>
       </section>`;
   }
-  async function renderCards(user) { if (!canUse(user, 'flashcards')) return renderLocked('Flashcards'); await Flashcards.renderList(view, user); }
+  // prepend the Library sub-nav to a sub-page rendered by another module
+  function injectLibNav(active, user) {
+    const page = view.querySelector('.page'); if (!page) return;
+    const nav = document.createElement('div');
+    nav.innerHTML = librarySubnav(active, user);
+    page.insertBefore(nav.firstElementChild, page.firstChild);
+  }
+  async function renderCards(user) { if (!canUse(user, 'flashcards')) return renderLocked('Flashcards'); await Flashcards.renderList(view, user); injectLibNav('cards', user); }
   async function renderDeck(deckId, user) { if (!canUse(user, 'flashcards')) return renderLocked('Flashcards'); await Flashcards.renderDeck(view, deckId, user); }
   async function renderSimHome(user) { if (!canUse(user, 'simulator')) return renderLocked('The adaptive simulator'); await Simulator.renderHome(view, user); }
   async function renderSimRun(user) { if (!canUse(user, 'simulator')) return renderLocked('The adaptive simulator'); await Simulator.startRun(view, user); }
