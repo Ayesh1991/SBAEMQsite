@@ -44,6 +44,10 @@ const AI = (() => {
     // Gemini access is developer-granted per user (server-enforced too) —
     // without it, show why instead of a button that would only error.
     const u0 = await getUser();
+    if (u0 && !u0.isDeveloper && !u0.featureFlags?.paid) {
+      slot.innerHTML = `<p class="ai-note">✨ The AI tutor is part of the paid plan — ask the site owner to activate your access.</p>`;
+      return;
+    }
     if (u0 && !u0.isDeveloper && !u0.featureFlags?.gemini) {
       slot.innerHTML = `<p class="ai-note">✨ The AI tutor is enabled per user — ask the site owner for Gemini access.</p>`;
       return;

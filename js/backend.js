@@ -114,6 +114,10 @@ const Backend = (() => {
       return { xpGained, xpTotal: p.xp, streak: p.streak.count, attemptId: attempt.id };
     }
     async function getAttempt(id) { return (await getProgress()).attempts.find(a => a.id === id) || null; }
+    async function addXp(points) {
+      const e = sessionEmail(); if (!e || !points) return;
+      const pr = read(pKey(e), blankProgress()); pr.xp = (pr.xp || 0) + points; write(pKey(e), pr);
+    }
     async function resetProgress() { const e = sessionEmail(); if (e) del(pKey(e)); }
 
     async function getPublishedPapers() { return read('published', []); }
@@ -331,7 +335,7 @@ const Backend = (() => {
 
     return { init, signUp, signIn, signOut, requestPasswordReset, updatePassword, onPasswordRecovery, currentUser, updateProfile,
       getRegistrationOpen, setRegistrationOpen, setUserStatus, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
-      getProgress, recordAttempt, getAttempt, resetProgress,
+      getProgress, recordAttempt, getAttempt, addXp, resetProgress,
       getPublishedPapers, publishPaper, unpublishPaper,
       getExamDate, setExamDate, saveSession, loadSession, clearSession, listSessions,
       getNote, saveNote, getNotesForPaper, listAllNotes, getCustomCurriculum, saveCustomCurriculum,
@@ -453,6 +457,11 @@ const Backend = (() => {
       await ensureClient();
       const { data } = await sb.from('attempts').select('*').eq('id', id).single();
       return data ? { id: data.id, ...data.payload } : null;
+    }
+    async function addXp(points) {
+      await ensureClient(); const id = await uid(); if (!id || !points) return;
+      const { data } = await sb.from('profiles').select('xp').eq('id', id).single();
+      await sb.from('profiles').update({ xp: (data?.xp || 0) + points }).eq('id', id);
     }
     async function resetProgress() {
       await ensureClient(); const id = await uid(); if (!id) return;
@@ -854,7 +863,7 @@ const Backend = (() => {
 
     return { init, signUp, signIn, signOut, requestPasswordReset, updatePassword, onPasswordRecovery, currentUser, updateProfile,
       getRegistrationOpen, setRegistrationOpen, setUserStatus, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
-      getProgress, recordAttempt, getAttempt, resetProgress,
+      getProgress, recordAttempt, getAttempt, addXp, resetProgress,
       getPublishedPapers, publishPaper, unpublishPaper,
       getExamDate, setExamDate, saveSession, loadSession, clearSession, listSessions,
       getNote, saveNote, getNotesForPaper, listAllNotes, getCustomCurriculum, saveCustomCurriculum,

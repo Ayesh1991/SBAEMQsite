@@ -150,15 +150,21 @@ const Simulator = (() => {
 
   /* ---------------- selection ---------------- */
 
-  function select(bp, index, hist) {
+  function select(bp, index, hist, ov = null) {
     const rnd = () => Math.random();
     const avail = r => !hist.excluded.has(r.qkey);
     const unseen = r => !hist.seen.has(r.qkey);
 
     function pickForSection(kindWanted, buckets, keyOf, total) {
       const pool = index.filter(r => r.kind === kindWanted && avail(r));
-      // adaptive weights → target counts
-      const adj = buckets.map(b => ({ b, weight: b.weight * perfFactor(keyOf(b), hist) }));
+      // adaptive weights → target counts. The pre-mock weakness chooser can
+      // force a bucket IN (studied → boost) or OUT (not studied yet → zero).
+      const adj = buckets.map(b => {
+        const label = keyOf(b);
+        let w = b.weight * perfFactor(label, hist);
+        if (ov) { if (ov.exclude?.has(label)) w = 0; else if (ov.include?.has(label)) w *= 1.6; }
+        return { b, weight: w };
+      });
       const counts = Blueprint.distribute(adj.map(x => ({ weight: x.weight })), total);
       const chosen = [];
       const used = new Set();
@@ -942,7 +948,59 @@ const Simulator = (() => {
     }
     catch (e) { view.innerHTML = `<section class="page narrow"><p class="bad">Could not prepare the mock: ${esc(e.message || e)}</p><a class="btn btn-ghost" href="#/simulator">Back</a></section>`; return; }
 
-    const plan = select(bp, index, hist);
+    // ---- pre-mock weakness chooser ----
+    // Weak areas from previous mocks: tick the ones you've STUDIED (they'll
+    // be tested, boosted), untick to exclude (no point testing unstudied
+    // ground), or Skip to run the standard adaptive engine untouched.
+    const weakAreas = Object.entries(hist.bucketAgg || {})
+      .filter(([, a]) => (a.rawSeen || 0) >= 3 && a.seen > 0 && (a.correct / a.seen) < 0.7)
+      .map(([label, a]) => ({ label, pct: Math.round((a.correct / a.seen) * 100) }))
+      .sort((x, y) => x.pct - y.pct).slice(0, 10);
+    let ov = null;
+    if (weakAreas.length) {
+      const studied = (user && user.prefs?.studiedAreas) || {};
+      ov = await new Promise(resolvePick => {
+        view.innerHTML = `
+          <section class="page narrow">
+            <header data-animate>
+              <p class="kicker">BEFORE YOUR MOCK</p>
+              <h1 class="page-title">Your weak areas — test them?</h1>
+              <p class="muted">Tick the areas you've <strong>studied since</strong> — the paper will test them (boosted).
+                Unticked areas are left out: no point burning questions on ground you haven't covered yet.
+                Ticks are pre-filled from your <a class="link" href="#/mistakes">Mistake lab</a> checklist.</p>
+            </header>
+            <div class="card" data-animate>
+              <div class="mk-weak-list">${weakAreas.map((w, i) => `
+                <label class="mk-weak-row ${studied[w.label] ? 'is-studied' : ''}">
+                  <input type="checkbox" data-wk="${i}" ${studied[w.label] ? 'checked' : ''}>
+                  <span class="mk-weak-name">${esc(w.label)}</span>
+                  <span class="mk-weak-pct ${w.pct < 50 ? 'bad' : ''}">${w.pct}%</span>
+                  <span class="mk-weak-state">${studied[w.label] ? 'studied — include' : 'exclude for now'}</span>
+                </label>`).join('')}</div>
+              <div class="sim-hero-actions" style="margin-top:18px">
+                <button class="btn btn-gold btn-lg" id="wk-go">Generate with my choices →</button>
+                <button class="btn btn-ghost" id="wk-skip">Skip — standard adaptive engine</button>
+              </div>
+            </div>
+          </section>`;
+        FX.viewIn(view);
+        view.querySelectorAll('[data-wk]').forEach(cb => cb.addEventListener('change', () => {
+          const row = cb.closest('.mk-weak-row');
+          row.classList.toggle('is-studied', cb.checked);
+          row.querySelector('.mk-weak-state').textContent = cb.checked ? 'studied — include' : 'exclude for now';
+        }));
+        view.querySelector('#wk-skip').addEventListener('click', () => resolvePick(null));
+        view.querySelector('#wk-go').addEventListener('click', () => {
+          const include = new Set(), exclude = new Set();
+          view.querySelectorAll('[data-wk]').forEach(cb =>
+            (cb.checked ? include : exclude).add(weakAreas[Number(cb.dataset.wk)].label));
+          resolvePick({ include, exclude });
+        });
+      });
+      view.innerHTML = `<section class="page narrow"><header data-animate><p class="kicker">ADAPTIVE SIMULATOR</p><h1 class="page-title">Building your mock…</h1></header></section>`;
+    }
+
+    const plan = select(bp, index, hist, ov);
     const dict = await resolve([...plan.sbaRecs, ...plan.emqRecs]);
     const sbaQ = plan.sbaRecs.map(r => dict[r.qkey]).filter(Boolean);
     const emqQ = plan.emqRecs.map(r => dict[r.qkey]).filter(Boolean);
@@ -993,6 +1051,12 @@ const Simulator = (() => {
       detail: attempt.detail.map(d => ({ qkey: d.qkey, bucket: d.bucket, kind: d.kind, isCorrect: d.isCorrect, excluded: d.excluded, chosen: d.chosen, correct: d.correct, timeSec: d.timeSec || 0 }))
     };
     if (opts.custom) { result.custom = true; result.topics = opts.topics || []; }
+    // real mocks pay into Total XP exactly like library sets (10/correct,
+    // +25 for a perfect paper); designed papers don't (they'd be farmable)
+    if (!opts.custom) {
+      result.xpGained = attempt.correct * 10 + (attempt.percent === 100 ? 25 : 0);
+      try { Backend.addXp?.(result.xpGained).catch?.(() => {}); } catch {}
+    }
     // anonymous score into the cohort distribution (percentile curve) —
     // custom-designed papers stay out: their difficulty isn't comparable
     try { if (!opts.custom) Backend.saveCohortScore?.(result.percent).catch?.(() => {}); } catch {}
@@ -1020,7 +1084,7 @@ const Simulator = (() => {
           ${mock.custom && (mock.topics || []).length ? `<p class="muted tiny">Topics: ${(mock.topics || []).map(esc).join(' · ')}</p>` : ''}
           <div class="score-hero"><span id="score-big">0%</span></div>
           <p class="verdict ${verdict.c}">${verdict.t}</p>
-          <p class="muted">${mock.correct} of ${mock.scored} scored correct${(mock.excludedKeys || []).length ? ` · ${(mock.excludedKeys || []).length} excluded as flawed` : ''}</p>
+          <p class="muted">${mock.correct} of ${mock.scored} scored correct${(mock.excludedKeys || []).length ? ` · ${(mock.excludedKeys || []).length} excluded as flawed` : ''}${mock.xpGained ? ` · <strong class="dev-cost">+${mock.xpGained} XP</strong>` : ''}</p>
           <div class="sim-section-split">
             <div class="sim-split"><span class="chip chip-sba">SBA</span> <strong class="${secPct(sec.SBA) >= 70 ? 'good' : ''}">${secPct(sec.SBA)}%</strong> <span class="muted">(${sec.SBA?.correct || 0}/${sec.SBA?.seen || 0})</span></div>
             <div class="sim-split"><span class="chip chip-emq">EMQ</span> <strong class="${secPct(sec.EMQ) >= 70 ? 'good' : ''}">${secPct(sec.EMQ)}%</strong> <span class="muted">(${sec.EMQ?.correct || 0}/${sec.EMQ?.seen || 0})</span></div>
@@ -1224,12 +1288,12 @@ const Simulator = (() => {
         AI.attach(slot, { questionKey: d.qkey, kind: q.kind, theme: q.theme || '', stem: q.stem, lead: q.lead || '', options: q.options, answer: q.answer, chosen: d.chosen, rationale: q.rationale || '', hook: q.hook || '', reference: q.reference || '', paperTitle: q._paperTitle || 'Mock', preLettered: q.preLettered });
       });
     }
-    host.querySelector('#sim-gen-cards')?.addEventListener('click', e => generateAiCards(e.target, host.querySelector('#sim-cards-msg'), wrong, dict));
+    host.querySelector('#sim-gen-cards')?.addEventListener('click', e => generateAiCards(e.target, host.querySelector('#sim-cards-msg'), wrong, dict, mock));
   }
 
   /* ---------------- AI flashcards from wrong answers ---------------- */
 
-  async function generateAiCards(btn, msg, wrong, dict) {
+  async function generateAiCards(btn, msg, wrong, dict, mock) {
     btn.disabled = true;
     const items = wrong.slice(0, 12);                // cost guard per run
     const made = [];
@@ -1253,14 +1317,17 @@ const Simulator = (() => {
         });
       }
       if (!made.length) throw new Error('The AI returned no usable cards — try again.');
-      // merge into the personal deck (dedupe by card id → re-running is safe)
+      // ONE DECK PER PAPER (never merged): each mock keeps its own deck so
+      // you can revisit exactly what a given sitting taught you.
+      const deckId = 'deck-ai-' + (mock?.id || 'misc');
+      const label = (mock?.custom ? '🎨 Designed paper' : 'Mock') + ' · ' + new Date(mock?.date || Date.now()).toLocaleDateString();
       const decks = (await Backend.listUserDecks?.()) || [];
-      const ex = decks.find(d => d.id === 'deck-ai-mistakes');
+      const ex = decks.find(d => d.id === deckId);
       const have = new Map((ex?.content?.cards || []).map(c => [c.id, c]));
       made.forEach(c => have.set(c.id, c));
       const cards = [...have.values()];
-      await Backend.saveUserDeck({ id: 'deck-ai-mistakes', title: 'From my mistakes (AI)', source: 'AI-generated from your wrong answers', cardCount: cards.length, personal: true, content: { topic: 'From my mistakes', cards } });
-      msg.innerHTML = `✓ ${made.length} card${made.length > 1 ? 's' : ''} added — deck now ${cards.length} cards. <a class="link" href="#/cards/deck-ai-mistakes">Open deck →</a>`;
+      await Backend.saveUserDeck({ id: deckId, title: 'Mistakes — ' + label, source: 'AI cards from your wrong answers in this paper', cardCount: cards.length, personal: true, content: { topic: 'Mistakes — ' + label, cards } });
+      msg.innerHTML = `✓ ${made.length} card${made.length > 1 ? 's' : ''} in this paper's deck (${cards.length} total). <a class="link" href="#/mistakes/deck/${encodeURIComponent(deckId)}">Open in Mistake lab →</a>`;
       msg.className = 'dev-row-msg good';
     } catch (e) {
       msg.textContent = e.message || String(e); msg.className = 'dev-row-msg bad';

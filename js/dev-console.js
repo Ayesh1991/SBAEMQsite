@@ -757,61 +757,93 @@ const DevConsole = (() => {
       <div class="dev-reg">
         <label class="dev-flag"><input type="checkbox" id="reg-open" ${regOpen ? 'checked' : ''}><span></span></label>
         <span>New registrations are <strong id="reg-state">${regOpen ? 'OPEN' : 'CLOSED'}</strong>
-          <span class="muted tiny">— when closed, the sign-up form is hidden. Every new account still needs your approval below.</span></span>
+          <span class="muted tiny">— when closed, the sign-up form is hidden. Every new account still needs your approval.</span></span>
         ${pendingN ? `<span class="chip pr-st-pending">${pendingN} awaiting approval</span>` : ''}
       </div>
       <div class="dev-users-stats">
         <div><strong>${list.length}</strong><span>Accounts</span></div>
-        <div><strong>${list.reduce((s, u) => s + (u.xp || 0), 0)}</strong><span>Total XP</span></div>
+        <div><strong>${list.filter(u => u.featureFlags?.paid).length}</strong><span>Paid</span></div>
         <div><strong>${totalAi}</strong><span>AI calls (all time)</span></div>
         <div><strong>${Billing.usd(monthTotal)}</strong><span>AI cost this month</span></div>
       </div>
-      <div class="table-scroll"><table class="table dev-users-table">
-        <thead><tr><th>Name</th><th>Email</th><th>Status</th><th>XP</th><th>AI today</th><th>AI total</th><th>Cost (month)</th><th>Cost (all)</th>${FEATURES.map(f => `<th>${f.label}</th>`).join('')}<th>Self-enabled</th><th></th></tr></thead>
-        <tbody>${list.map(u => {
+      <p class="tiny muted">Click a user to open their full control panel. <strong>Paid</strong> is the master key: an unpaid account has
+        NO AI, no Simulator, no Flashcards, and a 30-question daily practice cap — one toggle activates everything they've been granted.</p>
+      <div class="dev-ulist">
+        ${list.map((u, i) => {
           const isDev = (u.email || '').toLowerCase() === devMail;
-          const ai = usage[u.id] || { total: 0, today: 0 };
           const c = costs[u.id] || { thisMonth: 0, allTime: 0 };
-          const self = [u.prefs?.simulator ? 'Sim' : null, u.prefs?.flashcards ? 'Cards' : null].filter(Boolean).join(' · ') || '—';
-          const stBadge = isDev ? '<span class="tiny muted">owner</span>'
-            : u.status === 'pending' ? `<span class="chip pr-st-pending">Awaiting approval</span> <button class="link-btn" data-approve="${ctx.esc(u.id)}">approve</button> · <button class="link-btn" data-deny="${ctx.esc(u.id)}">deny</button>`
-            : u.status === 'denied' ? `<span class="chip pr-st-rejected">Access denied</span> <button class="link-btn" data-approve="${ctx.esc(u.id)}">approve</button>`
-            : `<span class="chip pr-st-approved">Approved</span> <button class="link-btn" data-deny="${ctx.esc(u.id)}">revoke</button>`;
-          return `<tr class="${isDev ? 'dev-users-me' : ''}">
-            <td>${ctx.esc(u.name || '')}${isDev ? ' <span class="qedit-tag">developer</span>' : ''}</td>
-            <td class="muted">${ctx.esc(u.email || '')}</td>
-            <td>${stBadge}</td>
-            <td class="muted">${u.xp || 0}</td>
-            <td class="muted">${ai.today}</td>
-            <td class="muted">${ai.total}</td>
-            <td class="dev-cost">${Billing.usd(c.thisMonth)}</td>
-            <td class="muted">${Billing.usd(c.allTime)}</td>
-            ${FEATURES.map(f => `<td>${isDev
-              ? '<span class="tiny muted">always</span>'
-              : `<label class="dev-flag"><input type="checkbox" data-uid="${ctx.esc(u.id)}" data-flag="${f.id}" ${u.featureFlags?.[f.id] ? 'checked' : ''}><span></span></label>`}</td>`).join('')}
-            <td class="muted tiny">${self}</td>
-            <td><button class="btn btn-ghost btn-sm" data-bill="${ctx.esc(u.id)}" title="Generate this user's invoice">🧾 Bill</button></td>
-          </tr>`;
-        }).join('')}</tbody>
-      </table></div>
-      <p class="tiny muted"><strong>Gemini</strong> is the master AI switch — a user with it OFF has no AI at all (server-enforced; the flag column is
-        database-protected so nobody can self-grant). <strong>Gemini+</strong> adds the model picker; <strong>AI cards</strong> allows flashcard generation
-        from wrong answers. <strong>Simulator / Flashcards</strong> are your APPROVAL — only then does the switch appear in that user's Profile, where they
-        activate it per session (it self-expires after 5 idle minutes; <em>Self-enabled</em> shows who has it active right now). Costs come from
-        <strong>true token counts</strong> per user × model × day (rates in <code>config.js → ai.pricing</code>).
-        🧾 Bill generates a commercial invoice (JPEG / PNG / PDF) for any month.
-        ${tokensLive ? '' : '<span class="bad">Token meter unavailable — run the updated supabase/schema.sql once.</span>'}</p>
+          const ai = usage[u.id] || { total: 0, today: 0 };
+          const paid = isDev || !!u.featureFlags?.paid;
+          const stChip = isDev ? '<span class="qedit-tag">developer</span>'
+            : u.status === 'pending' ? '<span class="chip pr-st-pending">Awaiting approval</span>'
+            : u.status === 'denied' ? '<span class="chip pr-st-rejected">Access denied</span>'
+            : '<span class="chip pr-st-approved">Approved</span>';
+          return `
+          <div class="dev-user ${isDev ? 'dev-users-me' : ''}" data-ui="${i}">
+            <button class="dev-user-head" data-utoggle="${i}" aria-expanded="false">
+              <span class="dev-user-id"><strong>${ctx.esc(u.name || '')}</strong><span class="muted tiny">${ctx.esc(u.email || '')}</span></span>
+              ${stChip}
+              <span class="chip ${paid ? 'pr-st-approved' : 'pr-st-rejected'}">${paid ? '💳 Paid' : 'Unpaid'}</span>
+              <span class="dev-cost">${Billing.usd(c.thisMonth)}<span class="muted tiny">/mo</span></span>
+              <span class="dc-caret">▸</span>
+            </button>
+            <div class="dev-user-panel" hidden>
+              ${isDev ? '<p class="muted tiny">This is you — every feature is always on for the developer.</p>' : `
+              <div class="dev-up-grid">
+                <div class="dev-up-block dev-up-pay">
+                  <h4>💳 Payment</h4>
+                  <label class="dev-flag"><input type="checkbox" data-uflag="paid" data-uid="${ctx.esc(u.id)}" ${u.featureFlags?.paid ? 'checked' : ''}><span></span></label>
+                  <p class="tiny muted">${u.featureFlags?.paid ? 'Paid — all granted features active.' : 'Unpaid — AI, Simulator and Flashcards disabled; 30 questions/day cap.'}</p>
+                </div>
+                <div class="dev-up-block">
+                  <h4>Account status</h4>
+                  ${u.status === 'pending' ? `<button class="btn btn-gold btn-sm" data-approve="${ctx.esc(u.id)}">✓ Approve</button>
+                    <button class="btn btn-ghost btn-sm qr-danger" data-deny="${ctx.esc(u.id)}">Deny</button>`
+                  : u.status === 'denied' ? `<button class="btn btn-gold btn-sm" data-approve="${ctx.esc(u.id)}">✓ Approve</button>`
+                  : `<button class="btn btn-ghost btn-sm qr-danger" data-deny="${ctx.esc(u.id)}">Revoke access</button>`}
+                </div>
+                <div class="dev-up-block">
+                  <h4>AI grants</h4>
+                  ${[['gemini', 'Gemini (master AI switch)'], ['gemini_advanced', 'Gemini+ model picker'], ['ai_flashcards', 'AI flashcards']].map(([f, lbl]) => `
+                    <label class="dev-up-flag"><label class="dev-flag"><input type="checkbox" data-uflag="${f}" data-uid="${ctx.esc(u.id)}" ${u.featureFlags?.[f] ? 'checked' : ''}><span></span></label> ${lbl}</label>`).join('')}
+                </div>
+                <div class="dev-up-block">
+                  <h4>Tool approvals</h4>
+                  ${[['simulator', 'Simulator'], ['flashcards', 'Flashcards']].map(([f, lbl]) => `
+                    <label class="dev-up-flag"><label class="dev-flag"><input type="checkbox" data-uflag="${f}" data-uid="${ctx.esc(u.id)}" ${u.featureFlags?.[f] ? 'checked' : ''}><span></span></label> ${lbl}
+                      <span class="tiny muted">${u.prefs?.[f] ? '· user has it ON' : '· not activated by user'}</span></label>`).join('')}
+                </div>
+                <div class="dev-up-block">
+                  <h4>Usage &amp; billing</h4>
+                  <p class="tiny muted">XP ${u.xp || 0} · AI today ${ai.today} · AI total ${ai.total}<br>
+                    Cost this month <strong class="dev-cost">${Billing.usd(c.thisMonth)}</strong> · all time ${Billing.usd(c.allTime)}</p>
+                  <button class="btn btn-ghost btn-sm" data-bill="${ctx.esc(u.id)}">🧾 Generate bill</button>
+                </div>
+              </div>`}
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
       <p class="dev-row-msg" id="dev-users-msg"></p>`;
-    host.querySelectorAll('input[data-flag]:not([disabled])').forEach(cb => cb.addEventListener('change', async () => {
-      const msg = host.querySelector('#dev-users-msg');
+
+    const msgEl = host.querySelector('#dev-users-msg');
+    host.querySelectorAll('[data-utoggle]').forEach(b => b.addEventListener('click', () => {
+      const panel = b.parentElement.querySelector('.dev-user-panel');
+      const open = panel.hidden;
+      panel.hidden = !open;
+      b.setAttribute('aria-expanded', String(open));
+      b.parentElement.classList.toggle('is-open', open);
+    }));
+    host.querySelectorAll('input[data-uflag]').forEach(cb => cb.addEventListener('change', async () => {
       cb.disabled = true;
       try {
-        await ctx.Backend.setUserFeature(cb.dataset.uid, cb.dataset.flag, cb.checked);
-        msg.textContent = `✓ ${cb.dataset.flag} ${cb.checked ? 'enabled' : 'disabled'} — takes effect on their next page load.`;
-        msg.className = 'dev-row-msg good';
+        await ctx.Backend.setUserFeature(cb.dataset.uid, cb.dataset.uflag, cb.checked);
+        msgEl.textContent = `✓ ${cb.dataset.uflag} ${cb.checked ? 'enabled' : 'disabled'} — takes effect on their next page load.`;
+        msgEl.className = 'dev-row-msg good';
+        if (cb.dataset.uflag === 'paid') await refreshUsers(view);
       } catch (e) {
         cb.checked = !cb.checked;
-        msg.textContent = 'Could not save: ' + (e.message || e); msg.className = 'dev-row-msg bad';
+        msgEl.textContent = 'Could not save: ' + (e.message || e); msgEl.className = 'dev-row-msg bad';
       }
       cb.disabled = false;
     }));

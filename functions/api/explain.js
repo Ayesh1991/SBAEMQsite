@@ -67,6 +67,10 @@ export async function onRequest(context) {
   let geminiRestricted = false;
   if (!isDev) {
     const flags = await getUserFlags(token, user.id, env);
+    // payment first: unpaid accounts get NO AI at all, whatever else is granted
+    if (!flags.paid) {
+      return json({ error: 'AI features are part of the paid plan — ask the site owner to activate your payment in Users & access.' }, 403);
+    }
     if (!flags.gemini) {
       return json({ error: 'AI access is not enabled for your account yet — ask the developer to switch on Gemini for you in Users & access.' }, 403);
     }

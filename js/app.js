@@ -35,6 +35,8 @@
     { re: /^#\/simulator\/run$/, fn: renderSimRun },
     { re: /^#\/simulator\/design$/, fn: renderSimDesign },
     { re: /^#\/simulator\/search$/, fn: renderSimSearch },
+    { re: /^#\/mistakes$/, fn: renderMistakes },
+    { re: /^#\/mistakes\/deck\/([^/]+)$/, fn: renderMistakeDeck },
     { re: /^#\/simulator\/result\/([^/]+)$/, fn: renderSimResult },
     { re: /^#\/dev(?:\/(papers|cards|users|blueprint|review|ai))?$/, fn: renderDev }
   ];
@@ -78,19 +80,23 @@
   function renderNav(user) {
     const nav = document.getElementById('nav');
     const isDev = user && (user.email === cfg.developer.email || sessionStorage.getItem('aureum-dev') === '1');
+    const simOn = isDev || (isPaid(user) && user?.featureFlags?.simulator && user?.prefs?.simulator);
+    const fcOn = isDev || (isPaid(user) && user?.featureFlags?.flashcards && user?.prefs?.flashcards);
     nav.innerHTML = `
       <a class="brand" href="#/">
         <img class="brand-logo" src="assets/logo-mark.svg" alt=""> ${esc(cfg.brandName)}<span class="brand-sub">${esc(cfg.brandTag)}</span>
       </a>
-      <div class="nav-links">
+      ${user ? `<button class="nav-burger" id="nav-burger" aria-label="Menu" aria-expanded="false"><span></span><span></span><span></span></button>` : ''}
+      <div class="nav-links" id="nav-links">
         ${user ? `
           <a href="#/dashboard" class="${location.hash === '#/dashboard' ? 'active' : ''}">Dashboard</a>
           <a href="#/library" class="${location.hash.startsWith('#/library') || location.hash.startsWith('#/paper') ? 'active' : ''}">Library</a>
           <a href="#/studio" class="${location.hash === '#/studio' ? 'active' : ''}">Studio</a>
           <a href="#/peer" class="${location.hash === '#/peer' ? 'active' : ''}">Peer review</a>
-          ${(isDev || (user.featureFlags?.flashcards && user.prefs?.flashcards)) ? `<a href="#/cards" class="${location.hash.startsWith('#/cards') ? 'active' : ''}">Flashcards</a>` : ''}
-          ${(isDev || (user.featureFlags?.simulator && user.prefs?.simulator)) ? `<a href="#/simulator" class="${location.hash.startsWith('#/simulator') ? 'active' : ''}">Simulator</a>` : ''}
-          ${isDev ? `<a href="#/dev" class="${location.hash.startsWith('#/dev') ? 'active' : ''}">Developer</a>` : ''}
+          ${fcOn ? `<a href="#/cards" class="${location.hash.startsWith('#/cards') ? 'active' : ''}">Flashcards</a>` : ''}
+          ${simOn ? `<a href="#/simulator" class="${location.hash.startsWith('#/simulator') ? 'active' : ''}">Simulator</a>` : ''}
+          ${simOn ? `<a href="#/mistakes" class="${location.hash.startsWith('#/mistakes') ? 'active' : ''}">My mistakes</a>` : ''}
+          ${isDev ? `<a href="#/dev" class="${location.hash.startsWith('#/dev') ? 'active' : ''}">Developer<span class="nav-badge" id="nav-dev-badge" hidden></span></a>` : ''}
           <a href="#/profile" class="${location.hash === '#/profile' ? 'active' : ''}">Profile</a>
           <button class="btn btn-ghost btn-sm" id="nav-logout">Sign out</button>
         ` : `<a href="#/auth" class="btn btn-primary btn-sm">Sign in</a>`}
@@ -98,6 +104,29 @@
     nav.querySelector('#nav-logout')?.addEventListener('click', async () => {
       await Backend.signOut(); sessionStorage.removeItem('aureum-dev'); location.hash = '#/';
     });
+    // mobile: hamburger dropdown (links collapse into a sheet under the bar)
+    const burger = nav.querySelector('#nav-burger');
+    burger?.addEventListener('click', () => {
+      const open = nav.classList.toggle('nav-open');
+      burger.setAttribute('aria-expanded', String(open));
+    });
+    nav.querySelectorAll('.nav-links a').forEach(a => a.addEventListener('click', () => nav.classList.remove('nav-open')));
+    // developer: pending approvals badge (proposals + registrations)
+    if (isDev) refreshDevBadge();
+  }
+
+  // small red count on the Developer tab: pending proposals + pending users
+  async function refreshDevBadge() {
+    try {
+      const [props, users] = await Promise.all([
+        Backend.listProposals().catch(() => []),
+        Backend.listAllUsers().catch(() => [])
+      ]);
+      const n = props.filter(p => p.status === 'pending').length +
+                users.filter(u => u.status === 'pending').length;
+      const el = document.getElementById('nav-dev-badge');
+      if (el) { el.textContent = n > 9 ? '9+' : String(n); el.hidden = n === 0; }
+    } catch { /* badge is best-effort */ }
   }
 
   /* ================= countdown ================= */
@@ -447,6 +476,8 @@
           <div class="stat-tile ring-tile"><div id="ring-acc"></div></div>
         </div>
 
+        <div id="dash-mocks"></div>
+
         <div class="dash-grid">
           <div class="card readiness-card" data-animate>
             <h3 class="card-title">Exam readiness</h3>
@@ -497,6 +528,7 @@
     if (ready) Charts.ring(document.getElementById('ring-ready'), ready.score, 'Ready');
     Charts.scoreTrend(document.getElementById('chart-trend'), Progression.scoreSeries(progress));
     Charts.sectionBars(document.getElementById('chart-cats'), Progression.categoryAccuracy(progress));
+    renderMockChart(document.getElementById('dash-mocks'), user);
 
     const recent = (progress.attempts || []).slice(0, 6);
     document.getElementById('recent-list').innerHTML = recent.length ? `
@@ -769,7 +801,26 @@
 
   /* ================= quiz ================= */
 
+  /* unpaid accounts: 30 SBA/EMQ answers per day across the library */
+  const FREE_DAILY_Q = 30;
+  function dqKey(user) { return 'aureum.dq.' + (user?.id || 'anon') + '.' + new Date().toISOString().slice(0, 10); }
+  function dailyCount(user) { try { return Number(localStorage.getItem(dqKey(user))) || 0; } catch { return 0; } }
+  function addDailyCount(user, n) { try { localStorage.setItem(dqKey(user), String(dailyCount(user) + n)); } catch { /* ignore */ } }
+
   async function renderQuiz(paperId, kind, mode, user) {
+    if (!isPaid(user) && dailyCount(user) >= FREE_DAILY_Q) {
+      view.innerHTML = `
+        <section class="page narrow" data-animate>
+          <div class="card locked-card">
+            <span class="locked-ico">⏳</span>
+            <h1 class="page-title">Daily limit reached</h1>
+            <p class="muted">The free plan covers <strong>${FREE_DAILY_Q} questions a day</strong> — you've used them all. Come back tomorrow,
+              or ask the site owner about full access (unlimited practice, AI tutor, simulator and flashcards).</p>
+            <a class="btn btn-gold" href="#/dashboard">Back to dashboard</a>
+          </div>
+        </section>`;
+      return;
+    }
     const loaded = await Data.loadPaper(paperId);
     const questions = Data.flatten(loaded.paper, kind);
     if (!questions.length) throw new Error(`This paper has no ${kind} questions.`);
@@ -785,6 +836,7 @@
       mode, kind, sessionKey, resume,
       timeLimitMinutes: Math.max(5, Math.round(questions.length * 1.8)),
       onFinish: async (attempt) => {
+        addDailyCount(user, (attempt.detail || []).filter(d => d.chosen != null).length);
         const summary = await Backend.recordAttempt(attempt);
         try { ReviewQueue.addFromAttempt(attempt); } catch { /* optional */ }
         location.hash = '#/results/' + summary.attemptId;
@@ -911,11 +963,16 @@
           <p class="save-note" id="pos-note" hidden>Saved ✓</p>
         </div>
 
-        ${(isGranted(user, 'simulator') || isGranted(user, 'flashcards')) ? `
+        ${(!isPaid(user) && (isGranted(user, 'simulator') || isGranted(user, 'flashcards'))) ? `
         <div class="card" data-animate>
           <h3 class="card-title">Study tools</h3>
-          <p class="muted">The site owner has approved these tools for your account. Switch one on to use it —
-            it turns itself off after <strong>5 minutes</strong> away, so come back here to re-activate for each session.</p>
+          <p class="muted">🔒 These tools are approved for your account but need an <strong>active payment</strong> —
+            contact the site owner to activate your access.</p>
+        </div>` : ''}
+        ${(isPaid(user) && (isGranted(user, 'simulator') || isGranted(user, 'flashcards'))) ? `
+        <div class="card" data-animate>
+          <h3 class="card-title">Study tools</h3>
+          <p class="muted">The site owner has approved these tools for your account. Switch one on and it stays on.</p>
           <div class="pref-toggles">
             ${isGranted(user, 'simulator') ? `
             <label class="pref-toggle">
@@ -1101,6 +1158,168 @@
       <p class="tiny muted aiu-note">💡 <strong>Personal</strong> costs (tutor, coach, flashcards) are your own token use. <strong>Shared</strong> costs are your equal fraction of platform-wide AI jobs (e.g. question tagging), split across eligible users — never marked up.</p>`;
 
     host.querySelector('#aiu-bill').addEventListener('click', () => Billing.openBillModal(user, myRows, sharedCtx));
+  }
+
+  /* ================= dashboard: mock exam trajectory ================= */
+
+  // Futuristic mock-paper chart: neon bars per mock (band-coloured), a
+  // glowing trend line, the 70% pass line, and XP-per-mock markers.
+  async function renderMockChart(host, user) {
+    if (!host) return;
+    let mocks = [];
+    try { mocks = ((await Backend.listMockResults()) || []).filter(m => !m.custom); } catch { mocks = []; }
+    if (!mocks.length) { host.innerHTML = ''; return; }
+    const series = mocks.slice().reverse();          // oldest → newest
+    const shown = series.slice(-14);                 // last 14 mocks
+    const W = 720, H = 220, PAD = 34, bw = (W - PAD * 2) / Math.max(shown.length, 6);
+    const y = p => H - 30 - (p / 100) * (H - 60);
+    const bandCol = p => p >= 70 ? '#34d399' : p >= 50 ? '#e8a33d' : '#e05263';
+    const bars = shown.map((m, i) => {
+      const x = PAD + i * bw + bw * 0.18, w = bw * 0.64, h = (H - 30) - y(m.percent);
+      return `<rect x="${x}" y="${y(m.percent)}" width="${w}" height="${Math.max(2, h)}" rx="4"
+        fill="url(#mg${m.percent >= 70 ? 'G' : m.percent >= 50 ? 'A' : 'R'})" opacity="0.92">
+        <title>Mock ${i + 1 + Math.max(0, series.length - 14)} · ${m.percent}% · ${new Date(m.date).toLocaleDateString()}${m.xpGained ? ' · +' + m.xpGained + ' XP' : ''}</title></rect>` +
+        `<text x="${x + w / 2}" y="${y(m.percent) - 6}" text-anchor="middle" font-size="10" fill="${bandCol(m.percent)}">${m.percent}</text>`;
+    }).join('');
+    const pts = shown.map((m, i) => `${PAD + i * bw + bw / 2},${y(m.percent)}`).join(' ');
+    const avg = Math.round(shown.reduce((s, m) => s + m.percent, 0) / shown.length);
+    const best = Math.max(...shown.map(m => m.percent));
+    const xpTotal = series.reduce((s, m) => s + (m.xpGained || 0), 0);
+    host.innerHTML = `
+      <div class="card mock-chart-card" data-animate>
+        <div class="mock-chart-head">
+          <h3 class="card-title">Mock exam trajectory</h3>
+          <div class="mock-chart-stats">
+            <span><strong>${series.length}</strong> mocks</span>
+            <span>avg <strong class="${avg >= 70 ? 'good' : ''}">${avg}%</strong></span>
+            <span>best <strong class="good">${best}%</strong></span>
+            ${xpTotal ? `<span><strong class="dev-cost">+${xpTotal}</strong> XP earned</span>` : ''}
+          </div>
+        </div>
+        <svg class="mock-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Mock scores over time">
+          <defs>
+            <linearGradient id="mgG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#34d399"/><stop offset="1" stop-color="#0d9468"/></linearGradient>
+            <linearGradient id="mgA" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f4c95d"/><stop offset="1" stop-color="#b57b1e"/></linearGradient>
+            <linearGradient id="mgR" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#e05263"/><stop offset="1" stop-color="#8f2836"/></linearGradient>
+            <filter id="mglow"><feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+          </defs>
+          ${[0, 25, 50, 75, 100].map(g => `<line x1="${PAD}" y1="${y(g)}" x2="${W - PAD}" y2="${y(g)}" stroke="rgba(255,255,255,.05)"/>` +
+            `<text x="${PAD - 8}" y="${y(g) + 3}" text-anchor="end" font-size="9" fill="#5b6478">${g}</text>`).join('')}
+          <line x1="${PAD}" y1="${y(70)}" x2="${W - PAD}" y2="${y(70)}" stroke="#34d399" stroke-dasharray="6 5" opacity=".55"/>
+          <text x="${W - PAD}" y="${y(70) - 5}" text-anchor="end" font-size="9" fill="#34d399">PASS 70%</text>
+          ${bars}
+          ${shown.length > 1 ? `<polyline points="${pts}" fill="none" stroke="#7dd3fc" stroke-width="2" filter="url(#mglow)" opacity=".9"/>` : ''}
+          ${shown.map((m, i) => `<circle cx="${PAD + i * bw + bw / 2}" cy="${y(m.percent)}" r="3" fill="#7dd3fc"/>`).join('')}
+        </svg>
+        <p class="tiny muted">Every completed mock also pays into your Total XP (10 XP per correct answer). Designed papers are charted separately in the simulator.</p>
+      </div>`;
+  }
+
+  /* ================= My mistakes (per-mock AI decks + weakness log) ================= */
+
+  async function renderMistakeDeck(deckId, user) {
+    if (!canUse(user, 'simulator')) return renderLocked('My mistakes');
+    await Flashcards.renderDeck(view, deckId, user);
+  }
+
+  async function renderMistakes(user) {
+    if (!canUse(user, 'simulator')) return renderLocked('My mistakes');
+    view.innerHTML = `
+      <section class="page">
+        <header data-animate>
+          <p class="kicker">MY MISTAKES · TURN LOSSES INTO MARKS</p>
+          <h1 class="page-title">Mistake lab</h1>
+          <p class="muted">Everything you've got wrong, weaponised: per-mock AI flashcard decks, your weakness map, and a
+            study checklist that feeds straight into the next mock's design.</p>
+        </header>
+        <div id="mk-body"><p class="muted">Analysing your history…</p></div>
+      </section>`;
+    FX.viewIn(view);
+
+    let mocks = [], decks = [], hist = null;
+    try { mocks = ((await Backend.listMockResults()) || []); } catch { mocks = []; }
+    try { decks = ((await Backend.listUserDecks()) || []).filter(d => /^deck-ai-/.test(d.id)); } catch { decks = []; }
+    try { hist = await Simulator.loadHistory(); } catch { hist = { bucketAgg: {} }; }
+    const studied = Object.assign({}, user.prefs?.studiedAreas || {});
+
+    // wrong answers per topic across every mock (raw counts)
+    const wrongBy = {};
+    let totalWrong = 0, totalScored = 0;
+    mocks.forEach(m => (m.detail || []).forEach(d => {
+      if (d.excluded) return;
+      totalScored++;
+      if (!d.isCorrect && d.chosen != null) { totalWrong++; const b = d.bucket || '(other)'; wrongBy[b] = (wrongBy[b] || 0) + 1; }
+    }));
+    const wrongTop = Object.entries(wrongBy).map(([label, n]) => ({ label, n })).sort((a, b) => b.n - a.n).slice(0, 10);
+    const maxWrong = Math.max(...wrongTop.map(w => w.n), 1);
+
+    // weakness list: decayed accuracy < 70% with evidence
+    const weak = Object.entries(hist.bucketAgg || {})
+      .filter(([, a]) => (a.rawSeen || 0) >= 3 && a.seen > 0 && (a.correct / a.seen) < 0.7)
+      .map(([label, a]) => ({ label, pct: Math.round((a.correct / a.seen) * 100) }))
+      .sort((x, y) => x.pct - y.pct);
+
+    const cardsTotal = decks.reduce((s, d) => s + (d.cardCount || d.content?.cards?.length || 0), 0);
+    const body = view.querySelector('#mk-body');
+    body.innerHTML = `
+      <div class="dev-users-stats mk-stats" data-animate>
+        <div><strong>${totalWrong}</strong><span>Mistakes logged</span></div>
+        <div><strong>${totalScored ? Math.round(((totalScored - totalWrong) / totalScored) * 100) + '%' : '—'}</strong><span>Overall accuracy</span></div>
+        <div><strong>${decks.length}</strong><span>AI mistake decks</span></div>
+        <div><strong>${weak.length}</strong><span>Weak areas open</span></div>
+      </div>
+
+      ${weak.length ? `
+      <div class="card" data-animate>
+        <h3 class="card-title">🎯 Weakness checklist</h3>
+        <p class="muted">Tick an area once you've studied it — the next mock's weakness screen uses this to decide
+          whether to test you there again.</p>
+        <div class="mk-weak-list">${weak.map(w => `
+          <label class="mk-weak-row ${studied[w.label] ? 'is-studied' : ''}">
+            <input type="checkbox" data-studied="${esc(w.label)}" ${studied[w.label] ? 'checked' : ''}>
+            <span class="mk-weak-name">${esc(w.label)}</span>
+            <span class="mk-weak-pct ${w.pct < 50 ? 'bad' : ''}">${w.pct}%</span>
+            <span class="mk-weak-state">${studied[w.label] ? '✓ studied' : 'to study'}</span>
+          </label>`).join('')}</div>
+        <p class="save-note" id="mk-note" hidden>Saved ✓</p>
+      </div>` : ''}
+
+      ${wrongTop.length ? `
+      <div class="card" data-animate>
+        <h3 class="card-title">Where the marks leaked</h3>
+        <div class="mk-bars">${wrongTop.map(w => `
+          <div class="mk-bar-row">
+            <span class="mk-bar-label">${esc(w.label)}</span>
+            <div class="mk-bar"><span style="width:${Math.round((w.n / maxWrong) * 100)}%"></span></div>
+            <span class="mk-bar-n">${w.n}</span>
+          </div>`).join('')}</div>
+      </div>` : ''}
+
+      <div class="card" data-animate>
+        <h3 class="card-title">🃏 AI mistake decks — one per paper</h3>
+        <p class="muted">Cards the AI wrote from YOUR wrong answers, kept separate per mock so you can revisit each sitting.
+          They run in the full spaced-repetition engine.</p>
+        ${decks.length ? `<div class="mk-decks">${decks.map(d => `
+          <a class="mk-deck" href="#/mistakes/deck/${encodeURIComponent(d.id)}">
+            <span class="mk-deck-ico">🃏</span>
+            <span class="mk-deck-title">${esc(d.title)}</span>
+            <span class="mk-deck-meta">${d.cardCount || d.content?.cards?.length || 0} cards</span>
+          </a>`).join('')}</div>`
+        : `<p class="muted">No decks yet — finish a mock, then use “Turn mistakes into flashcards” on the results page.</p>`}
+      </div>`;
+
+    body.querySelectorAll('[data-studied]').forEach(cb => cb.addEventListener('change', async () => {
+      const label = cb.dataset.studied;
+      if (cb.checked) studied[label] = new Date().toISOString().slice(0, 10); else delete studied[label];
+      const row = cb.closest('.mk-weak-row');
+      row.classList.toggle('is-studied', cb.checked);
+      row.querySelector('.mk-weak-state').textContent = cb.checked ? '✓ studied' : 'to study';
+      try {
+        const prefs = Object.assign({}, (await Backend.currentUser())?.prefs, { studiedAreas: studied });
+        await Backend.updateProfile({ prefs });
+        const note = body.querySelector('#mk-note'); if (note) { note.hidden = false; setTimeout(() => note.hidden = true, 1500); }
+      } catch (e) { alert('Could not save: ' + (e.message || e)); }
+    }));
   }
 
   /* ================= peer review (open to every user) ================= */
@@ -1393,38 +1612,17 @@
 
   /* ================= flashcards & simulator (two-key access) ================= */
 
-  // TWO KEYS turn these tabs on:
-  //   1. the developer's GRANT (featureFlags — trigger-protected, only the
-  //      dev can set it). Without it the toggle isn't even visible.
-  //   2. the user's own ACTIVATION (prefs — flipped in Profile).
-  // The activation self-expires after 5 minutes of not using the tab
-  // (idle sweep below), so each session starts from Profile.
-  const canUse = (user, flag) => devOnly(user) || (!!user?.featureFlags?.[flag] && !!user?.prefs?.[flag]);
+  // TWO KEYS turn these tabs on, plus payment:
+  //   1. the developer's GRANT (featureFlags — trigger-protected).
+  //      Without it the toggle isn't even visible in Profile.
+  //   2. the user's own ACTIVATION (prefs — flipped once in Profile and it
+  //      STAYS on; no expiry).
+  // Unpaid users (no `paid` flag) don't get these tabs at all.
+  const isPaid = user => devOnly(user) || !!user?.featureFlags?.paid;
+  const canUse = (user, flag) => devOnly(user) || (isPaid(user) && !!user?.featureFlags?.[flag] && !!user?.prefs?.[flag]);
   const isGranted = (user, flag) => devOnly(user) || !!user?.featureFlags?.[flag];
-
-  /* ---- 5-minute inactivity auto-disable ---- */
-  const IDLE_MS = 5 * 60 * 1000;
-  const lastUseKey = f => 'aureum.lastuse.' + f;
-  const touchUse = f => { try { localStorage.setItem(lastUseKey(f), String(Date.now())); } catch { /* ignore */ } };
-  const lastUse = f => { try { return Number(localStorage.getItem(lastUseKey(f))) || 0; } catch { return 0; } };
-  const routeFlag = () => location.hash.startsWith('#/simulator') ? 'simulator'
-    : location.hash.startsWith('#/cards') ? 'flashcards' : null;
-  // any interaction while ON the tab keeps it alive (incl. mid-mock)
-  ['click', 'keydown', 'pointerdown'].forEach(ev =>
-    document.addEventListener(ev, () => { const f = routeFlag(); if (f) touchUse(f); }, { passive: true, capture: true }));
-  async function idleSweep() {
-    let user; try { user = await Backend.currentUser(); } catch { return; }
-    if (!user || devOnly(user)) return;
-    for (const f of ['simulator', 'flashcards']) {
-      // only sweep while the user is AWAY from the tab — never yank it mid-use
-      if (user.prefs?.[f] && routeFlag() !== f && Date.now() - (lastUse(f) || 0) > IDLE_MS) {
-        try { await Backend.setPref(f, false); } catch { continue; }
-        user = await Backend.currentUser().catch(() => user);
-        renderNav(user);
-      }
-    }
-  }
-  setInterval(idleSweep, 60 * 1000);
+  const touchUse = () => {};   // retained no-op (activation no longer expires)
+  const routeFlag = () => null;
   async function renderReview(user) { await ReviewQueue.renderRun(view, user); }
   function renderLocked(title) {
     view.innerHTML = `
