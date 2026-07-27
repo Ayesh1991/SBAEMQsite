@@ -22,7 +22,9 @@
     { re: /^#\/auth$/, fn: renderAuth, public: true },
     { re: /^#\/dashboard$/, fn: renderDashboard },
     { re: /^#\/library$/, fn: renderLibrary },
+    { re: /^#\/library\/notes$/, fn: renderLibraryNotes },
     { re: /^#\/library\/essay$/, fn: (u) => Essay.renderList(view, u) },
+    { re: /^#\/library\/essay\/writing$/, fn: (u) => Essay.renderWritingLab(view, u) },
     { re: /^#\/library\/essay\/how$/, fn: (u) => Essay.renderHow(view, u) },
     { re: /^#\/library\/essay\/feedback\/([^/]+)$/, fn: (code, u) => Essay.renderFeedback(view, code, u) },
     { re: /^#\/library\/essay\/([^/]+)\/write\/(\d+)$/, fn: (id, qi, u) => Essay.renderWrite(view, id, qi, u) },
@@ -47,15 +49,34 @@
   ];
   const devOnly = user => !!(user && (user.email === cfg.developer.email || sessionStorage.getItem('aureum-dev') === '1'));
 
+  // EGRESS: currentUser() reads the profiles row from Supabase on every
+  // hashchange — dozens of reads while a user clicks around. Cache it in
+  // memory for a few seconds so rapid navigation costs one read, not ten.
+  // Invalidated immediately whenever we change the profile ourselves.
+  let _userCache = null, _userCacheAt = 0;
+  const USER_TTL = 8000;
+  async function cachedUser() {
+    if (_userCache && Date.now() - _userCacheAt < USER_TTL) return _userCache;
+    _userCache = await Backend.currentUser();
+    _userCacheAt = Date.now();
+    return _userCache;
+  }
+  function invalidateUser() { _userCache = null; }
+
+  // remember scroll position per route so returning to a tab lands where you left
+  const _scroll = {};
+  let _lastHash = location.hash;
+
   async function route() {
     Quiz.destroy();
+    if (_lastHash) _scroll[_lastHash] = window.scrollY;   // save the outgoing page's position
     const hash = location.hash || '#/';
     // Supabase recovery links land with tokens in the hash — let the client
     // consume them and wait for the PASSWORD_RECOVERY event (below).
     if (/access_token=|type=recovery/.test(hash)) { renderResetPassword(); return; }
     const match = routes.find(r => r.re.test(hash));
     if (!match) { location.hash = '#/'; return; }
-    const user = await Backend.currentUser();
+    const user = await cachedUser();
     if (!match.public && !user) { location.hash = '#/auth'; return; }
     // registration approval gate: pending/denied accounts see only a notice
     if (user && !devOnly(user) && user.status && user.status !== 'approved' && !match.public) {
@@ -66,9 +87,10 @@
     ThreeBG.setMood(match.fn === renderLanding ? 'hero' : 'interior');
     { const rf = routeFlag?.(); if (rf) touchUse(rf); }   // visiting the tab counts as using it
     window.__aureumUser = user;
+    if (user) applyPrefsAppearance(user);       // theme + energy-saving from prefs
     renderNav(user);
     view.className = 'view';
-    window.scrollTo(0, 0);
+    _lastHash = hash;
     try {
       const args = (hash.match(match.re) || []).slice(1).map(decodeURIComponent);
       await match.fn(...args, user);
@@ -79,6 +101,32 @@
         <a class="btn btn-primary" href="#/dashboard">Back to dashboard</a></section>`;
     }
     FX.viewIn(view);
+    // restore the scroll position we saved for this route (else top)
+    const y = _scroll[hash] || 0;
+    requestAnimationFrame(() => window.scrollTo(0, y));
+  }
+
+  /* ================= appearance: theme + energy saving ================= */
+
+  const THEMES = ['dark', 'light', 'night'];
+  function applyTheme(theme) {
+    theme = THEMES.includes(theme) ? theme : 'dark';
+    document.documentElement.setAttribute('data-theme', theme);
+    try { localStorage.setItem('aureum.theme', theme); } catch {}
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', theme === 'light' ? '#f4f6fb' : theme === 'night' ? '#05060c' : '#0a0c18');
+  }
+  function applyEnergySaving(on) {
+    try { localStorage.setItem('aureum.energy', on ? '1' : '0'); } catch {}
+    document.documentElement.classList.toggle('energy-saving', !!on);
+    try { ThreeBG.setEnergySaving?.(on); } catch {}
+  }
+  // apply the user's stored prefs (cloud) once known; localStorage handled the instant boot
+  let _apChecked = false;
+  function applyPrefsAppearance(user) {
+    if (_apChecked) return; _apChecked = true;
+    if (user?.prefs?.theme) applyTheme(user.prefs.theme);
+    if (user?.prefs?.energySaving != null) applyEnergySaving(user.prefs.energySaving);
   }
 
   /* ================= nav ================= */
@@ -441,6 +489,8 @@
     try { publishedCount = (await Data.publishedPapers()).length; } catch { /* decorative */ }
     let reviewDue = [];
     try { reviewDue = await ReviewQueue.dueItems(); } catch { /* optional */ }
+    let writing = null;
+    try { if (typeof Essay !== 'undefined' && Essay.writingSummary) { const fb = (await Backend.listEssayFeedback()) || []; if (fb.length) writing = Essay.writingSummary(fb); } } catch { /* optional */ }
     const ready = Progression.readiness(progress, publishedCount);
     const stats = Progression.summarise(progress);
     const tier = stats.tier;
@@ -512,6 +562,15 @@
                 <p class="muted">Nothing due. Wrong answers from any set are scheduled back here automatically — tomorrow first, then at growing intervals.</p>
               </div>`}
           </div>
+          ${writing ? `
+          <div class="card writing-card" data-animate>
+            <h3 class="card-title">✍ Writing skills</h3>
+            <div class="review-cta">
+              <div class="writing-badge"><strong>${writing.avg != null ? writing.avg + '%' : '—'}</strong><span>essay avg · ${writing.count} marked</span></div>
+              <p class="muted">${writing.top ? `Your most-flagged writing weakness is <strong>${esc(writing.top.label)}</strong> (${writing.top.count}× across your papers).` : 'Upload marked essays to see your writing patterns.'} ${writing.trend > 1 ? '📈 Trending up.' : writing.trend < -1 ? '📉 Slipping lately.' : ''}</p>
+              <a class="btn btn-gold" href="#/library/essay/writing">Open the writing lab →</a>
+            </div>
+          </div>` : ''}
         </div>
 
         <div class="dash-grid">
@@ -578,6 +637,7 @@
     return `<div class="lib-subnav" data-animate>
       ${tab('bank', '#/library', 'Question bank')}
       ${tab('essay', '#/library/essay', 'Essay')}
+      ${tab('notes', '#/library/notes', 'Notes')}
       ${fcOn ? tab('cards', '#/cards', 'Flashcards') : ''}
       ${simOn ? tab('mistakes', '#/mistakes', 'My mistakes') : ''}
     </div>`;
@@ -682,6 +742,106 @@
         gsap.fromTo(results.querySelectorAll('.paper-card'), { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.35, stagger: 0.03, ease: 'power2.out', clearProps: 'transform' });
       }
     });
+  }
+
+  /* ---- Library → Notes: user-designed study notes with tags + hooks ---- */
+  async function renderLibraryNotes(user) {
+    window.__aureumUser = user;
+    view.innerHTML = libraryShell('notes', `
+      <header data-animate>
+        <p class="kicker">STUDY NOTES</p>
+        <h1 class="page-title">Notes, tags &amp; hooks</h1>
+        <p class="muted">A memory hook is only useful pinned to the concept it hangs on. Write your own notes, tag them with the topics that give them meaning, and find them again by searching those tags.</p>
+      </header>
+      <div id="notes-wrap"><p class="muted">Loading your notes…</p></div>`, user);
+
+    const [notes, tags] = await Promise.all([
+      Backend.listUserNotes ? Backend.listUserNotes().catch(() => []) : Promise.resolve([]),
+      Backend.listQuestionTags ? Backend.listQuestionTags().catch(() => []) : Promise.resolve([])
+    ]);
+    // the AI taxonomy — distinct topic tags, offered as suggestions so a user's
+    // notes align with the same vocabulary the question bank is tagged with.
+    const tagPool = [...new Set(tags.flatMap(t => [t.topic, ...(t.tags || [])]).filter(Boolean).map(s => String(s).trim()))].sort((a, b) => a.localeCompare(b)).slice(0, 60);
+
+    const wrap = view.querySelector('#notes-wrap');
+    let editing = null, search = '';
+    const esc2 = esc;
+
+    function composer() {
+      const n = editing || {};
+      return `
+        <div class="card note-composer" data-animate>
+          <h3>${editing ? 'Edit note' : 'New note'}</h3>
+          <input type="text" id="nc-title" class="nc-input" placeholder="Title — the concept, e.g. 'Magnesium sulphate in severe pre-eclampsia'" value="${esc2(n.title || '')}">
+          <textarea id="nc-body" class="nc-input" placeholder="Your explanation, the facts you keep forgetting, the reasoning…">${esc2(n.body || '')}</textarea>
+          <input type="text" id="nc-hook" class="nc-input" placeholder="💡 Memory hook / mnemonic (optional)" value="${esc2(n.hook || '')}">
+          <input type="text" id="nc-tags" class="nc-input" placeholder="Tags, comma-separated — the topics this note belongs to" value="${esc2((n.tags || []).join(', '))}">
+          ${tagPool.length ? `<div class="note-tagsug">${tagPool.slice(0, 24).map(t => `<button class="tagsug" data-tag="${esc2(t)}">${esc2(t)}</button>`).join('')}</div>` : ''}
+          <div class="nc-actions">
+            <button class="btn btn-gold" id="nc-save">${editing ? 'Save changes' : 'Save note'}</button>
+            ${editing ? '<button class="btn btn-ghost" id="nc-cancel">Cancel</button>' : ''}
+          </div>
+        </div>`;
+    }
+    function noteCard(n) {
+      return `<article class="card note-item" data-nid="${esc2(n.id)}">
+        <div class="note-item-head"><h4>${esc2(n.title || 'Untitled')}</h4>
+          <span class="note-item-actions"><button class="link" data-edit="${esc2(n.id)}">Edit</button> · <button class="link" data-del="${esc2(n.id)}">Delete</button></span></div>
+        ${n.body ? `<p class="note-item-body">${esc2(n.body)}</p>` : ''}
+        ${n.hook ? `<p class="note-item-hook">💡 ${esc2(n.hook)}</p>` : ''}
+        ${(n.tags || []).length ? `<div class="note-item-tags">${n.tags.map(t => `<span class="note-tag">${esc2(t)}</span>`).join('')}</div>` : ''}
+      </article>`;
+    }
+    function matches(n) {
+      if (!search) return true;
+      return [n.title, n.body, n.hook, (n.tags || []).join(' ')].join(' ').toLowerCase().includes(search);
+    }
+    function draw() {
+      const shown = notes.filter(matches);
+      wrap.innerHTML = `
+        ${composer()}
+        <div class="notes-toolbar" data-animate>
+          <input type="search" id="notes-search" class="studio-search" placeholder="Search notes by word, hook or tag…" value="${esc2(search)}" autocomplete="off">
+          <span class="muted">${notes.length} note${notes.length === 1 ? '' : 's'}</span>
+        </div>
+        <div class="notes-grid" data-animate>${shown.length ? shown.map(noteCard).join('') : `<p class="muted studio-empty">${notes.length ? 'No notes match that search.' : 'No notes yet — write your first above.'}</p>`}</div>`;
+      wire();
+    }
+    function wire() {
+      const g = (id) => wrap.querySelector(id);
+      wrap.querySelectorAll('.tagsug').forEach(b => b.addEventListener('click', () => {
+        const input = g('#nc-tags'); const cur = input.value.split(',').map(s => s.trim()).filter(Boolean);
+        if (!cur.includes(b.dataset.tag)) cur.push(b.dataset.tag);
+        input.value = cur.join(', ');
+      }));
+      g('#nc-save')?.addEventListener('click', async () => {
+        const note = {
+          id: editing?.id, title: g('#nc-title').value.trim(), body: g('#nc-body').value.trim(),
+          hook: g('#nc-hook').value.trim(), tags: g('#nc-tags').value.split(',').map(s => s.trim()).filter(Boolean)
+        };
+        if (!note.title && !note.body) { g('#nc-title').focus(); return; }
+        const btn = g('#nc-save'); btn.disabled = true; btn.textContent = 'Saving…';
+        try {
+          const saved = await Backend.saveUserNote(note);
+          const row = { id: saved.id, title: saved.title, body: saved.body, hook: saved.hook, tags: saved.tags || note.tags, question_key: saved.question_key };
+          if (editing) { const i = notes.findIndex(x => x.id === editing.id); if (i >= 0) notes[i] = row; editing = null; }
+          else notes.unshift(row);
+          draw();
+        } catch (e) { btn.disabled = false; btn.textContent = 'Save note'; alert('Could not save: ' + (e.message || e)); }
+      });
+      g('#nc-cancel')?.addEventListener('click', () => { editing = null; draw(); });
+      g('#notes-search')?.addEventListener('input', e => { search = e.target.value.trim().toLowerCase(); const grid = wrap.querySelector('.notes-grid'); const shown = notes.filter(matches); grid.innerHTML = shown.length ? shown.map(noteCard).join('') : `<p class="muted studio-empty">No notes match that search.</p>`; bindItems(); });
+      bindItems();
+    }
+    function bindItems() {
+      wrap.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => { editing = notes.find(n => n.id === b.dataset.edit) || null; draw(); window.scrollTo({ top: 0, behavior: 'smooth' }); }));
+      wrap.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => {
+        const n = notes.find(x => x.id === b.dataset.del); if (!n || !confirm('Delete this note?')) return;
+        try { await Backend.deleteUserNote(n.id); } catch {}
+        const i = notes.indexOf(n); if (i >= 0) notes.splice(i, 1); draw();
+      }));
+    }
+    draw();
   }
 
   function chapterCard(cat, paperN, topicN, byTopic, pStats) {
@@ -1061,6 +1221,24 @@
           </form>
         </div>
 
+        <div class="card" data-animate>
+          <h3 class="card-title">Appearance</h3>
+          <p class="muted">Choose how AUREUM looks. Your choice follows your account across devices.</p>
+          <div class="theme-picker" id="theme-picker">
+            ${[['dark', '🌙 Dark', 'The signature deep-navy look'], ['light', '☀️ Light', 'Bright, high-contrast daytime'], ['night', '🌌 Night', 'Dimmed OLED black for late study']].map(([id, label, desc]) => `
+              <button class="theme-opt ${(user.prefs?.theme || localStorage.getItem('aureum.theme') || 'dark') === id ? 'active' : ''}" data-theme-opt="${id}">
+                <span class="theme-swatch theme-sw-${id}"></span>
+                <span class="theme-opt-label">${label}</span>
+                <span class="theme-opt-desc muted tiny">${desc}</span>
+              </button>`).join('')}
+          </div>
+          <label class="pref-toggle" style="margin-top:14px">
+            <span><strong>🔋 Energy-saving mode</strong><br><span class="muted tiny">Stops the animated background and heavy motion to save battery. Core features and layout are unchanged.</span></span>
+            <label class="dev-flag"><input type="checkbox" id="energy-toggle" ${(user.prefs?.energySaving) ? 'checked' : ''}><span></span></label>
+          </label>
+          <p class="save-note" id="appearance-note" hidden>Saved ✓</p>
+        </div>
+
         <div class="card danger-zone" data-animate>
           <h3 class="card-title">Data</h3>
           <p class="muted">${Backend.mode === 'cloud' ? 'Synced to your account across devices.' : 'Stored in this browser.'}</p>
@@ -1093,6 +1271,25 @@
       try { await Backend.updatePassword(f.get('p1')); e.target.reset(); note.hidden = false; setTimeout(() => note.hidden = true, 2500); }
       catch (err) { errBox.textContent = err.message; errBox.hidden = false; }
       btn.disabled = false;
+    });
+
+    async function saveAppearancePref(patch) {
+      const note = view.querySelector('#appearance-note');
+      try {
+        const prefs = Object.assign({}, (await Backend.currentUser())?.prefs, patch);
+        await Backend.updateProfile({ prefs }); invalidateUser();
+        if (note) { note.hidden = false; setTimeout(() => note.hidden = true, 1500); }
+      } catch (e) { /* localStorage already holds it for this device */ }
+    }
+    view.querySelector('#theme-picker')?.addEventListener('click', e => {
+      const btn = e.target.closest('[data-theme-opt]'); if (!btn) return;
+      view.querySelectorAll('.theme-opt').forEach(b => b.classList.toggle('active', b === btn));
+      applyTheme(btn.dataset.themeOpt);
+      saveAppearancePref({ theme: btn.dataset.themeOpt });
+    });
+    view.querySelector('#energy-toggle')?.addEventListener('change', e => {
+      applyEnergySaving(e.target.checked);
+      saveAppearancePref({ energySaving: e.target.checked });
     });
 
     view.querySelector('#position-picker').addEventListener('click', async e => {
@@ -1456,118 +1653,229 @@
     }
   }
 
-  /* ================= studio (private AI gallery) ================= */
+  /* ================= studio — mission control ================= */
 
   async function renderStudio(user) {
     view.innerHTML = `
       <section class="page">
         <header data-animate>
-          <p class="kicker">STUDIO · PRIVATE TO YOU</p>
-          <h1 class="page-title">Your AI studio</h1>
-          <p class="muted">Every conversation, chart, mind map, infographic and note you've created — grouped by paper, private to your account.</p>
+          <p class="kicker">STUDIO · MISSION CONTROL</p>
+          <h1 class="page-title">Your studio</h1>
+          <p class="muted">Your private workshop and the shared tea room — creations, notes and conversations, all in one console.</p>
         </header>
-        <div class="studio-stats" id="studio-stats" data-animate hidden></div>
-        <div class="studio-toolbar" data-animate>
-          <div class="studio-filters" id="studio-filters"></div>
-          <input type="search" id="studio-search" class="studio-search" placeholder="Search your studio…" autocomplete="off">
-        </div>
-        <div id="studio-body"><p class="muted">Loading your studio…</p></div>
+        <div class="studio-console" id="studio-console" data-animate></div>
+        <div id="studio-panel" data-animate><p class="muted">Loading…</p></div>
       </section>`;
 
-    const [items, notes, papers] = await Promise.all([
+    const [items, notes, papers, discussions] = await Promise.all([
       Backend.listAiItems ? Backend.listAiItems().catch(() => []) : Promise.resolve([]),
       Backend.listAllNotes ? Backend.listAllNotes().catch(() => []) : Promise.resolve([]),
-      Data.publishedPapers().catch(() => [])
+      Data.publishedPapers().catch(() => []),
+      Backend.listDiscussions ? Backend.listDiscussions().catch(() => []) : Promise.resolve([])
     ]);
     const titleOf = {}; papers.forEach(p => titleOf[p.id] = p.title);
 
-    const records = [];
-    items.forEach(it => records.push({
+    // ---- creations (AI items) ----
+    const creations = [];
+    items.forEach(it => creations.push({
       kind: it.kind, when: it.created ? new Date(it.created).getTime() : 0,
       paper: it.paperTitle || titleOf[String(it.questionKey || '').split(':')[0]] || 'Unfiled',
       qnum: String(it.questionKey || '').split(':')[2] || '', ai: it,
       del: () => Backend.deleteAiItem(it.id)
     }));
-    notes.forEach(n => {
+    creations.sort((a, b) => b.when - a.when);
+    creations.forEach((r, i) => r._i = i);
+
+    // ---- notes ----
+    const noteList = notes.map(n => {
       const [pid, , num] = String(n.question_key).split(':');
-      records.push({ kind: 'note', when: 0, paper: titleOf[pid] || pid || 'Unfiled', qnum: num || '', note: n.body, del: () => Backend.saveNote(n.question_key, '') });
-    });
-    records.sort((a, b) => b.when - a.when);
-    records.forEach((r, i) => r._i = i);
+      return { key: n.question_key, paper: titleOf[pid] || pid || 'Unfiled', qnum: num || '', body: n.body };
+    }).filter(n => n.body);
 
-    // summary band: what's in the studio at a glance
-    const statsEl = view.querySelector('#studio-stats');
-    if (statsEl && records.length) {
-      const paperCount = new Set(records.map(r => r.paper)).size;
-      const latest = records.find(r => r.when);
-      statsEl.hidden = false;
-      statsEl.innerHTML = `
-        <div class="studio-stat"><strong>${records.length}</strong><span>Saved items</span></div>
-        <div class="studio-stat"><strong>${records.filter(r => r.kind === 'chat').length}</strong><span>Conversations</span></div>
-        <div class="studio-stat"><strong>${records.filter(r => r.kind === 'note').length}</strong><span>Notes</span></div>
-        <div class="studio-stat"><strong>${paperCount}</strong><span>Papers covered</span></div>
-        ${latest ? `<div class="studio-stat"><strong>${esc(new Date(latest.when).toLocaleDateString())}</strong><span>Last saved</span></div>` : ''}`;
+    const panel = view.querySelector('#studio-panel');
+    const consoleEl = view.querySelector('#studio-console');
+    const tiles = [
+      { id: 'tearoom', ico: '☕', title: 'Tea room', sub: 'Discuss with friends', count: discussions.length, accent: 'linear-gradient(135deg,#f4c95d,#e8a33d)' },
+      { id: 'creations', ico: '✨', title: 'AI creations', sub: 'Charts · mind maps · chats', count: creations.length, accent: 'linear-gradient(135deg,#7dd3fc,#a78bfa)' },
+      { id: 'notes', ico: '🗒', title: 'My notes', sub: 'Quick jottings by question', count: noteList.length, accent: 'linear-gradient(135deg,#5eead4,#34d399)' }
+    ];
+    let active = 'tearoom';
+    function drawConsole() {
+      consoleEl.innerHTML = tiles.map(t => `
+        <button class="studio-tile ${active === t.id ? 'active' : ''}" data-tile="${t.id}" style="--tile-accent:${t.accent}">
+          <span class="studio-tile-ico">${t.ico}</span>
+          <span class="studio-tile-txt"><strong>${t.title}</strong><span>${t.sub}</span></span>
+          <span class="studio-tile-count">${t.count}</span>
+        </button>`).join('');
+      consoleEl.querySelectorAll('[data-tile]').forEach(b => b.addEventListener('click', () => { active = b.dataset.tile; drawConsole(); drawPanel(); }));
+    }
+    function drawPanel() {
+      if (active === 'tearoom') return drawTearoom();
+      if (active === 'notes') return drawNotes();
+      return drawCreations();
     }
 
-    const label = k => k === 'note' ? 'Note' : (AI.kindLabel ? AI.kindLabel(k) : k);
-    const icon = k => k === 'note' ? '🗒' : (AI.kindIcon ? AI.kindIcon(k) : '✨');
-    const live = () => records.filter(r => !r._deleted);
-    const present = () => [...new Set(live().map(r => r.kind))];
-
-    let filter = 'all', search = '';
-    const filtersEl = view.querySelector('#studio-filters');
-    const bodyEl = view.querySelector('#studio-body');
-    const searchEl = view.querySelector('#studio-search');
-
-    function drawFilters() {
-      const L = live();
-      filtersEl.innerHTML = `<button class="filter-chip ${filter === 'all' ? 'active' : ''}" data-k="all">All <span>${L.length}</span></button>` +
-        present().map(k => `<button class="filter-chip ${filter === k ? 'active' : ''}" data-k="${k}">${icon(k)} ${esc(label(k))} <span>${L.filter(r => r.kind === k).length}</span></button>`).join('');
-      filtersEl.querySelectorAll('.filter-chip').forEach(b => b.addEventListener('click', () => { filter = b.dataset.k; drawFilters(); draw(); }));
-    }
-    function matches(r) {
-      if (r._deleted) return false;
-      if (filter !== 'all' && r.kind !== filter) return false;
-      if (!search) return true;
-      return [r.paper, r.qnum, r.note || '', r.ai?.title || '', r.ai?.content || ''].join(' ').toLowerCase().includes(search);
-    }
-    function cardHTML(r) {
-      const head = `
-        <div class="studio-card-head">
-          <span class="studio-card-kind">${icon(r.kind)} ${esc(label(r.kind))}${r.qnum ? ' · Q' + esc(r.qnum) : ''}</span>
-          ${r.when ? `<span class="studio-card-when">${esc(new Date(r.when).toLocaleDateString())}</span>` : ''}
-          <button class="studio-card-del" data-rid="${r._i}" title="Delete">🗑</button>
-        </div>`;
-      const body = r.kind === 'note'
-        ? `<div class="studio-card-body"><div class="note-shown">🗒 <span>${esc(r.note)}</span></div></div>`
-        : `<div class="studio-card-body" data-render="${r._i}"></div>`;
-      return `<article class="studio-card ${r.kind === 'chat' ? 'is-chat' : ''}">${head}${body}</article>`;
-    }
-    function draw() {
-      const shown = records.filter(matches);
-      if (!shown.length) {
-        bodyEl.innerHTML = `<p class="muted studio-empty">${live().length ? 'Nothing matches that filter.' : 'Your studio is empty. Open a question in Study mode, tap ✨ Explore with AI, and every chat, chart, mind map and summary you make is saved here for next time.'}</p>`;
-        return;
+    /* ---- panel: AI creations ---- */
+    const label = k => AI.kindLabel ? AI.kindLabel(k) : k;
+    const icon = k => AI.kindIcon ? AI.kindIcon(k) : '✨';
+    function drawCreations() {
+      const live = () => creations.filter(r => !r._deleted);
+      const present = () => [...new Set(live().map(r => r.kind))];
+      let filter = 'all', search = '';
+      panel.innerHTML = `
+        <div class="studio-toolbar">
+          <div class="studio-filters" id="studio-filters"></div>
+          <input type="search" id="studio-search" class="studio-search" placeholder="Search your creations…" autocomplete="off">
+        </div>
+        <div id="studio-body"></div>`;
+      const filtersEl = panel.querySelector('#studio-filters');
+      const bodyEl = panel.querySelector('#studio-body');
+      const searchEl = panel.querySelector('#studio-search');
+      function drawFilters() {
+        const L = live();
+        filtersEl.innerHTML = `<button class="filter-chip ${filter === 'all' ? 'active' : ''}" data-k="all">All <span>${L.length}</span></button>` +
+          present().map(k => `<button class="filter-chip ${filter === k ? 'active' : ''}" data-k="${k}">${icon(k)} ${esc(label(k))} <span>${L.filter(r => r.kind === k).length}</span></button>`).join('');
+        filtersEl.querySelectorAll('.filter-chip').forEach(b => b.addEventListener('click', () => { filter = b.dataset.k; drawFilters(); draw(); }));
       }
-      const groups = {};
-      shown.forEach(r => (groups[r.paper] || (groups[r.paper] = [])).push(r));
-      bodyEl.innerHTML = Object.keys(groups).map(paper => `
-        <details class="studio-group" open>
-          <summary><span class="studio-group-title">${esc(paper)}</span><span class="studio-group-count">${groups[paper].length}</span></summary>
-          <div class="studio-grid">${groups[paper].map(cardHTML).join('')}</div>
-        </details>`).join('');
-      bodyEl.querySelectorAll('[data-render]').forEach(el => { const r = records[Number(el.dataset.render)]; if (r && r.ai) AI.renderSavedItem(el, r.ai); });
-      bodyEl.querySelectorAll('.studio-card-del').forEach(b => b.addEventListener('click', async () => {
-        const r = records[Number(b.dataset.rid)]; if (!r || !confirm('Delete this item from your studio?')) return;
-        try { await r.del(); } catch {}
-        r._deleted = true; drawFilters(); draw();
-      }));
-      if (typeof gsap !== 'undefined' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-        gsap.fromTo(bodyEl.querySelectorAll('.studio-card'), { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.4, stagger: 0.03, ease: 'power2.out', clearProps: 'transform' });
+      function matches(r) {
+        if (r._deleted) return false;
+        if (filter !== 'all' && r.kind !== filter) return false;
+        if (!search) return true;
+        return [r.paper, r.qnum, r.ai?.title || '', r.ai?.content || ''].join(' ').toLowerCase().includes(search);
       }
+      function cardHTML(r) {
+        return `<article class="studio-card ${r.kind === 'chat' ? 'is-chat' : ''}">
+          <div class="studio-card-head">
+            <span class="studio-card-kind">${icon(r.kind)} ${esc(label(r.kind))}${r.qnum ? ' · Q' + esc(r.qnum) : ''}</span>
+            ${r.when ? `<span class="studio-card-when">${esc(new Date(r.when).toLocaleDateString())}</span>` : ''}
+            <button class="studio-card-del" data-rid="${r._i}" title="Delete">🗑</button>
+          </div>
+          <div class="studio-card-body" data-render="${r._i}"></div>
+        </article>`;
+      }
+      function draw() {
+        const shown = creations.filter(matches);
+        if (!shown.length) {
+          bodyEl.innerHTML = `<p class="muted studio-empty">${live().length ? 'Nothing matches that filter.' : 'No creations yet. Open a question in Study mode, tap ✨ Explore with AI, and every chart, mind map and summary lands here.'}</p>`;
+          return;
+        }
+        const groups = {};
+        shown.forEach(r => (groups[r.paper] || (groups[r.paper] = [])).push(r));
+        bodyEl.innerHTML = Object.keys(groups).map(paper => `
+          <details class="studio-group" open>
+            <summary><span class="studio-group-title">${esc(paper)}</span><span class="studio-group-count">${groups[paper].length}</span></summary>
+            <div class="studio-grid">${groups[paper].map(cardHTML).join('')}</div>
+          </details>`).join('');
+        bodyEl.querySelectorAll('[data-render]').forEach(el => { const r = creations[Number(el.dataset.render)]; if (r && r.ai) AI.renderSavedItem(el, r.ai); });
+        bodyEl.querySelectorAll('.studio-card-del').forEach(b => b.addEventListener('click', async () => {
+          const r = creations[Number(b.dataset.rid)]; if (!r || !confirm('Delete this item from your studio?')) return;
+          try { await r.del(); } catch {}
+          r._deleted = true; drawFilters(); draw();
+        }));
+      }
+      searchEl.addEventListener('input', () => { search = searchEl.value.trim().toLowerCase(); draw(); });
+      drawFilters(); draw();
     }
-    searchEl.addEventListener('input', () => { search = searchEl.value.trim().toLowerCase(); draw(); });
-    drawFilters(); draw();
+
+    /* ---- panel: My notes ---- */
+    function drawNotes() {
+      let search = '';
+      panel.innerHTML = `
+        <div class="studio-toolbar">
+          <p class="muted" style="margin:0">Quick notes you jotted on questions. For structured study notes with tags and hooks, see <a class="link" href="#/library/notes">Library → Notes</a>.</p>
+          <input type="search" id="note-search" class="studio-search" placeholder="Search notes…" autocomplete="off">
+        </div>
+        <div id="note-body"></div>`;
+      const bodyEl = panel.querySelector('#note-body');
+      function draw() {
+        const shown = noteList.filter(n => !search || (n.body + ' ' + n.paper).toLowerCase().includes(search));
+        if (!shown.length) { bodyEl.innerHTML = `<p class="muted studio-empty">${noteList.length ? 'No notes match that search.' : 'No notes yet. In Study mode, tap 🗒 Note under any question to jot a reminder.'}</p>`; return; }
+        const groups = {};
+        shown.forEach(n => (groups[n.paper] || (groups[n.paper] = [])).push(n));
+        bodyEl.innerHTML = Object.keys(groups).map(paper => `
+          <details class="studio-group" open>
+            <summary><span class="studio-group-title">${esc(paper)}</span><span class="studio-group-count">${groups[paper].length}</span></summary>
+            <div class="studio-grid">${groups[paper].map(n => `
+              <article class="studio-card"><div class="studio-card-head"><span class="studio-card-kind">🗒 Note${n.qnum ? ' · Q' + esc(n.qnum) : ''}</span></div>
+              <div class="studio-card-body"><div class="note-shown"><span>${esc(n.body)}</span></div></div></article>`).join('')}</div>
+          </details>`).join('');
+      }
+      panel.querySelector('#note-search').addEventListener('input', e => { search = e.target.value.trim().toLowerCase(); draw(); });
+      draw();
+    }
+
+    /* ---- panel: Tea room (shared discussions) ---- */
+    function drawTearoom() {
+      panel.innerHTML = `
+        <div class="tearoom-intro card">
+          <h3>☕ Tea room</h3>
+          <p class="muted">Concepts worth chewing over with friends. Post a question the board can see, and reply to each other's — like debating a stem over a cup of tea.</p>
+          <div class="tearoom-compose">
+            <textarea id="tea-new" placeholder="Start a discussion — a tricky concept, a disputed answer, an exam-day dilemma…"></textarea>
+            <button class="btn btn-gold" id="tea-post">Post to the tea room</button>
+          </div>
+        </div>
+        <div id="tea-list"></div>`;
+      const listEl = panel.querySelector('#tea-list');
+      panel.querySelector('#tea-post').addEventListener('click', async () => {
+        const topic = panel.querySelector('#tea-new').value.trim();
+        if (!topic) return;
+        const btn = panel.querySelector('#tea-post'); btn.disabled = true; btn.textContent = 'Posting…';
+        try { const row = await Backend.addDiscussion({ topic }); discussions.unshift(row); tiles.find(t => t.id === 'tearoom').count = discussions.length; drawConsole(); panel.querySelector('#tea-new').value = ''; drawList(); }
+        catch (e) { alert('Could not post: ' + (e.message || e)); }
+        btn.disabled = false; btn.textContent = 'Post to the tea room';
+      });
+      function drawList() {
+        if (!discussions.length) { listEl.innerHTML = `<p class="muted studio-empty">The tea room is quiet. Start a topic above, or tap ☕ Discuss with friends under any question's explanation.</p>`; return; }
+        listEl.innerHTML = discussions.map((d, i) => `
+          <article class="tea-post" data-di="${i}">
+            <div class="tea-post-head">
+              <span class="tea-author">${esc(d.author_name || 'A friend')}</span>
+              <span class="tea-when muted">${d.created_at ? esc(new Date(d.created_at).toLocaleDateString()) : ''}</span>
+              ${d.mine ? `<button class="tea-del" data-del="${i}" title="Delete your post">🗑</button>` : ''}
+            </div>
+            <p class="tea-topic">${esc(d.topic)}</p>
+            ${d.question_key ? `<div class="tea-ctx">${d.paper_title ? `<span class="tea-paper">${esc(d.paper_title)}</span>` : ''}${d.answer_text ? `<div class="tea-ans"><strong>Answer:</strong> ${esc(d.answer_text)}</div>` : ''}${d.rationale ? `<div class="tea-rat">${esc(d.rationale)}</div>` : ''}</div>` : ''}
+            <button class="btn btn-ghost btn-sm tea-toggle" data-toggle="${i}">💬 ${d.reply_count || 0} ${(d.reply_count === 1) ? 'reply' : 'replies'}</button>
+            <div class="tea-replies" id="tea-replies-${i}" hidden></div>
+          </article>`).join('');
+        listEl.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => {
+          const d = discussions[Number(b.dataset.del)]; if (!d || !confirm('Delete your post and its replies?')) return;
+          try { await Backend.deleteDiscussion(d.id); } catch {}
+          discussions.splice(Number(b.dataset.del), 1); tiles.find(t => t.id === 'tearoom').count = discussions.length; drawConsole(); drawList();
+        }));
+        listEl.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () => openReplies(Number(b.dataset.toggle))));
+      }
+      async function openReplies(i) {
+        const d = discussions[i];
+        const box = panel.querySelector(`#tea-replies-${i}`);
+        if (!box.hidden) { box.hidden = true; return; }
+        box.hidden = false;
+        box.innerHTML = `<p class="muted">Loading replies…</p>`;
+        let replies = [];
+        try { replies = await Backend.listDiscussionReplies(d.id); } catch {}
+        function paint() {
+          box.innerHTML = `
+            ${replies.map(r => `<div class="tea-reply"><span class="tea-author">${esc(r.author_name || 'A friend')}</span> <span class="tea-when muted">${r.created_at ? esc(new Date(r.created_at).toLocaleDateString()) : ''}</span>${r.mine ? ` <button class="tea-del" data-rdel="${r.id}" title="Delete">🗑</button>` : ''}<p>${esc(r.body)}</p></div>`).join('')}
+            <div class="tea-reply-compose"><textarea placeholder="Add your take…"></textarea><button class="btn btn-primary btn-sm tea-reply-send">Reply</button></div>`;
+          box.querySelector('.tea-reply-send').addEventListener('click', async () => {
+            const ta = box.querySelector('textarea'); const body = ta.value.trim(); if (!body) return;
+            const sb = box.querySelector('.tea-reply-send'); sb.disabled = true;
+            try { const row = await Backend.addDiscussionReply(d.id, body); replies.push(row); d.reply_count = (d.reply_count || 0) + 1; paint(); const tog = panel.querySelector(`[data-toggle="${i}"]`); if (tog) tog.textContent = `💬 ${d.reply_count} ${d.reply_count === 1 ? 'reply' : 'replies'}`; }
+            catch (e) { alert('Could not reply: ' + (e.message || e)); sb.disabled = false; }
+          });
+          box.querySelectorAll('[data-rdel]').forEach(rb => rb.addEventListener('click', async () => {
+            const rid = rb.dataset.rdel; try { await Backend.deleteDiscussionReply(d.id, rid); } catch {}
+            replies = replies.filter(x => x.id !== rid); d.reply_count = Math.max(0, (d.reply_count || 1) - 1); paint();
+            const tog = panel.querySelector(`[data-toggle="${i}"]`); if (tog) tog.textContent = `💬 ${d.reply_count} ${d.reply_count === 1 ? 'reply' : 'replies'}`;
+          }));
+        }
+        paint();
+      }
+      drawList();
+    }
+
+    drawConsole(); drawPanel();
   }
 
   /* ================= developer console ================= */
@@ -1705,9 +2013,14 @@
 
   try { Backend.onPasswordRecovery?.(() => renderResetPassword()); } catch { /* optional */ }
   window.addEventListener('hashchange', route);
+  // Apply the last-used appearance from localStorage BEFORE first paint so
+  // there's no flash of the wrong theme (prefs sync refines it after auth).
+  try { applyTheme(localStorage.getItem('aureum.theme') || 'dark'); } catch {}
+  const _energyBoot = (() => { try { return localStorage.getItem('aureum.energy') === '1'; } catch { return false; } })();
   window.addEventListener('DOMContentLoaded', async () => {
     const canvas = document.getElementById('bg-canvas');
-    if (canvas) ThreeBG.init(canvas);
+    if (canvas && !_energyBoot) ThreeBG.init(canvas);
+    if (_energyBoot) document.documentElement.classList.add('energy-saving');
     try { await Backend.init(); } catch (e) { console.warn('Backend init:', e); }
     route();
   });

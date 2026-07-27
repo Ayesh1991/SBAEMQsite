@@ -247,8 +247,13 @@ const Flashcards = (() => {
         if (Date.now() - tT > 600) return;                       // slow drag ≠ swipe
         const t = e.changedTouches[0];
         const dx = t.clientX - tX, dy = t.clientY - tY;
-        if (Math.abs(dx) > 48 && Math.abs(dx) > Math.abs(dy) * 1.5) nav(dx < 0 ? 1 : -1);
-        else if (Math.abs(dy) > 48 && Math.abs(dy) > Math.abs(dx) * 1.5) flip();
+        if (Math.abs(dx) > 48 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+          // Swipe left = next. If you've already seen the answer, a swipe-next
+          // grades the card Easy by default (the confident "got it, move on"
+          // gesture) — so flowing through a deck by swiping records real
+          // progress. Swipe right still just steps back without grading.
+          if (dx < 0 && s.revealed) grade('easy'); else nav(dx < 0 ? 1 : -1);
+        } else if (Math.abs(dy) > 48 && Math.abs(dy) > Math.abs(dx) * 1.5) flip();
       }, { passive: true });
       paintCard();
     }

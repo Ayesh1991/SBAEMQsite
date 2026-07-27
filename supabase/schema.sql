@@ -343,9 +343,11 @@ create table if not exists public.review_items (
   reps integer default 0,
   lapses integer default 0,
   wrong_count integer default 1,
+  streak integer default 0,             -- consecutive correct on review → graduate at 2
   updated_at timestamptz default now(),
   primary key (user_id, question_key)
 );
+alter table public.review_items add column if not exists streak integer default 0;
 create index if not exists review_due_idx on public.review_items (user_id, due);
 alter table public.review_items enable row level security;
 drop policy if exists "own review all" on public.review_items;
@@ -648,6 +650,68 @@ create policy "own essay feedback all" on public.essay_feedback for all
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "essay feedback dev read" on public.essay_feedback for select
   using (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+
+-- ---------- 8c) Tea-room discussions (shared among approved users) ----------
+-- "Discuss with friends": any question whose rationale is worth chewing over
+-- at tea time is posted to a shared board. Every approved candidate can read
+-- the board and reply; you can only delete your own posts/replies.
+create table if not exists public.discussions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  author_name text,
+  question_key text,                    -- paperId:kind:number (nullable — free topics allowed)
+  paper_title text,
+  answer_text text,                     -- the correct answer, for context
+  rationale text,                       -- the rationale / hook being discussed
+  topic text not null,                  -- the poster's prompt: "why is this the answer?"
+  created_at timestamptz default now()
+);
+create index if not exists disc_created_idx on public.discussions (created_at desc);
+alter table public.discussions enable row level security;
+drop policy if exists "discussions read" on public.discussions;
+drop policy if exists "discussions insert" on public.discussions;
+drop policy if exists "discussions own delete" on public.discussions;
+create policy "discussions read" on public.discussions for select using (auth.role() = 'authenticated');
+create policy "discussions insert" on public.discussions for insert with check (auth.uid() = user_id);
+create policy "discussions own delete" on public.discussions for delete using (auth.uid() = user_id);
+
+create table if not exists public.discussion_replies (
+  id uuid primary key default gen_random_uuid(),
+  discussion_id uuid not null references public.discussions(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  author_name text,
+  body text not null,
+  created_at timestamptz default now()
+);
+create index if not exists disc_reply_idx on public.discussion_replies (discussion_id, created_at);
+alter table public.discussion_replies enable row level security;
+drop policy if exists "disc replies read" on public.discussion_replies;
+drop policy if exists "disc replies insert" on public.discussion_replies;
+drop policy if exists "disc replies own delete" on public.discussion_replies;
+create policy "disc replies read" on public.discussion_replies for select using (auth.role() = 'authenticated');
+create policy "disc replies insert" on public.discussion_replies for insert with check (auth.uid() = user_id);
+create policy "disc replies own delete" on public.discussion_replies for delete using (auth.uid() = user_id);
+
+-- ---------- 8d) User-designed study notes (private, tag + hook indexed) ----------
+-- A memory hook is meaningless without the concept it hangs on. These notes let
+-- a candidate write their own study note, attach AI-style topic tags and a
+-- memory hook, and find it later by searching the tags. Private to each user.
+create table if not exists public.user_notes (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  title text not null,
+  body text,
+  hook text,                            -- the memory hook / mnemonic
+  tags text[] default '{}',             -- topic tags for meaning + search
+  question_key text,                    -- optional link back to a question
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+create index if not exists user_notes_idx on public.user_notes (user_id, updated_at desc);
+alter table public.user_notes enable row level security;
+drop policy if exists "own user_notes all" on public.user_notes;
+create policy "own user_notes all" on public.user_notes for all
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
 -- ---------- 9) Auto-create a profile row on sign-up ----------
 create or replace function public.handle_new_user()

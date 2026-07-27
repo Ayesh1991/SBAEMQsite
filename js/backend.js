@@ -334,6 +334,42 @@ const Backend = (() => {
     async function getEssayFeedback(code) { const e = sessionEmail(); if (!e) return null; return read(efKey(e), {})[code] || null; }
     async function deleteEssayFeedback(code) { const e = sessionEmail(); if (!e) return; const m = read(efKey(e), {}); delete m[code]; write(efKey(e), m); }
 
+    /* Tea-room discussions (shared board — local mirror) */
+    function discAuthor() { const e = sessionEmail(); const u = e ? users()[e] : null; return u ? (u.name || u.email) : 'You'; }
+    async function addDiscussion(post) {
+      const e = sessionEmail(); if (!e) throw new Error('Not signed in.');
+      const list = read('disc', []);
+      const row = { id: 'd' + Date.now() + Math.random().toString(36).slice(2, 6), user_id: e, author_name: discAuthor(),
+        question_key: post.questionKey || null, paper_title: post.paperTitle || null, answer_text: post.answerText || null,
+        rationale: post.rationale || null, topic: post.topic || '', created_at: new Date().toISOString(), reply_count: 0, mine: true };
+      list.unshift(row); write('disc', list); return row;
+    }
+    async function listDiscussions() {
+      const e = sessionEmail(); const replies = read('discR', {});
+      return read('disc', []).map(d => ({ ...d, mine: d.user_id === e, reply_count: (replies[d.id] || []).length }));
+    }
+    async function deleteDiscussion(id) { write('disc', read('disc', []).filter(d => d.id !== id)); const r = read('discR', {}); delete r[id]; write('discR', r); }
+    async function listDiscussionReplies(id) { const e = sessionEmail(); return (read('discR', {})[id] || []).map(r => ({ ...r, mine: r.user_id === e })); }
+    async function addDiscussionReply(id, body) {
+      const e = sessionEmail(); if (!e) throw new Error('Not signed in.');
+      const all = read('discR', {}); const list = all[id] || (all[id] = []);
+      const row = { id: 'r' + Date.now() + Math.random().toString(36).slice(2, 6), discussion_id: id, user_id: e, author_name: discAuthor(), body, created_at: new Date().toISOString(), mine: true };
+      list.push(row); write('discR', all); return row;
+    }
+    async function deleteDiscussionReply(id, replyId) { const all = read('discR', {}); if (all[id]) { all[id] = all[id].filter(r => r.id !== replyId); write('discR', all); } }
+
+    /* User-designed study notes (tags + hooks) — local mirror */
+    function unKey(e) { return 'unotes:' + norm(e); }
+    async function listUserNotes() { const e = sessionEmail(); if (!e) return []; return read(unKey(e), []).slice().sort((a, b) => (b.updated || 0) - (a.updated || 0)); }
+    async function saveUserNote(note) {
+      const e = sessionEmail(); if (!e) throw new Error('Not signed in.');
+      const list = read(unKey(e), []); const now = Date.now();
+      if (note.id) { const i = list.findIndex(n => n.id === note.id); if (i >= 0) { list[i] = Object.assign(list[i], note, { updated: now }); write(unKey(e), list); return list[i]; } }
+      const row = { id: 'n' + now + Math.random().toString(36).slice(2, 6), title: note.title || '', body: note.body || '', hook: note.hook || '', tags: note.tags || [], question_key: note.questionKey || null, created: now, updated: now };
+      list.unshift(row); write(unKey(e), list); return row;
+    }
+    async function deleteUserNote(noteId) { const e = sessionEmail(); if (!e) return; write(unKey(e), read(unKey(e), []).filter(n => n.id !== noteId)); }
+
     /* AI feature registry + shared pools + tags (local mirrors) */
     async function getAiFeatures() { return read('aifeatures', {}); }
     async function saveAiFeatures(data) { write('aifeatures', data); return data; }
@@ -361,6 +397,8 @@ const Backend = (() => {
       listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, setPref, listAiUsage, listAiTokenUsage, listMyTokenUsage, getEligibleCounts,
       logEvents, listRecentEvents, bumpQuestionStats, listQuestionStats, saveCohortScore, listCohortScores,
       listAllFlags, resolveFlags, listGlobalFlaggedKeys, saveUserDeck, listUserDecks, deleteUserDeck,
+      addDiscussion, listDiscussions, deleteDiscussion, listDiscussionReplies, addDiscussionReply, deleteDiscussionReply,
+      listUserNotes, saveUserNote, deleteUserNote,
       getAiFeatures, saveAiFeatures, listSharedUsage, saveQuestionTags, listQuestionTags, getAccessToken };
   })();
 
@@ -609,11 +647,11 @@ const Backend = (() => {
     async function listReviewItems() {
       await ensureClient(); const id = await uid(); if (!id) return [];
       const { data } = await sb.from('review_items').select('*').eq('user_id', id);
-      return (data || []).map(r => ({ question_key: r.question_key, paperTitle: r.paper_title, due: r.due, interval: r.interval, ease: r.ease, reps: r.reps, lapses: r.lapses, wrongCount: r.wrong_count }));
+      return (data || []).map(r => ({ question_key: r.question_key, paperTitle: r.paper_title, due: r.due, interval: r.interval, ease: r.ease, reps: r.reps, lapses: r.lapses, wrongCount: r.wrong_count, streak: r.streak || 0 }));
     }
     async function saveReviewItem(qk, s) {
       await ensureClient(); const id = await uid(); if (!id) return;
-      await sb.from('review_items').upsert({ user_id: id, question_key: qk, paper_title: s.paperTitle || null, due: s.due, interval: s.interval || 0, ease: s.ease || 2.5, reps: s.reps || 0, lapses: s.lapses || 0, wrong_count: s.wrongCount || 1, updated_at: new Date().toISOString() }, { onConflict: 'user_id,question_key' });
+      await sb.from('review_items').upsert({ user_id: id, question_key: qk, paper_title: s.paperTitle || null, due: s.due, interval: s.interval || 0, ease: s.ease || 2.5, reps: s.reps || 0, lapses: s.lapses || 0, wrong_count: s.wrongCount || 1, streak: s.streak || 0, updated_at: new Date().toISOString() }, { onConflict: 'user_id,question_key' });
     }
     async function removeReviewItem(qk) { await ensureClient(); const id = await uid(); if (!id) return; await sb.from('review_items').delete().eq('user_id', id).eq('question_key', qk); }
 
@@ -741,6 +779,61 @@ const Backend = (() => {
       await ensureClient(); const id = await uid(); if (!id) return;
       await sb.from('user_decks').delete().eq('user_id', id).eq('id', deckId);
     }
+
+    /* Tea-room discussions (shared board — RLS: read all, write/delete own) */
+    async function discAuthorName() {
+      const { data } = await sb.auth.getUser();
+      if (!data?.user) return 'A friend';
+      const { data: prof } = await sb.from('profiles').select('name').eq('id', data.user.id).single();
+      return prof?.name || data.user.user_metadata?.name || (data.user.email || '').split('@')[0] || 'A friend';
+    }
+    async function addDiscussion(post) {
+      await ensureClient(); const id = await uid(); if (!id) throw new Error('Not signed in.');
+      const row = { user_id: id, author_name: await discAuthorName(), question_key: post.questionKey || null,
+        paper_title: post.paperTitle || null, answer_text: post.answerText || null, rationale: post.rationale || null, topic: post.topic || '' };
+      const { data, error } = await sb.from('discussions').insert(row).select().single();
+      if (error) throw error;
+      return { ...data, mine: true, reply_count: 0 };
+    }
+    async function listDiscussions() {
+      await ensureClient(); const id = await uid();
+      const { data } = await sb.from('discussions').select('*').order('created_at', { ascending: false }).limit(200);
+      const rows = data || [];
+      // one grouped count query for reply badges (cheap, avoids N round-trips)
+      let counts = {};
+      try {
+        const ids = rows.map(r => r.id);
+        if (ids.length) { const { data: reps } = await sb.from('discussion_replies').select('discussion_id').in('discussion_id', ids); (reps || []).forEach(r => counts[r.discussion_id] = (counts[r.discussion_id] || 0) + 1); }
+      } catch {}
+      return rows.map(r => ({ ...r, mine: r.user_id === id, reply_count: counts[r.id] || 0 }));
+    }
+    async function deleteDiscussion(discId) { await ensureClient(); const id = await uid(); if (!id) return; await sb.from('discussions').delete().eq('id', discId).eq('user_id', id); }
+    async function listDiscussionReplies(discId) {
+      await ensureClient(); const id = await uid();
+      const { data } = await sb.from('discussion_replies').select('*').eq('discussion_id', discId).order('created_at', { ascending: true });
+      return (data || []).map(r => ({ ...r, mine: r.user_id === id }));
+    }
+    async function addDiscussionReply(discId, body) {
+      await ensureClient(); const id = await uid(); if (!id) throw new Error('Not signed in.');
+      const { data, error } = await sb.from('discussion_replies').insert({ discussion_id: discId, user_id: id, author_name: await discAuthorName(), body }).select().single();
+      if (error) throw error;
+      return { ...data, mine: true };
+    }
+    async function deleteDiscussionReply(discId, replyId) { await ensureClient(); const id = await uid(); if (!id) return; await sb.from('discussion_replies').delete().eq('id', replyId).eq('user_id', id); }
+
+    /* User-designed study notes (tags + hooks) — RLS own-all */
+    async function listUserNotes() {
+      await ensureClient(); const id = await uid(); if (!id) return [];
+      const { data } = await sb.from('user_notes').select('*').eq('user_id', id).order('updated_at', { ascending: false });
+      return (data || []).map(r => ({ id: r.id, title: r.title, body: r.body, hook: r.hook, tags: r.tags || [], question_key: r.question_key, created: r.created_at, updated: r.updated_at }));
+    }
+    async function saveUserNote(note) {
+      await ensureClient(); const id = await uid(); if (!id) throw new Error('Not signed in.');
+      const row = { user_id: id, title: note.title || '', body: note.body || '', hook: note.hook || '', tags: note.tags || [], question_key: note.questionKey || null, updated_at: new Date().toISOString() };
+      if (note.id) { const { data, error } = await sb.from('user_notes').update(row).eq('id', note.id).eq('user_id', id).select().single(); if (error) throw error; return data; }
+      const { data, error } = await sb.from('user_notes').insert(row).select().single(); if (error) throw error; return data;
+    }
+    async function deleteUserNote(noteId) { await ensureClient(); const id = await uid(); if (!id) return; await sb.from('user_notes').delete().eq('id', noteId).eq('user_id', id); }
 
     /* AI feature registry (app_config), shared pools, question tags */
     async function getAiFeatures() {
@@ -916,6 +1009,8 @@ const Backend = (() => {
       listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, setPref, listAiUsage, listAiTokenUsage, listMyTokenUsage, getEligibleCounts,
       logEvents, listRecentEvents, bumpQuestionStats, listQuestionStats, saveCohortScore, listCohortScores,
       listAllFlags, resolveFlags, listGlobalFlaggedKeys, saveUserDeck, listUserDecks, deleteUserDeck,
+      addDiscussion, listDiscussions, deleteDiscussion, listDiscussionReplies, addDiscussionReply, deleteDiscussionReply,
+      listUserNotes, saveUserNote, deleteUserNote,
       getAiFeatures, saveAiFeatures, listSharedUsage, saveQuestionTags, listQuestionTags, getAccessToken };
   })();
 

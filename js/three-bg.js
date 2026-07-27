@@ -14,9 +14,11 @@ const ThreeBG = (() => {
   let intensity = 1; // 1 = hero, 0.35 = interior pages
 
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let energySaving = false;   // set by the app from the user's pref
+  let paused = false;         // tab hidden → stop rendering (battery)
 
   function supported() {
-    return typeof THREE !== 'undefined' && !reducedMotion;
+    return typeof THREE !== 'undefined' && !reducedMotion && !energySaving;
   }
 
   function buildHelix() {
@@ -113,7 +115,11 @@ const ThreeBG = (() => {
   }
 
   function loop(t) {
+    if (paused) { raf = null; return; }        // suspended while tab is hidden
     raf = requestAnimationFrame(loop);
+    // Battery: the helix breathes slowly, so ~30fps is visually identical to
+    // 60fps here and halves GPU/CPU work. Skip every other frame.
+    if ((loop._n = (loop._n || 0) + 1) % 2 === 0) return;
     const time = t * 0.001;
 
     helix.rotation.y = time * 0.12;
@@ -140,6 +146,18 @@ const ThreeBG = (() => {
     if (raf) cancelAnimationFrame(raf);
     raf = null;
   }
+  // battery: freeze the render loop whenever the tab is not visible
+  document.addEventListener('visibilitychange', () => {
+    paused = document.hidden;
+    if (!paused && renderer && raf == null) loop(performance.now());
+  });
+  // energy-saving pref (from Profile): tear the scene down entirely / restore
+  function setEnergySaving(on) {
+    energySaving = !!on;
+    document.documentElement.classList.toggle('energy-saving', energySaving);
+    if (energySaving) { stop(); if (renderer) { const c = renderer.domElement; renderer.dispose?.(); const g = c.getContext('webgl') || c.getContext('webgl2'); g?.getExtension('WEBGL_lose_context')?.loseContext(); } }
+    else if (renderer == null && !reducedMotion) { const c = document.getElementById('bg-canvas'); if (c) init(c); }
+  }
 
-  return { init, setMood, stop, supported };
+  return { init, setMood, stop, supported, setEnergySaving };
 })();

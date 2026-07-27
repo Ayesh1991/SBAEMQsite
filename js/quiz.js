@@ -53,12 +53,18 @@ const Quiz = (() => {
       // and per-question struck-out options (real exam elimination technique)
       qTime: resume?.qTime?.length === questions.length ? resume.qTime.slice() : new Array(questions.length).fill(0),
       qEnter: Date.now(),
-      strikes: questions.map((_, i) => new Set(resume?.strikes?.[i] || []))
+      strikes: questions.map((_, i) => new Set(resume?.strikes?.[i] || [])),
+      // idle guard (simulator mocks): pause the clock if the candidate walks away
+      lastActive: Date.now(), idlePaused: false, idleId: null
     };
     if (state.mode === 'exam' && state.timeLimitSec > 0 && state.remaining == null) state.remaining = state.timeLimitSec;
     if (state.mode === 'exam' && state.remaining != null) state.timerId = setInterval(tick, 1000);
 
     document.addEventListener('keydown', onKey);
+    // any tap/click inside the runner counts as "still here"
+    state._touch = () => { if (state) state.lastActive = Date.now(); };
+    container.addEventListener('pointerdown', state._touch, { passive: true });
+    startIdleGuard();
 
     // load any saved notes for this paper+kind, then render
     const prefix = notePrefix();
@@ -78,8 +84,63 @@ const Quiz = (() => {
   function destroy() {
     if (state?.timerId) clearInterval(state.timerId);
     if (state?.saveTimer) clearTimeout(state.saveTimer);
+    stopIdleGuard();
+    if (state?.container && state._touch) state.container.removeEventListener('pointerdown', state._touch);
     document.removeEventListener('keydown', onKey);
     state = null;
+  }
+
+  /* ---------------- idle guard — "Are you still there?" ----------------
+     Long dwell on a mock question is ambiguous: it can mean a genuinely
+     hard question OR that the candidate walked away for tea. Counting
+     walk-away time as "thinking" corrupts the empirical-difficulty signal
+     and their own pacing stats, so after 2 minutes of no interaction on a
+     single question we freeze the clock and ask. The overlay stays until
+     they confirm; only then does the timer resume — the away-time is
+     discarded, never charged to the question. Simulator (mock) mode only. */
+  const IDLE_LIMIT_SEC = 120;
+  function startIdleGuard() {
+    stopIdleGuard();
+    if (!state || !state.simulator) return;
+    state.idleId = setInterval(() => {
+      if (!state || state.idlePaused) return;
+      if (Math.round((Date.now() - state.lastActive) / 1000) >= IDLE_LIMIT_SEC) pauseForIdle();
+    }, 5000);
+  }
+  function stopIdleGuard() { if (state?.idleId) { clearInterval(state.idleId); state.idleId = null; } }
+
+  function pauseForIdle() {
+    if (!state || state.idlePaused) return;
+    bankTime();                                            // bank the genuine up-to-2-min
+    state.idlePaused = true;
+    if (state.timerId) { clearInterval(state.timerId); state.timerId = null; }   // freeze exam clock
+    track('idle_pause', { onQuestion: state.index });
+    showIdleOverlay();
+  }
+  function resumeFromIdle() {
+    if (!state || !state.idlePaused) return;
+    state.idlePaused = false;
+    state.qEnter = Date.now();                             // discard away-time — clock restarts now
+    state.lastActive = Date.now();
+    state.container.querySelector('#idle-overlay')?.remove();
+    if (state.mode === 'exam' && state.remaining != null) state.timerId = setInterval(tick, 1000);
+    startIdleGuard();
+    track('idle_resume', {});
+  }
+  function showIdleOverlay() {
+    if (state.container.querySelector('#idle-overlay')) return;
+    const ov = document.createElement('div');
+    ov.id = 'idle-overlay';
+    ov.className = 'idle-overlay';
+    ov.innerHTML = `
+      <div class="idle-card" role="dialog" aria-modal="true" aria-labelledby="idle-title">
+        <div class="idle-icon">⏸</div>
+        <h3 id="idle-title">Are you still there?</h3>
+        <p class="muted">Your paper is paused so a break doesn't count against your timing. The clock stays frozen until you're ready.</p>
+        <button class="btn btn-gold" id="idle-resume">I'm back — resume the clock</button>
+      </div>`;
+    state.container.appendChild(ov);
+    ov.querySelector('#idle-resume').addEventListener('click', resumeFromIdle);
   }
 
   function tick() {
@@ -127,6 +188,7 @@ const Quiz = (() => {
 
   function onKey(e) {
     if (!state || e.metaKey || e.ctrlKey || e.altKey) return;
+    state.lastActive = Date.now();
     if (/^(input|textarea|select)$/i.test(document.activeElement?.tagName || '')) return;
     const q = state.questions[state.index];
     if (e.key === 'ArrowRight') return go(1);

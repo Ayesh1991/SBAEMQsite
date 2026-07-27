@@ -300,10 +300,10 @@ const Simulator = (() => {
 
       ${hist.mocks.length ? `
         <div class="card" data-animate>
-          <h3 class="card-title">Recent mocks</h3>
-          <div class="table-scroll"><table class="table">
+          <h3 class="card-title">Recent mocks <span class="muted" style="font-weight:400;font-size:.85rem">· ${hist.mocks.length} total</span></h3>
+          <div class="table-scroll mock-history-scroll"><table class="table">
             <thead><tr><th>#</th><th>Date</th><th>Score</th><th>SBA/EMQ</th><th>Excluded</th><th></th></tr></thead>
-            <tbody>${hist.mocks.slice(0, 8).map((m, i) => `
+            <tbody>${hist.mocks.map((m, i) => `
               <tr>
                 <td>${m.custom ? '🎨' : 'Mock ' + hist.mocks.slice(i).filter(x => !x.custom).length}</td>
                 <td class="muted">${new Date(m.date).toLocaleDateString()}</td>

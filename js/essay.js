@@ -98,6 +98,7 @@ const Essay = (() => {
             <label class="btn btn-gold btn-sm" style="cursor:pointer">⬆ Upload report (JSON)
               <input type="file" id="es-upload" accept="application/json,.json" hidden multiple></label>
             ${user?.isDeveloper ? `<button class="btn btn-ghost btn-sm" id="es-scan">↻ Auto-import from Drive</button>` : ''}
+            ${fb.length ? `<a class="btn btn-ghost btn-sm" href="#/library/essay/writing">✍ Writing lab</a>` : ''}
             <a class="btn btn-ghost btn-sm" href="#/library/essay/how">ℹ How marking works</a>
           </div>
         </div>
@@ -464,6 +465,102 @@ const Essay = (() => {
     return '<p>' + h.replace(/\n{2,}/g, '</p><p>').replace(/\n/g, '<br>') + '</p>';
   }
 
+  /* ---------- Writing lab: aggregate writing-skills weakness analysis ---------- */
+
+  // Distil every marked report into a picture of the candidate's WRITING (as
+  // opposed to knowledge) — the recurring English/structure/technique failings
+  // the examiner flagged, their score trend, and the concrete rewrites to learn
+  // from. Reused by the dashboard summary and the full Writing lab page.
+  function writingSummary(fb) {
+    const reports = (fb || []).filter(f => f && f.score);
+    const byWeakness = {};       // label → { count, tips:Set, quotes:[] }
+    reports.forEach(f => (f.writingImprovement || []).forEach(w => {
+      const key = (w.label || 'General').trim();
+      const rec = byWeakness[key] || (byWeakness[key] = { label: key, count: 0, tips: new Set(), quotes: [] });
+      rec.count++;
+      (w.proTips || []).forEach(t => rec.tips.add(t));
+      (w.quotes || []).forEach(q => { if (rec.quotes.length < 4 && q.original) rec.quotes.push(q); });
+    }));
+    const weaknesses = Object.values(byWeakness).sort((a, b) => b.count - a.count)
+      .map(w => ({ label: w.label, count: w.count, tips: [...w.tips], quotes: w.quotes }));
+    const scored = reports.filter(f => f.score.percent != null);
+    const avg = scored.length ? Math.round(scored.reduce((s, f) => s + f.score.percent, 0) / scored.length) : null;
+    // trend: compare the most recent third with the earliest third (by created)
+    const ordered = scored.slice().sort((a, b) => (a.created || 0) - (b.created || 0)).map(f => f.score.percent);
+    let trend = 0;
+    if (ordered.length >= 4) { const k = Math.max(1, Math.floor(ordered.length / 3)); const first = ordered.slice(0, k), last = ordered.slice(-k); trend = Math.round(last.reduce((s, x) => s + x, 0) / last.length - first.reduce((s, x) => s + x, 0) / first.length); }
+    return { count: reports.length, avg, trend, weaknesses, top: weaknesses[0] || null };
+  }
+
+  async function renderWritingLab(view, user) {
+    view.innerHTML = libraryShell('essay', `<a class="link muted dev-back" href="#/library/essay">← Essay papers</a>
+      <div id="wl-body"><p class="muted">Analysing your writing…</p></div>`);
+    FX.viewIn(view);
+    let fb = []; try { fb = (await Backend.listEssayFeedback()) || []; } catch { fb = []; }
+    const sum = writingSummary(fb);
+    const body = view.querySelector('#wl-body');
+    if (!sum.count) {
+      body.innerHTML = `<div class="card" data-animate><h3 class="card-title">✍ Writing lab</h3>
+        <p class="muted">Once you've uploaded a marked essay or two, this page distils the <strong>writing</strong> patterns behind your marks — grammar, structure, concision and exam technique — and builds targeted practice drills. Mark an essay to get started.</p>
+        <a class="btn btn-gold" href="#/library/essay">Go to essay papers</a></div>`;
+      return;
+    }
+    const trendTxt = sum.trend > 1 ? `<span class="good">▲ improving (+${sum.trend}%)</span>` : sum.trend < -1 ? `<span class="bad">▼ slipping (${sum.trend}%)</span>` : `<span class="muted">steady</span>`;
+    body.innerHTML = `
+      <header data-animate><p class="kicker">WRITING LAB</p><h1 class="page-title">How you write, not just what you know</h1>
+        <p class="muted">Aggregated from ${sum.count} marked answer${sum.count === 1 ? '' : 's'}. Knowledge wins marks — but so does how clearly and completely you put it on the page under time pressure.</p></header>
+      <div class="wl-stats" data-animate>
+        <div class="wl-stat"><strong>${sum.avg != null ? sum.avg + '%' : '—'}</strong><span>Average score</span></div>
+        <div class="wl-stat"><strong>${sum.count}</strong><span>Answers marked</span></div>
+        <div class="wl-stat"><strong>${trendTxt}</strong><span>Recent trend</span></div>
+        <div class="wl-stat"><strong>${sum.top ? esc(sum.top.label) : '—'}</strong><span>Top weakness</span></div>
+      </div>
+      <div class="card" data-animate>
+        <h3 class="card-title">📉 Your recurring writing weaknesses</h3>
+        <p class="muted tiny">Ranked by how often the examiner flagged each across your papers.</p>
+        <div class="wl-weak-list">
+          ${sum.weaknesses.map(w => `
+            <details class="wl-weak">
+              <summary><span class="wl-weak-name">${esc(w.label)}</span><span class="wl-weak-count">${w.count}×</span></summary>
+              ${w.quotes.length ? `<div class="wl-quotes">${w.quotes.map(q => `<div class="es-rewrite"><p class="es-rw-orig">“${esc(q.original)}”</p>${q.rewrite ? `<p class="es-rw-new">→ ${esc(q.rewrite)}</p>` : ''}</div>`).join('')}</div>` : ''}
+              ${w.tips.length ? `<ul class="es-protips">${w.tips.map(t => `<li>${esc(t)}</li>`).join('')}</ul>` : ''}
+            </details>`).join('')}
+        </div>
+      </div>
+      <div class="card es-ai" data-animate>
+        <h3 class="card-title">🏋 Targeted practice drills</h3>
+        <p class="muted">Generate grammar, structure and exam-technique exercises aimed squarely at your top weaknesses — with model rewrites to check yourself against.</p>
+        <button class="btn btn-ai" id="wl-drills">✨ Build my practice drills</button>
+        <div id="wl-out"></div>
+      </div>`;
+    view.querySelector('#wl-drills')?.addEventListener('click', e => buildDrills(e.target, view.querySelector('#wl-out'), sum));
+  }
+
+  async function buildDrills(btn, out, sum) {
+    btn.disabled = true;
+    out.innerHTML = `<div class="ai-loading"><span></span><span></span><span></span></div>`;
+    try {
+      const token = await Backend.getAccessToken();
+      if (!token) throw new Error('Sign in to use AI analysis.');
+      const weak = sum.weaknesses.slice(0, 4).map(w => `${w.label} (flagged ${w.count}×)${w.tips.length ? ' — advice given: ' + w.tips.slice(0, 2).join('; ') : ''}`).join('\n');
+      const q = `You are an O&G examiner-coach helping a PGIM MD Part II candidate improve their essay WRITING (not their medical knowledge). Their average is ${sum.avg}% and their recurring writing weaknesses, most frequent first, are:\n${weak}\n\n` +
+        `Design a short set of practice drills targeting these. Use **bold** headers and this structure:\n` +
+        `**Grammar & clarity** — 2 short "fix this sentence" drills (give a clumsy clinical sentence, then the model rewrite).\n` +
+        `**Structure & concision** — 1 drill on planning/structuring an answer in 2 minutes for their weakest area.\n` +
+        `**Exam technique** — 2 concrete habits to drill before their next mock.\n` +
+        `Keep it under 260 words, practical and specific to O&G essays.`;
+      const res = await fetch(cfg().ai.apiBase, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+        body: JSON.stringify({ action: 'chat', provider: 'gemini', dailyLimit: cfg().ai.dailyLimit,
+          question: { kind: 'ESSAY', theme: 'Writing skills', stem: 'Writing-skills drills', options: [], answer: 0, preLettered: true }, messages: [{ role: 'user', content: q }] })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Failed (HTTP ${res.status}).`);
+      out.innerHTML = `<div class="ai-body">${renderMd(data.text)}</div>`;
+    } catch (e) { out.innerHTML = `<p class="ai-error">${esc(e.message || e)}</p>`; }
+    btn.disabled = false;
+  }
+
   // "How marking works" help page (route #/library/essay/how)
   function renderHow(view, user) {
     view.innerHTML = libraryShell('essay', `
@@ -487,5 +584,5 @@ const Essay = (() => {
     return window.__aureumLibraryShell ? window.__aureumLibraryShell(active, inner) : `<section class="page">${inner}</section>`;
   }
 
-  return { renderList, renderPaper, renderWrite, renderFeedback, renderHow, bustPapers, papers, questionsOf, validateFeedback, normaliseFeedback };
+  return { renderList, renderPaper, renderWrite, renderFeedback, renderWritingLab, writingSummary, renderHow, bustPapers, papers, questionsOf, validateFeedback, normaliseFeedback };
 })();

@@ -98,11 +98,15 @@ const ReviewQueue = (() => {
           const d = attempt.detail[i] || {};
           try {
             if (d.isCorrect) {
+              // GRADUATE after 2 consecutive correct — stops the queue
+              // over-filling with a topic the user has clearly re-learned.
+              const streak = (it.streak || 0) + 1;
+              if (streak >= 2) { await Backend.removeReviewItem(qk); continue; }
               const next = Flashcards.schedule({ ease: it.ease, reps: it.reps, lapses: it.lapses, interval: it.interval }, 'good');
-              if (next.interval >= 90) await Backend.removeReviewItem(qk);   // mastered — retire it
-              else await Backend.saveReviewItem(qk, { paperTitle: it.paperTitle, due: next.due, interval: next.interval, ease: next.ease, reps: next.reps, lapses: next.lapses, wrongCount: it.wrongCount });
+              await Backend.saveReviewItem(qk, { paperTitle: it.paperTitle, due: next.due, interval: next.interval, ease: next.ease, reps: next.reps, lapses: next.lapses, wrongCount: it.wrongCount, streak });
             } else {
-              await Backend.saveReviewItem(qk, { paperTitle: it.paperTitle, due: tomorrow(), interval: 1, ease: Math.max(1.3, (it.ease || 2.5) - 0.2), reps: 0, lapses: (it.lapses || 0) + 1, wrongCount: (it.wrongCount || 1) + 1 });
+              // wrong on review resets the consecutive-correct streak
+              await Backend.saveReviewItem(qk, { paperTitle: it.paperTitle, due: tomorrow(), interval: 1, ease: Math.max(1.3, (it.ease || 2.5) - 0.2), reps: 0, lapses: (it.lapses || 0) + 1, wrongCount: (it.wrongCount || 1) + 1, streak: 0 });
             }
           } catch { /* keep going */ }
         }

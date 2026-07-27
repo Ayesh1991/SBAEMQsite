@@ -61,6 +61,7 @@ const QEdit = (() => {
         <div class="qedit-actions">
           <button class="btn btn-ghost btn-sm" data-qe="flag">${c && c.flagged ? '⚑ Edit flag' : '⚑ Flag this question as wrong'}</button>
           <button class="btn btn-ghost btn-sm" data-qe="expl">${c && c.explanation ? '✎ Edit explanation' : '✎ Add explanation'}</button>
+          <button class="btn btn-ghost btn-sm" data-qe="discuss" title="Send this concept to the tea room in your Studio, for a chat with friends">☕ Discuss with friends</button>
           <span class="qedit-tag ${dev ? '' : 'qedit-tag-me'}">${dev ? 'developer · everyone sees this' : 'flags go to the editor for review — scrutiny keeps the bank sharp'}</span>
         </div>
         <div class="qedit-editor" id="qedit-editor"></div>`;
@@ -70,6 +71,36 @@ const QEdit = (() => {
     function wire() {
       slot.querySelector('[data-qe="flag"]').addEventListener('click', openFlag);
       slot.querySelector('[data-qe="expl"]').addEventListener('click', openExpl);
+      slot.querySelector('[data-qe="discuss"]')?.addEventListener('click', openDiscuss);
+    }
+
+    // Send this question/concept to the shared "tea room" in the Studio tab.
+    function openDiscuss() {
+      if (!Backend.addDiscussion) return;
+      const host = slot.querySelector('#qedit-editor');
+      if (host.dataset.open === 'discuss') { host.dataset.open = ''; host.innerHTML = ''; return; }
+      host.dataset.open = 'discuss';
+      host.innerHTML = `
+        <div class="qedit-box">
+          <label class="qedit-label">Post this to the tea room — a friend might see it differently</label>
+          <textarea id="qe-disc" class="qedit-expl" placeholder="What's worth chewing over here? e.g. 'Why is this first-line over the alternative?'"></textarea>
+          <div class="qedit-btns">
+            <button class="btn btn-gold btn-sm" id="qe-disc-send">☕ Send to tea room</button>
+            <button class="btn btn-ghost btn-sm" id="qe-disc-cancel">Cancel</button>
+            <span class="qedit-tag qedit-tag-me" id="qe-disc-msg"></span>
+          </div>
+        </div>`;
+      host.querySelector('#qe-disc-cancel').addEventListener('click', () => { host.dataset.open = ''; host.innerHTML = ''; });
+      host.querySelector('#qe-disc-send').addEventListener('click', async () => {
+        const topic = host.querySelector('#qe-disc').value.trim();
+        if (!topic) { host.querySelector('#qe-disc').focus(); return; }
+        const btn = host.querySelector('#qe-disc-send'); btn.disabled = true; btn.textContent = 'Sending…';
+        try {
+          await Backend.addDiscussion({ questionKey: ctx.questionKey, paperTitle: ctx.paperTitle, answerText: ctx.answerText, rationale: ctx.rationale, topic });
+          host.innerHTML = `<div class="qedit-correction qedit-mine">☕ Posted to the tea room — open <strong>Studio → Tea room</strong> to see replies from friends.</div>`;
+          host.dataset.open = '';
+        } catch (e) { btn.disabled = false; btn.textContent = '☕ Send to tea room'; host.querySelector('#qe-disc-msg').textContent = 'Could not send: ' + (e.message || e); }
+      });
     }
 
     function refresh(rec) { if (dev) glob = rec; else mine = rec; }
