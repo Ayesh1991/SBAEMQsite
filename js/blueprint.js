@@ -180,5 +180,47 @@ const Blueprint = (() => {
     return score;
   }
 
-  return { parseFrontMatter, normalise, load, save, bust, distribute, boostFor, affinity, normStr };
+  /* ---------- serialise a normalised doc back to blueprint Markdown ----------
+     Lets the Blueprint Studio round-trip: edit visually here, export the exact
+     Markdown you'd paste back into the Claude project or data/blueprint.md. */
+  function toMarkdown(doc) {
+    const q = s => '"' + String(s == null ? '' : s).replace(/"/g, '\\"') + '"';
+    const p = doc.paper || {};
+    const L = [];
+    L.push('---');
+    L.push('blueprint: ' + (doc.id || 'blueprint'));
+    L.push('version: ' + (doc.version || 1));
+    L.push('updated: ' + q(doc.updated || new Date().toISOString().slice(0, 10)));
+    L.push('paper:');
+    L.push('  sba_count: ' + (p.sbaCount ?? 30));
+    L.push('  emq_count: ' + (p.emqCount ?? 30));
+    L.push('  duration_min: ' + (p.durationMin ?? 180));
+    L.push('  sba_mark_each: ' + (p.sbaMark ?? 3));
+    L.push('  emq_mark_each: ' + (p.emqMark ?? 3));
+    L.push('  negative_marking: ' + (p.negativeMarking ? 'true' : 'false'));
+    const areas = (arr) => (arr || []).length ? ['    specific_areas:', ...(arr).map(a => '      - ' + q(a))] : [];
+    L.push('blueprint_sba:');
+    (doc.sba || []).forEach(b => {
+      L.push('  - category: ' + q(b.category || ''));
+      L.push('    subcategory: ' + q(b.subcategory || ''));
+      L.push('    weight: ' + (b.weight || 0));
+      areas(b.areas).forEach(x => L.push(x));
+    });
+    L.push('blueprint_emq:');
+    (doc.emq || []).forEach(b => {
+      L.push('  - theme: ' + q(b.theme || ''));
+      L.push('    weight: ' + (b.weight || 0));
+      areas(b.areas).forEach(x => L.push(x));
+    });
+    if ((doc.priority || []).length) {
+      L.push('priority_topics:');
+      doc.priority.forEach(pt => { L.push('  - match: ' + q(pt.match || '')); L.push('    boost: ' + (pt.boost || 1)); });
+    }
+    L.push('---');
+    L.push('');
+    if (doc.notes) L.push(doc.notes);
+    return L.join('\n');
+  }
+
+  return { parseFrontMatter, normalise, load, save, bust, distribute, boostFor, affinity, normStr, toMarkdown };
 })();

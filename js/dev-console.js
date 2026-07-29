@@ -22,6 +22,8 @@ const DevConsole = (() => {
   let driveFiles = [];      // [{key,id,name,folder,paper?,meta?}]
   let published = [];
   let syllabus = null;
+  let bpEdit = null;        // Blueprint Studio working copy (deep clone of the loaded doc)
+  let bpCoverage = null;    // last computed { sba:{name:{matched,pool,areas}}, emq:{...} }
 
   /**
    * Entry point. section = 'hub' | 'papers' | 'cards' | 'users' | 'blueprint'
@@ -261,18 +263,96 @@ const DevConsole = (() => {
         </header>
         <div class="card" data-animate>
           <div class="dev-toolbar">
-            <label class="btn btn-gold" style="cursor:pointer">Upload blueprint file
+            <label class="btn btn-ghost" style="cursor:pointer">⬆ Upload file
               <input type="file" id="bp-file" accept=".md,.markdown,.json,.txt" hidden>
             </label>
+            <button class="btn btn-gold" id="bp-edit">✎ Edit in Studio</button>
+            <button class="btn btn-ghost" id="bp-coverage">🎯 Check coverage</button>
             <span class="dev-status" id="bp-status"></span>
           </div>
           <div id="bp-summary"></div>
         </div>
+        <div id="bp-studio"></div>
       </section>`;
 
     view.querySelector('#bp-file').addEventListener('change', uploadBlueprint);
+    view.querySelector('#bp-edit').addEventListener('click', () => openBlueprintStudio(view));
+    view.querySelector('#bp-coverage').addEventListener('click', () => runCoverage(view));
+    bpEdit = null;
     await refreshBlueprint(view);
     ctx.FX.viewIn(view);
+  }
+
+  /* ---------------- blueprint coverage analysis ----------------
+     For every bucket and every specific_area, how many questions in the LIVE
+     bank actually match — using the SAME signals the selector uses (category
+     gate for SBA, AI-tag topic, and keyword affinity against question text).
+     Turns "I edited an area" into "…and 7 real questions back it" (or zero). */
+  const bpNorm = s => Blueprint.normStr(s);
+  const bpSameCat = (a, b) => { a = bpNorm(a); b = bpNorm(b); return a && b && (a === b || a.includes(b) || b.includes(a)); };
+  function areaWords(a) { return bpNorm(a).split(' ').filter(w => w.length > 4); }
+
+  async function buildCoverageIndex() {
+    const index = await Simulator.buildIndex();          // [{qkey,kind,category,group,text}]
+    let tags = {};
+    try { (await ctx.Backend.listQuestionTags?.() || []).forEach(t => tags[t.questionKey] = t); } catch { /* untagged bank still works */ }
+    return index.map(r => {
+      const tg = tags[r.qkey];
+      const text = tg ? [tg.topic, tg.category, ...(tg.tags || [])].filter(Boolean).join(' ') + ' ' + r.text : r.text;
+      return { kind: r.kind, category: r.category, text: bpNorm(text), tagTopic: tg?.topic || '' };
+    });
+  }
+  function coverBuckets(enriched, buckets, kind, keyOf, catGate) {
+    return buckets.map(b => {
+      const name = keyOf(b), nName = bpNorm(name);
+      const pool = enriched.filter(r => r.kind === kind && (!catGate || !b.category || bpSameCat(r.category, b.category)));
+      const areaHit = (r, a) => { const w = areaWords(a); return w.length && w.some(x => r.text.includes(x)); };
+      const matched = pool.filter(r =>
+        (nName && r.text.includes(nName)) ||
+        (r.tagTopic && bpSameCat(r.tagTopic, name)) ||
+        (b.areas || []).some(a => areaHit(r, a))
+      ).length;
+      const areas = (b.areas || []).map(a => ({ area: a, count: pool.filter(r => areaHit(r, a)).length }));
+      return { name, weight: b.weight, pool: pool.length, matched, areas };
+    });
+  }
+  async function computeCoverage(doc) {
+    const enriched = await buildCoverageIndex();
+    return {
+      sba: coverBuckets(enriched, doc.sba || [], 'SBA', b => b.subcategory || b.category, true),
+      emq: coverBuckets(enriched, doc.emq || [], 'EMQ', b => b.theme, false),
+      total: enriched.length
+    };
+  }
+  const covClass = c => c.matched === 0 ? 'cov-none' : c.matched < Math.max(3, c.weight) ? 'cov-low' : 'cov-ok';
+  const areaClass = n => n === 0 ? 'cov-none' : n < 3 ? 'cov-low' : 'cov-ok';
+
+  async function runCoverage(view) {
+    const status = view.querySelector('#bp-status');
+    status.textContent = 'Scanning the bank…'; status.className = 'dev-status';
+    let doc; try { doc = bpEdit || await Blueprint.load(); } catch { doc = null; }
+    if (!doc) { status.innerHTML = '<span class="bad">No blueprint loaded.</span>'; return; }
+    try {
+      bpCoverage = await computeCoverage(doc);
+      status.innerHTML = `<span class="good">✓ Scanned ${bpCoverage.total} bank questions.</span>`;
+      if (bpEdit) drawStudio(view); else drawCoverageReport(view, doc, bpCoverage);
+    } catch (e) { status.innerHTML = `<span class="bad">${ctx.esc(e.message || e)}</span>`; }
+  }
+  function coverageRowsHTML(cov) {
+    const row = c => `<tr class="${covClass(c)}">
+      <td>${ctx.esc(c.name)}</td><td class="num">w${c.weight}</td>
+      <td class="num"><strong>${c.matched}</strong><span class="muted">/${c.pool}</span></td>
+      <td>${c.areas.length ? `<div class="cov-areas">${c.areas.map(a => `<span class="cov-chip ${areaClass(a.count)}" title="${ctx.esc(a.area)}">${a.count} · ${ctx.esc(a.area.length > 42 ? a.area.slice(0, 40) + '…' : a.area)}</span>`).join('')}</div>` : '<span class="muted tiny">no specific areas</span>'}</td></tr>`;
+    return c => row(c);
+  }
+  function drawCoverageReport(view, doc, cov) {
+    const host = view.querySelector('#bp-studio');
+    const rows = coverageRowsHTML(cov);
+    const legend = `<p class="cov-legend"><span class="cov-chip cov-ok">backed</span> <span class="cov-chip cov-low">thin (&lt;3)</span> <span class="cov-chip cov-none">no match — nothing in the bank</span></p>`;
+    const tbl = (title, arr) => `<div class="card" data-animate><h4>${title}</h4>${legend}
+      <div class="table-scroll"><table class="table bp-cov-table"><thead><tr><th>Bucket</th><th>Weight</th><th>Matched</th><th>Specific areas (matches each)</th></tr></thead>
+      <tbody>${arr.map(rows).join('')}</tbody></table></div></div>`;
+    host.innerHTML = tbl(`SBA coverage · ${cov.sba.length} buckets`, cov.sba) + tbl(`EMQ coverage · ${cov.emq.length} themes`, cov.emq);
   }
 
   /* ---------------- section: users ---------------- */
@@ -694,14 +774,16 @@ const DevConsole = (() => {
       if (!(doc.sba || []).length && !(doc.emq || []).length) throw new Error('No blueprint_sba / blueprint_emq buckets found in the file.');
       await Blueprint.save(doc);
       status.innerHTML = `<span class="good">✓ Saved — ${doc.sba.length} SBA topics, ${doc.emq.length} EMQ themes.</span>`;
-      await refreshBlueprint(document.getElementById('view'));
+      bpEdit = null; bpCoverage = null;
+      const v = document.getElementById('view'); v.querySelector('#bp-studio').innerHTML = '';
+      await refreshBlueprint(v);
     } catch (err) { status.innerHTML = `<span class="bad">${ctx.esc(err.message || err)}</span>`; }
     e.target.value = '';
   }
   async function refreshBlueprint(view) {
     const host = view.querySelector('#bp-summary');
     let doc; try { doc = await Blueprint.load(); } catch { doc = null; }
-    if (!doc || (!(doc.sba || []).length && !(doc.emq || []).length)) { host.innerHTML = `<p class="muted">No blueprint loaded yet — the bundled default is used until you upload one.</p>`; return; }
+    if (!doc || (!(doc.sba || []).length && !(doc.emq || []).length)) { host.innerHTML = `<p class="muted">No blueprint loaded yet — the bundled default is used until you upload one, or press <strong>Edit in Studio</strong> to build one.</p>`; return; }
     const sbaW = doc.sba.reduce((s, b) => s + b.weight, 0), emqW = doc.emq.reduce((s, b) => s + b.weight, 0);
     host.innerHTML = `<div class="bp-summary">
       <p class="good">Blueprint v${doc.version || 1}${doc.updated ? ' · ' + ctx.esc(doc.updated) : ''} loaded.</p>
@@ -709,6 +791,187 @@ const DevConsole = (() => {
         <div><h5>SBA · ${doc.sba.length} topics · Σ${sbaW}</h5><ul>${doc.sba.map(b => `<li>${ctx.esc(b.subcategory || b.category)} <span class="muted">w${b.weight}</span></li>`).join('')}</ul></div>
         <div><h5>EMQ · ${doc.emq.length} themes · Σ${emqW}</h5><ul>${doc.emq.map(b => `<li>${ctx.esc(b.theme)} <span class="muted">w${b.weight}</span></li>`).join('')}</ul></div>
       </div></div>`;
+  }
+
+  /* ---------------- Blueprint Studio — visual, coverage-aware editor ----------
+     Edits a deep-cloned working copy so nothing is committed until Save. Every
+     bucket, weight, specific area and priority boost is editable inline; the
+     weight sums show live with one-click normalise-to-100; coverage badges show
+     how many real questions back each bucket/area; Export round-trips to the
+     exact Markdown you'd paste back into the Claude project. */
+  const bpSum = arr => (arr || []).reduce((s, b) => s + (Number(b.weight) || 0), 0);
+
+  async function openBlueprintStudio(view) {
+    let doc; try { doc = await Blueprint.load(); } catch { doc = null; }
+    doc = doc || {};
+    bpEdit = JSON.parse(JSON.stringify({
+      id: doc.id || 'blueprint', version: doc.version || 1, updated: doc.updated || '',
+      paper: doc.paper || { sbaCount: 30, emqCount: 30, durationMin: 180, sbaMark: 3, emqMark: 3, negativeMarking: false },
+      sba: doc.sba || [], emq: doc.emq || [], priority: doc.priority || [], notes: doc.notes || ''
+    }));
+    bpCoverage = null;
+    drawStudio(view);
+  }
+
+  function normalizeTo100(arr) {
+    const sum = bpSum(arr); if (!sum) return;
+    const exact = arr.map(b => (Number(b.weight) || 0) / sum * 100);
+    const floor = exact.map(x => Math.floor(x));
+    let used = floor.reduce((a, c) => a + c, 0);
+    const rema = exact.map((x, i) => ({ i, frac: x - floor[i] })).sort((a, b) => b.frac - a.frac);
+    let k = 0; while (used < 100 && k < rema.length * 4) { floor[rema[k % rema.length].i]++; used++; k++; }
+    arr.forEach((b, i) => b.weight = floor[i]);
+  }
+
+  function bucketCardHTML(sec, b, i) {
+    const isSba = sec === 'sba';
+    const name = isSba ? (b.subcategory || b.category) : b.theme;
+    const cov = bpCoverage && (bpCoverage[sec] || []).find(c => c.name === name);
+    const areaChip = (a, ai) => {
+      const ac = cov && cov.areas.find(x => x.area === a);
+      return `<span class="bp-area ${ac ? areaClass(ac.count) : ''}">${ac ? `<b>${ac.count}</b> ` : ''}${ctx.esc(a)}<button class="bp-area-x" data-act="del-area" data-ai="${ai}" title="Remove area">×</button></span>`;
+    };
+    return `<div class="bp-bucket" data-sec="${sec}" data-i="${i}">
+      <div class="bp-bucket-top">
+        ${isSba ? `<input class="bp-in bp-cat" data-field="category" placeholder="Category" value="${ctx.esc(b.category || '')}">` : ''}
+        <input class="bp-in bp-name" data-field="${isSba ? 'subcategory' : 'theme'}" placeholder="${isSba ? 'Subcategory' : 'Theme'}" value="${ctx.esc(name || '')}">
+        ${cov ? `<span class="bp-cov ${covClass(cov)}" title="questions in the bank matching this bucket">${cov.matched}/${cov.pool}</span>` : ''}
+        <button class="bp-x" data-act="del-bucket" title="Remove bucket">✕</button>
+      </div>
+      <div class="bp-weight-row">
+        <input type="range" min="0" max="20" step="1" class="bp-range" data-field="weight" value="${b.weight || 0}">
+        <input type="number" min="0" class="bp-in bp-wnum" data-field="weight" value="${b.weight || 0}">
+        <span class="bp-wlabel muted tiny">weight</span>
+      </div>
+      <div class="bp-areas">
+        ${(b.areas || []).map(areaChip).join('')}
+        <input class="bp-in bp-area-add" data-act="add-area" placeholder="+ specific area, then Enter">
+      </div>
+    </div>`;
+  }
+
+  function drawStudio(view) {
+    const host = view.querySelector('#bp-studio');
+    const d = bpEdit;
+    const sbaSum = bpSum(d.sba), emqSum = bpSum(d.emq);
+    host.innerHTML = `
+      <div class="card bp-studio-head" data-animate>
+        <div class="bp-sums">
+          <span class="bp-sum ${sbaSum === 100 ? 'ok' : 'off'}">SBA Σ <strong id="bp-sum-sba">${sbaSum}</strong></span>
+          <button class="btn btn-ghost btn-sm" data-act="norm-sba">→100</button>
+          <span class="bp-sum ${emqSum === 100 ? 'ok' : 'off'}">EMQ Σ <strong id="bp-sum-emq">${emqSum}</strong></span>
+          <button class="btn btn-ghost btn-sm" data-act="norm-emq">→100</button>
+        </div>
+        <div class="bp-studio-actions">
+          <button class="btn btn-ghost btn-sm" data-act="cover">🎯 Coverage</button>
+          <button class="btn btn-gold btn-sm" data-act="save">💾 Save &amp; apply</button>
+          <button class="btn btn-ghost btn-sm" data-act="export">⬇ Export .md</button>
+          <button class="btn btn-ghost btn-sm" data-act="revert">↺ Revert</button>
+          <button class="btn btn-ghost btn-sm" data-act="close">Close</button>
+        </div>
+        <span class="dev-status" id="bp-studio-status"></span>
+      </div>
+      <div class="card" data-animate>
+        <div class="bp-sec-head"><h4>SBA buckets · ${d.sba.length}</h4><button class="btn btn-ghost btn-sm" data-act="add-sba">+ Add bucket</button></div>
+        <div class="bp-buckets">${d.sba.map((b, i) => bucketCardHTML('sba', b, i)).join('') || '<p class="muted">No SBA buckets — add one.</p>'}</div>
+      </div>
+      <div class="card" data-animate>
+        <div class="bp-sec-head"><h4>EMQ themes · ${d.emq.length}</h4><button class="btn btn-ghost btn-sm" data-act="add-emq">+ Add theme</button></div>
+        <div class="bp-buckets">${d.emq.map((b, i) => bucketCardHTML('emq', b, i)).join('') || '<p class="muted">No EMQ themes — add one.</p>'}</div>
+      </div>
+      <div class="card" data-animate>
+        <div class="bp-sec-head"><h4>Priority boosts · ${d.priority.length}</h4><button class="btn btn-ghost btn-sm" data-act="add-pri">+ Add boost</button></div>
+        <div class="bp-pri">${d.priority.map((p, i) => `<div class="bp-pri-row" data-i="${i}">
+          <input class="bp-in bp-pri-match" data-pri="match" placeholder="match phrase (appears in question text)" value="${ctx.esc(p.match || '')}">
+          <input type="number" step="0.05" min="1" class="bp-in bp-pri-boost" data-pri="boost" value="${p.boost || 1}">
+          <button class="bp-x" data-act="del-pri" title="Remove">✕</button></div>`).join('') || '<p class="muted">No priority boosts.</p>'}</div>
+      </div>`;
+    wireStudio(view, host);
+  }
+
+  function updateSums(host) {
+    const s = bpSum(bpEdit.sba), e = bpSum(bpEdit.emq);
+    const ss = host.querySelector('#bp-sum-sba'), es = host.querySelector('#bp-sum-emq');
+    if (ss) { ss.textContent = s; ss.parentElement.className = 'bp-sum ' + (s === 100 ? 'ok' : 'off'); }
+    if (es) { es.textContent = e; es.parentElement.className = 'bp-sum ' + (e === 100 ? 'ok' : 'off'); }
+  }
+
+  function wireStudio(view, host) {
+    // live field edits (no re-render → focus preserved)
+    host.addEventListener('input', e => {
+      const t = e.target;
+      const bucket = t.closest('.bp-bucket');
+      if (bucket && t.dataset.field) {
+        const arr = bpEdit[bucket.dataset.sec], b = arr[Number(bucket.dataset.i)];
+        if (t.dataset.field === 'weight') {
+          b.weight = Math.max(0, Number(t.value) || 0);
+          bucket.querySelectorAll('[data-field="weight"]').forEach(el => { if (el !== t) el.value = b.weight; });
+          updateSums(host);
+        } else { b[t.dataset.field] = t.value; }
+        return;
+      }
+      const pri = t.closest('.bp-pri-row');
+      if (pri && t.dataset.pri) {
+        const p = bpEdit.priority[Number(pri.dataset.i)];
+        p[t.dataset.pri] = t.dataset.pri === 'boost' ? (Number(t.value) || 1) : t.value;
+      }
+    });
+    // add specific area on Enter
+    host.addEventListener('keydown', e => {
+      if (e.key !== 'Enter' || !e.target.classList.contains('bp-area-add')) return;
+      e.preventDefault();
+      const val = e.target.value.trim(); if (!val) return;
+      const bucket = e.target.closest('.bp-bucket');
+      bpEdit[bucket.dataset.sec][Number(bucket.dataset.i)].areas.push(val);
+      drawStudio(view);
+    });
+    // structural + command buttons
+    host.addEventListener('click', async e => {
+      const btn = e.target.closest('[data-act]'); if (!btn) return;
+      const act = btn.dataset.act;
+      const bucket = btn.closest('.bp-bucket');
+      if (act === 'del-bucket') { bpEdit[bucket.dataset.sec].splice(Number(bucket.dataset.i), 1); return drawStudio(view); }
+      if (act === 'del-area') { bpEdit[bucket.dataset.sec][Number(bucket.dataset.i)].areas.splice(Number(btn.dataset.ai), 1); return drawStudio(view); }
+      if (act === 'add-sba') { bpEdit.sba.push({ category: '', subcategory: '', weight: 5, areas: [] }); return drawStudio(view); }
+      if (act === 'add-emq') { bpEdit.emq.push({ theme: '', weight: 5, areas: [] }); return drawStudio(view); }
+      if (act === 'add-pri') { bpEdit.priority.push({ match: '', boost: 1.2 }); return drawStudio(view); }
+      if (act === 'del-pri') { bpEdit.priority.splice(Number(btn.closest('.bp-pri-row').dataset.i), 1); return drawStudio(view); }
+      if (act === 'norm-sba') { normalizeTo100(bpEdit.sba); return drawStudio(view); }
+      if (act === 'norm-emq') { normalizeTo100(bpEdit.emq); return drawStudio(view); }
+      if (act === 'cover') return runCoverage(view);
+      if (act === 'revert') return openBlueprintStudio(view);
+      if (act === 'close') { bpEdit = null; bpCoverage = null; host.innerHTML = ''; return refreshBlueprint(view); }
+      if (act === 'export') return exportBlueprint();
+      if (act === 'save') return saveStudio(view);
+    });
+  }
+
+  async function saveStudio(view) {
+    const status = view.querySelector('#bp-studio-status');
+    // guardrails: clean empty buckets, require names
+    bpEdit.sba = bpEdit.sba.filter(b => (b.subcategory || b.category) && b.weight > 0);
+    bpEdit.emq = bpEdit.emq.filter(b => b.theme && b.weight > 0);
+    bpEdit.priority = bpEdit.priority.filter(p => p.match);
+    if (!bpEdit.sba.length && !bpEdit.emq.length) { status.innerHTML = '<span class="bad">Add at least one weighted bucket.</span>'; return; }
+    bpEdit.version = (Number(bpEdit.version) || 1) + 1;
+    bpEdit.updated = new Date().toISOString().slice(0, 10);
+    status.textContent = 'Saving…'; status.className = 'dev-status';
+    try {
+      await Blueprint.save(JSON.parse(JSON.stringify(bpEdit)));   // persists + busts cache → next mock uses it
+      status.innerHTML = `<span class="good">✓ Saved v${bpEdit.version} — the next mock uses it.</span>`;
+      await refreshBlueprint(view);
+      drawStudio(view);
+    } catch (e) { status.innerHTML = `<span class="bad">${ctx.esc(e.message || e)}</span>`; }
+  }
+
+  function exportBlueprint() {
+    const md = Blueprint.toMarkdown(bpEdit);
+    const blob = new Blob([md], { type: 'text/markdown' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `blueprint-v${bpEdit.version || 1}.md`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
   }
 
   /* ---------------- users & feature flags ---------------- */
