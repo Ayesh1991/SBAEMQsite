@@ -686,6 +686,31 @@ create table if not exists public.discussion_replies (
   created_at timestamptz default now()
 );
 create index if not exists disc_reply_idx on public.discussion_replies (discussion_id, created_at);
+
+-- Reply counts are kept on the thread row by a trigger. Without this the app
+-- had to read EVERY reply row just to draw "12 comments" badges — an unbounded
+-- query that grew with the board. One integer column removes it entirely.
+alter table public.discussions add column if not exists reply_count integer not null default 0;
+create or replace function public.bump_discussion_replies()
+returns trigger language plpgsql security definer as $$
+begin
+  if TG_OP = 'INSERT' then
+    update public.discussions set reply_count = reply_count + 1 where id = new.discussion_id;
+    return new;
+  elsif TG_OP = 'DELETE' then
+    update public.discussions set reply_count = greatest(0, reply_count - 1) where id = old.discussion_id;
+    return old;
+  end if;
+  return null;
+end; $$;
+drop trigger if exists on_discussion_reply on public.discussion_replies;
+create trigger on_discussion_reply
+  after insert or delete on public.discussion_replies
+  for each row execute function public.bump_discussion_replies();
+-- backfill for boards created before the column existed
+update public.discussions d
+   set reply_count = (select count(*) from public.discussion_replies r where r.discussion_id = d.id)
+ where d.reply_count = 0;
 alter table public.discussion_replies enable row level security;
 drop policy if exists "disc replies read" on public.discussion_replies;
 drop policy if exists "disc replies insert" on public.discussion_replies;

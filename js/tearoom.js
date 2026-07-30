@@ -34,7 +34,8 @@ const TeaRoom = (() => {
   let threads = [];                 // newest first
   const replies = {};               // threadId → [reply]
   const openThreads = new Set();    // thread ids whose comments are expanded
-  let loaded = false, loading = null;
+  let loaded = false, loading = null, moreAvailable = false;
+  const PAGE = 40;                  // threads per fetch — keeps the first paint small
   let pollTimer = null, lastPoll = null;
   let dockEl = null, dockOpen = false, dockMin = false;
   let panelHost = null;             // Studio panel mount, when on that page
@@ -94,7 +95,8 @@ const TeaRoom = (() => {
     if (loading) return loading;
     loading = (async () => {
       try {
-        threads = (await Backend.listDiscussions?.()) || [];
+        threads = (await Backend.listDiscussions?.({ limit: PAGE })) || [];
+        moreAvailable = threads.length >= PAGE;
         threads.sort((a, b) => ts(b) - ts(a));
         loaded = true;
         lastPoll = new Date(Math.max(latestStamp(), now() - 60000)).toISOString();
@@ -190,32 +192,50 @@ const TeaRoom = (() => {
 
   /* ---------------- rendering ---------------- */
 
-  function questionCardHTML(t) {
+  /* EGRESS: the thread list carries no question bodies — only the flag that
+     one exists. The snapshot is pulled once, on first expand, and cached for
+     the session. A busy board therefore costs a list of one-line rows, not a
+     broadcast of every stem and option to every reader. */
+  function questionShellHTML(t) {
+    if (!t.hasQuestion && !t.answer_text && !t.question) return '';
+    return `<details class="tr-q" data-q-shell>
+      <summary><span class="tr-q-kind">Q</span>${esc(t.paper_title || 'Question')}<span class="tr-q-more">show question</span></summary>
+      <div class="tr-q-body" data-q-body><p class="tr-empty">Loading question…</p></div>
+    </details>`;
+  }
+  async function fillQuestion(card, id) {
+    const body = card.querySelector('[data-q-body]');
+    if (!body || body.dataset.done === '1') return;
+    const t = threads.find(x => x.id === id);
+    if (!t.question && !t._qLoaded) {
+      try { Object.assign(t, (await Backend.getDiscussionQuestion?.(id)) || {}); } catch {}
+      t._qLoaded = true;
+    }
+    body.dataset.done = '1';
+    body.innerHTML = questionBodyHTML(t) || '<p class="tr-empty">No question attached.</p>';
+  }
+
+  function questionBodyHTML(t) {
     const q = t.question;
     if (!q) {
       // legacy thread (answer-only) — still render what we kept
       if (!t.answer_text && !t.rationale) return '';
-      return `<div class="tr-q"><div class="tr-q-body">
-        ${t.answer_text ? `<p class="tr-q-ans"><b>Answer:</b> ${esc(t.answer_text)}</p>` : ''}
-        ${t.rationale ? `<p class="tr-q-rat">${esc(t.rationale)}</p>` : ''}</div></div>`;
+      return `${t.answer_text ? `<p class="tr-q-ans"><b>Answer:</b> ${esc(t.answer_text)}</p>` : ''}
+        ${t.rationale ? `<p class="tr-q-rat">${esc(t.rationale)}</p>` : ''}`;
     }
     const opts = (q.options || []).map((o, i) => `
       <li class="${i === q.answer ? 'is-answer' : ''}">
         ${q.preLettered ? '' : `<span class="tr-q-let">${LETTERS[i]}</span>`}<span>${esc(o)}</span>
         ${i === q.answer ? '<span class="tr-q-tick">✓</span>' : ''}
       </li>`).join('');
-    return `<details class="tr-q">
-      <summary><span class="tr-q-kind">${esc(q.kind || 'SBA')}</span>${esc(t.paper_title || '')}<span class="tr-q-more">show question</span></summary>
-      <div class="tr-q-body">
-        ${q.theme ? `<p class="tr-q-theme">${esc(q.theme)}</p>` : ''}
-        <p class="tr-q-stem">${esc(q.stem || '')}</p>
-        ${q.lead ? `<p class="tr-q-lead">${esc(q.lead)}</p>` : ''}
-        ${opts ? `<ol class="tr-q-opts">${opts}</ol>` : ''}
-        ${q.rationale ? `<p class="tr-q-rat">${esc(q.rationale)}</p>` : ''}
-        ${q.hook ? `<p class="tr-q-hook">💡 ${esc(q.hook)}</p>` : ''}
-        ${q.reference ? `<p class="tr-q-ref">§ ${esc(q.reference)}</p>` : ''}
-      </div>
-    </details>`;
+    return `
+      ${q.theme ? `<p class="tr-q-theme">${esc(q.theme)}</p>` : ''}
+      <p class="tr-q-stem">${esc(q.stem || '')}</p>
+      ${q.lead ? `<p class="tr-q-lead">${esc(q.lead)}</p>` : ''}
+      ${opts ? `<ol class="tr-q-opts">${opts}</ol>` : ''}
+      ${q.rationale ? `<p class="tr-q-rat">${esc(q.rationale)}</p>` : ''}
+      ${q.hook ? `<p class="tr-q-hook">💡 ${esc(q.hook)}</p>` : ''}
+      ${q.reference ? `<p class="tr-q-ref">§ ${esc(q.reference)}</p>` : ''}`;
   }
 
   function threadCardHTML(t, compact) {
@@ -231,7 +251,7 @@ const TeaRoom = (() => {
         ${t.mine ? `<button class="tr-del" data-act="del-thread" title="Delete">🗑</button>` : ''}
       </header>
       <p class="tr-topic">${esc(t.topic)}</p>
-      ${questionCardHTML(t)}
+      ${questionShellHTML(t)}
       <div class="tr-actions">
         <button class="tr-link" data-act="toggle">${open ? '▾ Hide' : '▸ '}${n ? `${n} ${n === 1 ? 'comment' : 'comments'}` : 'Comment'}</button>
       </div>
@@ -258,7 +278,8 @@ const TeaRoom = (() => {
 
   function listHTML(compact) {
     if (!threads.length) return `<p class="tr-empty big">The tea room is quiet.<br>Start a topic, or tap ☕ <b>Discuss with friends</b> under any question's explanation.</p>`;
-    return threads.map(t => threadCardHTML(t, compact)).join('');
+    return threads.map(t => threadCardHTML(t, compact)).join('')
+      + (moreAvailable ? `<button class="tr-older" data-act="older">Load older discussions</button>` : '');
   }
 
   function composerHTML() {
@@ -319,6 +340,17 @@ const TeaRoom = (() => {
 
       if (act === 'mute') { setMute(Number(btn.dataset.m) * 60000); repaint(); return; }
       if (act === 'unmute') { setMute(0); repaint(); return; }
+      if (act === 'older') {
+        btn.disabled = true; btn.textContent = 'Loading…';
+        const oldest = threads.length ? threads[threads.length - 1].created_at : null;
+        try {
+          const more = (await Backend.listDiscussions({ limit: PAGE, before: oldest })) || [];
+          moreAvailable = more.length >= PAGE;
+          more.forEach(t => { if (!threads.some(x => x.id === t.id)) threads.push(t); });
+          repaint();
+        } catch { btn.disabled = false; btn.textContent = 'Load older discussions'; }
+        return;
+      }
 
       if (act === 'new') {
         const ta = root.querySelector('#tr-new-text, .tr-new textarea');
@@ -375,6 +407,14 @@ const TeaRoom = (() => {
       send?.click();
     });
     root.addEventListener('input', e => { if (e.target.tagName === 'TEXTAREA') autoGrow(e.target); });
+    // first expand of a question pulls its snapshot (once per session)
+    root.addEventListener('toggle', e => {
+      const d = e.target;
+      if (d.matches?.('[data-q-shell]') && d.open) {
+        const card = d.closest('[data-tid]');
+        if (card) fillQuestion(d, card.dataset.tid);
+      }
+    }, true);
     // reading the room marks it read
     root.addEventListener('scroll', () => markSeen(Math.max(latestStamp(), seenAt())), { capture: true, passive: true });
   }

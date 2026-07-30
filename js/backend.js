@@ -354,9 +354,20 @@ const Backend = (() => {
         replies: Object.values(replies).flat().filter(r => r.created_at > since).map(r => ({ ...r, mine: r.user_id === e }))
       };
     }
-    async function listDiscussions() {
+    async function listDiscussions(opts) {
       const e = sessionEmail(); const replies = read('discR', {});
-      return read('disc', []).map(d => ({ ...d, mine: d.user_id === e, reply_count: (replies[d.id] || []).length }));
+      let rows = read('disc', []);
+      if (opts?.before) rows = rows.filter(d => d.created_at < opts.before);
+      // mirror the cloud's slim projection so both paths behave identically
+      return rows.slice(0, opts?.limit || 40).map(d => ({
+        id: d.id, user_id: d.user_id, author_name: d.author_name, question_key: d.question_key,
+        paper_title: d.paper_title, topic: d.topic, created_at: d.created_at,
+        reply_count: (replies[d.id] || []).length, mine: d.user_id === e, hasQuestion: !!d.question_key
+      }));
+    }
+    async function getDiscussionQuestion(discId) {
+      const d = read('disc', []).find(x => x.id === discId);
+      return d ? { question: d.question || null, answer_text: d.answer_text || null, rationale: d.rationale || null } : null;
     }
     async function deleteDiscussion(id) { write('disc', read('disc', []).filter(d => d.id !== id)); const r = read('discR', {}); delete r[id]; write('discR', r); }
     async function listDiscussionReplies(id) { const e = sessionEmail(); return (read('discR', {})[id] || []).map(r => ({ ...r, mine: r.user_id === e })); }
@@ -407,7 +418,7 @@ const Backend = (() => {
       listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, setPref, listAiUsage, listAiTokenUsage, listMyTokenUsage, getEligibleCounts,
       logEvents, listRecentEvents, bumpQuestionStats, listQuestionStats, saveCohortScore, listCohortScores,
       listAllFlags, resolveFlags, listGlobalFlaggedKeys, saveUserDeck, listUserDecks, deleteUserDeck,
-      addDiscussion, listDiscussions, deleteDiscussion, listDiscussionReplies, addDiscussionReply, deleteDiscussionReply, pollDiscussions,
+      addDiscussion, listDiscussions, deleteDiscussion, listDiscussionReplies, addDiscussionReply, deleteDiscussionReply, pollDiscussions, getDiscussionQuestion,
       listUserNotes, saveUserNote, deleteUserNote,
       getAiFeatures, saveAiFeatures, listSharedUsage, saveQuestionTags, listQuestionTags, getAccessToken };
   })();
@@ -813,25 +824,33 @@ const Backend = (() => {
       await ensureClient(); const id = await uid(); if (!id) return { threads: [], replies: [] };
       const since = sinceIso || new Date(Date.now() - 60000).toISOString();
       const [t, r] = await Promise.all([
-        sb.from('discussions').select('*').gt('created_at', since).order('created_at', { ascending: true }).limit(80),
-        sb.from('discussion_replies').select('*').gt('created_at', since).order('created_at', { ascending: true }).limit(200)
+        sb.from('discussions').select(DISC_COLS).gt('created_at', since).order('created_at', { ascending: true }).limit(80),
+        sb.from('discussion_replies').select('id,discussion_id,user_id,author_name,body,created_at').gt('created_at', since).order('created_at', { ascending: true }).limit(200)
       ]);
       return {
-        threads: (t.data || []).map(x => ({ ...x, mine: x.user_id === id, reply_count: 0 })),
+        threads: (t.data || []).map(x => ({ ...x, mine: x.user_id === id, hasQuestion: !!x.question_key })),
         replies: (r.data || []).map(x => ({ ...x, mine: x.user_id === id }))
       };
     }
-    async function listDiscussions() {
+    /* EGRESS: the list ships only what a card needs. The question snapshot and
+       rationale are the heaviest fields and are collapsed in the UI anyway, so
+       they are fetched lazily per thread (getDiscussionQuestion) instead of
+       being broadcast for every row. Reply counts come from the trigger-kept
+       column, so drawing badges costs nothing. */
+    const DISC_COLS = 'id,user_id,author_name,question_key,paper_title,topic,created_at,reply_count';
+    async function listDiscussions(opts) {
       await ensureClient(); const id = await uid();
-      const { data } = await sb.from('discussions').select('*').order('created_at', { ascending: false }).limit(200);
-      const rows = data || [];
-      // one grouped count query for reply badges (cheap, avoids N round-trips)
-      let counts = {};
-      try {
-        const ids = rows.map(r => r.id);
-        if (ids.length) { const { data: reps } = await sb.from('discussion_replies').select('discussion_id').in('discussion_id', ids); (reps || []).forEach(r => counts[r.discussion_id] = (counts[r.discussion_id] || 0) + 1); }
-      } catch {}
-      return rows.map(r => ({ ...r, mine: r.user_id === id, reply_count: counts[r.id] || 0 }));
+      const limit = opts?.limit || 40;
+      let q = sb.from('discussions').select(DISC_COLS).order('created_at', { ascending: false }).limit(limit);
+      if (opts?.before) q = q.lt('created_at', opts.before);          // "load older" paging
+      const { data } = await q;
+      return (data || []).map(r => ({ ...r, mine: r.user_id === id, hasQuestion: !!r.question_key }));
+    }
+    /** The heavy part of one thread, fetched only when a reader opens it. */
+    async function getDiscussionQuestion(discId) {
+      await ensureClient();
+      const { data } = await sb.from('discussions').select('question,answer_text,rationale').eq('id', discId).single();
+      return data || null;
     }
     async function deleteDiscussion(discId) { await ensureClient(); const id = await uid(); if (!id) return; await sb.from('discussions').delete().eq('id', discId).eq('user_id', id); }
     async function listDiscussionReplies(discId) {
@@ -1035,7 +1054,7 @@ const Backend = (() => {
       listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, setPref, listAiUsage, listAiTokenUsage, listMyTokenUsage, getEligibleCounts,
       logEvents, listRecentEvents, bumpQuestionStats, listQuestionStats, saveCohortScore, listCohortScores,
       listAllFlags, resolveFlags, listGlobalFlaggedKeys, saveUserDeck, listUserDecks, deleteUserDeck,
-      addDiscussion, listDiscussions, deleteDiscussion, listDiscussionReplies, addDiscussionReply, deleteDiscussionReply, pollDiscussions,
+      addDiscussion, listDiscussions, deleteDiscussion, listDiscussionReplies, addDiscussionReply, deleteDiscussionReply, pollDiscussions, getDiscussionQuestion,
       listUserNotes, saveUserNote, deleteUserNote,
       getAiFeatures, saveAiFeatures, listSharedUsage, saveQuestionTags, listQuestionTags, getAccessToken };
   })();

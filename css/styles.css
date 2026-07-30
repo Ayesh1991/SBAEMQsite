@@ -2112,3 +2112,5 @@ textarea.nc-input { min-height: 90px; resize: vertical; }
 }
 /* energy-saving keeps the chat, drops its motion */
 .energy-saving .tr-dock.is-open { animation: none; }
+.tr-older { width: 100%; padding: 9px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink-2); font-size: .78rem; cursor: pointer; margin-top: 4px; }
+.tr-older:hover { color: var(--ink); border-color: var(--gold); }
