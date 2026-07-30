@@ -341,8 +341,18 @@ const Backend = (() => {
       const list = read('disc', []);
       const row = { id: 'd' + Date.now() + Math.random().toString(36).slice(2, 6), user_id: e, author_name: discAuthor(),
         question_key: post.questionKey || null, paper_title: post.paperTitle || null, answer_text: post.answerText || null,
-        rationale: post.rationale || null, topic: post.topic || '', created_at: new Date().toISOString(), reply_count: 0, mine: true };
+        rationale: post.rationale || null, question: post.question || null, topic: post.topic || '',
+        created_at: new Date().toISOString(), reply_count: 0, mine: true };
       list.unshift(row); write('disc', list); return row;
+    }
+    async function pollDiscussions(sinceIso) {
+      const e = sessionEmail(); if (!e) return { threads: [], replies: [] };
+      const since = sinceIso || '';
+      const replies = read('discR', {});
+      return {
+        threads: read('disc', []).filter(d => d.created_at > since).map(d => ({ ...d, mine: d.user_id === e })),
+        replies: Object.values(replies).flat().filter(r => r.created_at > since).map(r => ({ ...r, mine: r.user_id === e }))
+      };
     }
     async function listDiscussions() {
       const e = sessionEmail(); const replies = read('discR', {});
@@ -397,7 +407,7 @@ const Backend = (() => {
       listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, setPref, listAiUsage, listAiTokenUsage, listMyTokenUsage, getEligibleCounts,
       logEvents, listRecentEvents, bumpQuestionStats, listQuestionStats, saveCohortScore, listCohortScores,
       listAllFlags, resolveFlags, listGlobalFlaggedKeys, saveUserDeck, listUserDecks, deleteUserDeck,
-      addDiscussion, listDiscussions, deleteDiscussion, listDiscussionReplies, addDiscussionReply, deleteDiscussionReply,
+      addDiscussion, listDiscussions, deleteDiscussion, listDiscussionReplies, addDiscussionReply, deleteDiscussionReply, pollDiscussions,
       listUserNotes, saveUserNote, deleteUserNote,
       getAiFeatures, saveAiFeatures, listSharedUsage, saveQuestionTags, listQuestionTags, getAccessToken };
   })();
@@ -790,10 +800,26 @@ const Backend = (() => {
     async function addDiscussion(post) {
       await ensureClient(); const id = await uid(); if (!id) throw new Error('Not signed in.');
       const row = { user_id: id, author_name: await discAuthorName(), question_key: post.questionKey || null,
-        paper_title: post.paperTitle || null, answer_text: post.answerText || null, rationale: post.rationale || null, topic: post.topic || '' };
+        paper_title: post.paperTitle || null, answer_text: post.answerText || null, rationale: post.rationale || null,
+        question: post.question || null, topic: post.topic || '' };
       const { data, error } = await sb.from('discussions').insert(row).select().single();
       if (error) throw error;
       return { ...data, mine: true, reply_count: 0 };
+    }
+    /* Incremental poll for live chat: only rows newer than `sinceIso`, so a
+       quiet board costs two near-empty queries and the tea room stays live
+       without anyone reloading the tab. */
+    async function pollDiscussions(sinceIso) {
+      await ensureClient(); const id = await uid(); if (!id) return { threads: [], replies: [] };
+      const since = sinceIso || new Date(Date.now() - 60000).toISOString();
+      const [t, r] = await Promise.all([
+        sb.from('discussions').select('*').gt('created_at', since).order('created_at', { ascending: true }).limit(80),
+        sb.from('discussion_replies').select('*').gt('created_at', since).order('created_at', { ascending: true }).limit(200)
+      ]);
+      return {
+        threads: (t.data || []).map(x => ({ ...x, mine: x.user_id === id, reply_count: 0 })),
+        replies: (r.data || []).map(x => ({ ...x, mine: x.user_id === id }))
+      };
     }
     async function listDiscussions() {
       await ensureClient(); const id = await uid();
@@ -1009,7 +1035,7 @@ const Backend = (() => {
       listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, setPref, listAiUsage, listAiTokenUsage, listMyTokenUsage, getEligibleCounts,
       logEvents, listRecentEvents, bumpQuestionStats, listQuestionStats, saveCohortScore, listCohortScores,
       listAllFlags, resolveFlags, listGlobalFlaggedKeys, saveUserDeck, listUserDecks, deleteUserDeck,
-      addDiscussion, listDiscussions, deleteDiscussion, listDiscussionReplies, addDiscussionReply, deleteDiscussionReply,
+      addDiscussion, listDiscussions, deleteDiscussion, listDiscussionReplies, addDiscussionReply, deleteDiscussionReply, pollDiscussions,
       listUserNotes, saveUserNote, deleteUserNote,
       getAiFeatures, saveAiFeatures, listSharedUsage, saveQuestionTags, listQuestionTags, getAccessToken };
   })();

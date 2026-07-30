@@ -392,7 +392,8 @@ const Quiz = (() => {
       QEdit.mount(box.querySelector('.qedit-slot'), {
         questionKey: questionKey(i), rationale: q.rationale || '',
         paperTitle: state.loaded.paper.topic || state.loaded.meta.title,
-        answerText: (q.preLettered ? '' : LETTERS[q.answer] + '. ') + q.options[q.answer]
+        answerText: (q.preLettered ? '' : LETTERS[q.answer] + '. ') + q.options[q.answer],
+        question: snapshotQuestion(q)
       });
     }
 
@@ -400,6 +401,16 @@ const Quiz = (() => {
     if (typeof AI !== "undefined" && (window.AUREUM_CONFIG?.ai?.enabled)) {
       AI.attach(box.querySelector('#ai-slot'), aiContext(i));
     }
+  }
+
+  /** A portable copy of a question — everything needed to re-render it
+      elsewhere (the tea room shares the WHOLE question, not just the answer). */
+  function snapshotQuestion(q) {
+    return {
+      kind: q.kind, theme: q.theme || '', instruction: q.instruction || '',
+      stem: q.stem, lead: q.lead || '', options: q.options || [], answer: q.answer,
+      preLettered: !!q.preLettered, rationale: q.rationale || '', hook: q.hook || '', reference: q.reference || ''
+    };
   }
 
   function aiContext(i) {
@@ -524,5 +535,5 @@ const Quiz = (() => {
     finish(attempt);
   }
 
-  return { start, destroy, LETTERS, esc };
+  return { start, destroy, LETTERS, esc, snapshotQuestion };
 })();

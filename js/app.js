@@ -89,6 +89,8 @@
     window.__aureumUser = user;
     if (user) applyPrefsAppearance(user);       // theme + energy-saving from prefs
     renderNav(user);
+    startTeaRoom(user);                         // live chat + dock, once per session
+    if (typeof TeaRoom !== 'undefined') TeaRoom.releasePanel();   // leaving a page drops its panel mount
     view.className = 'view';
     _lastHash = hash;
     try {
@@ -145,7 +147,7 @@
         ${user ? `
           <a href="#/dashboard" class="${location.hash === '#/dashboard' ? 'active' : ''}">Dashboard</a>
           <a href="#/library" class="${location.hash.startsWith('#/library') || location.hash.startsWith('#/paper') ? 'active' : ''}">Library</a>
-          <a href="#/studio" class="${location.hash === '#/studio' ? 'active' : ''}">Studio</a>
+          <a href="#/studio" class="${location.hash === '#/studio' ? 'active' : ''}">Studio<span class="nav-badge nav-badge-tea" id="nav-tea-badge" hidden></span></a>
           <a href="#/peer" class="${location.hash === '#/peer' ? 'active' : ''}">Peer review</a>
           ${simOn ? `<a href="#/simulator" class="${location.hash.startsWith('#/simulator') ? 'active' : ''}">Simulator</a>` : ''}
           ${isDev ? `<a href="#/dev" class="${location.hash.startsWith('#/dev') ? 'active' : ''}">Developer<span class="nav-badge" id="nav-dev-badge" hidden></span></a>` : ''}
@@ -165,6 +167,27 @@
     nav.querySelectorAll('.nav-links a').forEach(a => a.addEventListener('click', () => nav.classList.remove('nav-open')));
     // developer: pending approvals badge (proposals + registrations)
     if (isDev) refreshDevBadge();
+    // tea room: unread count on the Studio tab, kept live by the module
+    if (user) paintTeaBadge(typeof TeaRoom !== 'undefined' ? TeaRoom.unreadCount() : 0);
+  }
+
+  function paintTeaBadge(n) {
+    const b = document.getElementById('nav-tea-badge');
+    if (!b) return;
+    b.textContent = n > 99 ? '99+' : n;
+    b.hidden = !n;
+  }
+  /* Start the tea room once per signed-in session: it owns its own polling,
+     the floating dock and the launcher bubble from here on. */
+  let _teaStarted = false;
+  function startTeaRoom(user) {
+    if (typeof TeaRoom === 'undefined') return;
+    if (!user) { if (_teaStarted) { TeaRoom.unmountLauncher(); _teaStarted = false; } return; }
+    if (_teaStarted) return;
+    _teaStarted = true;
+    TeaRoom.onChange(paintTeaBadge);
+    TeaRoom.mountLauncher();
+    TeaRoom.init();
   }
 
   // small red count on the Developer tab: pending proposals + pending users
@@ -1108,7 +1131,8 @@
         if (typeof QEdit !== 'undefined') {
           QEdit.mount(item.querySelector('.qedit-slot'), {
             questionKey: nKey, rationale: q.rationale || '', paperTitle: attempt.paperTitle,
-            answerText: (q.preLettered ? '' : Quiz.LETTERS[q.answer] + '. ') + q.options[q.answer]
+            answerText: (q.preLettered ? '' : Quiz.LETTERS[q.answer] + '. ') + q.options[q.answer],
+            question: Quiz.snapshotQuestion(q)
           });
         }
         // AI ("AI" is a lexical const — window.AI is always undefined, so the
@@ -1667,11 +1691,10 @@
         <div id="studio-panel" data-animate><p class="muted">Loading…</p></div>
       </section>`;
 
-    const [items, notes, papers, discussions] = await Promise.all([
+    const [items, notes, papers] = await Promise.all([
       Backend.listAiItems ? Backend.listAiItems().catch(() => []) : Promise.resolve([]),
       Backend.listAllNotes ? Backend.listAllNotes().catch(() => []) : Promise.resolve([]),
-      Data.publishedPapers().catch(() => []),
-      Backend.listDiscussions ? Backend.listDiscussions().catch(() => []) : Promise.resolve([])
+      Data.publishedPapers().catch(() => [])
     ]);
     const titleOf = {}; papers.forEach(p => titleOf[p.id] = p.title);
 
@@ -1695,7 +1718,7 @@
     const panel = view.querySelector('#studio-panel');
     const consoleEl = view.querySelector('#studio-console');
     const tiles = [
-      { id: 'tearoom', ico: '☕', title: 'Tea room', sub: 'Discuss with friends', count: discussions.length, accent: 'linear-gradient(135deg,#f4c95d,#e8a33d)' },
+      { id: 'tearoom', ico: '☕', title: 'Tea room', sub: 'Discuss with friends', count: (typeof TeaRoom !== 'undefined' ? TeaRoom.unreadCount() : 0) || '💬', accent: 'linear-gradient(135deg,#f4c95d,#e8a33d)' },
       { id: 'creations', ico: '✨', title: 'AI creations', sub: 'Charts · mind maps · chats', count: creations.length, accent: 'linear-gradient(135deg,#7dd3fc,#a78bfa)' },
       { id: 'notes', ico: '🗒', title: 'My notes', sub: 'Quick jottings by question', count: noteList.length, accent: 'linear-gradient(135deg,#5eead4,#34d399)' }
     ];
@@ -1804,75 +1827,11 @@
       draw();
     }
 
-    /* ---- panel: Tea room (shared discussions) ---- */
+    /* ---- panel: Tea room — delegated to the TeaRoom module, so the page
+           panel and the floating dock share one live state. ---- */
     function drawTearoom() {
-      panel.innerHTML = `
-        <div class="tearoom-intro card">
-          <h3>☕ Tea room</h3>
-          <p class="muted">Concepts worth chewing over with friends. Post a question the board can see, and reply to each other's — like debating a stem over a cup of tea.</p>
-          <div class="tearoom-compose">
-            <textarea id="tea-new" placeholder="Start a discussion — a tricky concept, a disputed answer, an exam-day dilemma…"></textarea>
-            <button class="btn btn-gold" id="tea-post">Post to the tea room</button>
-          </div>
-        </div>
-        <div id="tea-list"></div>`;
-      const listEl = panel.querySelector('#tea-list');
-      panel.querySelector('#tea-post').addEventListener('click', async () => {
-        const topic = panel.querySelector('#tea-new').value.trim();
-        if (!topic) return;
-        const btn = panel.querySelector('#tea-post'); btn.disabled = true; btn.textContent = 'Posting…';
-        try { const row = await Backend.addDiscussion({ topic }); discussions.unshift(row); tiles.find(t => t.id === 'tearoom').count = discussions.length; drawConsole(); panel.querySelector('#tea-new').value = ''; drawList(); }
-        catch (e) { alert('Could not post: ' + (e.message || e)); }
-        btn.disabled = false; btn.textContent = 'Post to the tea room';
-      });
-      function drawList() {
-        if (!discussions.length) { listEl.innerHTML = `<p class="muted studio-empty">The tea room is quiet. Start a topic above, or tap ☕ Discuss with friends under any question's explanation.</p>`; return; }
-        listEl.innerHTML = discussions.map((d, i) => `
-          <article class="tea-post" data-di="${i}">
-            <div class="tea-post-head">
-              <span class="tea-author">${esc(d.author_name || 'A friend')}</span>
-              <span class="tea-when muted">${d.created_at ? esc(new Date(d.created_at).toLocaleDateString()) : ''}</span>
-              ${d.mine ? `<button class="tea-del" data-del="${i}" title="Delete your post">🗑</button>` : ''}
-            </div>
-            <p class="tea-topic">${esc(d.topic)}</p>
-            ${d.question_key ? `<div class="tea-ctx">${d.paper_title ? `<span class="tea-paper">${esc(d.paper_title)}</span>` : ''}${d.answer_text ? `<div class="tea-ans"><strong>Answer:</strong> ${esc(d.answer_text)}</div>` : ''}${d.rationale ? `<div class="tea-rat">${esc(d.rationale)}</div>` : ''}</div>` : ''}
-            <button class="btn btn-ghost btn-sm tea-toggle" data-toggle="${i}">💬 ${d.reply_count || 0} ${(d.reply_count === 1) ? 'reply' : 'replies'}</button>
-            <div class="tea-replies" id="tea-replies-${i}" hidden></div>
-          </article>`).join('');
-        listEl.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async () => {
-          const d = discussions[Number(b.dataset.del)]; if (!d || !confirm('Delete your post and its replies?')) return;
-          try { await Backend.deleteDiscussion(d.id); } catch {}
-          discussions.splice(Number(b.dataset.del), 1); tiles.find(t => t.id === 'tearoom').count = discussions.length; drawConsole(); drawList();
-        }));
-        listEl.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () => openReplies(Number(b.dataset.toggle))));
-      }
-      async function openReplies(i) {
-        const d = discussions[i];
-        const box = panel.querySelector(`#tea-replies-${i}`);
-        if (!box.hidden) { box.hidden = true; return; }
-        box.hidden = false;
-        box.innerHTML = `<p class="muted">Loading replies…</p>`;
-        let replies = [];
-        try { replies = await Backend.listDiscussionReplies(d.id); } catch {}
-        function paint() {
-          box.innerHTML = `
-            ${replies.map(r => `<div class="tea-reply"><span class="tea-author">${esc(r.author_name || 'A friend')}</span> <span class="tea-when muted">${r.created_at ? esc(new Date(r.created_at).toLocaleDateString()) : ''}</span>${r.mine ? ` <button class="tea-del" data-rdel="${r.id}" title="Delete">🗑</button>` : ''}<p>${esc(r.body)}</p></div>`).join('')}
-            <div class="tea-reply-compose"><textarea placeholder="Add your take…"></textarea><button class="btn btn-primary btn-sm tea-reply-send">Reply</button></div>`;
-          box.querySelector('.tea-reply-send').addEventListener('click', async () => {
-            const ta = box.querySelector('textarea'); const body = ta.value.trim(); if (!body) return;
-            const sb = box.querySelector('.tea-reply-send'); sb.disabled = true;
-            try { const row = await Backend.addDiscussionReply(d.id, body); replies.push(row); d.reply_count = (d.reply_count || 0) + 1; paint(); const tog = panel.querySelector(`[data-toggle="${i}"]`); if (tog) tog.textContent = `💬 ${d.reply_count} ${d.reply_count === 1 ? 'reply' : 'replies'}`; }
-            catch (e) { alert('Could not reply: ' + (e.message || e)); sb.disabled = false; }
-          });
-          box.querySelectorAll('[data-rdel]').forEach(rb => rb.addEventListener('click', async () => {
-            const rid = rb.dataset.rdel; try { await Backend.deleteDiscussionReply(d.id, rid); } catch {}
-            replies = replies.filter(x => x.id !== rid); d.reply_count = Math.max(0, (d.reply_count || 1) - 1); paint();
-            const tog = panel.querySelector(`[data-toggle="${i}"]`); if (tog) tog.textContent = `💬 ${d.reply_count} ${d.reply_count === 1 ? 'reply' : 'replies'}`;
-          }));
-        }
-        paint();
-      }
-      drawList();
+      if (typeof TeaRoom === 'undefined') { panel.innerHTML = '<p class="muted">Tea room unavailable.</p>'; return; }
+      TeaRoom.renderPanel(panel);
     }
 
     drawConsole(); drawPanel();

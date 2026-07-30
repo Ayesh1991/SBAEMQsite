@@ -290,30 +290,43 @@ const DevConsole = (() => {
      Turns "I edited an area" into "…and 7 real questions back it" (or zero). */
   const bpNorm = s => Blueprint.normStr(s);
   const bpSameCat = (a, b) => { a = bpNorm(a); b = bpNorm(b); return a && b && (a === b || a.includes(b) || b.includes(a)); };
-  function areaWords(a) { return bpNorm(a).split(' ').filter(w => w.length > 4); }
+  /* Significant words of an area. Long words discriminate best, but short
+     acronyms (HIV, DSD, GTD, LSCS) ARE the topic — falling back to them stops
+     those areas being reported as "no match" when the bank is full of them. */
+  function areaWords(a) {
+    const all = bpNorm(a).split(' ').filter(Boolean);
+    const long = all.filter(w => w.length > 4);
+    return long.length ? long : all.filter(w => w.length >= 3);
+  }
 
   async function buildCoverageIndex() {
     const index = await Simulator.buildIndex();          // [{qkey,kind,category,group,text}]
     let tags = {};
     try { (await ctx.Backend.listQuestionTags?.() || []).forEach(t => tags[t.questionKey] = t); } catch { /* untagged bank still works */ }
+    // Pre-tokenise once. Token-set lookups are O(1), so a 9k-question bank
+    // scans instantly instead of running tens of thousands of substring scans.
     return index.map(r => {
       const tg = tags[r.qkey];
-      const text = tg ? [tg.topic, tg.category, ...(tg.tags || [])].filter(Boolean).join(' ') + ' ' + r.text : r.text;
-      return { kind: r.kind, category: r.category, text: bpNorm(text), tagTopic: tg?.topic || '' };
+      const text = bpNorm(tg ? [tg.topic, tg.category, ...(tg.tags || [])].filter(Boolean).join(' ') + ' ' + r.text : r.text);
+      return { kind: r.kind, category: r.category, text, tokens: new Set(text.split(' ')), tagTopic: tg?.topic || '' };
     });
   }
   function coverBuckets(enriched, buckets, kind, keyOf, catGate) {
+    const byKind = enriched.filter(r => r.kind === kind);
     return buckets.map(b => {
       const name = keyOf(b), nName = bpNorm(name);
-      const pool = enriched.filter(r => r.kind === kind && (!catGate || !b.category || bpSameCat(r.category, b.category)));
-      const areaHit = (r, a) => { const w = areaWords(a); return w.length && w.some(x => r.text.includes(x)); };
-      const matched = pool.filter(r =>
-        (nName && r.text.includes(nName)) ||
-        (r.tagTopic && bpSameCat(r.tagTopic, name)) ||
-        (b.areas || []).some(a => areaHit(r, a))
-      ).length;
-      const areas = (b.areas || []).map(a => ({ area: a, count: pool.filter(r => areaHit(r, a)).length }));
-      return { name, weight: b.weight, pool: pool.length, matched, areas };
+      const pool = byKind.filter(r => !catGate || !b.category || bpSameCat(r.category, b.category));
+      const areaTokens = (b.areas || []).map(a => ({ area: a, words: areaWords(a) }));
+      const areaCounts = areaTokens.map(() => 0);
+      let matched = 0;
+      for (const r of pool) {
+        let hit = (nName && r.text.includes(nName)) || (r.tagTopic && bpSameCat(r.tagTopic, name));
+        areaTokens.forEach((at, i) => {
+          if (at.words.length && at.words.some(w => r.tokens.has(w))) { areaCounts[i]++; hit = true; }
+        });
+        if (hit) matched++;
+      }
+      return { name, weight: b.weight, pool: pool.length, matched, areas: areaTokens.map((at, i) => ({ area: at.area, count: areaCounts[i] })) };
     });
   }
   async function computeCoverage(doc) {
@@ -804,12 +817,19 @@ const DevConsole = (() => {
   async function openBlueprintStudio(view) {
     let doc; try { doc = await Blueprint.load(); } catch { doc = null; }
     doc = doc || {};
+    // Repair legacy rows: areas saved as objects by the old parser are
+    // flattened back to readable strings instead of showing [object Object].
+    const fixAreas = list => (list || []).map(a => typeof a === 'string' ? a.trim()
+      : (a && typeof a === 'object' ? Object.keys(a).map(k => a[k] == null || a[k] === '' ? k : `${k}: ${a[k]}`).join(' ') : String(a || ''))).filter(Boolean);
     bpEdit = JSON.parse(JSON.stringify({
-      id: doc.id || 'blueprint', version: doc.version || 1, updated: doc.updated || '',
+      id: doc.id || 'blueprint', version: Number(doc.version) || 1, updated: doc.updated || '',
       paper: doc.paper || { sbaCount: 30, emqCount: 30, durationMin: 180, sbaMark: 3, emqMark: 3, negativeMarking: false },
-      sba: doc.sba || [], emq: doc.emq || [], priority: doc.priority || [], notes: doc.notes || ''
+      sba: (doc.sba || []).map(b => ({ ...b, areas: fixAreas(b.areas) })),
+      emq: (doc.emq || []).map(b => ({ ...b, areas: fixAreas(b.areas) })),
+      priority: doc.priority || [], notes: doc.notes || ''
     }));
     bpCoverage = null;
+    view.querySelector('#bp-studio').innerHTML = '';    // force a fresh panel + one wiring pass
     drawStudio(view);
   }
 
@@ -827,9 +847,9 @@ const DevConsole = (() => {
     const isSba = sec === 'sba';
     const name = isSba ? (b.subcategory || b.category) : b.theme;
     const cov = bpCoverage && (bpCoverage[sec] || []).find(c => c.name === name);
-    const areaChip = (a, ai) => {
+    const areaChip = (a) => {
       const ac = cov && cov.areas.find(x => x.area === a);
-      return `<span class="bp-area ${ac ? areaClass(ac.count) : ''}">${ac ? `<b>${ac.count}</b> ` : ''}${ctx.esc(a)}<button class="bp-area-x" data-act="del-area" data-ai="${ai}" title="Remove area">×</button></span>`;
+      return `<span class="bp-area ${ac ? areaClass(ac.count) : ''}">${ac ? `<b>${ac.count}</b> ` : ''}${ctx.esc(a)}<button class="bp-area-x" data-act="del-area" title="Remove area">×</button></span>`;
     };
     return `<div class="bp-bucket" data-sec="${sec}" data-i="${i}">
       <div class="bp-bucket-top">
@@ -852,11 +872,22 @@ const DevConsole = (() => {
 
   function drawStudio(view) {
     const host = view.querySelector('#bp-studio');
+    // Listeners live on the STABLE host and are attached exactly once. Redraws
+    // only ever replace the inner panel, so handlers can never stack up — the
+    // bug that made one Save click fire N times and run the version away.
+    let panel = host.querySelector('#bp-panel');
+    if (!panel) {
+      host.innerHTML = `<div id="bp-panel"></div>`;
+      panel = host.querySelector('#bp-panel');
+      wireStudio(view, host);
+    }
     const d = bpEdit;
     const sbaSum = bpSum(d.sba), emqSum = bpSum(d.emq);
-    host.innerHTML = `
-      <div class="card bp-studio-head" data-animate>
+    const scrollY = window.scrollY;
+    panel.innerHTML = `
+      <div class="card bp-studio-head">
         <div class="bp-sums">
+          <label class="bp-vlabel">v<input type="number" min="1" class="bp-in bp-vnum" id="bp-version" value="${Number(d.version) || 1}" title="Blueprint version — edit freely"></label>
           <span class="bp-sum ${sbaSum === 100 ? 'ok' : 'off'}">SBA Σ <strong id="bp-sum-sba">${sbaSum}</strong></span>
           <button class="btn btn-ghost btn-sm" data-act="norm-sba">→100</button>
           <span class="bp-sum ${emqSum === 100 ? 'ok' : 'off'}">EMQ Σ <strong id="bp-sum-emq">${emqSum}</strong></span>
@@ -871,22 +902,22 @@ const DevConsole = (() => {
         </div>
         <span class="dev-status" id="bp-studio-status"></span>
       </div>
-      <div class="card" data-animate>
+      <div class="card">
         <div class="bp-sec-head"><h4>SBA buckets · ${d.sba.length}</h4><button class="btn btn-ghost btn-sm" data-act="add-sba">+ Add bucket</button></div>
         <div class="bp-buckets">${d.sba.map((b, i) => bucketCardHTML('sba', b, i)).join('') || '<p class="muted">No SBA buckets — add one.</p>'}</div>
       </div>
-      <div class="card" data-animate>
+      <div class="card">
         <div class="bp-sec-head"><h4>EMQ themes · ${d.emq.length}</h4><button class="btn btn-ghost btn-sm" data-act="add-emq">+ Add theme</button></div>
         <div class="bp-buckets">${d.emq.map((b, i) => bucketCardHTML('emq', b, i)).join('') || '<p class="muted">No EMQ themes — add one.</p>'}</div>
       </div>
-      <div class="card" data-animate>
+      <div class="card">
         <div class="bp-sec-head"><h4>Priority boosts · ${d.priority.length}</h4><button class="btn btn-ghost btn-sm" data-act="add-pri">+ Add boost</button></div>
         <div class="bp-pri">${d.priority.map((p, i) => `<div class="bp-pri-row" data-i="${i}">
           <input class="bp-in bp-pri-match" data-pri="match" placeholder="match phrase (appears in question text)" value="${ctx.esc(p.match || '')}">
           <input type="number" step="0.05" min="1" class="bp-in bp-pri-boost" data-pri="boost" value="${p.boost || 1}">
           <button class="bp-x" data-act="del-pri" title="Remove">✕</button></div>`).join('') || '<p class="muted">No priority boosts.</p>'}</div>
       </div>`;
-    wireStudio(view, host);
+    window.scrollTo(0, scrollY);      // redraws must not throw you back to the top
   }
 
   function updateSums(host) {
@@ -895,19 +926,32 @@ const DevConsole = (() => {
     if (ss) { ss.textContent = s; ss.parentElement.className = 'bp-sum ' + (s === 100 ? 'ok' : 'off'); }
     if (es) { es.textContent = e; es.parentElement.className = 'bp-sum ' + (e === 100 ? 'ok' : 'off'); }
   }
+  const bucketOf = el => { const n = el.closest('.bp-bucket'); return n ? bpEdit[n.dataset.sec][Number(n.dataset.i)] : null; };
+
+  /** Append one area chip in place — no full redraw, so focus stays in the box
+      and you can type area after area without the page jumping. */
+  function appendAreaChip(input, value) {
+    const chip = document.createElement('span');
+    chip.className = 'bp-area';
+    chip.innerHTML = `${ctx.esc(value)}<button class="bp-area-x" data-act="del-area" title="Remove area">×</button>`;
+    input.parentNode.insertBefore(chip, input);
+    input.value = '';
+    input.focus();
+  }
 
   function wireStudio(view, host) {
-    // live field edits (no re-render → focus preserved)
+    // live field edits — never re-render, so the caret never moves
     host.addEventListener('input', e => {
       const t = e.target;
-      const bucket = t.closest('.bp-bucket');
-      if (bucket && t.dataset.field) {
-        const arr = bpEdit[bucket.dataset.sec], b = arr[Number(bucket.dataset.i)];
+      if (t.id === 'bp-version') { bpEdit.version = Math.max(1, Number(t.value) || 1); return; }
+      const node = t.closest('.bp-bucket');
+      if (node && t.dataset.field) {
+        const b = bpEdit[node.dataset.sec][Number(node.dataset.i)];
         if (t.dataset.field === 'weight') {
           b.weight = Math.max(0, Number(t.value) || 0);
-          bucket.querySelectorAll('[data-field="weight"]').forEach(el => { if (el !== t) el.value = b.weight; });
+          node.querySelectorAll('[data-field="weight"]').forEach(el => { if (el !== t) el.value = b.weight; });
           updateSums(host);
-        } else { b[t.dataset.field] = t.value; }
+        } else b[t.dataset.field] = t.value;
         return;
       }
       const pri = t.closest('.bp-pri-row');
@@ -916,22 +960,29 @@ const DevConsole = (() => {
         p[t.dataset.pri] = t.dataset.pri === 'boost' ? (Number(t.value) || 1) : t.value;
       }
     });
-    // add specific area on Enter
+    // add a specific area on Enter (or on blur, so a typed-but-unconfirmed
+    // area is never silently lost when you click away)
+    const commitArea = input => {
+      const val = input.value.trim(); if (!val) return;
+      const b = bucketOf(input); if (!b) return;
+      b.areas.push(val);
+      appendAreaChip(input, val);
+    };
     host.addEventListener('keydown', e => {
-      if (e.key !== 'Enter' || !e.target.classList.contains('bp-area-add')) return;
-      e.preventDefault();
-      const val = e.target.value.trim(); if (!val) return;
-      const bucket = e.target.closest('.bp-bucket');
-      bpEdit[bucket.dataset.sec][Number(bucket.dataset.i)].areas.push(val);
-      drawStudio(view);
+      if (e.key === 'Enter' && e.target.classList.contains('bp-area-add')) { e.preventDefault(); commitArea(e.target); }
     });
+    host.addEventListener('focusout', e => { if (e.target.classList.contains('bp-area-add')) commitArea(e.target); });
     // structural + command buttons
-    host.addEventListener('click', async e => {
+    host.addEventListener('click', e => {
       const btn = e.target.closest('[data-act]'); if (!btn) return;
       const act = btn.dataset.act;
-      const bucket = btn.closest('.bp-bucket');
-      if (act === 'del-bucket') { bpEdit[bucket.dataset.sec].splice(Number(bucket.dataset.i), 1); return drawStudio(view); }
-      if (act === 'del-area') { bpEdit[bucket.dataset.sec][Number(bucket.dataset.i)].areas.splice(Number(btn.dataset.ai), 1); return drawStudio(view); }
+      const node = btn.closest('.bp-bucket');
+      if (act === 'del-area') {              // remove the chip in place, no redraw
+        const chip = btn.closest('.bp-area'), b = bucketOf(btn);
+        if (b && chip) { const idx = [...chip.parentNode.querySelectorAll('.bp-area')].indexOf(chip); if (idx >= 0) b.areas.splice(idx, 1); chip.remove(); }
+        return;
+      }
+      if (act === 'del-bucket') { bpEdit[node.dataset.sec].splice(Number(node.dataset.i), 1); return drawStudio(view); }
       if (act === 'add-sba') { bpEdit.sba.push({ category: '', subcategory: '', weight: 5, areas: [] }); return drawStudio(view); }
       if (act === 'add-emq') { bpEdit.emq.push({ theme: '', weight: 5, areas: [] }); return drawStudio(view); }
       if (act === 'add-pri') { bpEdit.priority.push({ match: '', boost: 1.2 }); return drawStudio(view); }
@@ -939,29 +990,34 @@ const DevConsole = (() => {
       if (act === 'norm-sba') { normalizeTo100(bpEdit.sba); return drawStudio(view); }
       if (act === 'norm-emq') { normalizeTo100(bpEdit.emq); return drawStudio(view); }
       if (act === 'cover') return runCoverage(view);
-      if (act === 'revert') return openBlueprintStudio(view);
+      if (act === 'revert') { if (confirm('Discard your unsaved changes and reload the saved blueprint?')) openBlueprintStudio(view); return; }
       if (act === 'close') { bpEdit = null; bpCoverage = null; host.innerHTML = ''; return refreshBlueprint(view); }
       if (act === 'export') return exportBlueprint();
-      if (act === 'save') return saveStudio(view);
+      if (act === 'save') return saveStudio(view, btn);
     });
   }
 
-  async function saveStudio(view) {
+  let bpSaving = false;
+  async function saveStudio(view, btn) {
+    if (bpSaving) return;                      // re-entrancy guard
     const status = view.querySelector('#bp-studio-status');
-    // guardrails: clean empty buckets, require names
+    // guardrails: drop unnamed / zero-weight buckets before persisting
     bpEdit.sba = bpEdit.sba.filter(b => (b.subcategory || b.category) && b.weight > 0);
     bpEdit.emq = bpEdit.emq.filter(b => b.theme && b.weight > 0);
     bpEdit.priority = bpEdit.priority.filter(p => p.match);
     if (!bpEdit.sba.length && !bpEdit.emq.length) { status.innerHTML = '<span class="bad">Add at least one weighted bucket.</span>'; return; }
-    bpEdit.version = (Number(bpEdit.version) || 1) + 1;
+    bpSaving = true; if (btn) btn.disabled = true;
+    // The version is whatever the (editable) version box says — it is NOT
+    // auto-incremented, so repeated saves can never run it away.
+    bpEdit.version = Math.max(1, Number(view.querySelector('#bp-version')?.value) || Number(bpEdit.version) || 1);
     bpEdit.updated = new Date().toISOString().slice(0, 10);
     status.textContent = 'Saving…'; status.className = 'dev-status';
     try {
       await Blueprint.save(JSON.parse(JSON.stringify(bpEdit)));   // persists + busts cache → next mock uses it
       status.innerHTML = `<span class="good">✓ Saved v${bpEdit.version} — the next mock uses it.</span>`;
       await refreshBlueprint(view);
-      drawStudio(view);
     } catch (e) { status.innerHTML = `<span class="bad">${ctx.esc(e.message || e)}</span>`; }
+    bpSaving = false; if (btn) btn.disabled = false;
   }
 
   function exportBlueprint() {

@@ -663,9 +663,11 @@ create table if not exists public.discussions (
   paper_title text,
   answer_text text,                     -- the correct answer, for context
   rationale text,                       -- the rationale / hook being discussed
+  question jsonb,                       -- FULL question snapshot (stem, options, answer, hook)
   topic text not null,                  -- the poster's prompt: "why is this the answer?"
   created_at timestamptz default now()
 );
+alter table public.discussions add column if not exists question jsonb;
 create index if not exists disc_created_idx on public.discussions (created_at desc);
 alter table public.discussions enable row level security;
 drop policy if exists "discussions read" on public.discussions;

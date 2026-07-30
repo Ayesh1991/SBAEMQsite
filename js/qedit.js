@@ -96,8 +96,13 @@ const QEdit = (() => {
         if (!topic) { host.querySelector('#qe-disc').focus(); return; }
         const btn = host.querySelector('#qe-disc-send'); btn.disabled = true; btn.textContent = 'Sending…';
         try {
-          await Backend.addDiscussion({ questionKey: ctx.questionKey, paperTitle: ctx.paperTitle, answerText: ctx.answerText, rationale: ctx.rationale, topic });
-          host.innerHTML = `<div class="qedit-correction qedit-mine">☕ Posted to the tea room — open <strong>Studio → Tea room</strong> to see replies from friends.</div>`;
+          // the WHOLE question travels with the post, so friends can read the
+          // stem and options in the tea room without leaving what they're doing
+          const payload = { questionKey: ctx.questionKey, paperTitle: ctx.paperTitle, answerText: ctx.answerText, rationale: ctx.rationale, question: ctx.question || null };
+          if (typeof TeaRoom !== 'undefined') await TeaRoom.share(payload, topic);
+          else await Backend.addDiscussion({ ...payload, topic });
+          host.innerHTML = `<div class="qedit-correction qedit-mine">☕ Posted to the tea room — <button class="link" id="qe-disc-open">open it here</button> or find it in <strong>Studio → Tea room</strong>.</div>`;
+          host.querySelector('#qe-disc-open')?.addEventListener('click', () => { if (typeof TeaRoom !== 'undefined') TeaRoom.openDock(); });
           host.dataset.open = '';
         } catch (e) { btn.disabled = false; btn.textContent = '☕ Send to tea room'; host.querySelector('#qe-disc-msg').textContent = 'Could not send: ' + (e.message || e); }
       });

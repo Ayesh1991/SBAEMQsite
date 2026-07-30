@@ -1280,7 +1280,7 @@ const Simulator = (() => {
     // mount qedit (flag/exclude) + AI on each reviewed question
     host.querySelectorAll('.qedit-slot').forEach(slot => {
       const qk = slot.dataset.qk; const q = dict[qk]; if (!q || typeof QEdit === 'undefined') return;
-      QEdit.mount(slot, { questionKey: qk, rationale: q.rationale || '', paperTitle: q._paperTitle || 'Mock', answerText: (q.preLettered ? '' : Quiz.LETTERS[q.answer] + '. ') + q.options[q.answer] });
+      QEdit.mount(slot, { questionKey: qk, rationale: q.rationale || '', paperTitle: q._paperTitle || 'Mock', answerText: (q.preLettered ? '' : Quiz.LETTERS[q.answer] + '. ') + q.options[q.answer], question: Quiz.snapshotQuestion(q) });
     });
     if (typeof AI !== 'undefined' && window.AUREUM_CONFIG?.ai?.enabled) {
       host.querySelectorAll('.ai-slot').forEach(slot => {

@@ -56,7 +56,11 @@ const Blueprint = (() => {
       const arr = [];
       while (pos < lines.length && lines[pos].indent === indent && lines[pos].text.startsWith('- ')) {
         const after = lines[pos].text.slice(2);
-        if (isMapItem(after)) {
+        // A QUOTED item is always a scalar, even when it contains a colon.
+        // ("Thyroid: antenatal care" is a topic name, not a key/value pair —
+        //  reading it as a map is what produced [object Object] areas.)
+        const quoted = /^\s*["']/.test(after);
+        if (!quoted && isMapItem(after)) {
           const inner = indent + 2;
           lines[pos] = { indent: inner, text: after };   // reflow the inline first key
           arr.push(parseMap(inner));
@@ -101,16 +105,35 @@ const Blueprint = (() => {
       },
       sba: (doc.blueprint_sba || []).map(b => ({
         category: b.category || '', subcategory: b.subcategory || '',
-        weight: num(b.weight, 0), areas: b.specific_areas || []
+        weight: num(b.weight, 0), areas: cleanAreas(b.specific_areas || b.areas)
       })).filter(b => b.weight > 0),
       emq: (doc.blueprint_emq || []).map(b => ({
-        theme: b.theme || '', weight: num(b.weight, 0), areas: b.specific_areas || []
+        theme: b.theme || '', weight: num(b.weight, 0), areas: cleanAreas(b.specific_areas || b.areas)
       })).filter(b => b.weight > 0),
       priority: (doc.priority_topics || []).map(p => ({ match: p.match || '', boost: num(p.boost, 1) })).filter(p => p.match),
       notes: doc.notes || ''
     };
   }
   function num(v, d) { const n = Number(v); return Number.isFinite(n) ? n : d; }
+
+  /* Areas must always be plain strings. Older saves (and the pre-fix parser)
+     could store a map like {"Thyroid": "antenatal care"} for a quoted line
+     containing a colon; flatten those back to readable text instead of
+     rendering "[object Object]". */
+  function cleanAreas(list) {
+    const out = [];
+    for (const a of (list || [])) {
+      if (a == null) continue;
+      if (typeof a === 'string') { const s = a.trim(); if (s) out.push(s); }
+      else if (typeof a === 'object') {
+        for (const k in a) {
+          const v = a[k];
+          out.push(v == null || v === '' ? String(k).trim() : `${k}: ${typeof v === 'object' ? Object.keys(v).join(', ') : v}`.trim());
+        }
+      } else out.push(String(a));
+    }
+    return out;
+  }
 
   /* ---------- load / save ---------- */
 
