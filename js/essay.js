@@ -432,6 +432,7 @@ const Essay = (() => {
     try {
       const token = await Backend.getAccessToken();
       if (!token) throw new Error('Sign in to use AI analysis.');
+      const prov = await pickProvider();
       const missed = (f.markScheme || []).flatMap(s => (s.points || []).filter(p => /missed|partial/i.test(p.status)).map(p => `[${p.status}] ${p.point}${p.note ? ' — ' + p.note : ''}`)).slice(0, 30);
       const q = `You are an O&G examiner-coach. A PGIM MD Part II candidate scored ${f.score?.percent}% (${f.score?.band}) on "${f.code} — ${f.topic}". ` +
         `The marks they lost, from the official scheme:\n${missed.join('\n')}\n\n` +
@@ -439,7 +440,7 @@ const Essay = (() => {
       const messages = [{ role: 'user', content: q }];
       const res = await fetch(cfg().ai.apiBase, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-        body: JSON.stringify({ action: 'chat', provider: 'gemini', dailyLimit: cfg().ai.dailyLimit,
+        body: JSON.stringify({ action: 'chat', provider: prov, model: modelFor(prov), dailyLimit: cfg().ai.dailyLimit,
           question: { kind: 'ESSAY', theme: f.topic, stem: f.questionStem || f.code, options: [], answer: 0, preLettered: true }, messages })
       });
       const data = await res.json().catch(() => ({}));
@@ -450,6 +451,14 @@ const Essay = (() => {
   }
 
   /* ---------- helpers ---------- */
+
+  // Honour the model the user selected next to "Explore with AI", so every
+  // AI surface on the site answers with the same chosen provider.
+  async function pickProvider() {
+    try { return (typeof AI !== 'undefined' && AI.preferredProvider) ? await AI.preferredProvider() : 'gemini'; }
+    catch { return 'gemini'; }
+  }
+  const modelFor = p => p === 'claude' ? cfg().ai.claudeModel : p === 'gpt' ? cfg().ai.gptModel : cfg().ai.geminiModel;
 
   const stClass = s => /cover/i.test(s) ? 'cov' : /partial/i.test(s) ? 'par' : 'mis';
   const stIcon = s => /cover/i.test(s) ? '✓' : /partial/i.test(s) ? '~' : '✗';
@@ -542,6 +551,7 @@ const Essay = (() => {
     try {
       const token = await Backend.getAccessToken();
       if (!token) throw new Error('Sign in to use AI analysis.');
+      const prov = await pickProvider();
       const weak = sum.weaknesses.slice(0, 4).map(w => `${w.label} (flagged ${w.count}×)${w.tips.length ? ' — advice given: ' + w.tips.slice(0, 2).join('; ') : ''}`).join('\n');
       const q = `You are an O&G examiner-coach helping a PGIM MD Part II candidate improve their essay WRITING (not their medical knowledge). Their average is ${sum.avg}% and their recurring writing weaknesses, most frequent first, are:\n${weak}\n\n` +
         `Design a short set of practice drills targeting these. Use **bold** headers and this structure:\n` +
@@ -551,7 +561,7 @@ const Essay = (() => {
         `Keep it under 260 words, practical and specific to O&G essays.`;
       const res = await fetch(cfg().ai.apiBase, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-        body: JSON.stringify({ action: 'chat', provider: 'gemini', dailyLimit: cfg().ai.dailyLimit,
+        body: JSON.stringify({ action: 'chat', provider: prov, model: modelFor(prov), dailyLimit: cfg().ai.dailyLimit,
           question: { kind: 'ESSAY', theme: 'Writing skills', stem: 'Writing-skills drills', options: [], answer: 0, preLettered: true }, messages: [{ role: 'user', content: q }] })
       });
       const data = await res.json().catch(() => ({}));

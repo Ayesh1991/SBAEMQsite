@@ -14,6 +14,8 @@
  * Variables and secrets:
  *   GEMINI_API_KEY        (required — everyone uses this)
  *   ANTHROPIC_API_KEY     (optional — only the developer path uses it)
+ *   OPENAI_API_KEY        (optional — needed for the GPT provider)
+ *   OPENAI_DEFAULT_MODEL  (optional — exact GPT model id; defaults to gpt-5.6-luna)
  *   SUPABASE_URL          (your project URL)
  *   SUPABASE_ANON_KEY     (the public anon key)
  *   DEV_EMAIL             (ayeshmantha@gmail.com)
@@ -21,7 +23,7 @@
  *                          defaults to gemini-2.5-flash)
  *
  * Billing: every successful call logs the provider's OWN token counts
- * (Gemini usageMetadata / Anthropic usage) per user × day × model into
+ * (Gemini usageMetadata / Anthropic usage / OpenAI usage) per user × day × model into
  * ai_token_usage via the log_ai_tokens RPC — the invoice source of truth.
  */
 
@@ -40,7 +42,7 @@ export async function onRequest(context) {
   let body;
   try { body = await request.json(); } catch { return json({ error: 'Bad JSON.' }, 400); }
   const { action = 'explain', question = {}, messages = [], artifact, model } = body;
-  let provider = body.provider === 'claude' ? 'claude' : 'gemini';
+  let provider = ['claude', 'gpt'].includes(body.provider) ? body.provider : 'gemini';
 
   // --- verify the caller ---
   const token = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
@@ -60,6 +62,9 @@ export async function onRequest(context) {
   // access and billing tiers can't be bypassed. (feature_flags is
   // trigger-protected in Postgres: only the developer can change it.)
   const defaultGemini = env.GEMINI_DEFAULT_MODEL || 'gemini-3.1-flash-lite';
+  // GPT model id is env-overridable so the exact OpenAI string can be
+  // corrected server-side without redeploying the client.
+  const defaultGpt = env.OPENAI_DEFAULT_MODEL || 'gpt-5.6-luna';
   // Google retired the 1.x/2.x lines and gemini-3-flash for new keys — any
   // stored/requested retired id silently becomes the current default so a
   // stale saved config can never resurrect a dead (or mis-priced) model.
@@ -71,7 +76,10 @@ export async function onRequest(context) {
     if (!flags.paid) {
       return json({ error: 'AI features are part of the paid plan — ask the site owner to activate your payment in Users & access.' }, 403);
     }
-    if (!flags.gemini) {
+    // GPT is granted separately (flag `gpt`). Asking for it without the grant
+    // falls back to Gemini rather than erroring, so the tutor still answers.
+    if (provider === 'gpt' && !flags.gpt) provider = 'gemini';
+    if (provider !== 'gpt' && !flags.gemini) {
       return json({ error: 'AI access is not enabled for your account yet — ask the developer to switch on Gemini for you in Users & access.' }, 403);
     }
     geminiRestricted = !flags.gemini_advanced;
@@ -99,7 +107,9 @@ export async function onRequest(context) {
   const run = async (p, feature = 'tutor') => {
     const r = provider === 'claude'
       ? await callClaude(p.system, p.user, model, env)
-      : await callGemini(p.system, p.user, effectiveModel, env, geminiRestricted);
+      : provider === 'gpt'
+        ? await callOpenAI(p.system, p.user, defaultGpt, env)
+        : await callGemini(p.system, p.user, effectiveModel, env, geminiRestricted);
     await logTokens(token, env, provider, r, feature);   // true billing meter (dev included)
     return r;
   };
@@ -111,7 +121,7 @@ export async function onRequest(context) {
       const feature = { tag: 'question_tagger', insights: 'behaviour_insights', audit: 'question_auditor' }[action];
       const fc = await getFeatureConfig(env, feature);
       const p = action === 'tag' ? buildTagPrompt(body) : action === 'insights' ? buildInsightsPrompt(body) : buildAuditPrompt(body);
-      const useProvider = fc.provider === 'claude' ? 'claude' : 'gemini';
+      const useProvider = ['claude','gpt'].includes(fc.provider) ? fc.provider : 'gemini';
       // tagging returns ~100 tokens of JSON per question ×10, and Gemini
       // 2.5+ thinking also bills against the cap — give batch jobs headroom
       const maxTok = action === 'tag' ? 8000 : 2000;
@@ -119,7 +129,9 @@ export async function onRequest(context) {
       // (a retired Gemini id stored in the panel migrates to the default)
       const r = useProvider === 'claude'
         ? await callClaude(p.system, p.user, fc.model || model, env, maxTok)
-        : await callGemini(p.system, p.user, modernGemini(fc.model) || modernGemini(model) || defaultGemini, env, false, maxTok, true);
+        : useProvider === 'gpt'
+          ? await callOpenAI(p.system, p.user, fc.model || defaultGpt, env, maxTok)
+          : await callGemini(p.system, p.user, modernGemini(fc.model) || modernGemini(model) || defaultGemini, env, false, maxTok, true);
       await logShared(token, env, feature, useProvider, r);
       // usage goes back to the panel so the runner can show live cost
       return json({ text: r.text, model: r.model, usage: { in: r.in || 0, out: r.out || 0 } });
@@ -133,10 +145,12 @@ export async function onRequest(context) {
       const fc = await getFeatureConfig(env, 'auto_flashcards');
       if (fc.enabled === false) return json({ error: 'AI flashcards are currently switched off.' }, 403);
       const p = buildFlashcardPrompt(body);
-      const useProvider = fc.provider === 'claude' ? 'claude' : 'gemini';
+      const useProvider = ['claude','gpt'].includes(fc.provider) ? fc.provider : 'gemini';
       const r = useProvider === 'claude'
         ? await callClaude(p.system, p.user, fc.model, env)
-        : await callGemini(p.system, p.user, fc.model || defaultGemini, env, false);
+        : useProvider === 'gpt'
+          ? await callOpenAI(p.system, p.user, fc.model || defaultGpt, env)
+          : await callGemini(p.system, p.user, fc.model || defaultGemini, env, false);
       await logTokens(token, env, useProvider, r, 'flashcards');
       return json({ text: r.text, model: r.model });
     }
@@ -510,4 +524,33 @@ async function callClaude(system, user, model, env, maxTokens) {
   // True token counts from Anthropic's own meter.
   return { text, model: data.model || model || 'claude-haiku-4-5',
     in: data.usage?.input_tokens || 0, out: data.usage?.output_tokens || 0 };
+}
+
+/**
+ * OpenAI (GPT). Uses the Chat Completions shape, which every current GPT
+ * model accepts. Like the other providers we return the API's OWN token
+ * counts — OpenAI reports usage.prompt_tokens / completion_tokens but NOT a
+ * dollar figure, so cost is computed from the site's price table.
+ */
+async function callOpenAI(system, user, model, env, maxTokens) {
+  if (!env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not configured on the server.');
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + env.OPENAI_API_KEY },
+    body: JSON.stringify({
+      model: model || 'gpt-5.6-luna',
+      max_completion_tokens: maxTokens || 1200,
+      messages: [{ role: 'system', content: system }, { role: 'user', content: user }]
+    })
+  });
+  if (!res.ok) {
+    let detail = '';
+    try { detail = (await res.json())?.error?.message || ''; } catch {}
+    throw new Error(`GPT error (HTTP ${res.status})${detail ? ': ' + detail : '. Check OPENAI_API_KEY and the model id.'}`);
+  }
+  const data = await res.json();
+  const text = (data.choices || []).map(c => c.message?.content || '').join('') || '';
+  if (!text) throw new Error('GPT returned an empty response.');
+  return { text, model: data.model || model || 'gpt',
+    in: data.usage?.prompt_tokens || 0, out: data.usage?.completion_tokens || 0 };
 }

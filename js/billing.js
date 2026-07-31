@@ -4,8 +4,11 @@
    Source of truth: the ai_token_usage table, filled server-side with
    the EXACT token counts each provider reported (Gemini usageMetadata,
    Anthropic usage) per user × day × provider × model. This module turns
-   those rows into dollar costs (rates from AUREUM_CONFIG.ai.pricing,
-   USD per 1M tokens) and renders a commercial invoice that downloads
+   Anthropic usage, OpenAI usage) per user × day × provider × model. This
+   module turns those rows into dollar costs and renders a commercial
+   invoice. NO provider returns a cost — only token counts — so rates come
+   from the developer's rate card (app_config 'model_pricing'), falling back
+   to AUREUM_CONFIG.ai.pricing. USD per 1M tokens. It downloads
    as JPEG / PNG / SVG or prints to PDF.
 
    Used by dev-console.js (Users & access → cost columns + 🧾 Bill).
@@ -17,7 +20,27 @@ const Billing = (() => {
 
   /* ---------------- pricing ---------------- */
 
-  const table = () => (window.AUREUM_CONFIG?.ai?.pricing) || {};
+  // The developer's saved rate card (AI mission control → Model pricing) wins
+  // over the defaults compiled into config.js. Loaded once and cached, because
+  // pricing is read on every invoice line.
+  let liveTable = null;
+  const table = () => liveTable || (window.AUREUM_CONFIG?.ai?.pricing) || {};
+  /** Called by the pages that price things, before they render. */
+  async function loadRates() {
+    if (liveTable) return liveTable;
+    try {
+      const loader = () => Backend.getModelPricing?.();
+      const saved = (typeof Cache !== 'undefined')
+        ? await Cache.wrap('model-pricing', 15 * 60 * 1000, loader)
+        : await loader();
+      if (saved && Object.keys(saved).length) liveTable = saved;
+    } catch { /* defaults are fine */ }
+    return table();
+  }
+  /** Every rate currently in force, for display (Profile, invoices). */
+  const rateCard = () => Object.entries(table())
+    .map(([id, r]) => ({ id, label: r.label || id, in: Number(r.in) || 0, out: Number(r.out) || 0 }))
+    .sort((a, b) => a.label.localeCompare(b.label));
 
   // Longest-prefix match so 'gemini-2.5-flash-lite-001' → the lite rate,
   // 'claude-haiku-4-5-20251001' → the Haiku rate, and anything unknown
@@ -221,7 +244,7 @@ const Billing = (() => {
 
   /* ---------------- invoice rendering (SVG, print-white) ---------------- */
 
-  const PROVIDER_NAMES = { gemini: 'Google Gemini', claude: 'Anthropic Claude' };
+  const PROVIDER_NAMES = { gemini: 'Google Gemini', claude: 'Anthropic Claude', gpt: 'OpenAI GPT' };
   const NAVY = '#101a36', GOLD = '#b8860b', LIGHT = '#5b6478', RULE = '#d9dde8';
   const SERIF = "Georgia,'Times New Roman',serif", SANS = 'Arial,Helvetica,sans-serif';
   const W = 900, PAD = 56;
@@ -421,7 +444,7 @@ const Billing = (() => {
     draw();
   }
 
-  return { rateFor, summarise, userTotals, sharedLines, sharedTotals,
+  return { rateFor, loadRates, rateCard, summarise, userTotals, sharedLines, sharedTotals,
     personalByFeature, dailyCost, mySummary, featureLabel, featureIcon,
     rowsFor, invoice, invoiceSVG, openBillModal, usd, fmtInt, monthLabel };
 })();

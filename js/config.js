@@ -80,6 +80,14 @@ window.AUREUM_CONFIG = {
       { id: 'gemini-3.1-pro',        label: 'Gemini 3.1 Pro' }
     ],
     claudeModel: 'claude-haiku-4-5-20251001',
+    // OpenAI GPT — granted per user with the `gpt` flag in Users & access.
+    // NOTE: confirm this id against OpenAI's model list before going live; the
+    // server also accepts an OPENAI_DEFAULT_MODEL env override so the exact
+    // string can be corrected without a redeploy of the client.
+    gptModel: 'gpt-5.6-luna',
+    gptModels: [
+      { id: 'gpt-5.6-luna', label: 'GPT 5.6 Luna' }
+    ],
     // USD per 1,000,000 tokens — the invoice engine (js/billing.js) matches
     // each metered model id against these by longest prefix. Update here when
     // Google/Anthropic change list prices; historical rows are re-priced at
@@ -95,7 +103,9 @@ window.AUREUM_CONFIG = {
       'gemini-3.5-flash':      { in: 1.50, out: 9.00,  label: 'Gemini 3.5 Flash' },
       'gemini':                { in: 1.50, out: 9.00,  label: 'Gemini (other)' },
       'claude-haiku-4-5':      { in: 1.00, out: 5.00,  label: 'Claude Haiku 4.5' },
-      'claude':                { in: 1.00, out: 5.00,  label: 'Claude (other)' }
+      'claude':                { in: 1.00, out: 5.00,  label: 'Claude (other)' },
+      'gpt-5.6-luna':          { in: 0.20, out: 1.20,  label: 'GPT 5.6 Luna' },
+      'gpt':                   { in: 0.20, out: 1.20,  label: 'GPT (other)' }
     }
   }
 };

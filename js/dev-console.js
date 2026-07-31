@@ -1045,7 +1045,9 @@ const DevConsole = (() => {
     { id: 'ai_flashcards',   label: 'AI cards' },
     // approval for the two opt-in tabs (toggle visibility in their Profile)
     { id: 'simulator',       label: 'Simulator' },
-    { id: 'flashcards',      label: 'Flashcards' }
+    { id: 'flashcards',      label: 'Flashcards' },
+    // OpenAI GPT — off until you approve it here, per user
+    { id: 'gpt',             label: 'GPT' }
   ];
 
   async function refreshUsers(view) {
@@ -1058,6 +1060,7 @@ const DevConsole = (() => {
       return;
     }
     if (!list.length) { host.innerHTML = `<p class="muted">No registered users found.</p>`; return; }
+    try { await Billing.loadRates(); } catch {}      // price from the saved rate card
     let usage = {};
     try { usage = (await ctx.Backend.listAiUsage?.()) || {}; } catch { usage = {}; }
     // true token meter → dollar costs (needs the updated schema.sql once)
@@ -1556,6 +1559,19 @@ const DevConsole = (() => {
             tokens are billed to. Shared jobs run <strong>once per unit of work</strong> — nothing re-analyses the same data twice.</p>
         </header>
         <div class="card" data-animate>
+          <h3 class="card-title">💲 Model pricing</h3>
+          <p class="muted">No AI provider returns a dollar figure — Gemini, Anthropic and OpenAI all report
+            <strong>token counts only</strong>. Costs are therefore computed here, so these rates are the single
+            source of truth for every invoice and for what users see in their Profile. USD per 1,000,000 tokens.</p>
+          <div id="price-table"></div>
+          <div class="dev-toolbar">
+            <button class="btn btn-ghost btn-sm" id="price-add">+ Add model</button>
+            <button class="btn btn-gold btn-sm" id="price-save">💾 Save rates</button>
+            <button class="btn btn-ghost btn-sm" id="price-reset" title="Revert to the rates shipped in config.js">↺ Defaults</button>
+            <span class="dev-status" id="price-status"></span>
+          </div>
+        </div>
+        <div class="card" data-animate>
           <h3 class="card-title">🏷 Question tagger</h3>
           <p class="muted" id="tag-status">Checking bank…</p>
           <div class="dev-toolbar">
@@ -1584,6 +1600,79 @@ const DevConsole = (() => {
     await refreshAiPanel(view);
     wireTagger(view);
     view.querySelector('#ins-run').addEventListener('click', () => runInsights(view));
+    await renderPricing(view);
+  }
+
+  /* ---------------- model pricing (dev-editable) ----------------
+     Providers meter TOKENS, never money — Gemini returns usageMetadata,
+     Anthropic returns usage.input_tokens/output_tokens, OpenAI returns
+     usage.prompt_tokens/completion_tokens. None returns a cost. So the
+     rate card lives here, is stored in app_config, and Billing reads it
+     (falling back to the defaults compiled into config.js). */
+
+  let priceDraft = null;
+  const defaultPricing = () => (window.AUREUM_CONFIG?.ai?.pricing) || {};
+
+  async function loadPricing() {
+    let saved = null;
+    try { saved = await ctx.Backend.getModelPricing?.(); } catch { saved = null; }
+    return (saved && Object.keys(saved).length) ? saved : defaultPricing();
+  }
+
+  async function renderPricing(view) {
+    priceDraft = JSON.parse(JSON.stringify(await loadPricing()));
+    paintPricing(view);
+    view.querySelector('#price-add').addEventListener('click', () => {
+      const id = prompt('Model id prefix (e.g. gpt-5.6-luna, gemini-3.1-pro, claude-haiku-4-5):');
+      if (!id || !id.trim()) return;
+      priceDraft[id.trim()] = { in: 0, out: 0, label: id.trim() };
+      paintPricing(view);
+    });
+    view.querySelector('#price-reset').addEventListener('click', () => {
+      if (!confirm('Discard the saved rates and reload the defaults from config.js?')) return;
+      priceDraft = JSON.parse(JSON.stringify(defaultPricing()));
+      paintPricing(view);
+    });
+    view.querySelector('#price-save').addEventListener('click', async e => {
+      const status = view.querySelector('#price-status');
+      e.target.disabled = true; status.textContent = 'Saving…'; status.className = 'dev-status';
+      try {
+        await ctx.Backend.saveModelPricing(priceDraft);
+        if (typeof Cache !== 'undefined') Cache.bust('model-pricing');
+        status.innerHTML = '<span class="good">✓ Rates saved — invoices and user Profiles use them immediately.</span>';
+      } catch (err) { status.innerHTML = `<span class="bad">${ctx.esc(err.message || err)}</span>`; }
+      e.target.disabled = false;
+    });
+  }
+
+  function paintPricing(view) {
+    const host = view.querySelector('#price-table');
+    const ids = Object.keys(priceDraft).sort();
+    host.innerHTML = `<div class="table-scroll"><table class="table price-table">
+      <thead><tr><th>Model id (prefix match)</th><th>Label</th><th class="num">Input $/1M</th><th class="num">Output $/1M</th><th></th></tr></thead>
+      <tbody>${ids.map(id => `<tr data-pid="${ctx.esc(id)}">
+        <td><code>${ctx.esc(id)}</code></td>
+        <td><input class="bp-in price-label" value="${ctx.esc(priceDraft[id].label || id)}"></td>
+        <td class="num"><input type="number" step="0.01" min="0" class="bp-in price-in" value="${Number(priceDraft[id].in) || 0}"></td>
+        <td class="num"><input type="number" step="0.01" min="0" class="bp-in price-out" value="${Number(priceDraft[id].out) || 0}"></td>
+        <td><button class="bp-x" data-price-del title="Remove">✕</button></td>
+      </tr>`).join('')}</tbody></table></div>`;
+    // delegated ONCE on the persistent host — repaints must not stack handlers
+    if (host.dataset.wired !== '1') {
+      host.dataset.wired = '1';
+      host.addEventListener('input', e => {
+        const row = e.target.closest('[data-pid]'); if (!row) return;
+        const p = priceDraft[row.dataset.pid]; if (!p) return;
+        if (e.target.classList.contains('price-label')) p.label = e.target.value;
+        if (e.target.classList.contains('price-in')) p.in = Number(e.target.value) || 0;
+        if (e.target.classList.contains('price-out')) p.out = Number(e.target.value) || 0;
+      });
+      host.addEventListener('click', e => {
+        const del = e.target.closest('[data-price-del]'); if (!del) return;
+        delete priceDraft[del.closest('[data-pid]').dataset.pid];
+        paintPricing(view);
+      });
+    }
   }
 
   async function refreshAiPanel(view) {

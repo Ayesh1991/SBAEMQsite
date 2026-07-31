@@ -2114,3 +2114,93 @@ textarea.nc-input { min-height: 90px; resize: vertical; }
 .energy-saving .tr-dock.is-open { animation: none; }
 .tr-older { width: 100%; padding: 9px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink-2); font-size: .78rem; cursor: pointer; margin-top: 4px; }
 .tr-older:hover { color: var(--ink); border-color: var(--gold); }
+
+/* ============================================================
+   v35 — Hook library, AI model picker, dev pricing deck
+   ============================================================ */
+
+/* --- Notes sub-tabs --- */
+.notes-tabs { display: flex; gap: 8px; margin: 0 0 20px; flex-wrap: wrap; }
+.notes-tab {
+  padding: 9px 18px; border-radius: 999px; cursor: pointer; font-size: .88rem; font-weight: 600;
+  background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink-2);
+}
+.notes-tab:hover { color: var(--ink); }
+.notes-tab.active { background: var(--surface); border-color: var(--gold); color: var(--ink); }
+
+/* --- collapsed note composer --- */
+.note-composer { padding: 0; }
+.nc-summary { padding: 16px 20px; cursor: pointer; font-weight: 650; list-style: none; display: flex; align-items: center; gap: 9px; }
+.nc-summary::-webkit-details-marker { display: none; }
+.nc-plus { color: var(--gold); font-size: 1rem; }
+.note-composer[open] .nc-summary { border-bottom: 1px solid var(--hairline); }
+.nc-fields { padding: 16px 20px 20px; display: flex; flex-direction: column; gap: 10px; }
+.note-tagsug-wrap { background: var(--surface-2); border-radius: 10px; padding: 4px 12px; }
+.tagsug-toggle { cursor: pointer; font-size: .8rem; color: var(--muted); padding: 7px 0; list-style: none; }
+.tagsug-toggle::-webkit-details-marker { display: none; }
+.note-tagsug-wrap .note-tagsug { max-height: 170px; overflow-y: auto; padding: 4px 0 10px; }
+
+/* --- hook library --- */
+.hk-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
+.hk-search { flex: 1; min-width: 240px; margin: 0; }
+.hk-count { font-size: .8rem; color: var(--muted); white-space: nowrap; }
+.hk-loading { padding: 30px; text-align: center; }
+.hk-empty { text-align: center; padding: 30px; }
+
+.hk-decks { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 12px; align-items: start; }
+.hk-deck { background: var(--surface); border: 1px solid var(--hairline); border-radius: 14px; overflow: hidden; transition: border-color .18s ease; }
+.hk-deck:hover { border-color: rgba(244,201,93,.35); }
+.hk-deck.is-open { grid-column: 1 / -1; border-color: rgba(244,201,93,.45); }
+.hk-deck-head {
+  width: 100%; display: flex; align-items: center; gap: 10px; padding: 14px 16px;
+  background: none; border: none; cursor: pointer; color: inherit; text-align: left; font: inherit;
+}
+.hk-deck-ico { font-size: 1rem; }
+.hk-deck-title { flex: 1; font-weight: 650; font-size: .9rem; line-height: 1.35; }
+.hk-deck-untagged { font-size: .62rem; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); border: 1px solid var(--hairline); border-radius: 999px; padding: 2px 7px; }
+.hk-deck-n { font-size: .76rem; font-weight: 700; color: var(--gold); background: rgba(244,201,93,.12); border-radius: 999px; padding: 2px 10px; }
+.hk-deck-caret { color: var(--ink-3); transition: transform .2s ease; }
+.hk-deck.is-open .hk-deck-caret { transform: rotate(90deg); }
+.hk-deck-body { padding: 0 16px 14px; display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+
+.hk-item { background: var(--surface-2); border-radius: 11px; padding: 12px 14px; }
+.hk-text { margin: 0 0 8px; font-size: .87rem; line-height: 1.5; color: var(--gold); }
+.hk-btns { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.hk-btn {
+  font-size: .72rem; padding: 3px 11px; border-radius: 999px; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--hairline); color: var(--ink-2);
+}
+.hk-btn:hover { color: var(--ink); border-color: var(--gold); }
+.hk-btn.active { background: rgba(244,201,93,.14); color: var(--gold); border-color: var(--gold); }
+.hk-src { font-size: .68rem; color: var(--ink-3); margin-left: auto; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hk-reveal { margin-top: 10px; }
+.hk-rat { font-size: .82rem; line-height: 1.55; color: var(--ink-2); background: var(--surface); border-radius: 9px; padding: 10px 12px; }
+.hk-q { font-size: .82rem; background: var(--surface); border-radius: 9px; padding: 10px 12px; }
+.hk-q-theme { font-weight: 650; margin: 0 0 5px; }
+.hk-q-stem { margin: 0 0 6px; line-height: 1.5; }
+.hk-q-lead { margin: 0 0 6px; font-weight: 600; }
+.hk-q-opts { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 3px; }
+.hk-q-opts li { display: flex; align-items: baseline; gap: 7px; padding: 4px 8px; border-radius: 6px; background: var(--surface-2); }
+.hk-q-opts li.is-answer { background: rgba(52,211,153,.13); }
+.hk-let { font-weight: 700; color: var(--ink-3); font-size: .72rem; }
+.hk-tick { margin-left: auto; color: var(--good); }
+.hk-q-ref { margin: 6px 0 0; font-size: .72rem; color: var(--ink-3); }
+:root[data-theme="light"] .hk-text { color: #8a6212; }
+:root[data-theme="light"] .hk-deck-n { background: rgba(154,107,18,.12); color: #8a6212; }
+:root[data-theme="light"] .hk-btn.active { background: rgba(154,107,18,.12); color: #8a6212; }
+@media (max-width: 560px) { .hk-decks, .hk-deck-body { grid-template-columns: 1fr; } }
+
+/* --- AI provider picker next to Explore with AI --- */
+.ai-launch { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ai-pick { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px 4px 8px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--hairline); }
+.ai-pick-ico { font-size: .8rem; color: var(--ink-3); }
+.ai-pick-sel { background: none; border: none; color: var(--ink-2); font: inherit; font-size: .8rem; cursor: pointer; outline: none; }
+.ai-pick-sel option { background: var(--surface); color: var(--ink); }
+.ai-pick:hover { border-color: var(--gold); }
+.ai-pick:hover .ai-pick-sel { color: var(--ink); }
+/* --- dev price table --- */
+.price-table td { vertical-align: middle; }
+.price-table td.num { text-align: right; }
+.price-table .bp-in { width: 100%; max-width: 150px; }
+.price-table .price-in, .price-table .price-out { max-width: 92px; text-align: right; }
+.aiu-rates td.num, .aiu-rates th.num { text-align: right; }

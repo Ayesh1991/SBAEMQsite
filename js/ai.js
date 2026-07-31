@@ -52,8 +52,50 @@ const AI = (() => {
       slot.innerHTML = `<p class="ai-note">✨ The AI tutor is enabled per user — ask the site owner for Gemini access.</p>`;
       return;
     }
-    slot.innerHTML = `<button class="btn btn-ai" data-ai-open>✨ Explore with AI</button>`;
+    // Provider is chosen BEFORE the first call, not after the first answer.
+    // The choice is remembered site-wide, so the tutor, the essay coach and
+    // every other AI surface open on the model you last picked.
+    const provs = await allowedProviders(u0);
+    const cur = currentProvider(provs);
+    slot.innerHTML = `
+      <div class="ai-launch">
+        <button class="btn btn-ai" data-ai-open>✨ Explore with AI</button>
+        ${provs.length > 1 ? `<label class="ai-pick" title="Which model answers">
+          <span class="ai-pick-ico">⚙</span>
+          <select class="ai-pick-sel" data-ai-prov>
+            ${provs.map(p => `<option value="${p.id}" ${p.id === cur ? 'selected' : ''}>${p.label}</option>`).join('')}
+          </select></label>` : `<span class="ai-badge">${provs[0]?.label || 'Gemini'}</span>`}
+      </div>`;
+    slot.querySelector('[data-ai-prov]')?.addEventListener('change', e => setProvider(e.target.value));
     slot.querySelector('[data-ai-open]').addEventListener('click', () => openPanel(slot, ctx));
+  }
+
+  /* ---------------- provider choice (shared across the site) ---------------- */
+
+  const PROV_KEY = 'aureum.ai.provider';
+  /** Which providers this user may actually use, in preference order. */
+  async function allowedProviders(u) {
+    const user = u || await getUser();
+    const dev = !!user?.isDeveloper;
+    const f = user?.featureFlags || {};
+    const out = [];
+    if (dev || f.gemini) out.push({ id: 'gemini', label: 'Gemini Flash' });
+    if (dev || f.gpt) out.push({ id: 'gpt', label: gptLabel() });
+    if (dev) out.push({ id: 'claude', label: 'Claude' });
+    return out.length ? out : [{ id: 'gemini', label: 'Gemini Flash' }];
+  }
+  const gptLabel = () => (cfg().gptModels?.[0]?.label) || 'GPT';
+  function currentProvider(list) {
+    let saved = null;
+    try { saved = localStorage.getItem(PROV_KEY); } catch {}
+    if (saved && list.some(p => p.id === saved)) return saved;
+    return list[0].id;
+  }
+  function setProvider(id) { try { localStorage.setItem(PROV_KEY, id); } catch {} }
+  /** Public: other modules (essay coach, simulator) read the same choice. */
+  async function preferredProvider() {
+    const list = await allowedProviders();
+    return currentProvider(list);
   }
 
   async function openPanel(slot, ctx) {
@@ -62,6 +104,8 @@ const AI = (() => {
     // Gemini+ users (flag granted in Users & access) can pick their Gemini
     // model; the server re-checks the flag, so this is UX, not the gate.
     const advanced = dev || !!u?.featureFlags?.gemini_advanced;
+    const provs = await allowedProviders(u);
+    const chosen = currentProvider(provs);          // whatever was picked before opening
     const modelPicker = `<select class="ai-model" id="ai-model" title="Gemini model">
             ${(cfg().geminiModels || [{ id: cfg().geminiModel || 'gemini-3.1-flash-lite', label: 'Gemini Flash' }]).map(m => `<option value="${m.id}" ${m.id === (cfg().geminiModel) ? 'selected' : ''}>${m.label}</option>`).join('')}
           </select>`;
@@ -69,11 +113,10 @@ const AI = (() => {
       <div class="ai-panel" data-animate>
         <div class="ai-head">
           <span class="ai-title">✨ AI tutor</span>
-          ${dev ? `<div class="ai-providers">
-            <button class="ai-prov" data-prov="gemini">Gemini Flash</button>
-            <button class="ai-prov active" data-prov="claude">Claude</button>
-          </div>
-          ${modelPicker}` : (advanced ? modelPicker : `<span class="ai-badge">Gemini Flash</span>`)}
+          ${provs.length > 1 ? `<div class="ai-providers">
+            ${provs.map(p => `<button class="ai-prov ${p.id === chosen ? 'active' : ''}" data-prov="${p.id}">${p.label}</button>`).join('')}
+          </div>` : `<span class="ai-badge">${provs[0].label}</span>`}
+          ${(dev || advanced) ? modelPicker : ''}
           <button class="ai-x" data-ai-close aria-label="Close">✕</button>
         </div>
         <div class="ai-tools">
@@ -106,12 +149,13 @@ const AI = (() => {
       </div>`;
 
     const panel = slot.querySelector('.ai-panel');
-    const st = { provider: dev ? 'claude' : 'gemini', geminiModel: cfg().geminiModel || 'gemini-3.1-flash-lite', messages: [], follow: 0, dev };
+    const st = { provider: chosen, geminiModel: cfg().geminiModel || 'gemini-3.1-flash-lite', messages: [], follow: 0, dev };
 
     panel.querySelector('[data-ai-close]').addEventListener('click', () => attach(slot, ctx));
     panel.querySelectorAll('.ai-prov').forEach(b => b.addEventListener('click', () => {
       panel.querySelectorAll('.ai-prov').forEach(x => x.classList.toggle('active', x === b));
       st.provider = b.dataset.prov;
+      setProvider(st.provider);                       // remember it site-wide
       updateFollowCount(panel, st);                   // per-provider follow-up cap
       runExplain();                                   // regenerate with the chosen provider
     }));
@@ -377,7 +421,9 @@ const AI = (() => {
     const res = await fetch(cfg().apiBase, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-      body: JSON.stringify({ ...payload, model: payload.provider === 'claude' ? cfg().claudeModel : (payload.geminiModel || cfg().geminiModel), dailyLimit: cfg().dailyLimit })
+      body: JSON.stringify({ ...payload, model: payload.provider === 'claude' ? cfg().claudeModel
+        : payload.provider === 'gpt' ? cfg().gptModel
+        : (payload.geminiModel || cfg().geminiModel), dailyLimit: cfg().dailyLimit })
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -401,5 +447,5 @@ const AI = (() => {
     return '<p>' + h + '</p>';
   }
 
-  return { attach, renderSavedItem, kindIcon, kindLabel, featureOn };
+  return { attach, renderSavedItem, kindIcon, kindLabel, featureOn, preferredProvider, allowedProviders };
 })();

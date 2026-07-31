@@ -391,6 +391,10 @@ const Backend = (() => {
     }
     async function deleteUserNote(noteId) { const e = sessionEmail(); if (!e) return; write(unKey(e), read(unKey(e), []).filter(n => n.id !== noteId)); }
 
+    /* Model price card (USD per 1M tokens) — local mirror */
+    async function getModelPricing() { return read('aipricing', null); }
+    async function saveModelPricing(t) { write('aipricing', t || {}); return t; }
+
     /* AI feature registry + shared pools + tags (local mirrors) */
     async function getAiFeatures() { return read('aifeatures', {}); }
     async function saveAiFeatures(data) { write('aifeatures', data); return data; }
@@ -420,7 +424,7 @@ const Backend = (() => {
       listAllFlags, resolveFlags, listGlobalFlaggedKeys, saveUserDeck, listUserDecks, deleteUserDeck,
       addDiscussion, listDiscussions, deleteDiscussion, listDiscussionReplies, addDiscussionReply, deleteDiscussionReply, pollDiscussions, getDiscussionQuestion,
       listUserNotes, saveUserNote, deleteUserNote,
-      getAiFeatures, saveAiFeatures, listSharedUsage, saveQuestionTags, listQuestionTags, getAccessToken };
+      getAiFeatures, saveAiFeatures, getModelPricing, saveModelPricing, listSharedUsage, saveQuestionTags, listQuestionTags, getAccessToken };
   })();
 
   /* ================= SUPABASE BACKEND ================= */
@@ -880,6 +884,20 @@ const Backend = (() => {
     }
     async function deleteUserNote(noteId) { await ensureClient(); const id = await uid(); if (!id) return; await sb.from('user_notes').delete().eq('id', noteId).eq('user_id', id); }
 
+    /* Model price card (USD per 1M tokens), stored in app_config so every
+       device and every invoice prices from the same table. */
+    async function getModelPricing() {
+      await ensureClient();
+      const { data } = await sb.from('app_config').select('data').eq('id', 'model_pricing').single();
+      return data?.data || null;
+    }
+    async function saveModelPricing(t) {
+      await ensureClient();
+      const { error } = await sb.from('app_config').upsert({ id: 'model_pricing', data: t || {}, updated_at: new Date().toISOString() });
+      if (error) throw new Error('Could not save rates: ' + error.message);
+      return t;
+    }
+
     /* AI feature registry (app_config), shared pools, question tags */
     async function getAiFeatures() {
       await ensureClient();
@@ -1056,7 +1074,7 @@ const Backend = (() => {
       listAllFlags, resolveFlags, listGlobalFlaggedKeys, saveUserDeck, listUserDecks, deleteUserDeck,
       addDiscussion, listDiscussions, deleteDiscussion, listDiscussionReplies, addDiscussionReply, deleteDiscussionReply, pollDiscussions, getDiscussionQuestion,
       listUserNotes, saveUserNote, deleteUserNote,
-      getAiFeatures, saveAiFeatures, listSharedUsage, saveQuestionTags, listQuestionTags, getAccessToken };
+      getAiFeatures, saveAiFeatures, getModelPricing, saveModelPricing, listSharedUsage, saveQuestionTags, listQuestionTags, getAccessToken };
   })();
 
   const impl = useCloud ? Cloud : Local;

@@ -774,9 +774,27 @@
       <header data-animate>
         <p class="kicker">STUDY NOTES</p>
         <h1 class="page-title">Notes, tags &amp; hooks</h1>
-        <p class="muted">A memory hook is only useful pinned to the concept it hangs on. Write your own notes, tag them with the topics that give them meaning, and find them again by searching those tags.</p>
+        <p class="muted">A memory hook is only useful pinned to the concept it hangs on. Read every hook in the bank grouped by topic, and write your own notes alongside them.</p>
       </header>
-      <div id="notes-wrap"><p class="muted">Loading your notes…</p></div>`, user);
+      <div class="notes-tabs" data-animate>
+        <button class="notes-tab active" data-ntab="hooks">💡 Hook library</button>
+        <button class="notes-tab" data-ntab="mine">📝 My notes</button>
+      </div>
+      <div id="hooks-wrap"></div>
+      <div id="notes-wrap" hidden><p class="muted">Loading your notes…</p></div>`, user);
+
+    // sub-tabs: the hook library is the default view, personal notes the second
+    const hooksWrap = view.querySelector('#hooks-wrap');
+    const notesWrap = view.querySelector('#notes-wrap');
+    let hooksDrawn = false;
+    const showTab = (which) => {
+      view.querySelectorAll('.notes-tab').forEach(b => b.classList.toggle('active', b.dataset.ntab === which));
+      hooksWrap.hidden = which !== 'hooks';
+      notesWrap.hidden = which !== 'mine';
+      if (which === 'hooks' && !hooksDrawn && typeof Hooks !== 'undefined') { hooksDrawn = true; Hooks.render(hooksWrap); }
+    };
+    view.querySelectorAll('.notes-tab').forEach(b => b.addEventListener('click', () => showTab(b.dataset.ntab)));
+    showTab('hooks');
 
     const [notes, tags] = await Promise.all([
       Backend.listUserNotes ? Backend.listUserNotes().catch(() => []) : Promise.resolve([]),
@@ -786,25 +804,31 @@
     // notes align with the same vocabulary the question bank is tagged with.
     const tagPool = [...new Set(tags.flatMap(t => [t.topic, ...(t.tags || [])]).filter(Boolean).map(s => String(s).trim()))].sort((a, b) => a.localeCompare(b)).slice(0, 60);
 
-    const wrap = view.querySelector('#notes-wrap');
+    let wrap = view.querySelector('#notes-wrap');
     let editing = null, search = '';
     const esc2 = esc;
 
+    // The composer is a collapsed card — the list of notes is what you come
+    // here to read; writing is one click away rather than always occupying
+    // the top third of the page (and the 60-tag suggestion wall with it).
     function composer() {
       const n = editing || {};
       return `
-        <div class="card note-composer" data-animate>
-          <h3>${editing ? 'Edit note' : 'New note'}</h3>
-          <input type="text" id="nc-title" class="nc-input" placeholder="Title — the concept, e.g. 'Magnesium sulphate in severe pre-eclampsia'" value="${esc2(n.title || '')}">
-          <textarea id="nc-body" class="nc-input" placeholder="Your explanation, the facts you keep forgetting, the reasoning…">${esc2(n.body || '')}</textarea>
-          <input type="text" id="nc-hook" class="nc-input" placeholder="💡 Memory hook / mnemonic (optional)" value="${esc2(n.hook || '')}">
-          <input type="text" id="nc-tags" class="nc-input" placeholder="Tags, comma-separated — the topics this note belongs to" value="${esc2((n.tags || []).join(', '))}">
-          ${tagPool.length ? `<div class="note-tagsug">${tagPool.slice(0, 24).map(t => `<button class="tagsug" data-tag="${esc2(t)}">${esc2(t)}</button>`).join('')}</div>` : ''}
-          <div class="nc-actions">
-            <button class="btn btn-gold" id="nc-save">${editing ? 'Save changes' : 'Save note'}</button>
-            ${editing ? '<button class="btn btn-ghost" id="nc-cancel">Cancel</button>' : ''}
+        <details class="card note-composer" ${editing ? 'open' : ''} id="nc-card">
+          <summary class="nc-summary"><span class="nc-plus">✚</span> ${editing ? 'Edit note' : 'Write a new note'}</summary>
+          <div class="nc-fields">
+            <input type="text" id="nc-title" class="nc-input" placeholder="Title — the concept, e.g. 'Magnesium sulphate in severe pre-eclampsia'" value="${esc2(n.title || '')}">
+            <textarea id="nc-body" class="nc-input" placeholder="Your explanation, the facts you keep forgetting, the reasoning…">${esc2(n.body || '')}</textarea>
+            <input type="text" id="nc-hook" class="nc-input" placeholder="💡 Memory hook / mnemonic (optional)" value="${esc2(n.hook || '')}">
+            <input type="text" id="nc-tags" class="nc-input" placeholder="Tags, comma-separated — the topics this note belongs to" value="${esc2((n.tags || []).join(', '))}">
+            ${tagPool.length ? `<details class="note-tagsug-wrap"><summary class="tagsug-toggle">Suggested topic tags (${tagPool.length})</summary>
+              <div class="note-tagsug">${tagPool.map(t => `<button class="tagsug" data-tag="${esc2(t)}">${esc2(t)}</button>`).join('')}</div></details>` : ''}
+            <div class="nc-actions">
+              <button class="btn btn-gold" id="nc-save">${editing ? 'Save changes' : 'Save note'}</button>
+              ${editing ? '<button class="btn btn-ghost" id="nc-cancel">Cancel</button>' : ''}
+            </div>
           </div>
-        </div>`;
+        </details>`;
     }
     function noteCard(n) {
       return `<article class="card note-item" data-nid="${esc2(n.id)}">
@@ -821,6 +845,7 @@
     }
     function draw() {
       const shown = notes.filter(matches);
+      wrap = view.querySelector('#notes-wrap');
       wrap.innerHTML = `
         ${composer()}
         <div class="notes-toolbar" data-animate>
@@ -1341,6 +1366,7 @@
     }
     let myRows = [], counts = { all: 1, simulator: 1, dev: 1 }, sharedRows = [], features = {};
     try {
+      await Billing.loadRates();                 // dev's rate card before pricing anything
       [myRows, counts, sharedRows, features] = await Promise.all([
         Backend.listMyTokenUsage(),
         Backend.getEligibleCounts(),
@@ -1397,6 +1423,14 @@
 
       <h4 class="aiu-sub">Last 30 days</h4>
       <svg class="aiu-spark" viewBox="0 0 240 48" preserveAspectRatio="none" role="img" aria-label="Daily AI cost, last 30 days">${spark}</svg>
+
+      <h4 class="aiu-sub">Current rates <span class="muted tiny">· USD per 1,000,000 tokens</span></h4>
+      <div class="table-scroll"><table class="table aiu-rates">
+        <thead><tr><th>Model</th><th class="num">Input</th><th class="num">Output</th></tr></thead>
+        <tbody>${Billing.rateCard().filter(r => !/\(retired\)/i.test(r.label)).map(r => `
+          <tr><td>${esc(r.label)}</td><td class="num">$${r.in.toFixed(2)}</td><td class="num">$${r.out.toFixed(2)}</td></tr>`).join('')}</tbody>
+      </table></div>
+      <p class="tiny muted">Providers report token counts only — never a price — so every cost here is computed from these rates. They are billed at cost, never marked up.</p>
 
       <div class="aiu-actions">
         <button class="btn btn-gold btn-sm" id="aiu-bill">🧾 Generate my invoice</button>
