@@ -2164,7 +2164,7 @@ textarea.nc-input { min-height: 90px; resize: vertical; }
 .hk-deck-body { padding: 0 16px 14px; display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
 
 .hk-item { background: var(--surface-2); border-radius: 11px; padding: 12px 14px; }
-.hk-text { margin: 0 0 8px; font-size: .87rem; line-height: 1.5; color: var(--gold); }
+.hk-text { margin: 0 0 8px; font-size: .87rem; line-height: 1.5; color: var(--hook-ink, var(--gold)); }
 .hk-btns { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .hk-btn {
   font-size: .72rem; padding: 3px 11px; border-radius: 999px; cursor: pointer;
@@ -2185,7 +2185,7 @@ textarea.nc-input { min-height: 90px; resize: vertical; }
 .hk-let { font-weight: 700; color: var(--ink-3); font-size: .72rem; }
 .hk-tick { margin-left: auto; color: var(--good); }
 .hk-q-ref { margin: 6px 0 0; font-size: .72rem; color: var(--ink-3); }
-:root[data-theme="light"] .hk-text { color: #8a6212; }
+:root[data-theme="light"] .hk-text { color: var(--hook-ink-light, #8a6212); }
 :root[data-theme="light"] .hk-deck-n { background: rgba(154,107,18,.12); color: #8a6212; }
 :root[data-theme="light"] .hk-btn.active { background: rgba(154,107,18,.12); color: #8a6212; }
 @media (max-width: 560px) { .hk-decks, .hk-deck-body { grid-template-columns: 1fr; } }
@@ -2204,3 +2204,12 @@ textarea.nc-input { min-height: 90px; resize: vertical; }
 .price-table .bp-in { width: 100%; max-width: 150px; }
 .price-table .price-in, .price-table .price-out { max-width: 92px; text-align: right; }
 .aiu-rates td.num, .aiu-rates th.num { text-align: right; }
+
+/* hook reading-colour picker */
+.hk-ink { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: -6px 0 18px; }
+.hk-ink-label { font-size: .74rem; color: var(--ink-3); margin-right: 2px; }
+.hk-swatch { width: 22px; height: 22px; padding: 3px; border-radius: 50%; cursor: pointer; background: none; border: 1px solid transparent; line-height: 0; }
+.hk-swatch span { display: block; width: 100%; height: 100%; border-radius: 50%; }
+.hk-swatch:hover { border-color: var(--hairline); }
+.hk-swatch.active { border-color: var(--ink-2); }
+:root[data-theme="light"] .hk-swatch span { filter: brightness(.72) saturate(1.35); }

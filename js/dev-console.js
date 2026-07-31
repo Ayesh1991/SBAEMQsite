@@ -1050,6 +1050,9 @@ const DevConsole = (() => {
     { id: 'gpt',             label: 'GPT' }
   ];
 
+  // named from config so the grant row tracks whatever GPT model is configured
+  const gptGrantLabel = () => (window.AUREUM_CONFIG?.ai?.gptModels?.[0]?.label || 'GPT');
+
   async function refreshUsers(view) {
     const host = view.querySelector('#dev-users');
     if (!host) return;
@@ -1135,7 +1138,7 @@ const DevConsole = (() => {
                 </div>
                 <div class="dev-up-block">
                   <h4>AI grants</h4>
-                  ${[['gemini', 'Gemini (master AI switch)'], ['gemini_advanced', 'Gemini+ model picker'], ['ai_flashcards', 'AI flashcards']].map(([f, lbl]) => `
+                  ${[['gemini', 'Gemini (master AI switch)'], ['gemini_advanced', 'Gemini+ model picker'], ['gpt', gptGrantLabel()], ['ai_flashcards', 'AI flashcards']].map(([f, lbl]) => `
                     <label class="dev-up-flag"><label class="dev-flag"><input type="checkbox" data-uflag="${f}" data-uid="${ctx.esc(u.id)}" ${u.featureFlags?.[f] ? 'checked' : ''}><span></span></label> ${lbl}</label>`).join('')}
                 </div>
                 <div class="dev-up-block">
@@ -1503,13 +1506,22 @@ const DevConsole = (() => {
      ================================================================ */
 
   // labels carry the $/1M in-out rates so model choices are informed ones
-  const MODEL_OPTIONS = [
-    { id: 'gemini|gemini-3.1-flash-lite',     label: 'Gemini 3.1 Flash-Lite · $0.25/$1.50' },
-    { id: 'gemini|gemini-3.5-flash',          label: 'Gemini 3.5 Flash · $1.50/$9.00' },
-    { id: 'gemini|gemini-3.1-pro',            label: 'Gemini 3.1 Pro · $2.00/$12.00' },
-    { id: 'claude|claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 · $1.00/$5.00' },
-    { id: 'claude|claude-sonnet-4-5',         label: 'Claude Sonnet 4.5 · $3.00/$15.00' }
-  ];
+  /* The registry's model menu is DERIVED from config + the live rate card, so
+     adding a model (or re-pricing one) shows up here automatically instead of
+     needing this list edited — which is exactly how GPT went missing. */
+  function modelOptions() {
+    const ai = window.AUREUM_CONFIG?.ai || {};
+    const price = m => { const r = Billing.rateFor(m); return ` · $${(r.in || 0).toFixed(2)}/$${(r.out || 0).toFixed(2)}`; };
+    const out = [];
+    (ai.geminiModels || [{ id: ai.geminiModel, label: 'Gemini Flash' }]).forEach(m =>
+      out.push({ id: 'gemini|' + m.id, label: m.label + price(m.id) }));
+    (ai.gptModels || (ai.gptModel ? [{ id: ai.gptModel, label: 'GPT' }] : [])).forEach(m =>
+      out.push({ id: 'gpt|' + m.id, label: m.label + price(m.id) }));
+    [{ id: ai.claudeModel || 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
+     { id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' }].forEach(m =>
+      out.push({ id: 'claude|' + m.id, label: m.label + price(m.id) }));
+    return out;
+  }
   const SPLIT_OPTIONS = [
     { id: 'simulator', label: 'Split across simulator users' },
     { id: 'all',       label: 'Split across all users' },
@@ -1597,6 +1609,7 @@ const DevConsole = (() => {
         </div>
       </section>`;
     ctx.FX.viewIn(view);
+    try { await Billing.loadRates(); } catch {}   // registry labels quote the live rates
     await refreshAiPanel(view);
     wireTagger(view);
     view.querySelector('#ins-run').addEventListener('click', () => runInsights(view));
@@ -1707,7 +1720,7 @@ const DevConsole = (() => {
           </div>
           <div class="ai-feat-controls">
             <label class="dev-flag" title="${planned ? 'Coming soon' : 'Enable / disable'}"><input type="checkbox" data-fc="enabled" ${c.enabled ? 'checked' : ''} ${planned ? 'disabled' : ''}><span></span></label>
-            <select data-fc="model" ${planned ? 'disabled' : ''}>${MODEL_OPTIONS.map(m => `<option value="${m.id}" ${m.id === modelId ? 'selected' : ''}>${m.label}</option>`).join('')}</select>
+            <select data-fc="model" ${planned ? 'disabled' : ''}>${modelOptions().map(m => `<option value="${m.id}" ${m.id === modelId ? 'selected' : ''}>${m.label}</option>`).join('')}</select>
             <select data-fc="split" ${planned || f.billing === 'per-user' ? 'disabled' : ''} title="${f.billing === 'per-user' ? 'Each user pays their own tokens' : 'Who carries this pool'}">
               ${f.billing === 'per-user' ? '<option>Each user pays own use</option>' : SPLIT_OPTIONS.map(s => `<option value="${s.id}" ${s.id === c.split ? 'selected' : ''}>${s.label}</option>`).join('')}
             </select>

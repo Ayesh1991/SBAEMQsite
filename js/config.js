@@ -103,6 +103,7 @@ window.AUREUM_CONFIG = {
       'gemini-3.5-flash':      { in: 1.50, out: 9.00,  label: 'Gemini 3.5 Flash' },
       'gemini':                { in: 1.50, out: 9.00,  label: 'Gemini (other)' },
       'claude-haiku-4-5':      { in: 1.00, out: 5.00,  label: 'Claude Haiku 4.5' },
+      'claude-sonnet-4-5':     { in: 3.00, out: 15.00, label: 'Claude Sonnet 4.5' },
       'claude':                { in: 1.00, out: 5.00,  label: 'Claude (other)' },
       'gpt-5.6-luna':          { in: 0.20, out: 1.20,  label: 'GPT 5.6 Luna' },
       'gpt':                   { in: 0.20, out: 1.20,  label: 'GPT (other)' }

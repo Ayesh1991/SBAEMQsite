@@ -30,6 +30,43 @@ const Hooks = (() => {
 
   let index = null;         // [{ qkey, hook, rationale, topic, paper, kind, q }]
 
+  /* ---------------- reading colour ----------------
+     A wall of saturated amber is tiring at this density. Each swatch carries
+     a DARK-theme and a LIGHT-theme value so the same choice stays legible in
+     both — a pale cream that reads beautifully on black would vanish on white.
+     Tuned for long reading: mid-luminance, low-to-moderate saturation. */
+  const IN_KEY = 'aureum.hookInk';
+  const PALETTE = [
+    { id: 'paper',    name: 'Paper',     dark: '#e6eaf5', light: '#1e2636' },
+    { id: 'sand',     name: 'Sand',      dark: '#e9dfc6', light: '#5a4a24' },
+    { id: 'amber',    name: 'Amber',     dark: '#f4c95d', light: '#8a6212' },
+    { id: 'peach',    name: 'Peach',     dark: '#f3bd9a', light: '#9c5322' },
+    { id: 'rose',     name: 'Rose',      dark: '#f0aab7', light: '#a82f4a' },
+    { id: 'lavender', name: 'Lavender',  dark: '#c4b2f5', light: '#5b31d6' },
+    { id: 'sky',      name: 'Sky',       dark: '#9ad0f2', light: '#12639f' },
+    { id: 'teal',     name: 'Teal',      dark: '#7cd9d0', light: '#0d7873' },
+    { id: 'mint',     name: 'Mint',      dark: '#93ddb4', light: '#1f7548' },
+    { id: 'sage',     name: 'Sage',      dark: '#bcd3a4', light: '#4d6f31' }
+  ];
+  const inkOf = id => PALETTE.find(p => p.id === id) || PALETTE[2];   // amber default
+  function savedInk() { try { return localStorage.getItem(IN_KEY) || 'amber'; } catch { return 'amber'; } }
+  function applyInk(id) {
+    const c = inkOf(id);
+    // both values are set; the stylesheet picks per theme, so switching
+    // light/dark keeps the chosen colour readable without re-picking.
+    document.documentElement.style.setProperty('--hook-ink', c.dark);
+    document.documentElement.style.setProperty('--hook-ink-light', c.light);
+    try { localStorage.setItem(IN_KEY, id); } catch {}
+  }
+  function inkPickerHTML() {
+    const cur = savedInk();
+    return `<div class="hk-ink" title="Reading colour for the hooks">
+      <span class="hk-ink-label">Colour</span>
+      ${PALETTE.map(p => `<button class="hk-swatch ${p.id === cur ? 'active' : ''}" data-ink="${p.id}"
+        title="${p.name}" aria-label="${p.name}"><span style="background:${p.dark}"></span></button>`).join('')}
+    </div>`;
+  }
+
   /* ---------------- index ---------------- */
 
   async function build(force) {
@@ -138,7 +175,15 @@ const Hooks = (() => {
         <button class="btn btn-ghost btn-sm" id="hk-expand">Expand all</button>
         <button class="btn btn-ghost btn-sm" id="hk-refresh" title="Rebuild from the latest published papers">↻</button>
       </div>
+      ${inkPickerHTML()}
       <div id="hk-decks"></div>`;
+
+    applyInk(savedInk());
+    host.querySelector('.hk-ink').addEventListener('click', e => {
+      const b = e.target.closest('[data-ink]'); if (!b) return;
+      applyInk(b.dataset.ink);
+      host.querySelectorAll('.hk-swatch').forEach(s => s.classList.toggle('active', s === b));
+    });
 
     const decksEl = host.querySelector('#hk-decks');
     const countEl = host.querySelector('#hk-count');
