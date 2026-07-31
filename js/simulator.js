@@ -272,6 +272,7 @@ const Simulator = (() => {
             : `<span class="bad">Not enough unseen questions yet.</span> Publish more papers (or clear a flaw exclusion). SBA unseen: ${unseenSba}, EMQ unseen: ${unseenEmq}.`}</p>
           <div class="sim-hero-actions">
             <button class="btn btn-gold btn-lg" id="sim-start" ${enough ? '' : 'disabled'}>Generate today's mock →</button>
+            <button class="btn btn-ghost btn-lg" id="sim-preview" ${enough ? '' : 'disabled'} title="See which blueprint areas tomorrow's paper will cover — and change them">🗺 Coverage map for this paper</button>
             <button class="btn btn-ghost btn-sm" id="sim-rebuild" title="Re-scan published papers into the index">↻ Rebuild index</button>
           </div>
         </div>
@@ -285,6 +286,8 @@ const Simulator = (() => {
       </div>
 
       ${masteryHeatmapHTML(bp, hist)}
+      <div id="cov-blueprint"></div>
+      <div id="cov-syllabus"></div>
 
       ${weak.length ? `
         <div class="card" data-animate>
@@ -316,6 +319,11 @@ const Simulator = (() => {
         </div>` : ''}`;
 
     body.querySelector('#sim-start')?.addEventListener('click', () => { location.hash = '#/simulator/run'; });
+    body.querySelector('#sim-preview')?.addEventListener('click', e => previewPaper(e.currentTarget, user));
+    if (typeof Coverage !== 'undefined') {
+      Coverage.renderBlueprintMap(body.querySelector('#cov-blueprint'));
+      Coverage.renderSyllabusMap(body.querySelector('#cov-syllabus'));
+    }
     body.querySelector('#sim-rebuild')?.addEventListener('click', async e => {
       e.target.disabled = true; e.target.textContent = '↻ Rebuilding…';
       // Also drop the cached AI tags/stats (10-min TTL) so freshly-tagged
@@ -939,6 +947,137 @@ const Simulator = (() => {
 
   /* ---------------- run (#/simulator/run) ---------------- */
 
+  /* ---------------- paper coverage preview + area steering ----------------
+     Dry-runs the exact selection the mock would use, shows which blueprint
+     bucket and which specific area every question lands in, and lets the
+     candidate STEER it: if vulval cancer keeps coming up and ovarian cancer
+     never does, swap that slot to ovarian cancer and the paper is rebuilt
+     around the choice. The adjusted plan is handed to the runner, so what
+     you previewed is exactly what you sit. */
+
+  let pendingPlan = null;                 // { qkeys:[...] } consumed by startRun
+
+  async function previewPaper(btn, user) {
+    const old = btn.textContent;
+    btn.disabled = true; btn.textContent = 'Planning…';
+    let bp, index, hist;
+    try {
+      const [b, raw, h, stats, tags] = await Promise.all([Blueprint.load(), buildIndex(), loadHistory(), loadStats(), loadTags()]);
+      bp = b; hist = h; index = enrich(raw, stats, tags);
+    } catch (e) { btn.disabled = false; btn.textContent = old; alert('Could not plan the paper: ' + (e.message || e)); return; }
+
+    const defs = Coverage.bucketDefs(bp);
+    const covIdx = await Coverage.buildIndex();
+    const covByKey = {}; covIdx.forEach(r => covByKey[r.qkey] = r);
+    const prog = await Coverage.attempted();
+
+    // the plan the engine would produce right now
+    let plan = select(bp, index, hist, null);
+    let slots = [...plan.sbaRecs, ...plan.emqRecs].map(r => {
+      const def = defs.get(r.bucket);
+      const cov = covByKey[r.qkey];
+      return { rec: r, bucket: r.bucket, kind: r.kind, def, area: Coverage.areaFor(cov || r, def) || '(unmatched)' };
+    });
+    btn.disabled = false; btn.textContent = old;
+
+    const used = () => new Set(slots.map(s => s.rec.qkey));
+
+    /** Alternatives inside a bucket: every declared area + how many
+        questions back it, and how many of those you have never seen. */
+    function alternatives(def, kind) {
+      const pool = Coverage.bucketPool(covIdx, def, kind);
+      return (def?.areas || []).map(a => {
+        const qs = Coverage.areaMatches(pool, a);
+        const fresh = qs.filter(q => !prog.seen.has(q.qkey) && !used().has(q.qkey));
+        return { area: a, total: qs.length, fresh: fresh.length, pool: qs };
+      }).filter(a => a.total > 0);
+    }
+
+    function swap(slotIdx, targetArea) {
+      const s = slots[slotIdx];
+      const alts = alternatives(s.def, s.kind);
+      const target = alts.find(a => a.area === targetArea);
+      if (!target) return false;
+      const taken = used();
+      // prefer a question you have never answered; fall back to any unused one
+      const pick = target.pool.find(q => !prog.seen.has(q.qkey) && !taken.has(q.qkey))
+                || target.pool.find(q => !taken.has(q.qkey));
+      if (!pick) return false;
+      const full = index.find(r => r.qkey === pick.qkey);
+      if (!full) return false;
+      slots[slotIdx] = { ...s, rec: { ...full, bucket: s.bucket }, area: targetArea, swapped: true };
+      return true;
+    }
+
+    function summary() {
+      const byBucket = new Map();
+      slots.forEach((s, i) => {
+        if (!byBucket.has(s.bucket)) byBucket.set(s.bucket, { name: s.bucket, kind: s.kind, weight: s.def?.weight || 0, items: [] });
+        byBucket.get(s.bucket).items.push({ ...s, i });
+      });
+      return [...byBucket.values()].sort((a, b) => b.items.length - a.items.length);
+    }
+
+    function bodyHTML() {
+      const groups = summary();
+      const fresh = slots.filter(s => !prog.seen.has(s.rec.qkey)).length;
+      return `
+        <div class="pv-stats">
+          <div><strong>${slots.length}</strong><span>questions</span></div>
+          <div><strong>${groups.length}</strong><span>buckets</span></div>
+          <div><strong>${new Set(slots.map(s => s.area)).size}</strong><span>specific areas</span></div>
+          <div><strong>${fresh}</strong><span>never seen before</span></div>
+        </div>
+        <p class="pv-note muted">Each row is one question in tomorrow's paper. Change any slot's <strong>specific area</strong>
+          and the engine re-picks that question from the area you chose — preferring one you have never answered.</p>
+        <div class="pv-groups">${groups.map(g => `
+          <details class="pv-group" open>
+            <summary><span class="pv-g-name">${esc(g.name)}</span>
+              <span class="pv-g-kind">${g.kind}</span>
+              <span class="pv-g-n">${g.items.length} Q</span></summary>
+            <div class="pv-slots">${g.items.map(it => {
+              const alts = alternatives(it.def, it.kind);
+              const seenBefore = prog.seen.has(it.rec.qkey);
+              return `<div class="pv-slot ${it.swapped ? 'is-swapped' : ''}">
+                <span class="pv-dot ${seenBefore ? 'old' : 'new'}" title="${seenBefore ? 'You have answered this before' : 'New to you'}"></span>
+                <select class="pv-area" data-slot="${it.i}" ${alts.length ? '' : 'disabled'}>
+                  ${alts.length ? alts.map(a => `<option value="${esc(a.area)}" ${a.area === it.area ? 'selected' : ''}>${esc(a.area)} · ${a.fresh} new / ${a.total}</option>`).join('')
+                                : `<option>${esc(it.area)}</option>`}
+                </select>
+                ${it.swapped ? '<span class="pv-tag">changed</span>' : ''}
+              </div>`; }).join('')}</div>
+          </details>`).join('')}</div>
+        <div class="pv-actions">
+          <button class="btn btn-gold" id="pv-start">Start this paper →</button>
+          <button class="btn btn-ghost" id="pv-reset">↺ Reset to the engine's plan</button>
+        </div>`;
+    }
+
+    const modal = Coverage.openModal('Coverage map for this paper', 'WHAT TOMORROW\'S PAPER WILL COVER', bodyHTML());
+    const body = modal.querySelector('.cov-sheet-body');
+    const repaint = () => { body.innerHTML = bodyHTML(); };
+    body.addEventListener('change', e => {
+      const sel = e.target.closest('[data-slot]'); if (!sel) return;
+      if (!swap(Number(sel.dataset.slot), sel.value)) alert('No spare question left in that area — try another.');
+      repaint();
+    });
+    body.addEventListener('click', e => {
+      if (e.target.id === 'pv-reset') {
+        plan = select(bp, index, hist, null);
+        slots = [...plan.sbaRecs, ...plan.emqRecs].map(r => {
+          const def = defs.get(r.bucket); const cov = covByKey[r.qkey];
+          return { rec: r, bucket: r.bucket, kind: r.kind, def, area: Coverage.areaFor(cov || r, def) || '(unmatched)' };
+        });
+        repaint();
+      }
+      if (e.target.id === 'pv-start') {
+        pendingPlan = { recs: slots.map(s => ({ ...s.rec, area: s.area })) };
+        modal.remove();
+        location.hash = '#/simulator/run';
+      }
+    });
+  }
+
   async function startRun(view, user) {
     view.innerHTML = `<section class="page narrow"><header data-animate><p class="kicker">ADAPTIVE SIMULATOR</p><h1 class="page-title">Building your mock…</h1><p class="muted">Sampling the blueprint across the live bank.</p></header></section>`;
     let bp, index, hist;
@@ -1000,11 +1139,24 @@ const Simulator = (() => {
       view.innerHTML = `<section class="page narrow"><header data-animate><p class="kicker">ADAPTIVE SIMULATOR</p><h1 class="page-title">Building your mock…</h1></header></section>`;
     }
 
-    const plan = select(bp, index, hist, ov);
-    const dict = await resolve([...plan.sbaRecs, ...plan.emqRecs]);
-    const sbaQ = plan.sbaRecs.map(r => dict[r.qkey]).filter(Boolean);
-    const emqQ = plan.emqRecs.map(r => dict[r.qkey]).filter(Boolean);
-    const questions = [...sbaQ, ...emqQ].map((q, i) => ({ ...q, number: i + 1 }));
+    // A previewed-and-steered plan wins over a fresh draw, so the paper you
+    // approved in the coverage map is exactly the paper you sit.
+    let sbaRecs, emqRecs;
+    if (pendingPlan?.recs?.length) {
+      sbaRecs = pendingPlan.recs.filter(r => r.kind === 'SBA');
+      emqRecs = pendingPlan.recs.filter(r => r.kind === 'EMQ');
+      pendingPlan = null;
+    } else {
+      const plan = select(bp, index, hist, ov);
+      sbaRecs = plan.sbaRecs; emqRecs = plan.emqRecs;
+    }
+    const areaOf = {}; [...sbaRecs, ...emqRecs].forEach(r => { if (r.area) areaOf[r.qkey] = r.area; });
+    const dict = await resolve([...sbaRecs, ...emqRecs]);
+    const sbaQ = sbaRecs.map(r => dict[r.qkey]).filter(Boolean);
+    const emqQ = emqRecs.map(r => dict[r.qkey]).filter(Boolean);
+    // stamp the blueprint area so it is RECORDED with the attempt from now on,
+    // instead of being inferred from the text later
+    const questions = [...sbaQ, ...emqQ].map((q, i) => ({ ...q, number: i + 1, area: areaOf[q._qkey] || q.area || '' }));
 
     if (questions.length < 4) {
       view.innerHTML = `<section class="page narrow"><p class="bad">Not enough eligible questions to build a mock yet. Publish more papers, then rebuild the index.</p><a class="btn btn-ghost" href="#/simulator">Back</a></section>`;
@@ -1041,14 +1193,22 @@ const Simulator = (() => {
       const agg = buckets[b] || (buckets[b] = { seen: 0, correct: 0 });
       agg.seen++; if (d.isCorrect) agg.correct++;
     });
+    // per-specific-area tally: recorded from now on so blueprint coverage
+    // stops relying on keyword inference for future papers
+    const areas = {};
+    attempt.detail.forEach(d => {
+      if (d.excluded || !d.area) return;
+      const a = areas[d.area] || (areas[d.area] = { seen: 0, correct: 0, bucket: d.bucket || '' });
+      a.seen++; if (d.isCorrect) a.correct++;
+    });
     const bySection = { SBA: { seen: 0, correct: 0 }, EMQ: { seen: 0, correct: 0 } };
     attempt.detail.forEach(d => { if (d.excluded) return; const s = bySection[d.kind]; if (s) { s.seen++; if (d.isCorrect) s.correct++; } });
     const result = {
       date: attempt.date, total: attempt.total, scored: attempt.scored, correct: attempt.correct,
       percent: attempt.percent, durationSec: attempt.durationSec, timedOut: attempt.timedOut,
       questionKeys: questions.map(q => q._qkey), excludedKeys: attempt.excludedKeys || [],
-      buckets, bySection, sbaCount: counts.sba, emqCount: counts.emq, blueprintVersion: bp.version,
-      detail: attempt.detail.map(d => ({ qkey: d.qkey, bucket: d.bucket, kind: d.kind, isCorrect: d.isCorrect, excluded: d.excluded, chosen: d.chosen, correct: d.correct, timeSec: d.timeSec || 0 }))
+      buckets, areas, bySection, sbaCount: counts.sba, emqCount: counts.emq, blueprintVersion: bp.version,
+      detail: attempt.detail.map(d => ({ qkey: d.qkey, bucket: d.bucket, area: d.area || '', kind: d.kind, isCorrect: d.isCorrect, excluded: d.excluded, chosen: d.chosen, correct: d.correct, timeSec: d.timeSec || 0 }))
     };
     if (opts.custom) { result.custom = true; result.topics = opts.topics || []; }
     // real mocks pay into Total XP exactly like library sets (10/correct,

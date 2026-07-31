@@ -506,7 +506,7 @@ const Quiz = (() => {
       const ok = answers[i] === q.answer;
       const excluded = state.flawed.has(i);            // simulator: flawed questions don't count
       if (!excluded) { scored++; if (ok) correct++; }
-      return { chosen: answers[i], correct: q.answer, isCorrect: ok, excluded, qkey: questionKey(i), bucket: q.bucket || '', kind: q.kind, timeSec: state.qTime[i] || 0 };
+      return { chosen: answers[i], correct: q.answer, isCorrect: ok, excluded, qkey: questionKey(i), bucket: q.bucket || '', area: q.area || '', kind: q.kind, timeSec: state.qTime[i] || 0 };
     });
     // feed the cohort-wide empirical difficulty meter (fire-and-forget)
     try {
