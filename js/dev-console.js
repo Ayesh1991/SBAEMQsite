@@ -847,9 +847,13 @@ const DevConsole = (() => {
     const isSba = sec === 'sba';
     const name = isSba ? (b.subcategory || b.category) : b.theme;
     const cov = bpCoverage && (bpCoverage[sec] || []).find(c => c.name === name);
+    // Chips are click-to-edit: the label itself is an input, so a typo can be
+    // corrected in place instead of deleting the area and retyping it whole.
     const areaChip = (a) => {
       const ac = cov && cov.areas.find(x => x.area === a);
-      return `<span class="bp-area ${ac ? areaClass(ac.count) : ''}">${ac ? `<b>${ac.count}</b> ` : ''}${ctx.esc(a)}<button class="bp-area-x" data-act="del-area" title="Remove area">×</button></span>`;
+      return `<span class="bp-area ${ac ? areaClass(ac.count) : ''}">${ac ? `<b>${ac.count}</b> ` : ''}<input class="bp-area-in" value="${ctx.esc(a)}" size="${Math.min(46, Math.max(8, String(a).length))}" title="Click to edit this specific area">
+        <button class="bp-area-ai" data-act="ai-area" title="Match this wording against the AI tag vocabulary">✨</button>
+        <button class="bp-area-x" data-act="del-area" title="Remove area">×</button></span>`;
     };
     return `<div class="bp-bucket" data-sec="${sec}" data-i="${i}">
       <div class="bp-bucket-top">
@@ -865,7 +869,10 @@ const DevConsole = (() => {
       </div>
       <div class="bp-areas">
         ${(b.areas || []).map(areaChip).join('')}
-        <input class="bp-in bp-area-add" data-act="add-area" placeholder="+ specific area, then Enter">
+        <span class="bp-area-newwrap">
+          <input class="bp-in bp-area-add" data-act="add-area" placeholder="+ specific area, then Enter">
+          <button class="bp-area-ai" data-act="ai-new-area" title="Check this wording against the AI tag vocabulary before adding">✨</button>
+        </span>
       </div>
     </div>`;
   }
@@ -943,6 +950,14 @@ const DevConsole = (() => {
     // live field edits — never re-render, so the caret never moves
     host.addEventListener('input', e => {
       const t = e.target;
+      if (t.classList.contains('bp-area-in')) {          // live edit of an existing area
+        const b = bucketOf(t); if (!b) return;
+        const chip = t.closest('.bp-area');
+        const idx = [...chip.parentNode.querySelectorAll('.bp-area')].indexOf(chip);
+        if (idx >= 0) b.areas[idx] = t.value;
+        t.size = Math.min(46, Math.max(8, t.value.length));
+        return;
+      }
       if (t.id === 'bp-version') { bpEdit.version = Math.max(1, Number(t.value) || 1); return; }
       const node = t.closest('.bp-bucket');
       if (node && t.dataset.field) {
@@ -982,6 +997,17 @@ const DevConsole = (() => {
         if (b && chip) { const idx = [...chip.parentNode.querySelectorAll('.bp-area')].indexOf(chip); if (idx >= 0) b.areas.splice(idx, 1); chip.remove(); }
         return;
       }
+      if (act === 'ai-area') {                 // reconcile this area with the AI tag vocabulary
+        const input = btn.closest('.bp-area')?.querySelector('.bp-area-in');
+        if (input) openAreaMatcher(view, input, bucketOf(btn));
+        return;
+      }
+      if (act === 'ai-new-area') {
+        const input = btn.closest('.bp-areas')?.querySelector('.bp-area-add');
+        if (input && input.value.trim()) openAreaMatcher(view, input, bucketOf(btn));
+        else if (input) input.focus();
+        return;
+      }
       if (act === 'del-bucket') { bpEdit[node.dataset.sec].splice(Number(node.dataset.i), 1); return drawStudio(view); }
       if (act === 'add-sba') { bpEdit.sba.push({ category: '', subcategory: '', weight: 5, areas: [] }); return drawStudio(view); }
       if (act === 'add-emq') { bpEdit.emq.push({ theme: '', weight: 5, areas: [] }); return drawStudio(view); }
@@ -995,6 +1021,130 @@ const DevConsole = (() => {
       if (act === 'export') return exportBlueprint();
       if (act === 'save') return saveStudio(view, btn);
     });
+  }
+
+  /* ---------------- AI area matcher ----------------
+     A hand-typed specific_area only works if its words actually occur in the
+     bank. Spelling, British/US variants and loose phrasing silently break
+     that. This asks the model to reconcile the typed text against the tag
+     vocabulary, shows what it costs before and after, and bills the tokens
+     to the question_auditor shared pool. */
+
+  async function openAreaMatcher(view, input, bucket) {
+    const typed = input.value.trim();
+    if (!typed) { input.focus(); return; }
+    const bucketName = bucket ? (bucket.subcategory || bucket.category || bucket.theme || '') : '';
+
+    const wrap = document.createElement('div');
+    wrap.className = 'cov-modal is-open am-modal';
+    wrap.innerHTML = `<div class="cov-sheet am-sheet" role="dialog" aria-modal="true">
+        <header class="cov-sheet-head">
+          <div><p class="kicker">BLUEPRINT · AI TAG MATCH</p><h3>Align this area with the bank</h3></div>
+          <button class="cov-x" aria-label="Close">✕</button>
+        </header>
+        <div class="cov-sheet-body">
+          <p class="am-typed">You typed: <strong>${ctx.esc(typed)}</strong>${bucketName ? ` <span class="muted">in ${ctx.esc(bucketName)}</span>` : ''}</p>
+          <div id="am-body"><p class="muted">Reading the bank's tag vocabulary…</p></div>
+        </div>
+      </div>`;
+    document.body.appendChild(wrap);
+    const close = () => wrap.remove();
+    wrap.querySelector('.cov-x').addEventListener('click', close);
+    wrap.addEventListener('click', e => { if (e.target === wrap) close(); });
+    const body = wrap.querySelector('#am-body');
+
+    // vocabulary = every distinct AI topic/tag already on the bank
+    let vocab = [];
+    try {
+      const rows = (await ctx.Backend.listQuestionTags?.()) || [];
+      vocab = [...new Set(rows.flatMap(r => [r.topic, ...(r.tags || [])]).filter(Boolean).map(x => String(x).trim()))].sort();
+    } catch {}
+    if (!vocab.length) {
+      body.innerHTML = `<p class="bad">The bank has no AI tags yet — run the Question tagger first, then this can align your wording to it.</p>`;
+      return;
+    }
+
+    // local (free) match first, so the obvious cases never cost a token
+    const near = localMatches(typed, vocab);
+    const est = Math.ceil((typed.length + vocab.join(' ').length) / 4) + 260;   // ~4 chars/token + reply
+    const rate = Billing.rateFor((window.AUREUM_CONFIG?.ai?.geminiModel) || 'gemini');
+    const estCost = (est / 1e6) * (rate.in || 0) + (300 / 1e6) * (rate.out || 0);
+
+    body.innerHTML = `
+      ${near.length ? `<div class="am-block"><h4>Already close in the bank <span class="muted tiny">· free, matched on-device</span></h4>
+        <div class="am-list">${near.map(m => `<button class="am-opt" data-pick="${ctx.esc(m.tag)}">
+          <span class="am-opt-name">${ctx.esc(m.tag)}</span><span class="am-opt-n">${m.n} question${m.n === 1 ? '' : 's'}</span></button>`).join('')}</div></div>`
+        : `<p class="muted">No close match on-device — the AI can look harder.</p>`}
+      <div class="am-run">
+        <button class="btn btn-ai" id="am-go">✨ Ask the AI to reconcile it</button>
+        <span class="am-cost">~${est.toLocaleString()} tokens in · est. ${Billing.usd(estCost, 5)}
+          <i>billed to the question-auditor shared pool</i></span>
+      </div>
+      <div id="am-out"></div>`;
+
+    body.addEventListener('click', async e => {
+      const pick = e.target.closest('[data-pick]');
+      if (pick) { applyArea(input, pick.dataset.pick); close(); return; }
+      if (e.target.id !== 'am-go') return;
+      const btn = e.target; btn.disabled = true;
+      const out = body.querySelector('#am-out');
+      out.innerHTML = `<div class="ai-loading"><span></span><span></span><span></span></div>`;
+      try {
+        const token = await ctx.Backend.getAccessToken();
+        if (!token) throw new Error('Sign in again to use AI.');
+        const res = await fetch(ctx.cfg.ai.apiBase, {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+          body: JSON.stringify({ action: 'areamatch', text: typed, bucket: bucketName, tags: vocab, dailyLimit: ctx.cfg.ai.dailyLimit })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `Failed (HTTP ${res.status})`);
+        const parsed = safeJson(data.text);
+        const used = data.usage || { in: 0, out: 0 };
+        const r2 = Billing.rateFor(data.model || 'gemini');
+        const cost = (used.in / 1e6) * (r2.in || 0) + (used.out / 1e6) * (r2.out || 0);
+        if (!parsed) { out.innerHTML = `<p class="bad">The model didn't return usable JSON.</p>`; btn.disabled = false; return; }
+        const counts = {}; vocab.forEach(v => counts[v] = 0);
+        out.innerHTML = `
+          ${parsed.corrected && parsed.corrected !== typed ? `<div class="am-block"><h4>Corrected wording</h4>
+            <button class="am-opt is-primary" data-pick="${ctx.esc(parsed.corrected)}"><span class="am-opt-name">${ctx.esc(parsed.corrected)}</span><span class="am-opt-n">use this</span></button></div>` : ''}
+          ${(parsed.matches || []).length ? `<div class="am-block"><h4>Matching tags in the bank</h4>
+            <div class="am-list">${parsed.matches.map(m => `<button class="am-opt" data-pick="${ctx.esc(m.tag)}">
+              <span class="am-opt-name">${ctx.esc(m.tag)}</span>
+              <span class="am-opt-why muted">${ctx.esc(m.why || '')}</span>
+              <span class="am-opt-n">${Math.round((m.confidence || 0) * 100)}%</span></button>`).join('')}</div></div>` : ''}
+          ${parsed.suggested ? `<div class="am-block"><h4>Recommended</h4>
+            <button class="am-opt is-primary" data-pick="${ctx.esc(parsed.suggested)}"><span class="am-opt-name">${ctx.esc(parsed.suggested)}</span><span class="am-opt-n">store this</span></button></div>` : ''}
+          ${parsed.note ? `<p class="am-note muted">${ctx.esc(parsed.note)}</p>` : ''}
+          <p class="am-cost done">Used <b>${(used.in || 0).toLocaleString()}</b> in / <b>${(used.out || 0).toLocaleString()}</b> out tokens
+            · <b>${Billing.usd(cost, 5)}</b> · ${ctx.esc(data.model || '')} · charged to the question-auditor shared pool</p>`;
+      } catch (err) { out.innerHTML = `<p class="bad">${ctx.esc(err.message || err)}</p>`; }
+      btn.disabled = false;
+    });
+  }
+
+  /** Free on-device pass: how many bank tags share significant words. */
+  function localMatches(typed, vocab) {
+    const w = areaWords(typed);
+    if (!w.length) return [];
+    return vocab.map(tag => {
+      const tw = new Set(bpNorm(tag).split(' '));
+      const hits = w.filter(x => tw.has(x)).length;
+      return { tag, hits, n: hits };
+    }).filter(m => m.hits > 0).sort((a, b) => b.hits - a.hits).slice(0, 6);
+  }
+  function safeJson(text) {
+    if (!text) return null;
+    const m = String(text).match(/\{[\s\S]*\}/);
+    try { return JSON.parse(m ? m[0] : text); } catch { return null; }
+  }
+  /** Write a chosen wording back into the chip or the add-box. */
+  function applyArea(input, value) {
+    input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    if (input.classList.contains('bp-area-add')) {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    }
+    input.focus();
   }
 
   let bpSaving = false;

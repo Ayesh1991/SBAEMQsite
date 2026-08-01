@@ -18,7 +18,11 @@
 
 const Blueprint = (() => {
   const KEY = 'blueprint-doc';
-  const TTL = 30 * 60 * 1000;
+  // Short TTL: the blueprint is edited live in the Studio and every dependent
+  // surface (coverage maps, paper preview, mock selection, post-mock analysis)
+  // must reflect an edit almost at once — including on the candidate's other
+  // devices. It's one tiny row, so re-reading it often is cheap.
+  const TTL = 2 * 60 * 1000;
 
   /* ---------- tiny front-matter YAML parser (for this blueprint shape) ---------- */
 
@@ -159,7 +163,13 @@ const Blueprint = (() => {
   async function save(doc) {
     const normalised = doc.sba ? doc : normalise(doc);
     try { await Backend.saveBlueprint?.(normalised); } catch { /* dev only */ }
-    if (typeof Cache !== 'undefined') Cache.set(KEY, normalised);
+    if (typeof Cache !== 'undefined') {
+      Cache.set(KEY, normalised);
+      // Everything derived from the blueprint must be rebuilt, or the maps and
+      // the next paper would keep quoting the buckets/areas you just changed.
+      ['coverage-index', 'sim-qindex', 'sim-qtags', 'sim-qstats'].forEach(k => Cache.bust(k));
+    }
+    try { window.dispatchEvent(new CustomEvent('aureum:blueprint-changed', { detail: normalised })); } catch {}
     return normalised;
   }
   function bust() { if (typeof Cache !== 'undefined') Cache.bust(KEY); }

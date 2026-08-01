@@ -31,6 +31,7 @@
     { re: /^#\/library\/essay\/([^/]+)$/, fn: (id, u) => Essay.renderPaper(view, id, u) },
     { re: /^#\/paper\/([^/]+)$/, fn: renderPaper },
     { re: /^#\/quiz\/([^/]+)\/(SBA|EMQ)\/(exam|study)$/, fn: renderQuiz },
+    { re: /^#\/quiz\/([^/]+)\/(SBA|EMQ)\/(exam|study)\/fresh$/, fn: (p, k, m, u) => renderQuiz(p, k, m, u, true) },
     { re: /^#\/results\/([^/]+)$/, fn: renderResults },
     { re: /^#\/profile$/, fn: renderProfile },
     { re: /^#\/studio$/, fn: renderStudio },
@@ -975,6 +976,13 @@
 
     function bestFor(kind) { const s = pStats[paperId + ':' + kind]; return s ? `Best ${s.best}% · ${s.attempts} attempt${s.attempts > 1 ? 's' : ''}` : 'Not attempted yet'; }
 
+    // Questions from this paper you've already answered ANYWHERE — including
+    // inside simulator mocks. Re-reading those wastes revision time, so each
+    // deck offers to skip them.
+    let seenSet = new Set();
+    try { seenSet = (typeof Coverage !== 'undefined') ? (await Coverage.attempted()).seen : new Set(); } catch {}
+    const seenIn = kind => Data.flatten(paper, kind).filter(q => seenSet.has(`${paperId}:${kind}:${q.number}`)).length;
+
     view.innerHTML = `
       <section class="page narrow">
         <a class="link muted" href="#/library" data-animate>← Library</a>
@@ -986,8 +994,8 @@
         </header>
 
         <div class="run-grid">
-          ${sbaN ? runCard('SBA', sbaN, bestFor('SBA'), paperId, sessions) : ''}
-          ${emqN ? runCard('EMQ', emqN, bestFor('EMQ'), paperId, sessions) : ''}
+          ${sbaN ? runCard('SBA', sbaN, bestFor('SBA'), paperId, sessions, seenIn('SBA')) : ''}
+          ${emqN ? runCard('EMQ', emqN, bestFor('EMQ'), paperId, sessions, seenIn('EMQ')) : ''}
         </div>
         <p class="muted mode-note">
           <strong>Exam mode</strong> is timed and shows feedback at the end.
@@ -995,6 +1003,16 @@
           A half-finished paper is saved automatically so you can resume it here.
         </p>
       </section>`;
+
+    // "skip seen" toggle → point this card's runs at the unseen-only route
+    view.querySelectorAll('[data-fresh]').forEach(cb => cb.addEventListener('change', () => {
+      const card = cb.closest('.run-card');
+      card.querySelectorAll('[data-run]').forEach(a => {
+        const base = a.getAttribute('href').replace(/\/fresh$/, '');
+        a.setAttribute('href', cb.checked ? base + '/fresh' : base);
+      });
+      card.classList.toggle('is-fresh', cb.checked);
+    }));
 
     // restart handlers
     view.querySelectorAll('[data-restart]').forEach(b => b.addEventListener('click', async e => {
@@ -1005,7 +1023,8 @@
     }));
   }
 
-  function runCard(kind, n, best, paperId, sessions) {
+  function runCard(kind, n, best, paperId, sessions, seen = 0) {
+    const fresh = Math.max(0, n - seen);
     const mins = Math.max(5, Math.round(n * 1.8));
     function actions(mode, label) {
       const s = sessions[kind + ':' + mode];
@@ -1017,15 +1036,26 @@
           <a class="btn btn-ghost btn-sm" href="#" data-restart="${paperId}:${kind}:${mode}">Restart</a>
         </div>`;
       }
-      return `<a class="btn ${cls}" href="${href}">${label}${mode === 'exam' ? ' · ~' + mins + ' min' : ''}</a>`;
+      return `<a class="btn ${cls}" data-run="${mode}" href="${href}">${label}${mode === 'exam' ? ' · ~' + mins + ' min' : ''}</a>`;
     }
+    // Some of this deck may already have come up inside a mock. Skipping those
+    // turns a re-read into a pure gap-filling session.
+    const freshRow = seen > 0 ? `
+      <label class="run-fresh ${fresh ? '' : 'is-dry'}">
+        <input type="checkbox" data-fresh="${kind}" ${fresh ? '' : 'disabled'}>
+        <span class="run-fresh-box"></span>
+        <span class="run-fresh-txt">Skip the <b>${seen}</b> I've already seen
+          <i>${fresh ? `· ${fresh} unseen left` : '· none left unseen'}</i></span>
+      </label>` : '';
     return `
-      <div class="run-card">
+      <div class="run-card" data-kind="${kind}">
         <div class="run-head">
           <span class="chip chip-${kind.toLowerCase()}">${kind}</span>
           <span class="run-count">${n} question${n > 1 ? 's' : ''}</span>
+          ${seen > 0 ? `<span class="run-seen" title="Answered before, here or in a mock">${seen} seen</span>` : ''}
         </div>
         <p class="muted run-best">${best}</p>
+        ${freshRow}
         <div class="run-actions">
           ${actions('exam', 'Exam mode')}
           ${actions('study', 'Study mode')}
@@ -1041,7 +1071,7 @@
   function dailyCount(user) { try { return Number(localStorage.getItem(dqKey(user))) || 0; } catch { return 0; } }
   function addDailyCount(user, n) { try { localStorage.setItem(dqKey(user), String(dailyCount(user) + n)); } catch { /* ignore */ } }
 
-  async function renderQuiz(paperId, kind, mode, user) {
+  async function renderQuiz(paperId, kind, mode, user, freshOnly) {
     if (!isPaid(user) && dailyCount(user) >= FREE_DAILY_Q) {
       view.innerHTML = `
         <section class="page narrow" data-animate>
@@ -1056,9 +1086,26 @@
       return;
     }
     const loaded = await Data.loadPaper(paperId);
-    const questions = Data.flatten(loaded.paper, kind);
+    let questions = Data.flatten(loaded.paper, kind);
     if (!questions.length) throw new Error(`This paper has no ${kind} questions.`);
-    const sessionKey = `${paperId}:${kind}:${mode}`;
+    // unseen-only run: drop anything already answered (here or in a mock) and
+    // renumber, so the paper reads 1..n rather than showing gaps
+    if (freshOnly) {
+      let seen = new Set();
+      try { seen = (typeof Coverage !== 'undefined') ? (await Coverage.attempted()).seen : new Set(); } catch {}
+      const fresh = questions.filter(q => !seen.has(`${paperId}:${kind}:${q.number}`));
+      if (!fresh.length) {
+        view.innerHTML = `<section class="page narrow" data-animate>
+          <div class="card fc-complete"><div class="fc-complete-ring">✓</div>
+          <h2>Nothing left unseen here</h2>
+          <p class="muted">You've already answered every ${kind} question in this paper. Run the full deck to revise, or pick another paper.</p>
+          <a class="btn btn-gold" href="#/paper/${encodeURIComponent(paperId)}">Back to the paper</a></div></section>`;
+        return;
+      }
+      questions = fresh.map((q, i) => ({ ...q, _qkey: `${paperId}:${kind}:${q.number}`, number: i + 1 }));
+    }
+    // a fresh-only run gets its own resume slot so it can't clash with the full deck
+    const sessionKey = `${paperId}:${kind}:${mode}${freshOnly ? ':fresh' : ''}`;
     let resume = null;
     try {
       const saved = await Backend.loadSession(sessionKey);

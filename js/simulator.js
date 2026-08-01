@@ -122,7 +122,7 @@ const Simulator = (() => {
     const flaggedArr = (Backend.listGlobalFlaggedKeys ? await Backend.listGlobalFlaggedKeys().catch(() => []) : []) || [];
     const excluded = new Set([...excludedArr, ...flaggedArr]);
     const seen = new Set();
-    const bucketAgg = {};
+    const bucketAgg = {}, areaAgg = {};
     // Recency-decayed accuracy: a mock's evidence halves every 14 days, so
     // the weakness profile tracks the candidate you are NOW, not the one
     // who sat a paper two months ago.
@@ -135,10 +135,21 @@ const Simulator = (() => {
         const s = m.buckets[b]; const agg = bucketAgg[b] || (bucketAgg[b] = { seen: 0, correct: 0, rawSeen: 0 });
         agg.seen += (s.seen || 0) * w; agg.correct += (s.correct || 0) * w; agg.rawSeen += s.seen || 0;
       }
+      // which specific_areas this candidate has already been examined on —
+      // drives the cross-paper rotation so successive mocks walk the blueprint
+      for (const a in (m.areas || {})) {
+        const s = m.areas[a]; const agg = areaAgg[a] || (areaAgg[a] = { seen: 0, correct: 0 });
+        agg.seen += s.seen || 0; agg.correct += s.correct || 0;
+      }
+      (m.detail || []).forEach(d => {
+        if (!d.area || (m.areas && m.areas[d.area])) return;   // already counted above
+        const agg = areaAgg[d.area] || (areaAgg[d.area] = { seen: 0, correct: 0 });
+        agg.seen++; if (d.isCorrect) agg.correct++;
+      });
     });
     const recent = mocks.slice(0, 3);
     const acc = recent.length ? recent.reduce((a, m) => a + (m.percent || 0), 0) / recent.length / 100 : 0.5;
-    return { seen, excluded, flagged: new Set(flaggedArr), bucketAgg, targetDifficulty: clamp(0.35 + acc * 0.4, 0.3, 0.8), mocks };
+    return { seen, excluded, flagged: new Set(flaggedArr), bucketAgg, areaAgg, targetDifficulty: clamp(0.35 + acc * 0.4, 0.3, 0.8), mocks };
   }
 
   function perfFactor(label, hist) {
@@ -190,18 +201,58 @@ const Simulator = (() => {
         const inCat = kindWanted === 'SBA' && b.category
           ? pool.filter(r => !used.has(r.qkey) && sameCat(r.category, b.category))
           : pool.filter(r => !used.has(r.qkey));
-        const tiers = [inCat.filter(unseen), inCat, pool.filter(r => !used.has(r.qkey) && unseen(r)), pool.filter(r => !used.has(r.qkey))];
-        for (const tier of tiers) {
-          if (need <= 0) break;
-          const ranked = tier.map(r => ({ r, s: scoreFor(b, r) })).sort((x, y) => y.s - x.s);
-          for (const { r } of ranked) {
-            if (need <= 0) break;
-            if (used.has(r.qkey)) continue;
-            used.add(r.qkey); chosen.push({ ...r, bucket: keyOf(b) }); need--;
-          }
+
+        /* AREA ROTATION.
+           A bucket holds many specific_areas but a paper only draws 1–3
+           questions from it, so a naive top-N kept landing on the same area
+           twice in one paper and the same area every paper. Two rules fix it:
+             • within THIS paper, never take two questions from one area while
+               another area in the bucket still has candidates;
+             • across papers, an area you have already been examined on is
+               pushed down, so successive mocks walk the whole bucket.
+           Both are preferences, not hard filters — if an area is empty the
+           engine still fills the slot rather than short-changing the paper. */
+        const areasHere = new Set();                       // areas used in this paper
+        const areaOf = r => areaKeyFor(b, r);
+        const areaPenalty = r => {
+          const a = areaOf(r);
+          if (!a) return 0;
+          let pen = 0;
+          if (areasHere.has(a)) pen -= 6;                  // repeat inside this paper: heavy
+          const prior = hist.areaAgg?.[a];
+          if (prior?.seen) pen -= Math.min(3, 1 + Math.log2(prior.seen));   // seen before: taper
+          return pen;
+        };
+        // Unseen questions are strongly preferred; a seen one is a last resort.
+        const freshBonus = r => unseen(r) ? 5 : 0;
+        const rank = list => list
+          .map(r => ({ r, s: scoreFor(b, r) + freshBonus(r) + areaPenalty(r) }))
+          .sort((x, y) => y.s - x.s);
+
+        // one pass over the whole candidate set — re-ranked after each pick so
+        // the area penalty of the question just taken is felt by the next
+        let candidates = inCat.length ? inCat : pool.filter(r => !used.has(r.qkey));
+        while (need > 0) {
+          const avail = candidates.filter(r => !used.has(r.qkey));
+          if (!avail.length) break;
+          const best = rank(avail)[0].r;
+          used.add(best.qkey);
+          const a = areaOf(best); if (a) areasHere.add(a);
+          chosen.push({ ...best, bucket: keyOf(b), area: a || '' });
+          need--;
+        }
+        // bucket starved in-category → widen to the whole pool, still unseen-first
+        while (need > 0) {
+          const avail = pool.filter(r => !used.has(r.qkey));
+          if (!avail.length) break;
+          const best = rank(avail)[0].r;
+          used.add(best.qkey);
+          const a = areaOf(best); if (a) areasHere.add(a);
+          chosen.push({ ...best, bucket: keyOf(b), area: a || '' });
+          need--;
         }
       });
-      // top up if any bucket was starved
+      // top up if any bucket was starved — unseen first, always
       if (chosen.length < total) {
         const rest = pool.filter(r => !used.has(r.qkey)).sort((a, c) => (unseen(c) - unseen(a)) || (rnd() - 0.5));
         for (const r of rest) { if (chosen.length >= total) break; used.add(r.qkey); chosen.push({ ...r, bucket: r.group || r.category || 'General' }); }
@@ -214,6 +265,26 @@ const Simulator = (() => {
     return { sbaRecs, emqRecs };
   }
   function sameCat(a, b) { a = Blueprint.normStr(a); b = Blueprint.normStr(b); return a && b && (a === b || a.includes(b) || b.includes(a)); }
+
+  /* Best-matching specific_area for a record inside a bucket. Memoised per
+     (bucket, question) because selection re-ranks on every pick. */
+  const _areaCache = new Map();
+  function areaKeyFor(bucketDef, rec) {
+    if (!bucketDef?.areas?.length) return '';
+    const k = (bucketDef.subcategory || bucketDef.category || bucketDef.theme || '') + '|' + rec.qkey;
+    if (_areaCache.has(k)) return _areaCache.get(k);
+    const hay = Blueprint.normStr(rec.text || '');
+    let best = '', bestHits = 0;
+    for (const a of bucketDef.areas) {
+      const all = Blueprint.normStr(a).split(' ').filter(Boolean);
+      const long = all.filter(w => w.length > 4);
+      const words = long.length ? long : all.filter(w => w.length >= 3);
+      const hits = words.filter(w => hay.includes(w)).length;
+      if (hits > bestHits) { bestHits = hits; best = a; }
+    }
+    _areaCache.set(k, best);
+    return best;
+  }
 
   /* ---------------- resolve records → full questions ---------------- */
 
@@ -1040,10 +1111,12 @@ const Simulator = (() => {
               const seenBefore = prog.seen.has(it.rec.qkey);
               return `<div class="pv-slot ${it.swapped ? 'is-swapped' : ''}">
                 <span class="pv-dot ${seenBefore ? 'old' : 'new'}" title="${seenBefore ? 'You have answered this before' : 'New to you'}"></span>
-                <select class="pv-area" data-slot="${it.i}" ${alts.length ? '' : 'disabled'}>
-                  ${alts.length ? alts.map(a => `<option value="${esc(a.area)}" ${a.area === it.area ? 'selected' : ''}>${esc(a.area)} · ${a.fresh} new / ${a.total}</option>`).join('')
-                                : `<option>${esc(it.area)}</option>`}
-                </select>
+                <button class="pv-area" data-slot="${it.i}" ${alts.length > 1 ? '' : 'disabled'}
+                  aria-haspopup="listbox" title="${alts.length > 1 ? 'Change the specific area for this question' : 'No alternatives in this bucket'}">
+                  <span class="pv-area-txt">${esc(it.area)}</span>
+                  ${(() => { const cur = alts.find(a => a.area === it.area); return cur ? `<span class="pv-area-n">${cur.fresh} new / ${cur.total}</span>` : ''; })()}
+                  ${alts.length > 1 ? '<span class="pv-caret">▾</span>' : ''}
+                </button>
                 ${it.swapped ? '<span class="pv-tag">changed</span>' : ''}
               </div>`; }).join('')}</div>
           </details>`).join('')}</div>
@@ -1056,12 +1129,63 @@ const Simulator = (() => {
     const modal = Coverage.openModal('Coverage map for this paper', 'WHAT TOMORROW\'S PAPER WILL COVER', bodyHTML());
     const body = modal.querySelector('.cov-sheet-body');
     const repaint = () => { body.innerHTML = bodyHTML(); };
-    body.addEventListener('change', e => {
-      const sel = e.target.closest('[data-slot]'); if (!sel) return;
-      if (!swap(Number(sel.dataset.slot), sel.value)) alert('No spare question left in that area — try another.');
-      repaint();
-    });
+    /* Custom listbox: a native <select> popup can't be themed, and these
+       option labels are long — so the picker is a real element, searchable,
+       showing how many UNSEEN questions back each area. */
+    function openAreaPicker(anchor, slotIdx) {
+      document.querySelector('.pv-pop')?.remove();
+      const s = slots[slotIdx];
+      const alts = alternatives(s.def, s.kind);
+      const pop = document.createElement('div');
+      pop.className = 'pv-pop';
+      pop.innerHTML = `
+        <div class="pv-pop-search"><input type="search" placeholder="Filter areas…" autocomplete="off"></div>
+        <div class="pv-pop-list" role="listbox">
+          ${alts.map(a => `<button class="pv-opt ${a.area === s.area ? 'is-current' : ''} ${a.fresh ? '' : 'is-dry'}"
+              data-area="${esc(a.area)}" role="option" ${a.fresh ? '' : 'title="No unseen questions left here"'}>
+              <span class="pv-opt-name">${esc(a.area)}</span>
+              <span class="pv-opt-n"><b>${a.fresh}</b> new <i>/ ${a.total}</i></span>
+            </button>`).join('') || '<p class="tr-empty">No alternatives.</p>'}
+        </div>`;
+      document.body.appendChild(pop);
+      const r = anchor.getBoundingClientRect();
+      const w = Math.min(460, Math.max(280, r.width));
+      pop.style.width = w + 'px';
+      pop.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left)) + 'px';
+      // flip above if there isn't room below
+      const below = window.innerHeight - r.bottom;
+      if (below < 260 && r.top > below) { pop.style.bottom = (window.innerHeight - r.top + 6) + 'px'; }
+      else pop.style.top = (r.bottom + 6) + 'px';
+      requestAnimationFrame(() => pop.classList.add('is-open'));
+      const input = pop.querySelector('input');
+      input.focus();
+      input.addEventListener('input', () => {
+        const q = input.value.toLowerCase();
+        pop.querySelectorAll('.pv-opt').forEach(o => { o.hidden = !!q && !o.textContent.toLowerCase().includes(q); });
+      });
+      const close = () => { pop.remove(); document.removeEventListener('pointerdown', away, true); document.removeEventListener('keydown', esckey); };
+      const away = ev => { if (!pop.contains(ev.target) && ev.target !== anchor) close(); };
+      const esckey = ev => { if (ev.key === 'Escape') close(); };
+      setTimeout(() => { document.addEventListener('pointerdown', away, true); document.addEventListener('keydown', esckey); }, 0);
+      pop.addEventListener('click', ev => {
+        const o = ev.target.closest('[data-area]'); if (!o) return;
+        const area = o.dataset.area;
+        close();
+        if (area === s.area) return;
+        if (!swap(slotIdx, area)) { toast('No spare question left in that area — every one is already in this paper.'); return; }
+        repaint();
+      });
+    }
+    function toast(msg) {
+      document.querySelector('.pv-toast')?.remove();
+      const t = document.createElement('div'); t.className = 'pv-toast'; t.textContent = msg;
+      document.body.appendChild(t);
+      requestAnimationFrame(() => t.classList.add('is-open'));
+      setTimeout(() => { t.classList.remove('is-open'); setTimeout(() => t.remove(), 250); }, 2600);
+    }
     body.addEventListener('click', e => {
+      const areaBtn = e.target.closest('.pv-area:not([disabled])');
+      if (areaBtn) { openAreaPicker(areaBtn, Number(areaBtn.dataset.slot)); return; }
       if (e.target.id === 'pv-reset') {
         plan = select(bp, index, hist, null);
         slots = [...plan.sbaRecs, ...plan.emqRecs].map(r => {

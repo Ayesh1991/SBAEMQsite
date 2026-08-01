@@ -116,11 +116,16 @@ export async function onRequest(context) {
 
   try {
     // ---- platform AI jobs (developer-run, billed to a shared pool) ----
-    if (action === 'tag' || action === 'insights' || action === 'audit') {
+    if (action === 'tag' || action === 'insights' || action === 'audit' || action === 'areamatch') {
       if (!isDev) return json({ error: 'Developer only.' }, 403);
-      const feature = { tag: 'question_tagger', insights: 'behaviour_insights', audit: 'question_auditor' }[action];
+      // area-matching is a blueprint-authoring aid, billed to the same shared
+      // pool as the question auditor (it reasons over the same tag vocabulary)
+      const feature = { tag: 'question_tagger', insights: 'behaviour_insights', audit: 'question_auditor', areamatch: 'question_auditor' }[action];
       const fc = await getFeatureConfig(env, feature);
-      const p = action === 'tag' ? buildTagPrompt(body) : action === 'insights' ? buildInsightsPrompt(body) : buildAuditPrompt(body);
+      const p = action === 'tag' ? buildTagPrompt(body)
+              : action === 'insights' ? buildInsightsPrompt(body)
+              : action === 'areamatch' ? buildAreaMatchPrompt(body)
+              : buildAuditPrompt(body);
       const useProvider = ['claude','gpt'].includes(fc.provider) ? fc.provider : 'gemini';
       // tagging returns ~100 tokens of JSON per question ×10, and Gemini
       // 2.5+ thinking also bills against the cap — give batch jobs headroom
@@ -532,6 +537,29 @@ async function callClaude(system, user, model, env, maxTokens) {
  * counts — OpenAI reports usage.prompt_tokens / completion_tokens but NOT a
  * dollar figure, so cost is computed from the site's price table.
  */
+/**
+ * Reconcile a hand-typed blueprint specific_area against the AI tag
+ * vocabulary already attached to the bank. Typos, British/US spellings and
+ * loose phrasing all mean a hand-written area can silently match nothing —
+ * this maps it onto wording the bank actually uses.
+ */
+function buildAreaMatchPrompt(body) {
+  const typed = String(body.text || '').slice(0, 300);
+  const bucket = String(body.bucket || '').slice(0, 200);
+  const vocab = (body.tags || []).slice(0, 400).map(t => String(t).slice(0, 90));
+  return {
+    system: 'You align exam-blueprint topic labels to an existing tag vocabulary for an O&G question bank. Reply with STRICT JSON only, no prose, no code fences.',
+    user: `A developer typed this specific_area for the blueprint bucket "${bucket}":\n"${typed}"\n\n` +
+      `The question bank is tagged with this vocabulary:\n${vocab.join('\n')}\n\n` +
+      `Return JSON exactly:\n` +
+      `{"corrected":"<the typed text with spelling/grammar fixed, same meaning, O&G house style>",` +
+      `"matches":[{"tag":"<vocabulary entry>","confidence":<0-1>,"why":"<max 12 words>"}],` +
+      `"suggested":"<the single best wording to store, either the corrected text or a vocabulary entry>",` +
+      `"note":"<max 20 words: whether the bank actually covers this, or a warning if nothing matches>"}\n` +
+      `List at most 6 matches, best first, only genuine ones. If nothing matches, return an empty matches array and say so in note.`
+  };
+}
+
 async function callOpenAI(system, user, model, env, maxTokens) {
   if (!env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not configured on the server.');
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
