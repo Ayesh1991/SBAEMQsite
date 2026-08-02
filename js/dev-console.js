@@ -39,6 +39,7 @@ const DevConsole = (() => {
     if (section === 'blueprint') return renderBlueprintSection(view);
     if (section === 'review') return renderReviewSection(view);
     if (section === 'ai') return renderAiSection(view);
+    if (section === 'tearoom') return renderTeaSection(view);
     if (section === 'essays') return renderEssaysSection(view);
     return renderHub(view);
   }
@@ -91,6 +92,12 @@ const DevConsole = (() => {
             <h3>AI systems</h3>
             <p>Every AI engine on the platform: enable, pick the model, choose how the cost is split, and watch the monthly spend per system.</p>
             <span class="dev-hub-count" id="hub-ai">…</span>
+          </a>
+          <a class="dev-hub-card" href="#/dev/tearoom" style="--hub-accent:linear-gradient(135deg,#e879b9,#7dd3fc)">
+            <span class="dev-hub-ico">☕</span>
+            <h3>Tea room</h3>
+            <p>Wall, chat, refresh cadence and moderation.</p>
+            <span class="dev-hub-count" id="hub-tea">…</span>
           </a>
           <a class="dev-hub-card" href="#/dev/essays" style="--hub-accent:linear-gradient(135deg,#f4c95d,#a78bfa)">
             <span class="dev-hub-ico">📝</span>
@@ -366,6 +373,149 @@ const DevConsole = (() => {
       <div class="table-scroll"><table class="table bp-cov-table"><thead><tr><th>Bucket</th><th>Weight</th><th>Matched</th><th>Specific areas (matches each)</th></tr></thead>
       <tbody>${arr.map(rows).join('')}</tbody></table></div></div>`;
     host.innerHTML = tbl(`SBA coverage · ${cov.sba.length} buckets`, cov.sba) + tbl(`EMQ coverage · ${cov.emq.length} themes`, cov.emq);
+  }
+
+  /* ---------------- section: tea room controller ---------------- */
+
+  const TEA_DEFAULTS = { intervalOpen: 20, intervalIdle: 75, maxUploadMb: 8, desktopNotif: true, wallEnabled: true, chatEnabled: true, retentionDays: 0 };
+  let teaCfg = { ...TEA_DEFAULTS };
+
+  async function renderTeaSection(view) {
+    try { teaCfg = { ...TEA_DEFAULTS, ...((await ctx.Backend.getTeaConfig?.()) || {}) }; } catch { teaCfg = { ...TEA_DEFAULTS }; }
+    view.innerHTML = `
+      <section class="page">
+        ${backLink}
+        <header data-animate>
+          <p class="kicker">DEVELOPER · TEA ROOM</p>
+          <h1 class="page-title">Tea room controller</h1>
+          <p class="muted">The wall and the chat are live by polling. Everything below takes effect on each
+            member's next page load.</p>
+        </header>
+
+        <div class="card" data-animate>
+          <h3 class="card-title">⏱ Refresh cadence</h3>
+          <p class="muted">How often a member's browser asks for new posts and messages. Lower feels instant and
+            costs more egress; the poll is incremental, so an idle board returns almost nothing either way.</p>
+          <div class="tea-rows">
+            <label class="tea-row">
+              <span class="tea-row-lbl">While the wall or chat is open</span>
+              <input type="range" min="1" max="60" step="1" id="tea-open" value="${teaCfg.intervalOpen}">
+              <output id="tea-open-out">${teaCfg.intervalOpen}s</output>
+            </label>
+            <label class="tea-row">
+              <span class="tea-row-lbl">In the background (badge only)</span>
+              <input type="range" min="10" max="300" step="5" id="tea-idle" value="${teaCfg.intervalIdle}">
+              <output id="tea-idle-out">${teaCfg.intervalIdle}s</output>
+            </label>
+          </div>
+          <p class="tea-est" id="tea-est"></p>
+        </div>
+
+        <div class="card" data-animate>
+          <h3 class="card-title">🎛 Features &amp; limits</h3>
+          <div class="tea-toggles">
+            <label class="dev-up-flag"><label class="dev-flag"><input type="checkbox" id="tea-wall" ${teaCfg.wallEnabled !== false ? 'checked' : ''}><span></span></label> Wall (posts &amp; comments)</label>
+            <label class="dev-up-flag"><label class="dev-flag"><input type="checkbox" id="tea-chat" ${teaCfg.chatEnabled !== false ? 'checked' : ''}><span></span></label> Chat (direct &amp; group)</label>
+            <label class="dev-up-flag"><label class="dev-flag"><input type="checkbox" id="tea-notif" ${teaCfg.desktopNotif !== false ? 'checked' : ''}><span></span></label> Desktop notifications</label>
+          </div>
+          <label class="tea-row">
+            <span class="tea-row-lbl">Max upload size</span>
+            <input type="range" min="1" max="50" step="1" id="tea-mb" value="${teaCfg.maxUploadMb}">
+            <output id="tea-mb-out">${teaCfg.maxUploadMb} MB</output>
+          </label>
+          <div class="dev-toolbar">
+            <button class="btn btn-gold" id="tea-save">💾 Save settings</button>
+            <button class="btn btn-ghost" id="tea-reset">↺ Defaults</button>
+            <span class="dev-status" id="tea-status"></span>
+          </div>
+        </div>
+
+        <div class="card" data-animate>
+          <h3 class="card-title">🧹 Moderation</h3>
+          <p class="muted">Every post on the wall, newest first. As the owner you can remove anything.</p>
+          <div class="dev-toolbar"><button class="btn btn-ghost btn-sm" id="tea-reload">↻ Reload</button>
+            <span class="dev-status" id="tea-mod-status"></span></div>
+          <div id="tea-posts"><p class="muted">Loading…</p></div>
+        </div>
+      </section>`;
+    ctx.FX.viewIn(view);
+    wireTea(view);
+    await refreshTeaPosts(view);
+  }
+
+  function teaEstimate(view) {
+    const open = Number(view.querySelector('#tea-open').value);
+    const idle = Number(view.querySelector('#tea-idle').value);
+    // two small requests per poll; ~0.7 KB each round with headers
+    const perDay = (3600 / open) * 1 + (3600 / idle) * 7;      // ~1h active + 7h idle
+    const mb = (perDay * 0.7) / 1024;
+    view.querySelector('#tea-est').innerHTML =
+      `≈ <strong>${Math.round(perDay)}</strong> polls per member per day · about <strong>${mb.toFixed(1)} MB</strong> egress each,
+       <strong>${(mb * 30).toFixed(0)} MB</strong> a month. For 20 members that is roughly
+       <strong>${((mb * 30 * 20) / 1024).toFixed(2)} GB</strong> of your monthly allowance.`;
+  }
+
+  function wireTea(view) {
+    const sync = () => {
+      view.querySelector('#tea-open-out').textContent = view.querySelector('#tea-open').value + 's';
+      view.querySelector('#tea-idle-out').textContent = view.querySelector('#tea-idle').value + 's';
+      view.querySelector('#tea-mb-out').textContent = view.querySelector('#tea-mb').value + ' MB';
+      teaEstimate(view);
+    };
+    ['#tea-open', '#tea-idle', '#tea-mb'].forEach(sel => view.querySelector(sel).addEventListener('input', sync));
+    sync();
+    view.querySelector('#tea-reset').addEventListener('click', () => {
+      Object.assign(teaCfg, TEA_DEFAULTS);
+      view.querySelector('#tea-open').value = TEA_DEFAULTS.intervalOpen;
+      view.querySelector('#tea-idle').value = TEA_DEFAULTS.intervalIdle;
+      view.querySelector('#tea-mb').value = TEA_DEFAULTS.maxUploadMb;
+      view.querySelector('#tea-wall').checked = true;
+      view.querySelector('#tea-chat').checked = true;
+      view.querySelector('#tea-notif').checked = true;
+      sync();
+    });
+    view.querySelector('#tea-save').addEventListener('click', async e => {
+      const status = view.querySelector('#tea-status');
+      e.target.disabled = true; status.textContent = 'Saving…'; status.className = 'dev-status';
+      const next = {
+        intervalOpen: Number(view.querySelector('#tea-open').value),
+        intervalIdle: Number(view.querySelector('#tea-idle').value),
+        maxUploadMb: Number(view.querySelector('#tea-mb').value),
+        wallEnabled: view.querySelector('#tea-wall').checked,
+        chatEnabled: view.querySelector('#tea-chat').checked,
+        desktopNotif: view.querySelector('#tea-notif').checked
+      };
+      try {
+        await ctx.Backend.saveTeaConfig(next);
+        if (typeof Cache !== 'undefined') Cache.bust('tearoom-cfg');
+        try { await TeaRoom.loadCfg(); } catch {}
+        teaCfg = next;
+        status.innerHTML = '<span class="good">✓ Saved — members pick this up on their next load.</span>';
+      } catch (err) { status.innerHTML = `<span class="bad">${ctx.esc(err.message || err)}</span>`; }
+      e.target.disabled = false;
+    });
+    view.querySelector('#tea-reload').addEventListener('click', () => refreshTeaPosts(view));
+  }
+
+  async function refreshTeaPosts(view) {
+    const host = view.querySelector('#tea-posts');
+    let list = [];
+    try { list = (await ctx.Backend.listDiscussions?.({ limit: 60 })) || []; } catch { list = []; }
+    if (!list.length) { host.innerHTML = `<p class="muted">No posts yet.</p>`; return; }
+    host.innerHTML = `<div class="table-scroll"><table class="table">
+      <thead><tr><th>Author</th><th>Post</th><th class="num">💬</th><th class="num">👍</th><th>When</th><th></th></tr></thead>
+      <tbody>${list.map(p => `<tr>
+        <td>${ctx.esc(p.author_name || '')}</td>
+        <td>${ctx.esc(String(p.topic || '').slice(0, 90))}${p.kind === 'question' ? ' <span class="chip chip-sba">Q</span>' : ''}</td>
+        <td class="num">${p.reply_count || 0}</td><td class="num">${p.reaction_count || 0}</td>
+        <td class="muted">${p.created_at ? ctx.esc(new Date(p.created_at).toLocaleDateString()) : ''}</td>
+        <td><button class="link-btn" data-del-post="${ctx.esc(p.id)}">remove</button></td>
+      </tr>`).join('')}</tbody></table></div>`;
+    host.querySelectorAll('[data-del-post]').forEach(b => b.addEventListener('click', async () => {
+      if (!confirm('Remove this post and its comments?')) return;
+      try { await ctx.Backend.deleteDiscussion(b.dataset.delPost); } catch (e) { alert(e.message || e); }
+      refreshTeaPosts(view);
+    }));
   }
 
   /* ---------------- section: users ---------------- */
@@ -843,7 +993,7 @@ const DevConsole = (() => {
     arr.forEach((b, i) => b.weight = floor[i]);
   }
 
-  function bucketCardHTML(sec, b, i) {
+  function bucketCardHTML(sec, b, i, q = '') {
     const isSba = sec === 'sba';
     const name = isSba ? (b.subcategory || b.category) : b.theme;
     const cov = bpCoverage && (bpCoverage[sec] || []).find(c => c.name === name);
@@ -851,7 +1001,8 @@ const DevConsole = (() => {
     // corrected in place instead of deleting the area and retyping it whole.
     const areaChip = (a) => {
       const ac = cov && cov.areas.find(x => x.area === a);
-      return `<span class="bp-area ${ac ? areaClass(ac.count) : ''}">${ac ? `<b>${ac.count}</b> ` : ''}<input class="bp-area-in" value="${ctx.esc(a)}" size="${Math.min(46, Math.max(8, String(a).length))}" title="Click to edit this specific area">
+      const isHit = q && String(a).toLowerCase().includes(q);
+      return `<span class="bp-area ${ac ? areaClass(ac.count) : ''} ${isHit ? 'is-hit' : ''}">${ac ? `<b>${ac.count}</b> ` : ''}<input class="bp-area-in" value="${ctx.esc(a)}" size="${Math.min(46, Math.max(8, String(a).length))}" title="Click to edit this specific area">
         <button class="bp-area-ai" data-act="ai-area" title="Match this wording against the AI tag vocabulary">✨</button>
         <button class="bp-area-x" data-act="del-area" title="Remove area">×</button></span>`;
     };
@@ -891,6 +1042,12 @@ const DevConsole = (() => {
     const d = bpEdit;
     const sbaSum = bpSum(d.sba), emqSum = bpSum(d.emq);
     const scrollY = window.scrollY;
+    // Search narrows to matching buckets (by name) or buckets holding a
+    // matching area — the index is kept so edits still write to the right row.
+    const q = bpFilter.trim().toLowerCase();
+    const hit = (b, name) => !q || name.toLowerCase().includes(q) || (b.areas || []).some(a => String(a).toLowerCase().includes(q));
+    const idxSba = d.sba.map((b, i) => i).filter(i => hit(d.sba[i], d.sba[i].subcategory || d.sba[i].category || ''));
+    const idxEmq = d.emq.map((b, i) => i).filter(i => hit(d.emq[i], d.emq[i].theme || ''));
     panel.innerHTML = `
       <div class="card bp-studio-head">
         <div class="bp-sums">
@@ -899,6 +1056,11 @@ const DevConsole = (() => {
           <button class="btn btn-ghost btn-sm" data-act="norm-sba">→100</button>
           <span class="bp-sum ${emqSum === 100 ? 'ok' : 'off'}">EMQ Σ <strong id="bp-sum-emq">${emqSum}</strong></span>
           <button class="btn btn-ghost btn-sm" data-act="norm-emq">→100</button>
+        </div>
+        <div class="bp-search">
+          <span class="bp-search-ico">⌕</span>
+          <input type="search" id="bp-find" placeholder="Find a bucket or specific area…" value="${ctx.esc(bpFilter)}" autocomplete="off">
+          ${bpFilter ? '<button class="bp-search-x" data-act="clear-find" title="Clear">✕</button>' : ''}
         </div>
         <div class="bp-studio-actions">
           <button class="btn btn-ghost btn-sm" data-act="cover">🎯 Coverage</button>
@@ -910,12 +1072,12 @@ const DevConsole = (() => {
         <span class="dev-status" id="bp-studio-status"></span>
       </div>
       <div class="card">
-        <div class="bp-sec-head"><h4>SBA buckets · ${d.sba.length}</h4><button class="btn btn-ghost btn-sm" data-act="add-sba">+ Add bucket</button></div>
-        <div class="bp-buckets">${d.sba.map((b, i) => bucketCardHTML('sba', b, i)).join('') || '<p class="muted">No SBA buckets — add one.</p>'}</div>
+        <div class="bp-sec-head"><h4>SBA buckets · ${q ? `${idxSba.length} of ${d.sba.length}` : d.sba.length}</h4><button class="btn btn-ghost btn-sm" data-act="add-sba">+ Add bucket</button></div>
+        <div class="bp-buckets">${idxSba.map(i => bucketCardHTML('sba', d.sba[i], i, q)).join('') || `<p class="muted">${q ? 'No SBA bucket or area matches that search.' : 'No SBA buckets — add one.'}</p>`}</div>
       </div>
       <div class="card">
-        <div class="bp-sec-head"><h4>EMQ themes · ${d.emq.length}</h4><button class="btn btn-ghost btn-sm" data-act="add-emq">+ Add theme</button></div>
-        <div class="bp-buckets">${d.emq.map((b, i) => bucketCardHTML('emq', b, i)).join('') || '<p class="muted">No EMQ themes — add one.</p>'}</div>
+        <div class="bp-sec-head"><h4>EMQ themes · ${q ? `${idxEmq.length} of ${d.emq.length}` : d.emq.length}</h4><button class="btn btn-ghost btn-sm" data-act="add-emq">+ Add theme</button></div>
+        <div class="bp-buckets">${idxEmq.map(i => bucketCardHTML('emq', d.emq[i], i, q)).join('') || `<p class="muted">${q ? 'No EMQ theme or area matches that search.' : 'No EMQ themes — add one.'}</p>`}</div>
       </div>
       <div class="card">
         <div class="bp-sec-head"><h4>Priority boosts · ${d.priority.length}</h4><button class="btn btn-ghost btn-sm" data-act="add-pri">+ Add boost</button></div>
@@ -958,6 +1120,16 @@ const DevConsole = (() => {
         t.size = Math.min(46, Math.max(8, t.value.length));
         return;
       }
+      if (t.id === 'bp-find') {
+        bpFilter = t.value;
+        clearTimeout(host._findT);
+        host._findT = setTimeout(() => {
+          drawStudio(view);
+          const el = view.querySelector('#bp-find');
+          if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+        }, 220);
+        return;
+      }
       if (t.id === 'bp-version') { bpEdit.version = Math.max(1, Number(t.value) || 1); return; }
       const node = t.closest('.bp-bucket');
       if (node && t.dataset.field) {
@@ -997,6 +1169,7 @@ const DevConsole = (() => {
         if (b && chip) { const idx = [...chip.parentNode.querySelectorAll('.bp-area')].indexOf(chip); if (idx >= 0) b.areas.splice(idx, 1); chip.remove(); }
         return;
       }
+      if (act === 'clear-find') { bpFilter = ''; return drawStudio(view); }
       if (act === 'ai-area') {                 // reconcile this area with the AI tag vocabulary
         const input = btn.closest('.bp-area')?.querySelector('.bp-area-in');
         if (input) openAreaMatcher(view, input, bucketOf(btn));
@@ -1147,6 +1320,7 @@ const DevConsole = (() => {
     input.focus();
   }
 
+  let bpFilter = '';
   let bpSaving = false;
   async function saveStudio(view, btn) {
     if (bpSaving) return;                      // re-entrancy guard

@@ -719,6 +719,134 @@ create policy "disc replies read" on public.discussion_replies for select using 
 create policy "disc replies insert" on public.discussion_replies for insert with check (auth.uid() = user_id);
 create policy "disc replies own delete" on public.discussion_replies for delete using (auth.uid() = user_id);
 
+-- ---------- 8c-2) Tea room v2: wall posts, reactions, threaded comments ----------
+-- The board grew from a text list into a study wall: posts carry media
+-- (photos, screenshots, files), comments nest one level like Facebook, and
+-- reactions are counted on the row so a feed costs no extra query.
+alter table public.discussions add column if not exists kind text default 'post';        -- post | question
+alter table public.discussions add column if not exists media jsonb default '[]'::jsonb; -- [{url,type,name,size}]
+alter table public.discussions add column if not exists reaction_count integer not null default 0;
+alter table public.discussions add column if not exists edited_at timestamptz;
+alter table public.discussion_replies add column if not exists parent_id uuid references public.discussion_replies(id) on delete cascade;
+alter table public.discussion_replies add column if not exists media jsonb default '[]'::jsonb;
+create index if not exists disc_reply_parent_idx on public.discussion_replies (parent_id);
+
+create table if not exists public.post_reactions (
+  post_id uuid not null references public.discussions(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  emoji text not null default '👍',
+  created_at timestamptz default now(),
+  primary key (post_id, user_id)
+);
+alter table public.post_reactions enable row level security;
+drop policy if exists "reactions read" on public.post_reactions;
+drop policy if exists "reactions own write" on public.post_reactions;
+create policy "reactions read" on public.post_reactions for select using (auth.role() = 'authenticated');
+create policy "reactions own write" on public.post_reactions for all
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+create or replace function public.bump_post_reactions()
+returns trigger language plpgsql security definer as $$
+begin
+  if TG_OP = 'INSERT' then
+    update public.discussions set reaction_count = reaction_count + 1 where id = new.post_id;
+    return new;
+  elsif TG_OP = 'DELETE' then
+    update public.discussions set reaction_count = greatest(0, reaction_count - 1) where id = old.post_id;
+    return old;
+  end if;
+  return null;
+end; $$;
+drop trigger if exists on_post_reaction on public.post_reactions;
+create trigger on_post_reaction after insert or delete on public.post_reactions
+  for each row execute function public.bump_post_reactions();
+
+-- ---------- 8c-3) Chat rooms (direct + group) ----------
+create table if not exists public.chat_rooms (
+  id uuid primary key default gen_random_uuid(),
+  kind text not null default 'group',          -- direct | group
+  title text,
+  created_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz default now(),
+  last_message_at timestamptz default now()
+);
+create table if not exists public.chat_members (
+  room_id uuid not null references public.chat_rooms(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  display_name text,
+  joined_at timestamptz default now(),
+  last_read_at timestamptz default now(),
+  primary key (room_id, user_id)
+);
+create table if not exists public.chat_messages (
+  id uuid primary key default gen_random_uuid(),
+  room_id uuid not null references public.chat_rooms(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  author_name text,
+  body text,
+  media jsonb default '[]'::jsonb,
+  created_at timestamptz default now()
+);
+create index if not exists chat_msg_idx on public.chat_messages (room_id, created_at desc);
+create index if not exists chat_room_recent_idx on public.chat_rooms (last_message_at desc);
+
+-- Membership check as SECURITY DEFINER so the policies below can reference
+-- membership without chat_members' own policy recursing into itself.
+create or replace function public.is_room_member(r uuid)
+returns boolean language sql security definer stable as $$
+  select exists (select 1 from public.chat_members m where m.room_id = r and m.user_id = auth.uid());
+$$;
+
+alter table public.chat_rooms enable row level security;
+alter table public.chat_members enable row level security;
+alter table public.chat_messages enable row level security;
+drop policy if exists "rooms read" on public.chat_rooms;
+drop policy if exists "rooms insert" on public.chat_rooms;
+drop policy if exists "rooms update" on public.chat_rooms;
+create policy "rooms read" on public.chat_rooms for select using (public.is_room_member(id));
+create policy "rooms insert" on public.chat_rooms for insert with check (auth.uid() = created_by);
+create policy "rooms update" on public.chat_rooms for update using (public.is_room_member(id));
+drop policy if exists "members read" on public.chat_members;
+drop policy if exists "members insert" on public.chat_members;
+drop policy if exists "members own update" on public.chat_members;
+drop policy if exists "members own delete" on public.chat_members;
+create policy "members read" on public.chat_members for select using (public.is_room_member(room_id));
+-- you may add yourself, or anyone to a room you already belong to
+create policy "members insert" on public.chat_members for insert
+  with check (auth.uid() = user_id or public.is_room_member(room_id));
+create policy "members own update" on public.chat_members for update using (auth.uid() = user_id);
+create policy "members own delete" on public.chat_members for delete using (auth.uid() = user_id);
+drop policy if exists "messages read" on public.chat_messages;
+drop policy if exists "messages insert" on public.chat_messages;
+drop policy if exists "messages own delete" on public.chat_messages;
+create policy "messages read" on public.chat_messages for select using (public.is_room_member(room_id));
+create policy "messages insert" on public.chat_messages for insert
+  with check (auth.uid() = user_id and public.is_room_member(room_id));
+create policy "messages own delete" on public.chat_messages for delete using (auth.uid() = user_id);
+
+create or replace function public.touch_room()
+returns trigger language plpgsql security definer as $$
+begin
+  update public.chat_rooms set last_message_at = now() where id = new.room_id;
+  return new;
+end; $$;
+drop trigger if exists on_chat_message on public.chat_messages;
+create trigger on_chat_message after insert on public.chat_messages
+  for each row execute function public.touch_room();
+
+-- ---------- 8c-4) Storage for tea-room media ----------
+insert into storage.buckets (id, name, public)
+  values ('tearoom', 'tearoom', true)
+  on conflict (id) do nothing;
+drop policy if exists "tearoom read" on storage.objects;
+drop policy if exists "tearoom upload" on storage.objects;
+drop policy if exists "tearoom own delete" on storage.objects;
+create policy "tearoom read" on storage.objects for select using (bucket_id = 'tearoom');
+create policy "tearoom upload" on storage.objects for insert
+  with check (bucket_id = 'tearoom' and auth.role() = 'authenticated');
+create policy "tearoom own delete" on storage.objects for delete
+  using (bucket_id = 'tearoom' and owner = auth.uid());
+
 -- ---------- 8d) User-designed study notes (private, tag + hook indexed) ----------
 -- A memory hook is meaningless without the concept it hangs on. These notes let
 -- a candidate write their own study note, attach AI-style topic tags and a

@@ -342,6 +342,7 @@ const Backend = (() => {
       const row = { id: 'd' + Date.now() + Math.random().toString(36).slice(2, 6), user_id: e, author_name: discAuthor(),
         question_key: post.questionKey || null, paper_title: post.paperTitle || null, answer_text: post.answerText || null,
         rationale: post.rationale || null, question: post.question || null, topic: post.topic || '',
+        kind: post.kind || (post.question ? 'question' : 'post'), media: post.media || [], reaction_count: 0,
         created_at: new Date().toISOString(), reply_count: 0, mine: true };
       list.unshift(row); write('disc', list); return row;
     }
@@ -362,6 +363,7 @@ const Backend = (() => {
       return rows.slice(0, opts?.limit || 40).map(d => ({
         id: d.id, user_id: d.user_id, author_name: d.author_name, question_key: d.question_key,
         paper_title: d.paper_title, topic: d.topic, created_at: d.created_at,
+        kind: d.kind || 'post', media: d.media || [], reaction_count: d.reaction_count || 0,
         reply_count: (replies[d.id] || []).length, mine: d.user_id === e, hasQuestion: !!d.question_key
       }));
     }
@@ -371,10 +373,10 @@ const Backend = (() => {
     }
     async function deleteDiscussion(id) { write('disc', read('disc', []).filter(d => d.id !== id)); const r = read('discR', {}); delete r[id]; write('discR', r); }
     async function listDiscussionReplies(id) { const e = sessionEmail(); return (read('discR', {})[id] || []).map(r => ({ ...r, mine: r.user_id === e })); }
-    async function addDiscussionReply(id, body) {
+    async function addDiscussionReply(id, body, opts) {
       const e = sessionEmail(); if (!e) throw new Error('Not signed in.');
       const all = read('discR', {}); const list = all[id] || (all[id] = []);
-      const row = { id: 'r' + Date.now() + Math.random().toString(36).slice(2, 6), discussion_id: id, user_id: e, author_name: discAuthor(), body, created_at: new Date().toISOString(), mine: true };
+      const row = { id: 'r' + Date.now() + Math.random().toString(36).slice(2, 6), discussion_id: id, user_id: e, author_name: discAuthor(), body, parent_id: opts?.parentId || null, media: opts?.media || [], created_at: new Date().toISOString(), mine: true };
       list.push(row); write('discR', all); return row;
     }
     async function deleteDiscussionReply(id, replyId) { const all = read('discR', {}); if (all[id]) { all[id] = all[id].filter(r => r.id !== replyId); write('discR', all); } }
@@ -391,9 +393,56 @@ const Backend = (() => {
     }
     async function deleteUserNote(noteId) { const e = sessionEmail(); if (!e) return; write(unKey(e), read(unKey(e), []).filter(n => n.id !== noteId)); }
 
+    async function getTeaConfig() { return read('teacfg', null); }
+    async function saveTeaConfig(c) { write('teacfg', c || {}); return c; }
+
     /* Model price card (USD per 1M tokens) — local mirror */
     async function getModelPricing() { return read('aipricing', null); }
     async function saveModelPricing(t) { write('aipricing', t || {}); return t; }
+
+    /* ---------- Tea room v2 (local mirror) ---------- */
+    async function uploadTeaFile(file) {
+      // local mode keeps media as a data URL so the wall still works offline
+      const url = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
+      return { url, path: '', name: file.name, type: file.type || '', size: file.size || 0 };
+    }
+    async function setReaction(postId, on, emoji) {
+      const e = sessionEmail(); if (!e) return;
+      const m = read('discRx', {}); const set = m[postId] || (m[postId] = {});
+      if (on) set[e] = emoji || '👍'; else delete set[e];
+      write('discRx', m);
+      const list = read('disc', []); const p = list.find(x => x.id === postId);
+      if (p) { p.reaction_count = Object.keys(set).length; write('disc', list); }
+    }
+    async function myReactions(postIds) {
+      const e = sessionEmail(); const m = read('discRx', {}); const out = {};
+      (postIds || []).forEach(id => { if (m[id] && m[id][e]) out[id] = m[id][e]; });
+      return out;
+    }
+    async function listChatRooms() { const e = sessionEmail(); if (!e) return []; return read('rooms', []); }
+    async function createChatRoom({ title, kind }) {
+      const e = sessionEmail(); if (!e) throw new Error('Not signed in.');
+      const room = { id: 'r' + Date.now(), kind: kind || 'group', title: title || 'Room', created_by: e, created_at: new Date().toISOString(), last_message_at: new Date().toISOString(), members: [], mine: true };
+      const list = read('rooms', []); list.unshift(room); write('rooms', list); return room;
+    }
+    async function listChatMessages(roomId, sinceIso) {
+      const e = sessionEmail();
+      return (read('msgs', {})[roomId] || []).filter(m => !sinceIso || m.created_at > sinceIso).map(m => ({ ...m, mine: m.user_id === e }));
+    }
+    async function sendChatMessage(roomId, body, media) {
+      const e = sessionEmail(); if (!e) throw new Error('Not signed in.');
+      const all = read('msgs', {}); const list = all[roomId] || (all[roomId] = []);
+      const row = { id: 'm' + Date.now(), room_id: roomId, user_id: e, author_name: discAuthor(), body: body || '', media: media || [], created_at: new Date().toISOString(), mine: true };
+      list.push(row); write('msgs', all);
+      const rooms = read('rooms', []); const r = rooms.find(x => x.id === roomId); if (r) { r.last_message_at = row.created_at; write('rooms', rooms); }
+      return row;
+    }
+    async function markRoomRead() {}
+    async function pollChat(sinceIso) {
+      const e = sessionEmail(); const all = read('msgs', {});
+      return Object.values(all).flat().filter(m => !sinceIso || m.created_at > sinceIso).map(m => ({ ...m, mine: m.user_id === e }));
+    }
+    async function listChatPeople() { return Object.values(users()).map(u => ({ id: u.email, name: u.name })); }
 
     /* AI feature registry + shared pools + tags (local mirrors) */
     async function getAiFeatures() { return read('aifeatures', {}); }
@@ -424,7 +473,8 @@ const Backend = (() => {
       listAllFlags, resolveFlags, listGlobalFlaggedKeys, saveUserDeck, listUserDecks, deleteUserDeck,
       addDiscussion, listDiscussions, deleteDiscussion, listDiscussionReplies, addDiscussionReply, deleteDiscussionReply, pollDiscussions, getDiscussionQuestion,
       listUserNotes, saveUserNote, deleteUserNote,
-      getAiFeatures, saveAiFeatures, getModelPricing, saveModelPricing, listSharedUsage, saveQuestionTags, listQuestionTags, getAccessToken };
+      uploadTeaFile, setReaction, myReactions, listChatRooms, createChatRoom, listChatMessages, sendChatMessage, markRoomRead, pollChat, listChatPeople,
+      getAiFeatures, saveAiFeatures, getModelPricing, saveModelPricing, getTeaConfig, saveTeaConfig, listSharedUsage, saveQuestionTags, listQuestionTags, getAccessToken };
   })();
 
   /* ================= SUPABASE BACKEND ================= */
@@ -816,7 +866,8 @@ const Backend = (() => {
       await ensureClient(); const id = await uid(); if (!id) throw new Error('Not signed in.');
       const row = { user_id: id, author_name: await discAuthorName(), question_key: post.questionKey || null,
         paper_title: post.paperTitle || null, answer_text: post.answerText || null, rationale: post.rationale || null,
-        question: post.question || null, topic: post.topic || '' };
+        question: post.question || null, topic: post.topic || '',
+        kind: post.kind || (post.question ? 'question' : 'post'), media: post.media || [] };
       const { data, error } = await sb.from('discussions').insert(row).select().single();
       if (error) throw error;
       return { ...data, mine: true, reply_count: 0 };
@@ -841,7 +892,7 @@ const Backend = (() => {
        they are fetched lazily per thread (getDiscussionQuestion) instead of
        being broadcast for every row. Reply counts come from the trigger-kept
        column, so drawing badges costs nothing. */
-    const DISC_COLS = 'id,user_id,author_name,question_key,paper_title,topic,created_at,reply_count';
+    const DISC_COLS = 'id,user_id,author_name,question_key,paper_title,topic,created_at,reply_count,kind,media,reaction_count';
     async function listDiscussions(opts) {
       await ensureClient(); const id = await uid();
       const limit = opts?.limit || 40;
@@ -862,9 +913,9 @@ const Backend = (() => {
       const { data } = await sb.from('discussion_replies').select('*').eq('discussion_id', discId).order('created_at', { ascending: true });
       return (data || []).map(r => ({ ...r, mine: r.user_id === id }));
     }
-    async function addDiscussionReply(discId, body) {
+    async function addDiscussionReply(discId, body, opts) {
       await ensureClient(); const id = await uid(); if (!id) throw new Error('Not signed in.');
-      const { data, error } = await sb.from('discussion_replies').insert({ discussion_id: discId, user_id: id, author_name: await discAuthorName(), body }).select().single();
+      const { data, error } = await sb.from('discussion_replies').insert({ discussion_id: discId, user_id: id, author_name: await discAuthorName(), body, parent_id: opts?.parentId || null, media: opts?.media || [] }).select().single();
       if (error) throw error;
       return { ...data, mine: true };
     }
@@ -884,6 +935,19 @@ const Backend = (() => {
     }
     async function deleteUserNote(noteId) { await ensureClient(); const id = await uid(); if (!id) return; await sb.from('user_notes').delete().eq('id', noteId).eq('user_id', id); }
 
+    /* Tea-room platform settings (poll cadence, upload cap, switches). */
+    async function getTeaConfig() {
+      await ensureClient();
+      const { data } = await sb.from('app_config').select('data').eq('id', 'tearoom').single();
+      return data?.data || null;
+    }
+    async function saveTeaConfig(c) {
+      await ensureClient();
+      const { error } = await sb.from('app_config').upsert({ id: 'tearoom', data: c || {}, updated_at: new Date().toISOString() });
+      if (error) throw new Error('Could not save: ' + error.message);
+      return c;
+    }
+
     /* Model price card (USD per 1M tokens), stored in app_config so every
        device and every invoice prices from the same table. */
     async function getModelPricing() {
@@ -896,6 +960,94 @@ const Backend = (() => {
       const { error } = await sb.from('app_config').upsert({ id: 'model_pricing', data: t || {}, updated_at: new Date().toISOString() });
       if (error) throw new Error('Could not save rates: ' + error.message);
       return t;
+    }
+
+    /* ---------- Tea room v2: media, reactions, threaded comments, chat ---------- */
+
+    /** Upload a photo/screenshot/file to the public tearoom bucket. */
+    async function uploadTeaFile(file) {
+      await ensureClient(); const id = await uid(); if (!id) throw new Error('Not signed in.');
+      const safe = String(file.name || 'file').replace(/[^\w.\-]+/g, '_').slice(-60);
+      const path = `${id}/${Date.now()}-${Math.random().toString(36).slice(2, 7)}-${safe}`;
+      const { error } = await sb.storage.from('tearoom').upload(path, file, { cacheControl: '3600', upsert: false });
+      if (error) throw new Error('Upload failed: ' + error.message);
+      const { data } = sb.storage.from('tearoom').getPublicUrl(path);
+      return { url: data.publicUrl, path, name: file.name, type: file.type || '', size: file.size || 0 };
+    }
+
+    async function setReaction(postId, on, emoji) {
+      await ensureClient(); const id = await uid(); if (!id) return;
+      if (on) await sb.from('post_reactions').upsert({ post_id: postId, user_id: id, emoji: emoji || '👍' }, { onConflict: 'post_id,user_id' });
+      else await sb.from('post_reactions').delete().eq('post_id', postId).eq('user_id', id);
+    }
+    async function myReactions(postIds) {
+      await ensureClient(); const id = await uid(); if (!id || !postIds?.length) return {};
+      const { data } = await sb.from('post_reactions').select('post_id,emoji').eq('user_id', id).in('post_id', postIds);
+      const m = {}; (data || []).forEach(r => m[r.post_id] = r.emoji || '👍'); return m;
+    }
+
+    /* ---- chat ---- */
+    async function listChatRooms() {
+      await ensureClient(); const id = await uid(); if (!id) return [];
+      const { data: mine } = await sb.from('chat_members').select('room_id,last_read_at').eq('user_id', id);
+      const ids = (mine || []).map(m => m.room_id);
+      if (!ids.length) return [];
+      const readAt = {}; (mine || []).forEach(m => readAt[m.room_id] = m.last_read_at);
+      const [{ data: rooms }, { data: members }] = await Promise.all([
+        sb.from('chat_rooms').select('*').in('id', ids).order('last_message_at', { ascending: false }),
+        sb.from('chat_members').select('room_id,user_id,display_name').in('room_id', ids)
+      ]);
+      const byRoom = {}; (members || []).forEach(m => (byRoom[m.room_id] || (byRoom[m.room_id] = [])).push(m));
+      return (rooms || []).map(r => ({ ...r, members: byRoom[r.id] || [], lastReadAt: readAt[r.id], mine: r.created_by === id }));
+    }
+    async function createChatRoom({ title, kind, memberIds, myName }) {
+      await ensureClient(); const id = await uid(); if (!id) throw new Error('Not signed in.');
+      const { data: room, error } = await sb.from('chat_rooms')
+        .insert({ kind: kind || 'group', title: title || null, created_by: id }).select().single();
+      if (error) throw error;
+      const rows = [{ room_id: room.id, user_id: id, display_name: myName || null }];
+      (memberIds || []).filter(u => u && u !== id).forEach(u => rows.push({ room_id: room.id, user_id: u }));
+      const { error: mErr } = await sb.from('chat_members').insert(rows);
+      if (mErr) throw mErr;
+      return room;
+    }
+    async function listChatMessages(roomId, sinceIso) {
+      await ensureClient();
+      let q = sb.from('chat_messages').select('*').eq('room_id', roomId).order('created_at', { ascending: false }).limit(60);
+      if (sinceIso) q = q.gt('created_at', sinceIso);
+      const { data } = await q;
+      const id = await uid();
+      return (data || []).reverse().map(m => ({ ...m, mine: m.user_id === id }));
+    }
+    async function sendChatMessage(roomId, body, media) {
+      await ensureClient(); const id = await uid(); if (!id) throw new Error('Not signed in.');
+      const { data, error } = await sb.from('chat_messages')
+        .insert({ room_id: roomId, user_id: id, author_name: await discAuthorName(), body: body || '', media: media || [] })
+        .select().single();
+      if (error) throw error;
+      return { ...data, mine: true };
+    }
+    async function markRoomRead(roomId) {
+      await ensureClient(); const id = await uid(); if (!id) return;
+      await sb.from('chat_members').update({ last_read_at: new Date().toISOString() }).eq('room_id', roomId).eq('user_id', id);
+    }
+    /** One cheap poll for the chat badge: newest message time per room. */
+    async function pollChat(sinceIso) {
+      await ensureClient(); const id = await uid(); if (!id) return [];
+      const { data: mine } = await sb.from('chat_members').select('room_id').eq('user_id', id);
+      const ids = (mine || []).map(m => m.room_id);
+      if (!ids.length) return [];
+      const { data } = await sb.from('chat_messages')
+        .select('id,room_id,user_id,author_name,body,created_at')
+        .in('room_id', ids).gt('created_at', sinceIso || new Date(Date.now() - 60000).toISOString())
+        .order('created_at', { ascending: true }).limit(120);
+      return (data || []).map(m => ({ ...m, mine: m.user_id === id }));
+    }
+    /** Everyone who could be added to a room (approved users only). */
+    async function listChatPeople() {
+      await ensureClient(); const id = await uid();
+      const { data } = await sb.from('profiles').select('id,name,email').neq('id', id).limit(200);
+      return (data || []).map(p => ({ id: p.id, name: p.name || (p.email || '').split('@')[0] }));
     }
 
     /* AI feature registry (app_config), shared pools, question tags */
@@ -1074,7 +1226,8 @@ const Backend = (() => {
       listAllFlags, resolveFlags, listGlobalFlaggedKeys, saveUserDeck, listUserDecks, deleteUserDeck,
       addDiscussion, listDiscussions, deleteDiscussion, listDiscussionReplies, addDiscussionReply, deleteDiscussionReply, pollDiscussions, getDiscussionQuestion,
       listUserNotes, saveUserNote, deleteUserNote,
-      getAiFeatures, saveAiFeatures, getModelPricing, saveModelPricing, listSharedUsage, saveQuestionTags, listQuestionTags, getAccessToken };
+      uploadTeaFile, setReaction, myReactions, listChatRooms, createChatRoom, listChatMessages, sendChatMessage, markRoomRead, pollChat, listChatPeople,
+      getAiFeatures, saveAiFeatures, getModelPricing, saveModelPricing, getTeaConfig, saveTeaConfig, listSharedUsage, saveQuestionTags, listQuestionTags, getAccessToken };
   })();
 
   const impl = useCloud ? Cloud : Local;

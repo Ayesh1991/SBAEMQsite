@@ -1,25 +1,25 @@
 /* ============================================================
-   tearoom.js — the shared study chat.
+   tearoom.js — the study社 platform: a WALL and a CHAT.
 
-   One module, two surfaces, one state:
-     • the Studio → Tea room panel (full page), and
-     • a floating dock that can sit over ANY page — including a
-       running paper — so a thought can be posted without leaving
-       the question.
+   Two surfaces, one live state, both able to float over any page
+   (including a running paper) so a thought never costs you your place:
 
-   Design decisions worth knowing:
-     • LIVE, not reload-driven. A single incremental poll asks only
-       for rows newer than the last check, so a quiet board costs two
-       near-empty queries. Polling backs off when the tab is hidden,
-       slows right down when nothing is open, and stops while muted.
-     • UNREAD is derived, not stored server-side: every thread/reply
-       carries a timestamp, and "seen up to" lives in localStorage.
-       No extra table, no write amplification, works offline.
-     • MUTE is a study tool. During a mock the dock goes quiet — no
-       badge, no polling — until the chosen time passes.
-     • Threads carry the WHOLE question (stem, options, answer,
-       rationale, hook), collapsed by default so the board stays
-       scannable and expandable when a discussion needs the detail.
+     • WALL — a feed of posts. Text, photos, screenshots and files;
+       a question posted from "Discuss with friends" arrives as a
+       rich card carrying the whole stem, options and rationale.
+       Reactions on the row, comments in a popup, replies nested one
+       level, exactly the shape people already know from Facebook.
+     • CHAT — direct and group rooms in the Messenger/WhatsApp idiom:
+       bubbles, own-vs-other alignment, per-room unread, media.
+
+   Live-ness is a single incremental poll per surface asking only for
+   rows newer than the last check, so a quiet platform is nearly free.
+   The interval is set by the developer (Tea room controller) and can
+   go down to 1s; it still backs off when the tab is hidden or muted.
+
+   Notifications are DERIVED, never stored: each row carries a
+   timestamp and "seen up to" lives on the device. That means no extra
+   table, no write amplification, and it works offline.
    ============================================================ */
 
 const TeaRoom = (() => {
@@ -29,25 +29,52 @@ const TeaRoom = (() => {
 
   const SEEN_KEY = 'aureum.tea.seen';
   const MUTE_KEY = 'aureum.tea.mute';
-  const OPEN_KEY = 'aureum.tea.dock';
+  const CHAT_SEEN = 'aureum.chat.seen';
+  const NOTIF_KEY = 'aureum.tea.desktopNotif';
 
-  let threads = [];                 // newest first
-  const replies = {};               // threadId → [reply]
-  const openThreads = new Set();    // thread ids whose comments are expanded
+  /* ---------------- state ---------------- */
+
+  let posts = [];                     // newest first
+  const comments = {};                // postId → [reply]
+  const openPosts = new Set();
+  let myRx = {};                      // postId → emoji
   let loaded = false, loading = null, moreAvailable = false;
-  const PAGE = 40;                  // threads per fetch — keeps the first paint small
-  let pollTimer = null, lastPoll = null;
-  let dockEl = null, dockOpen = false, dockMin = false;
-  let panelHost = null;             // Studio panel mount, when on that page
-  const listeners = new Set();      // badge subscribers
+  const PAGE = 25;
 
-  /* ---------------- small helpers ---------------- */
+  let rooms = [], activeRoom = null, roomMsgs = {}, lastChatPoll = null;
+  let me = null;
+
+  let pollTimer = null, lastPoll = null;
+  let wallEl = null, chatEl = null;
+  let wallOpen = false, chatOpen = false;
+  let panelHost = null;
+  const listeners = new Set();
+
+  /* ---------------- config (developer-controlled) ---------------- */
+
+  const DEFAULTS = { intervalOpen: 20, intervalIdle: 75, maxUploadMb: 8, desktopNotif: true, wallEnabled: true, chatEnabled: true };
+  let cfg = { ...DEFAULTS };
+  async function loadCfg() {
+    try {
+      const saved = (typeof Cache !== 'undefined')
+        ? await Cache.wrap('tearoom-cfg', 60000, () => Backend.getTeaConfig?.())
+        : await Backend.getTeaConfig?.();
+      if (saved && typeof saved === 'object') cfg = { ...DEFAULTS, ...saved };
+    } catch { /* defaults are fine */ }
+    return cfg;
+  }
+  function config() { return cfg; }
+
+  /* ---------------- helpers ---------------- */
 
   const now = () => Date.now();
   const ts = r => new Date(r.created_at || 0).getTime() || 0;
-  function seenAt() { const v = Number(localStorage.getItem(SEEN_KEY) || 0); return v || 0; }
+  const num = v => Number(v) || 0;
+  function seenAt() { return num(localStorage.getItem(SEEN_KEY)); }
   function markSeen(t) { try { localStorage.setItem(SEEN_KEY, String(t || now())); } catch {} emit(); }
-  function muteUntil() { const v = Number(localStorage.getItem(MUTE_KEY) || 0); return v > now() ? v : 0; }
+  function chatSeenAt() { return num(localStorage.getItem(CHAT_SEEN)); }
+  function markChatSeen(t) { try { localStorage.setItem(CHAT_SEEN, String(t || now())); } catch {} emit(); }
+  function muteUntil() { const v = num(localStorage.getItem(MUTE_KEY)); return v > now() ? v : 0; }
   function setMute(ms) {
     try { ms ? localStorage.setItem(MUTE_KEY, String(now() + ms)) : localStorage.removeItem(MUTE_KEY); } catch {}
     emit(); schedule();
@@ -62,31 +89,61 @@ const TeaRoom = (() => {
     return new Date(d).toLocaleDateString();
   }
   const initials = n => String(n || '?').trim().split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase();
-  /* Deterministic avatar tint from the name — recognisable at a glance,
-     the way every chat app colours its default avatars. */
-  function tint(name) {
-    let h = 0; for (const ch of String(name || '')) h = (h * 31 + ch.charCodeAt(0)) % 360;
-    return `hsl(${h} 62% 46%)`;
-  }
+  function tint(name) { let h = 0; for (const ch of String(name || '')) h = (h * 31 + ch.charCodeAt(0)) % 360; return `hsl(${h} 62% 46%)`; }
+  const isImg = m => /^image\//.test(m?.type || '') || /\.(png|jpe?g|gif|webp|avif)$/i.test(m?.name || '');
+  const kb = n => n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
 
-  /** Unread = anything newer than "seen", excluding my own posts. */
-  function unreadCount() {
+  function unreadWall() {
     if (muteUntil()) return 0;
     const since = seenAt(); if (!since) return 0;
     let n = 0;
-    for (const t of threads) { if (!t.mine && ts(t) > since) n++; }
-    for (const id in replies) for (const r of replies[id]) { if (!r.mine && ts(r) > since) n++; }
+    for (const p of posts) if (!p.mine && ts(p) > since) n++;
+    for (const id in comments) for (const c of comments[id]) if (!c.mine && ts(c) > since) n++;
     return n;
   }
+  function unreadChat() {
+    if (muteUntil()) return 0;
+    const since = chatSeenAt(); if (!since) return 0;
+    let n = 0;
+    for (const rid in roomMsgs) for (const m of roomMsgs[rid]) if (!m.mine && ts(m) > since) n++;
+    return n;
+  }
+  const unreadCount = () => unreadWall() + unreadChat();
   function latestStamp() {
     let m = 0;
-    for (const t of threads) m = Math.max(m, ts(t));
-    for (const id in replies) for (const r of replies[id]) m = Math.max(m, ts(r));
+    for (const p of posts) m = Math.max(m, ts(p));
+    for (const id in comments) for (const c of comments[id]) m = Math.max(m, ts(c));
     return m;
   }
-
+  function latestChatStamp() {
+    let m = 0;
+    for (const rid in roomMsgs) for (const x of roomMsgs[rid]) m = Math.max(m, ts(x));
+    return m;
+  }
   function onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); }
   function emit() { listeners.forEach(fn => { try { fn(unreadCount()); } catch {} }); }
+
+  /* ---------------- desktop notifications ---------------- */
+
+  function notifAllowed() {
+    try { return localStorage.getItem(NOTIF_KEY) !== '0' && cfg.desktopNotif !== false; } catch { return true; }
+  }
+  function setNotif(on) { try { localStorage.setItem(NOTIF_KEY, on ? '1' : '0'); } catch {} }
+  async function askNotifPermission() {
+    if (!('Notification' in window)) return false;
+    if (Notification.permission === 'granted') return true;
+    if (Notification.permission === 'denied') return false;
+    try { return (await Notification.requestPermission()) === 'granted'; } catch { return false; }
+  }
+  /** Fire a real OS notification, but never while muted or on your own posts. */
+  function notify(title, body, onClick) {
+    if (muteUntil() || !notifAllowed()) return;
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    try {
+      const n = new Notification(title, { body: String(body || '').slice(0, 160), tag: 'aureum-tea', icon: 'assets/logo-mark-192.png' });
+      n.onclick = () => { window.focus(); try { onClick?.(); } catch {} n.close(); };
+    } catch {}
+  }
 
   /* ---------------- data ---------------- */
 
@@ -95,57 +152,73 @@ const TeaRoom = (() => {
     if (loading) return loading;
     loading = (async () => {
       try {
-        threads = (await Backend.listDiscussions?.({ limit: PAGE })) || [];
-        moreAvailable = threads.length >= PAGE;
-        threads.sort((a, b) => ts(b) - ts(a));
+        me = me || await Backend.currentUser().catch(() => null);
+        posts = (await Backend.listDiscussions?.({ limit: PAGE })) || [];
+        moreAvailable = posts.length >= PAGE;
+        posts.sort((a, b) => ts(b) - ts(a));
+        myRx = (await Backend.myReactions?.(posts.map(p => p.id))) || {};
         loaded = true;
         lastPoll = new Date(Math.max(latestStamp(), now() - 60000)).toISOString();
-        if (!seenAt()) markSeen(latestStamp() || now());     // first run: start clean
-      } catch { threads = []; }
+        if (!seenAt()) markSeen(latestStamp() || now());
+      } catch { posts = []; }
       loading = null;
     })();
     return loading;
   }
-
-  async function loadReplies(id, force) {
-    if (replies[id] && !force) return replies[id];
-    try { replies[id] = (await Backend.listDiscussionReplies?.(id)) || []; }
-    catch { replies[id] = []; }
-    return replies[id];
+  async function loadComments(id, force) {
+    if (comments[id] && !force) return comments[id];
+    try { comments[id] = (await Backend.listDiscussionReplies?.(id)) || []; } catch { comments[id] = []; }
+    return comments[id];
+  }
+  async function loadRooms() {
+    try { rooms = (await Backend.listChatRooms?.()) || []; } catch { rooms = []; }
+    return rooms;
   }
 
-  /** One incremental round-trip; merges anything new and repaints. */
   async function poll() {
-    if (!loaded || !Backend.pollDiscussions) return;
-    let out;
-    try { out = await Backend.pollDiscussions(lastPoll); } catch { return; }
+    if (!loaded) return;
     let changed = false;
-    for (const t of (out.threads || [])) {
-      if (!threads.some(x => x.id === t.id)) { threads.unshift(t); changed = true; }
-    }
-    for (const r of (out.replies || [])) {
-      const list = replies[r.discussion_id];
-      if (list) { if (!list.some(x => x.id === r.id)) { list.push(r); changed = true; } }
-      else {
-        // comments we haven't opened: keep the counter honest without fetching
-        const th = threads.find(x => x.id === r.discussion_id);
-        if (th) { th.reply_count = (th.reply_count || 0) + 1; changed = true; }
+    // ---- wall ----
+    try {
+      const out = await Backend.pollDiscussions?.(lastPoll);
+      for (const p of (out?.threads || [])) if (!posts.some(x => x.id === p.id)) {
+        posts.unshift(p); changed = true;
+        if (!p.mine) notify(`${p.author_name || 'A friend'} posted`, p.topic, () => openWall());
       }
-    }
-    if (changed) {
-      threads.sort((a, b) => ts(b) - ts(a));
-      lastPoll = new Date(Math.max(latestStamp(), Date.parse(lastPoll) || 0)).toISOString();
-      repaint();
-      emit();
-    }
+      for (const c of (out?.replies || [])) {
+        const list = comments[c.discussion_id];
+        if (list) { if (!list.some(x => x.id === c.id)) { list.push(c); changed = true; } }
+        else { const p = posts.find(x => x.id === c.discussion_id); if (p) { p.reply_count = (p.reply_count || 0) + 1; changed = true; } }
+        // a comment on YOUR post is the notification people actually want
+        const parent = posts.find(x => x.id === c.discussion_id);
+        if (!c.mine && parent?.mine) notify(`${c.author_name || 'Someone'} commented on your post`, c.body, () => { openWall(); openComments(c.discussion_id); });
+      }
+      if (out?.threads?.length || out?.replies?.length) {
+        lastPoll = new Date(Math.max(latestStamp(), Date.parse(lastPoll) || 0)).toISOString();
+      }
+    } catch {}
+    // ---- chat ----
+    try {
+      const msgs = await Backend.pollChat?.(lastChatPoll);
+      for (const m of (msgs || [])) {
+        const list = roomMsgs[m.room_id] || (roomMsgs[m.room_id] = []);
+        if (!list.some(x => x.id === m.id)) {
+          list.push(m); changed = true;
+          if (!m.mine) {
+            const r = rooms.find(x => x.id === m.room_id);
+            notify(`${m.author_name || 'New message'}${r?.title ? ' · ' + r.title : ''}`, m.body, () => openChat(m.room_id));
+          }
+        }
+      }
+      if (msgs?.length) lastChatPoll = new Date(Math.max(latestChatStamp(), Date.parse(lastChatPoll) || 0)).toISOString();
+    } catch {}
+    if (changed) { posts.sort((a, b) => ts(b) - ts(a)); repaint(); emit(); }
   }
 
-  /* Adaptive cadence: fast while you're reading it, slow when it's only
-     feeding the badge, off while hidden or muted — battery and egress both. */
   function interval() {
     if (document.hidden || muteUntil()) return 0;
-    if ((dockOpen && !dockMin) || panelHost) return 20000;
-    return 75000;
+    const open = (wallOpen || chatOpen || panelHost);
+    return Math.max(1, num(open ? cfg.intervalOpen : cfg.intervalIdle) || (open ? 20 : 75)) * 1000;
   }
   function schedule() {
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
@@ -155,372 +228,640 @@ const TeaRoom = (() => {
 
   async function init() {
     if (!Backend.listDiscussions) return;
+    await loadCfg();
     await ensureLoaded();
+    await loadRooms();
+    lastChatPoll = new Date(now() - 60000).toISOString();
+    if (notifAllowed()) askNotifPermission();
     emit(); schedule();
     document.addEventListener('visibilitychange', () => { schedule(); if (!document.hidden) poll(); });
-    if (localStorage.getItem(OPEN_KEY) === '1') openDock();
   }
 
   /* ---------------- posting ---------------- */
 
   async function post(payload) {
     const row = await Backend.addDiscussion(payload);
-    threads.unshift(row);
-    replies[row.id] = [];
+    posts.unshift(row); comments[row.id] = [];
     markSeen(Math.max(ts(row), seenAt()));
     repaint();
     return row;
   }
-  async function reply(threadId, body) {
-    const row = await Backend.addDiscussionReply(threadId, body);
-    (replies[threadId] || (replies[threadId] = [])).push(row);
-    const th = threads.find(t => t.id === threadId);
-    if (th) th.reply_count = (replies[threadId] || []).length;
+  async function comment(postId, body, opts) {
+    const row = await Backend.addDiscussionReply(postId, body, opts);
+    (comments[postId] || (comments[postId] = [])).push(row);
+    const p = posts.find(x => x.id === postId);
+    if (p) p.reply_count = (comments[postId] || []).length;
     markSeen(Math.max(ts(row), seenAt()));
     repaint();
     return row;
   }
-
   /** Called by the "Discuss with friends" button under a rationale. */
   async function share(ctx, topic) {
-    return post({
-      questionKey: ctx.questionKey, paperTitle: ctx.paperTitle,
-      answerText: ctx.answerText, rationale: ctx.rationale,
-      question: ctx.question || null, topic
+    const row = await post({
+      questionKey: ctx.questionKey, paperTitle: ctx.paperTitle, answerText: ctx.answerText,
+      rationale: ctx.rationale, question: ctx.question || null, topic, kind: 'question'
+    });
+    openWall();
+    return row;
+  }
+  async function react(postId, on) {
+    try { await Backend.setReaction?.(postId, on); } catch {}
+    if (on) myRx[postId] = '👍'; else delete myRx[postId];
+    const p = posts.find(x => x.id === postId);
+    if (p) p.reaction_count = Math.max(0, (p.reaction_count || 0) + (on ? 1 : -1));
+    repaint();
+  }
+
+  /* ---------------- uploads ---------------- */
+
+  async function pickFiles(accept) {
+    return new Promise(res => {
+      const i = document.createElement('input');
+      i.type = 'file'; i.multiple = true; if (accept) i.accept = accept;
+      i.onchange = () => res([...i.files]);
+      i.click();
     });
   }
+  async function uploadAll(files, onProgress) {
+    const max = (num(cfg.maxUploadMb) || 8) * 1048576;
+    const out = [];
+    for (const f of files) {
+      if (f.size > max) { alert(`"${f.name}" is larger than the ${cfg.maxUploadMb} MB limit.`); continue; }
+      onProgress?.(f.name);
+      try { out.push(await Backend.uploadTeaFile(f)); } catch (e) { alert(e.message || e); }
+    }
+    return out;
+  }
 
-  /* ---------------- rendering ---------------- */
+  /* ---------------- wall rendering ---------------- */
 
-  /* EGRESS: the thread list carries no question bodies — only the flag that
-     one exists. The snapshot is pulled once, on first expand, and cached for
-     the session. A busy board therefore costs a list of one-line rows, not a
-     broadcast of every stem and option to every reader. */
-  function questionShellHTML(t) {
-    if (!t.hasQuestion && !t.answer_text && !t.question) return '';
-    return `<details class="tr-q" data-q-shell>
-      <summary><span class="tr-q-kind">Q</span>${esc(t.paper_title || 'Question')}<span class="tr-q-more">show question</span></summary>
-      <div class="tr-q-body" data-q-body><p class="tr-empty">Loading question…</p></div>
+  function mediaHTML(media, compact) {
+    const list = (media || []).filter(Boolean);
+    if (!list.length) return '';
+    const imgs = list.filter(isImg), files = list.filter(m => !isImg(m));
+    return `
+      ${imgs.length ? `<div class="tw-media ${imgs.length > 1 ? 'is-grid' : ''}">${imgs.slice(0, 4).map((m, i) => `
+        <a class="tw-shot" href="${esc(m.url)}" target="_blank" rel="noopener">
+          <img src="${esc(m.url)}" alt="${esc(m.name || 'image')}" loading="lazy">
+          ${i === 3 && imgs.length > 4 ? `<span class="tw-more">+${imgs.length - 4}</span>` : ''}
+        </a>`).join('')}</div>` : ''}
+      ${files.length ? `<div class="tw-files">${files.map(m => `
+        <a class="tw-file" href="${esc(m.url)}" target="_blank" rel="noopener" download>
+          <span class="tw-file-ico">📎</span>
+          <span class="tw-file-name">${esc(m.name || 'file')}</span>
+          <span class="tw-file-size">${m.size ? kb(m.size) : ''}</span>
+        </a>`).join('')}</div>` : ''}`;
+  }
+
+  function questionHTML(p) {
+    if (!p.hasQuestion && !p.question && !p.answer_text) return '';
+    return `<details class="tw-q" data-q-shell>
+      <summary><span class="tw-q-kind">Q</span>${esc(p.paper_title || 'Question')}<span class="tw-q-more">show the question</span></summary>
+      <div class="tw-q-body" data-q-body><p class="tr-empty">Loading…</p></div>
     </details>`;
   }
-  async function fillQuestion(card, id) {
-    const body = card.querySelector('[data-q-body]');
+  async function fillQuestion(shell, id) {
+    const body = shell.querySelector('[data-q-body]');
     if (!body || body.dataset.done === '1') return;
-    const t = threads.find(x => x.id === id);
-    if (!t.question && !t._qLoaded) {
-      try { Object.assign(t, (await Backend.getDiscussionQuestion?.(id)) || {}); } catch {}
-      t._qLoaded = true;
+    const p = posts.find(x => x.id === id);
+    if (p && !p.question && !p._qLoaded) {
+      try { Object.assign(p, (await Backend.getDiscussionQuestion?.(id)) || {}); } catch {}
+      p._qLoaded = true;
     }
     body.dataset.done = '1';
-    body.innerHTML = questionBodyHTML(t) || '<p class="tr-empty">No question attached.</p>';
+    body.innerHTML = questionBodyHTML(p) || '<p class="tr-empty">No question attached.</p>';
   }
-
-  function questionBodyHTML(t) {
-    const q = t.question;
-    if (!q) {
-      // legacy thread (answer-only) — still render what we kept
-      if (!t.answer_text && !t.rationale) return '';
-      return `${t.answer_text ? `<p class="tr-q-ans"><b>Answer:</b> ${esc(t.answer_text)}</p>` : ''}
-        ${t.rationale ? `<p class="tr-q-rat">${esc(t.rationale)}</p>` : ''}`;
-    }
+  function questionBodyHTML(p) {
+    const q = p?.question;
+    if (!q) return `${p?.answer_text ? `<p class="tw-q-ans"><b>Answer:</b> ${esc(p.answer_text)}</p>` : ''}${p?.rationale ? `<p class="tw-q-rat">${esc(p.rationale)}</p>` : ''}`;
     const opts = (q.options || []).map((o, i) => `
-      <li class="${i === q.answer ? 'is-answer' : ''}">
-        ${q.preLettered ? '' : `<span class="tr-q-let">${LETTERS[i]}</span>`}<span>${esc(o)}</span>
-        ${i === q.answer ? '<span class="tr-q-tick">✓</span>' : ''}
-      </li>`).join('');
+      <li class="${i === q.answer ? 'is-answer' : ''}">${q.preLettered ? '' : `<span class="tw-q-let">${LETTERS[i]}</span>`}<span>${esc(o)}</span>${i === q.answer ? '<span class="tw-q-tick">✓</span>' : ''}</li>`).join('');
     return `
-      ${q.theme ? `<p class="tr-q-theme">${esc(q.theme)}</p>` : ''}
-      <p class="tr-q-stem">${esc(q.stem || '')}</p>
-      ${q.lead ? `<p class="tr-q-lead">${esc(q.lead)}</p>` : ''}
-      ${opts ? `<ol class="tr-q-opts">${opts}</ol>` : ''}
-      ${q.rationale ? `<p class="tr-q-rat">${esc(q.rationale)}</p>` : ''}
-      ${q.hook ? `<p class="tr-q-hook">💡 ${esc(q.hook)}</p>` : ''}
-      ${q.reference ? `<p class="tr-q-ref">§ ${esc(q.reference)}</p>` : ''}`;
+      ${q.theme ? `<p class="tw-q-theme">${esc(q.theme)}</p>` : ''}
+      <p class="tw-q-stem">${esc(q.stem || '')}</p>
+      ${q.lead ? `<p class="tw-q-lead">${esc(q.lead)}</p>` : ''}
+      ${opts ? `<ol class="tw-q-opts">${opts}</ol>` : ''}
+      ${q.rationale ? `<p class="tw-q-rat">${esc(q.rationale)}</p>` : ''}
+      ${q.hook ? `<p class="tw-q-hook">💡 ${esc(q.hook)}</p>` : ''}`;
   }
 
-  function threadCardHTML(t, compact) {
-    const list = replies[t.id];
-    const n = list ? list.length : (t.reply_count || 0);
-    const open = openThreads.has(t.id);
-    const fresh = !t.mine && ts(t) > seenAt();
-    return `<article class="tr-card ${compact ? 'is-compact' : ''} ${fresh ? 'is-new' : ''}" data-tid="${esc(t.id)}">
-      <header class="tr-head">
-        <span class="tr-av" style="background:${tint(t.author_name)}">${esc(initials(t.author_name))}</span>
-        <span class="tr-who">${esc(t.author_name || 'A friend')}</span>
-        <span class="tr-time">${esc(relTime(t.created_at))}</span>
-        ${t.mine ? `<button class="tr-del" data-act="del-thread" title="Delete">🗑</button>` : ''}
+  function postHTML(p) {
+    const n = comments[p.id] ? comments[p.id].length : (p.reply_count || 0);
+    const fresh = !p.mine && ts(p) > seenAt();
+    const liked = !!myRx[p.id];
+    return `<article class="tw-post ${fresh ? 'is-new' : ''}" data-pid="${esc(p.id)}">
+      <header class="tw-head">
+        <span class="tr-av" style="background:${tint(p.author_name)}">${esc(initials(p.author_name))}</span>
+        <span class="tw-who"><b>${esc(p.author_name || 'A friend')}</b><i>${esc(relTime(p.created_at))}${p.kind === 'question' ? ' · shared a question' : ''}</i></span>
+        ${p.mine ? `<button class="tr-del" data-act="del-post" title="Delete">🗑</button>` : ''}
       </header>
-      <p class="tr-topic">${esc(t.topic)}</p>
-      ${questionShellHTML(t)}
-      <div class="tr-actions">
-        <button class="tr-link" data-act="toggle">${open ? '▾ Hide' : '▸ '}${n ? `${n} ${n === 1 ? 'comment' : 'comments'}` : 'Comment'}</button>
+      ${p.topic ? `<p class="tw-text">${esc(p.topic)}</p>` : ''}
+      ${questionHTML(p)}
+      ${mediaHTML(p.media)}
+      ${(p.reaction_count || n) ? `<div class="tw-counts">
+        ${p.reaction_count ? `<span>👍 ${p.reaction_count}</span>` : '<span></span>'}
+        ${n ? `<span class="tw-cn" data-act="comments">${n} comment${n === 1 ? '' : 's'}</span>` : ''}
+      </div>` : ''}
+      <div class="tw-bar">
+        <button class="tw-act ${liked ? 'is-on' : ''}" data-act="like">👍 <span>Like</span></button>
+        <button class="tw-act" data-act="comments">💬 <span>Comment</span></button>
       </div>
-      <div class="tr-comments" ${open ? '' : 'hidden'}></div>
     </article>`;
   }
 
-  function commentsHTML(id) {
-    const list = replies[id] || [];
-    return `
-      ${list.length ? list.map(r => `
-        <div class="tr-cm ${!r.mine && ts(r) > seenAt() ? 'is-new' : ''}">
-          <span class="tr-av sm" style="background:${tint(r.author_name)}">${esc(initials(r.author_name))}</span>
-          <div class="tr-cm-body">
-            <div class="tr-cm-bubble"><span class="tr-who">${esc(r.author_name || 'A friend')}</span><p>${esc(r.body)}</p></div>
-            <div class="tr-cm-meta"><span>${esc(relTime(r.created_at))}</span>${r.mine ? `<button class="tr-link" data-act="del-reply" data-rid="${esc(r.id)}">delete</button>` : ''}</div>
+  function commentTreeHTML(id) {
+    const list = comments[id] || [];
+    const roots = list.filter(c => !c.parent_id);
+    const kids = c => list.filter(x => x.parent_id === c.id);
+    const one = (c, depth) => `
+      <div class="tw-cm ${depth ? 'is-reply' : ''} ${!c.mine && ts(c) > seenAt() ? 'is-new' : ''}" data-cid="${esc(c.id)}">
+        <span class="tr-av sm" style="background:${tint(c.author_name)}">${esc(initials(c.author_name))}</span>
+        <div class="tw-cm-body">
+          <div class="tw-cm-bubble"><span class="tw-cm-who">${esc(c.author_name || 'A friend')}</span><p>${esc(c.body)}</p>
+            ${mediaHTML(c.media)}</div>
+          <div class="tw-cm-meta">
+            <span>${esc(relTime(c.created_at))}</span>
+            ${depth ? '' : `<button class="tr-link" data-act="reply-to" data-rid="${esc(c.id)}">Reply</button>`}
+            ${c.mine ? `<button class="tr-link" data-act="del-cm" data-rid="${esc(c.id)}">Delete</button>` : ''}
           </div>
-        </div>`).join('') : '<p class="tr-empty">No comments yet — start the discussion.</p>'}
-      <div class="tr-cm-new">
-        <textarea rows="1" placeholder="Write a comment…  (Enter to send, Shift+Enter for a new line)"></textarea>
-        <button class="tr-send" data-act="send" title="Send">➤</button>
+          ${depth ? '' : kids(c).map(k => one(k, 1)).join('')}
+        </div>
       </div>`;
+    return roots.length ? roots.map(c => one(c, 0)).join('') : '<p class="tr-empty">No comments yet — start the discussion.</p>';
   }
 
-  function listHTML(compact) {
-    if (!threads.length) return `<p class="tr-empty big">The tea room is quiet.<br>Start a topic, or tap ☕ <b>Discuss with friends</b> under any question's explanation.</p>`;
-    return threads.map(t => threadCardHTML(t, compact)).join('')
-      + (moreAvailable ? `<button class="tr-older" data-act="older">Load older discussions</button>` : '');
+  /** Facebook-style: comments live in their own popup over the feed. */
+  async function openComments(postId) {
+    const p = posts.find(x => x.id === postId); if (!p) return;
+    document.querySelector('.tw-modal')?.remove();
+    const m = document.createElement('div');
+    m.className = 'tw-modal';
+    m.innerHTML = `<div class="tw-sheet" role="dialog" aria-modal="true">
+        <header class="tw-sheet-head">
+          <h3>${p.kind === 'question' ? 'Discussion' : 'Post'}</h3>
+          <button class="cov-x" aria-label="Close">✕</button>
+        </header>
+        <div class="tw-sheet-body">
+          <div class="tw-sheet-post">${postHTML(p)}</div>
+          <div class="tw-cm-list" id="tw-cms"><p class="tr-empty">Loading…</p></div>
+        </div>
+        <div class="tw-sheet-foot">
+          <div class="tw-replying" id="tw-replying" hidden></div>
+          <div class="tw-cm-new">
+            <textarea rows="1" placeholder="Write a comment…  (Enter to send)"></textarea>
+            <button class="tw-attach" data-act="cm-file" title="Attach">📎</button>
+            <button class="tr-send" data-act="cm-send" title="Send">➤</button>
+          </div>
+          <div class="tw-pending" id="tw-cm-pending"></div>
+        </div>
+      </div>`;
+    document.body.appendChild(m);
+    requestAnimationFrame(() => m.classList.add('is-open'));
+    const close = () => m.remove();
+    m.querySelector('.cov-x').addEventListener('click', close);
+    m.addEventListener('click', e => { if (e.target === m) close(); });
+
+    await loadComments(postId);
+    const list = m.querySelector('#tw-cms');
+    list.innerHTML = commentTreeHTML(postId);
+    markSeen(Math.max(latestStamp(), seenAt()));
+
+    let parentId = null, pending = [];
+    const pendEl = m.querySelector('#tw-cm-pending');
+    const replyEl = m.querySelector('#tw-replying');
+    const paintPending = () => {
+      pendEl.innerHTML = pending.map((f, i) => `<span class="tw-chip">${esc(f.name)}<button data-drop="${i}">×</button></span>`).join('');
+    };
+    m.addEventListener('click', async e => {
+      const act = e.target.closest('[data-act]')?.dataset.act;
+      const drop = e.target.closest('[data-drop]');
+      if (drop) { pending.splice(Number(drop.dataset.drop), 1); paintPending(); return; }
+      if (act === 'reply-to') {
+        parentId = e.target.dataset.rid;
+        const who = (comments[postId] || []).find(c => c.id === parentId)?.author_name || '';
+        replyEl.hidden = false;
+        replyEl.innerHTML = `Replying to <b>${esc(who)}</b> <button class="tr-link" data-act="cancel-reply">cancel</button>`;
+        m.querySelector('.tw-cm-new textarea').focus();
+        return;
+      }
+      if (act === 'cancel-reply') { parentId = null; replyEl.hidden = true; return; }
+      if (act === 'cm-file') { pending = pending.concat(await pickFiles()); paintPending(); return; }
+      if (act === 'del-cm') {
+        const rid = e.target.dataset.rid;
+        try { await Backend.deleteDiscussionReply(postId, rid); } catch {}
+        comments[postId] = (comments[postId] || []).filter(c => c.id !== rid && c.parent_id !== rid);
+        p.reply_count = comments[postId].length;
+        list.innerHTML = commentTreeHTML(postId); repaint();
+        return;
+      }
+      if (act === 'like') { react(postId, !myRx[postId]); m.querySelector('.tw-sheet-post').innerHTML = postHTML(p); return; }
+      if (act !== 'cm-send') return;
+      const ta = m.querySelector('.tw-cm-new textarea');
+      const body = ta.value.trim();
+      if (!body && !pending.length) return;
+      const btn = m.querySelector('[data-act="cm-send"]'); btn.disabled = true;
+      try {
+        const media = pending.length ? await uploadAll(pending) : [];
+        await comment(postId, body, { parentId, media });
+        ta.value = ''; pending = []; paintPending();
+        parentId = null; replyEl.hidden = true;
+        list.innerHTML = commentTreeHTML(postId);
+        list.scrollTop = list.scrollHeight;
+      } catch (err) { alert('Could not comment: ' + (err.message || err)); }
+      btn.disabled = false;
+    });
+    m.addEventListener('keydown', e => {
+      if (e.target.tagName === 'TEXTAREA' && e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault(); m.querySelector('[data-act="cm-send"]').click();
+      }
+    });
+    m.addEventListener('toggle', e => {
+      if (e.target.matches?.('[data-q-shell]') && e.target.open) fillQuestion(e.target, postId);
+    }, true);
   }
+
+  /* ---------------- wall surface ---------------- */
 
   function composerHTML() {
-    return `<div class="tr-new">
-      <textarea id="tr-new-text" rows="1" placeholder="Start a discussion…"></textarea>
-      <button class="btn btn-gold btn-sm" data-act="new">Post</button>
+    return `<div class="tw-composer">
+      <div class="tw-comp-row">
+        <span class="tr-av" style="background:${tint(me?.name)}">${esc(initials(me?.name || 'me'))}</span>
+        <textarea id="tw-new" rows="1" placeholder="Share a case, a question, a screenshot…"></textarea>
+      </div>
+      <div class="tw-pending" id="tw-pending"></div>
+      <div class="tw-comp-bar">
+        <button class="tw-tool" data-act="photo">🖼 Photo</button>
+        <button class="tw-tool" data-act="file">📎 File</button>
+        <button class="btn btn-gold btn-sm" data-act="post">Post</button>
+      </div>
     </div>`;
   }
-
   function muteBarHTML() {
     const u = muteUntil();
-    if (u) {
-      const mins = Math.max(1, Math.round((u - now()) / 60000));
-      return `<div class="tr-muted-bar">🔕 Muted for ~${mins} min <button class="tr-link" data-act="unmute">unmute</button></div>`;
-    }
-    return `<div class="tr-mute-row">
-      <span class="tr-mute-label">🔔 Mute</span>
-      ${[['30m', 30], ['1h', 60], ['3h', 180]].map(([l, m]) => `<button class="tr-chip" data-act="mute" data-m="${m}">${l}</button>`).join('')}
-    </div>`;
+    if (u) return `<div class="tr-muted-bar">🔕 Muted ~${Math.max(1, Math.round((u - now()) / 60000))} min <button class="tr-link" data-act="unmute">unmute</button></div>`;
+    return `<div class="tr-mute-row"><span class="tr-mute-label">🔔</span>
+      ${[['30m', 30], ['1h', 60], ['3h', 180]].map(([l, mm]) => `<button class="tr-chip" data-act="mute" data-m="${mm}">${l}</button>`).join('')}</div>`;
+  }
+  function feedHTML() {
+    if (!posts.length) return `<p class="tr-empty big">The wall is quiet.<br>Post something, or tap ☕ <b>Discuss with friends</b> under any question.</p>`;
+    return posts.map(postHTML).join('') + (moreAvailable ? `<button class="tr-older" data-act="older">Load older posts</button>` : '');
   }
 
-  /* ---------------- shared wiring (panel + dock use one code path) --------- */
-
-  function paintInto(root, compact) {
-    const body = root.querySelector('[data-tr-list]');
-    if (!body) return;
-    const scroll = body.scrollTop;
-    body.innerHTML = listHTML(compact);
-    body.scrollTop = scroll;
-    // re-open any expanded comment sections
-    openThreads.forEach(id => {
-      const card = body.querySelector(`[data-tid="${CSS.escape(id)}"] .tr-comments`);
-      if (card) { card.hidden = false; card.innerHTML = commentsHTML(id); }
-    });
-    const mute = root.querySelector('[data-tr-mute]');
-    if (mute) mute.innerHTML = muteBarHTML();
+  function paintWall(root) {
+    const feed = root.querySelector('[data-tw-feed]');
+    if (feed) { const y = feed.scrollTop; feed.innerHTML = feedHTML(); feed.scrollTop = y; }
+    const mute = root.querySelector('[data-tr-mute]'); if (mute) mute.innerHTML = muteBarHTML();
   }
 
-  function repaint() {
-    if (panelHost && document.body.contains(panelHost)) paintInto(panelHost, false);
-    if (dockEl && dockOpen) {
-      paintInto(dockEl, true);
-      const b = dockEl.querySelector('.tr-dock-count');
-      if (b) { const n = unreadCount(); b.textContent = n || ''; b.hidden = !n; }
-    }
-    updateLauncher();
-  }
-
-  function wire(root, compact) {
-    if (root.dataset.trWired === '1') return;      // attach ONCE per surface
-    root.dataset.trWired = '1';
-
+  function wireWall(root) {
+    if (root.dataset.wired === '1') return;
+    root.dataset.wired = '1';
+    let pending = [];
+    const paintPending = () => {
+      const el = root.querySelector('#tw-pending');
+      if (el) el.innerHTML = pending.map((f, i) => `<span class="tw-chip">${esc(f.name)}<button data-drop="${i}">×</button></span>`).join('');
+    };
     root.addEventListener('click', async e => {
+      const drop = e.target.closest('[data-drop]');
+      if (drop) { pending.splice(Number(drop.dataset.drop), 1); paintPending(); return; }
       const btn = e.target.closest('[data-act]'); if (!btn) return;
       const act = btn.dataset.act;
-      const card = btn.closest('[data-tid]');
-      const id = card?.dataset.tid;
-
+      const card = btn.closest('[data-pid]');
+      const pid = card?.dataset.pid;
       if (act === 'mute') { setMute(Number(btn.dataset.m) * 60000); repaint(); return; }
       if (act === 'unmute') { setMute(0); repaint(); return; }
+      if (act === 'photo') { pending = pending.concat(await pickFiles('image/*')); paintPending(); return; }
+      if (act === 'file') { pending = pending.concat(await pickFiles()); paintPending(); return; }
+      if (act === 'post') {
+        const ta = root.querySelector('#tw-new');
+        const text = ta.value.trim();
+        if (!text && !pending.length) return;
+        btn.disabled = true; btn.textContent = 'Posting…';
+        try {
+          const media = pending.length ? await uploadAll(pending) : [];
+          await post({ topic: text, media, kind: 'post' });
+          ta.value = ''; ta.style.height = 'auto'; pending = []; paintPending();
+        } catch (err) { alert('Could not post: ' + (err.message || err)); }
+        btn.disabled = false; btn.textContent = 'Post';
+        return;
+      }
       if (act === 'older') {
         btn.disabled = true; btn.textContent = 'Loading…';
-        const oldest = threads.length ? threads[threads.length - 1].created_at : null;
         try {
-          const more = (await Backend.listDiscussions({ limit: PAGE, before: oldest })) || [];
+          const more = (await Backend.listDiscussions({ limit: PAGE, before: posts[posts.length - 1]?.created_at })) || [];
           moreAvailable = more.length >= PAGE;
-          more.forEach(t => { if (!threads.some(x => x.id === t.id)) threads.push(t); });
+          more.forEach(p => { if (!posts.some(x => x.id === p.id)) posts.push(p); });
           repaint();
-        } catch { btn.disabled = false; btn.textContent = 'Load older discussions'; }
+        } catch { btn.disabled = false; btn.textContent = 'Load older posts'; }
         return;
       }
-
-      if (act === 'new') {
-        const ta = root.querySelector('#tr-new-text, .tr-new textarea');
-        const text = ta.value.trim(); if (!text) return;
-        btn.disabled = true;
-        try { await post({ topic: text }); ta.value = ''; autoGrow(ta); }
-        catch (err) { alert('Could not post: ' + (err.message || err)); }
-        btn.disabled = false; return;
+      if (!pid) return;
+      if (act === 'like') { react(pid, !myRx[pid]); return; }
+      if (act === 'comments') { openComments(pid); return; }
+      if (act === 'del-post') {
+        if (!confirm('Delete this post and its comments?')) return;
+        try { await Backend.deleteDiscussion(pid); } catch {}
+        posts = posts.filter(x => x.id !== pid); delete comments[pid];
+        repaint();
       }
-      if (act === 'toggle') {
-        const box = card.querySelector('.tr-comments');
-        if (openThreads.has(id)) { openThreads.delete(id); box.hidden = true; box.innerHTML = ''; }
-        else {
-          openThreads.add(id); box.hidden = false;
-          box.innerHTML = '<p class="tr-empty">Loading…</p>';
-          await loadReplies(id);
-          box.innerHTML = commentsHTML(id);
-          markSeen(Math.max(latestStamp(), seenAt()));
-        }
-        btn.textContent = (openThreads.has(id) ? '▾ Hide ' : '▸ ') + (() => { const n = (replies[id] || []).length; return n ? `${n} ${n === 1 ? 'comment' : 'comments'}` : 'Comment'; })();
-        return;
-      }
-      if (act === 'send') {
-        const ta = card.querySelector('.tr-cm-new textarea');
-        const body = ta.value.trim(); if (!body) return;
-        btn.disabled = true;
-        try { await reply(id, body); ta.value = ''; }
-        catch (err) { alert('Could not comment: ' + (err.message || err)); }
-        btn.disabled = false; return;
-      }
-      if (act === 'del-thread') {
-        if (!confirm('Delete your post and all its comments?')) return;
-        try { await Backend.deleteDiscussion(id); } catch {}
-        threads = threads.filter(t => t.id !== id); delete replies[id]; openThreads.delete(id);
-        repaint(); return;
-      }
-      if (act === 'del-reply') {
-        const rid = btn.dataset.rid;
-        try { await Backend.deleteDiscussionReply(id, rid); } catch {}
-        replies[id] = (replies[id] || []).filter(r => r.id !== rid);
-        const th = threads.find(t => t.id === id); if (th) th.reply_count = replies[id].length;
-        card.querySelector('.tr-comments').innerHTML = commentsHTML(id);
-        return;
-      }
-    });
-
-    // Enter sends, Shift+Enter newlines — the convention every chat app uses
-    root.addEventListener('keydown', e => {
-      const ta = e.target;
-      if (ta.tagName !== 'TEXTAREA' || e.key !== 'Enter' || e.shiftKey) return;
-      e.preventDefault();
-      const send = ta.closest('.tr-cm-new')?.querySelector('[data-act="send"]')
-                || ta.closest('.tr-new')?.querySelector('[data-act="new"]');
-      send?.click();
     });
     root.addEventListener('input', e => { if (e.target.tagName === 'TEXTAREA') autoGrow(e.target); });
-    // first expand of a question pulls its snapshot (once per session)
     root.addEventListener('toggle', e => {
       const d = e.target;
       if (d.matches?.('[data-q-shell]') && d.open) {
-        const card = d.closest('[data-tid]');
-        if (card) fillQuestion(d, card.dataset.tid);
+        const card = d.closest('[data-pid]'); if (card) fillQuestion(d, card.dataset.pid);
       }
     }, true);
-    // reading the room marks it read
-    root.addEventListener('scroll', () => markSeen(Math.max(latestStamp(), seenAt())), { capture: true, passive: true });
+  }
+  function autoGrow(ta) { ta.style.height = 'auto'; ta.style.height = Math.min(140, ta.scrollHeight) + 'px'; }
+
+  /* ---------------- chat surface ---------------- */
+
+  function roomName(r) {
+    if (r.title) return r.title;
+    const others = (r.members || []).filter(m => m.user_id !== me?.id);
+    return others.map(m => m.display_name || 'Member').join(', ') || 'Direct chat';
+  }
+  function roomsHTML() {
+    if (!rooms.length) return `<p class="tr-empty big">No conversations yet.<br>Start one with a study partner.</p>`;
+    return rooms.map(r => {
+      const msgs = roomMsgs[r.id] || [];
+      const last = msgs[msgs.length - 1];
+      const unread = msgs.filter(m => !m.mine && ts(m) > chatSeenAt()).length;
+      return `<button class="tc-room ${activeRoom === r.id ? 'is-active' : ''}" data-room="${esc(r.id)}">
+        <span class="tr-av" style="background:${tint(roomName(r))}">${esc(initials(roomName(r)))}</span>
+        <span class="tc-room-main">
+          <span class="tc-room-name">${esc(roomName(r))}${r.kind === 'group' ? ` <i>· ${(r.members || []).length}</i>` : ''}</span>
+          <span class="tc-room-last">${last ? esc((last.mine ? 'You: ' : '') + (last.body || '📎 attachment')).slice(0, 60) : 'No messages yet'}</span>
+        </span>
+        ${unread ? `<span class="tc-unread">${unread}</span>` : `<span class="tc-when">${last ? esc(relTime(last.created_at)) : ''}</span>`}
+      </button>`;
+    }).join('');
+  }
+  function messagesHTML(roomId) {
+    const msgs = roomMsgs[roomId] || [];
+    if (!msgs.length) return `<p class="tr-empty">No messages yet — say hello.</p>`;
+    let lastDay = '';
+    return msgs.map(m => {
+      const day = new Date(m.created_at || 0).toDateString();
+      const sep = day !== lastDay ? `<div class="tc-day">${esc(new Date(m.created_at).toLocaleDateString())}</div>` : '';
+      lastDay = day;
+      return `${sep}<div class="tc-msg ${m.mine ? 'is-mine' : ''}">
+        ${m.mine ? '' : `<span class="tr-av sm" style="background:${tint(m.author_name)}">${esc(initials(m.author_name))}</span>`}
+        <div class="tc-bubble">
+          ${m.mine ? '' : `<span class="tc-from">${esc(m.author_name || '')}</span>`}
+          ${m.body ? `<p>${esc(m.body)}</p>` : ''}
+          ${mediaHTML(m.media)}
+          <span class="tc-time">${esc(relTime(m.created_at))}</span>
+        </div>
+      </div>`;
+    }).join('');
   }
 
-  function autoGrow(ta) { ta.style.height = 'auto'; ta.style.height = Math.min(120, ta.scrollHeight) + 'px'; }
+  async function openRoom(roomId) {
+    activeRoom = roomId;
+    if (!roomMsgs[roomId]) {
+      try { roomMsgs[roomId] = (await Backend.listChatMessages?.(roomId)) || []; } catch { roomMsgs[roomId] = []; }
+    }
+    try { await Backend.markRoomRead?.(roomId); } catch {}
+    markChatSeen(Math.max(latestChatStamp(), chatSeenAt()));
+    paintChat();
+  }
 
-  /* ---------------- surface 1: the Studio panel ---------------- */
+  function paintChat() {
+    if (!chatEl) return;
+    const listEl = chatEl.querySelector('[data-tc-rooms]');
+    const viewEl = chatEl.querySelector('[data-tc-view]');
+    if (listEl) listEl.innerHTML = roomsHTML();
+    if (!viewEl) return;
+    chatEl.classList.toggle('has-room', !!activeRoom);
+    if (!activeRoom) { viewEl.innerHTML = `<p class="tr-empty big">Pick a conversation, or start a new one.</p>`; return; }
+    const r = rooms.find(x => x.id === activeRoom);
+    viewEl.innerHTML = `
+      <header class="tc-head">
+        <button class="tc-back" data-act="back">‹</button>
+        <span class="tr-av" style="background:${tint(roomName(r || {}))}">${esc(initials(roomName(r || {})))}</span>
+        <span class="tc-title">${esc(roomName(r || {}))}</span>
+      </header>
+      <div class="tc-stream" data-tc-stream>${messagesHTML(activeRoom)}</div>
+      <div class="tw-pending" id="tc-pending"></div>
+      <div class="tc-compose">
+        <button class="tw-attach" data-act="cfile" title="Attach">📎</button>
+        <textarea rows="1" placeholder="Message…  (Enter to send)"></textarea>
+        <button class="tr-send" data-act="csend" title="Send">➤</button>
+      </div>`;
+    const st = viewEl.querySelector('[data-tc-stream]');
+    if (st) st.scrollTop = st.scrollHeight;
+  }
+
+  function wireChat(root) {
+    if (root.dataset.wired === '1') return;
+    root.dataset.wired = '1';
+    let pending = [];
+    const paintPending = () => {
+      const el = root.querySelector('#tc-pending');
+      if (el) el.innerHTML = pending.map((f, i) => `<span class="tw-chip">${esc(f.name)}<button data-drop="${i}">×</button></span>`).join('');
+    };
+    root.addEventListener('click', async e => {
+      const drop = e.target.closest('[data-drop]');
+      if (drop) { pending.splice(Number(drop.dataset.drop), 1); paintPending(); return; }
+      const room = e.target.closest('[data-room]');
+      if (room) { openRoom(room.dataset.room); return; }
+      const act = e.target.closest('[data-act]')?.dataset.act;
+      if (act === 'back') { activeRoom = null; paintChat(); return; }
+      if (act === 'newroom') { await newRoomFlow(); return; }
+      if (act === 'cfile') { pending = pending.concat(await pickFiles()); paintPending(); return; }
+      if (act !== 'csend') return;
+      const ta = root.querySelector('.tc-compose textarea');
+      const body = ta.value.trim();
+      if ((!body && !pending.length) || !activeRoom) return;
+      const btn = root.querySelector('[data-act="csend"]'); btn.disabled = true;
+      try {
+        const media = pending.length ? await uploadAll(pending) : [];
+        const row = await Backend.sendChatMessage(activeRoom, body, media);
+        (roomMsgs[activeRoom] || (roomMsgs[activeRoom] = [])).push(row);
+        ta.value = ''; ta.style.height = 'auto'; pending = []; paintPending();
+        markChatSeen(Math.max(latestChatStamp(), chatSeenAt()));
+        paintChat();
+      } catch (err) { alert('Could not send: ' + (err.message || err)); }
+      btn.disabled = false;
+    });
+    root.addEventListener('input', e => { if (e.target.tagName === 'TEXTAREA') autoGrow(e.target); });
+    root.addEventListener('keydown', e => {
+      if (e.target.tagName === 'TEXTAREA' && e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault(); root.querySelector('[data-act="csend"]')?.click();
+      }
+    });
+  }
+
+  async function newRoomFlow() {
+    let people = [];
+    try { people = (await Backend.listChatPeople?.()) || []; } catch {}
+    const m = document.createElement('div');
+    m.className = 'tw-modal is-open';
+    m.innerHTML = `<div class="tw-sheet tc-newsheet" role="dialog" aria-modal="true">
+        <header class="tw-sheet-head"><h3>New conversation</h3><button class="cov-x">✕</button></header>
+        <div class="tw-sheet-body">
+          <input class="nc-input" id="nr-title" placeholder="Group name (leave blank for a direct chat)">
+          <p class="muted tiny" style="margin:10px 0 6px">Who's in it?</p>
+          <div class="tc-people">${people.length ? people.map(p => `
+            <label class="tc-person"><input type="checkbox" value="${esc(p.id)}"> <span class="tr-av sm" style="background:${tint(p.name)}">${esc(initials(p.name))}</span> ${esc(p.name)}</label>`).join('')
+            : '<p class="muted">No other members yet.</p>'}</div>
+          <div class="nc-actions"><button class="btn btn-gold" id="nr-go">Create</button></div>
+        </div>
+      </div>`;
+    document.body.appendChild(m);
+    const close = () => m.remove();
+    m.querySelector('.cov-x').addEventListener('click', close);
+    m.addEventListener('click', e => { if (e.target === m) close(); });
+    m.querySelector('#nr-go').addEventListener('click', async () => {
+      const title = m.querySelector('#nr-title').value.trim();
+      const ids = [...m.querySelectorAll('.tc-people input:checked')].map(i => i.value);
+      if (!ids.length && !title) { alert('Pick at least one person, or name a group.'); return; }
+      try {
+        const room = await Backend.createChatRoom({ title, kind: ids.length === 1 && !title ? 'direct' : 'group', memberIds: ids, myName: me?.name });
+        await loadRooms(); close(); openRoom(room.id);
+      } catch (err) { alert('Could not create: ' + (err.message || err)); }
+    });
+  }
+
+  /* ---------------- docks + launchers ---------------- */
+
+  function ensureWall() {
+    if (wallEl) return wallEl;
+    wallEl = document.createElement('div');
+    wallEl.className = 'tr-dock tw-dock';
+    wallEl.innerHTML = `<div class="tr-surface">
+        <header class="tr-dock-head">
+          <span class="tr-dock-title">🧱 Tea room wall</span>
+          <div data-tr-mute class="tr-mute-wrap"></div>
+          <button class="tr-icon" data-dock="close" title="Close">✕</button>
+        </header>
+        <div class="tw-body">
+          ${composerHTML()}
+          <div class="tw-feed" data-tw-feed></div>
+        </div>
+      </div>`;
+    document.body.appendChild(wallEl);
+    wireWall(wallEl.querySelector('.tr-surface'));
+    wallEl.querySelector('[data-dock="close"]').addEventListener('click', closeWall);
+    return wallEl;
+  }
+  function ensureChat() {
+    if (chatEl) return chatEl;
+    chatEl = document.createElement('div');
+    chatEl.className = 'tr-dock tc-dock';
+    chatEl.innerHTML = `<div class="tr-surface">
+        <header class="tr-dock-head">
+          <span class="tr-dock-title">💬 Chat</span>
+          <button class="tr-icon" data-act="newroom" title="New conversation">＋</button>
+          <button class="tr-icon" data-dock="close" title="Close">✕</button>
+        </header>
+        <div class="tc-body">
+          <div class="tc-rooms" data-tc-rooms></div>
+          <div class="tc-view" data-tc-view></div>
+        </div>
+      </div>`;
+    document.body.appendChild(chatEl);
+    wireChat(chatEl.querySelector('.tr-surface'));
+    chatEl.querySelector('[data-dock="close"]').addEventListener('click', closeChat);
+    return chatEl;
+  }
+
+  async function openWall() {
+    ensureWall(); wallOpen = true; wallEl.classList.add('is-open');
+    await ensureLoaded();
+    // composer needs `me` for the avatar — repaint once known
+    wallEl.querySelector('.tw-composer .tr-av')?.setAttribute('style', `background:${tint(me?.name)}`);
+    paintWall(wallEl.querySelector('.tr-surface'));
+    markSeen(Math.max(latestStamp(), seenAt()));
+    schedule(); emit(); updateLaunchers();
+  }
+  function closeWall() { wallOpen = false; wallEl?.classList.remove('is-open'); schedule(); updateLaunchers(); }
+  async function openChat(roomId) {
+    ensureChat(); chatOpen = true; chatEl.classList.add('is-open');
+    if (!rooms.length) await loadRooms();
+    if (roomId) await openRoom(roomId); else paintChat();
+    schedule(); emit(); updateLaunchers();
+  }
+  function closeChat() { chatOpen = false; chatEl?.classList.remove('is-open'); schedule(); updateLaunchers(); }
+  const toggleWall = () => wallOpen ? closeWall() : openWall();
+  const toggleChat = () => chatOpen ? closeChat() : openChat();
+
+  function repaint() {
+    if (panelHost && document.body.contains(panelHost)) paintWall(panelHost);
+    if (wallEl && wallOpen) paintWall(wallEl.querySelector('.tr-surface'));
+    if (chatEl && chatOpen) paintChat();
+    updateLaunchers();
+  }
+
+  let launchBar = null;
+  function ensureLaunchers() {
+    if (launchBar) return launchBar;
+    launchBar = document.createElement('div');
+    launchBar.className = 'tr-launchbar';
+    launchBar.innerHTML = `
+      <button class="tr-launch" data-open="chat" title="Chat"><span class="tr-launch-ico">💬</span><span class="tr-launch-badge" hidden></span></button>
+      <button class="tr-launch" data-open="wall" title="Tea room wall"><span class="tr-launch-ico">🧱</span><span class="tr-launch-badge" hidden></span></button>`;
+    launchBar.addEventListener('click', e => {
+      const b = e.target.closest('[data-open]'); if (!b) return;
+      b.dataset.open === 'chat' ? toggleChat() : toggleWall();
+    });
+    document.body.appendChild(launchBar);
+    return launchBar;
+  }
+  function updateLaunchers() {
+    const bar = ensureLaunchers();
+    const muted = !!muteUntil();
+    const set = (sel, n, hide) => {
+      const b = bar.querySelector(sel);
+      b.classList.toggle('is-hidden', hide);
+      b.classList.toggle('is-muted', muted);
+      const badge = b.querySelector('.tr-launch-badge');
+      badge.textContent = n > 99 ? '99+' : n; badge.hidden = !n;
+    };
+    set('[data-open="chat"]', unreadChat(), chatOpen || cfg.chatEnabled === false);
+    set('[data-open="wall"]', unreadWall(), wallOpen || cfg.wallEnabled === false);
+  }
+  function mountLauncher() { ensureLaunchers(); updateLaunchers(); }
+  function unmountLauncher() {
+    launchBar?.remove(); launchBar = null;
+    closeWall(); closeChat();
+    wallEl?.remove(); wallEl = null; chatEl?.remove(); chatEl = null;
+  }
+
+  /* ---------------- Studio panel (full-page wall) ---------------- */
 
   async function renderPanel(host) {
     panelHost = host;
-    host.innerHTML = `
-      <div class="tr-surface tr-panel">
+    me = me || await Backend.currentUser().catch(() => null);
+    host.innerHTML = `<div class="tr-surface tw-panel">
         <div class="tr-bar">
           <div data-tr-mute class="tr-mute-wrap"></div>
-          <button class="btn btn-ghost btn-sm" data-act="pop">⧉ Pop out</button>
+          <button class="btn btn-ghost btn-sm" data-act="popwall">⧉ Pop out</button>
+          <button class="btn btn-ghost btn-sm" data-act="popchat">💬 Chat</button>
         </div>
         ${composerHTML()}
-        <div class="tr-list" data-tr-list><p class="tr-empty">Loading…</p></div>
+        <div class="tw-feed" data-tw-feed><p class="tr-empty">Loading…</p></div>
       </div>`;
     const root = host.querySelector('.tr-surface');
-    wire(root, false);
-    root.querySelector('[data-act="pop"]').addEventListener('click', () => { openDock(); });
+    wireWall(root);
+    root.querySelector('[data-act="popwall"]').addEventListener('click', () => openWall());
+    root.querySelector('[data-act="popchat"]').addEventListener('click', () => openChat());
     await ensureLoaded();
-    paintInto(root, false);
+    paintWall(root);
     markSeen(Math.max(latestStamp(), seenAt()));
     schedule(); emit();
   }
   function releasePanel() { panelHost = null; schedule(); }
 
-  /* ---------------- surface 2: the floating dock ----------------
-     Fixed, self-contained, and below the quiz's idle overlay in the stack,
-     so it can ride over a running paper without ever covering an exam
-     dialog or stealing the runner's keyboard shortcuts.            */
-
-  function ensureDock() {
-    if (dockEl) return dockEl;
-    dockEl = document.createElement('div');
-    dockEl.className = 'tr-dock';
-    dockEl.innerHTML = `
-      <div class="tr-surface">
-        <header class="tr-dock-head">
-          <span class="tr-dock-title">☕ Tea room <span class="tr-dock-count" hidden></span></span>
-          <button class="tr-icon" data-dock="min" title="Minimise">—</button>
-          <button class="tr-icon" data-dock="close" title="Close">✕</button>
-        </header>
-        <div class="tr-dock-body">
-          <div data-tr-mute class="tr-mute-wrap"></div>
-          ${composerHTML()}
-          <div class="tr-list" data-tr-list></div>
-        </div>
-      </div>`;
-    document.body.appendChild(dockEl);
-    const root = dockEl.querySelector('.tr-surface');
-    wire(root, true);
-    dockEl.querySelector('[data-dock="min"]').addEventListener('click', () => {
-      dockMin = !dockMin; dockEl.classList.toggle('is-min', dockMin); schedule();
-    });
-    dockEl.querySelector('[data-dock="close"]').addEventListener('click', closeDock);
-    return dockEl;
-  }
-
-  async function openDock() {
-    ensureDock();
-    dockOpen = true; dockMin = false;
-    dockEl.classList.add('is-open'); dockEl.classList.remove('is-min');
-    try { localStorage.setItem(OPEN_KEY, '1'); } catch {}
-    await ensureLoaded();
-    paintInto(dockEl, true);
-    markSeen(Math.max(latestStamp(), seenAt()));
-    schedule(); emit();
-  }
-  function closeDock() {
-    dockOpen = false;
-    dockEl?.classList.remove('is-open');
-    try { localStorage.removeItem(OPEN_KEY); } catch {}
-    schedule(); updateLauncher();
-  }
-  function toggleDock() { dockOpen ? closeDock() : openDock(); }
-
-  /* ---------------- launcher bubble ---------------- */
-
-  let launcher = null;
-  function ensureLauncher() {
-    if (launcher) return launcher;
-    launcher = document.createElement('button');
-    launcher.className = 'tr-launch';
-    launcher.title = 'Tea room';
-    launcher.innerHTML = `<span class="tr-launch-ico">☕</span><span class="tr-launch-badge" hidden></span>`;
-    launcher.addEventListener('click', toggleDock);
-    document.body.appendChild(launcher);
-    return launcher;
-  }
-  function updateLauncher() {
-    const el = ensureLauncher();
-    const n = unreadCount();
-    el.classList.toggle('is-hidden', dockOpen);
-    el.classList.toggle('is-muted', !!muteUntil());
-    const b = el.querySelector('.tr-launch-badge');
-    b.textContent = n > 99 ? '99+' : n; b.hidden = !n;
-  }
-  function mountLauncher() { ensureLauncher(); updateLauncher(); }
-  function unmountLauncher() { launcher?.remove(); launcher = null; closeDock(); dockEl?.remove(); dockEl = null; }
-
   return {
-    init, onChange, unreadCount, renderPanel, releasePanel,
-    openDock, closeDock, toggleDock, mountLauncher, unmountLauncher,
-    share, post, setMute, muteUntil
+    init, onChange, unreadCount, unreadWall, unreadChat,
+    renderPanel, releasePanel, mountLauncher, unmountLauncher,
+    openWall, closeWall, toggleWall, openChat, closeChat, toggleChat,
+    openComments, share, post, setMute, muteUntil,
+    loadCfg, config, setNotif, askNotifPermission,
+    // kept for callers written against v1
+    openDock: openWall, closeDock: closeWall, toggleDock: toggleWall
   };
 })();
