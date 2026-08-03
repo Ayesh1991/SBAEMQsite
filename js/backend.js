@@ -442,7 +442,16 @@ const Backend = (() => {
       const e = sessionEmail(); const all = read('msgs', {});
       return Object.values(all).flat().filter(m => !sinceIso || m.created_at > sinceIso).map(m => ({ ...m, mine: m.user_id === e }));
     }
-    async function listChatPeople() { return Object.values(users()).map(u => ({ id: u.email, name: u.name })); }
+    async function listChatPeople() { return Object.values(users()).map(u => ({ id: u.email, name: u.name, avatar: u.avatar || '' })); }
+    async function listMemberCards() { const m = {}; Object.values(users()).forEach(u => m[u.email] = { name: u.name, avatar: u.avatar || '' }); return m; }
+    async function uploadAvatar(file) {
+      const e = sessionEmail(); if (!e) throw new Error('Not signed in.');
+      const url = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
+      const all = users(); if (all[e]) { all[e].avatar = url; write('users', all); }
+      return url;
+    }
+    async function getNotifSeen() { const e = sessionEmail(); return e ? read('notifseen:' + norm(e), {}) : {}; }
+    async function setNotifSeen(patch) { const e = sessionEmail(); if (!e) return; write('notifseen:' + norm(e), { ...read('notifseen:' + norm(e), {}), ...patch }); }
 
     /* AI feature registry + shared pools + tags (local mirrors) */
     async function getAiFeatures() { return read('aifeatures', {}); }
@@ -454,7 +463,7 @@ const Backend = (() => {
     /* AI (local mode has no server function — the app disables AI in local) */
     async function getAccessToken() { return null; }
 
-    function publicUser(u) { return { id: u.id, name: u.name, email: u.email, position: u.position, createdAt: u.createdAt, isDeveloper: norm(u.email) === devEmail, featureFlags: u.featureFlags || {}, prefs: u.prefs || {}, status: u.status || 'approved' }; }
+    function publicUser(u) { return { id: u.id, name: u.name, email: u.email, position: u.position, createdAt: u.createdAt, isDeveloper: norm(u.email) === devEmail, featureFlags: u.featureFlags || {}, prefs: u.prefs || {}, avatar: u.avatar || '', status: u.status || 'approved' }; }
 
     return { init, signUp, signIn, signOut, requestPasswordReset, updatePassword, onPasswordRecovery, currentUser, updateProfile,
       getRegistrationOpen, setRegistrationOpen, setUserStatus, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
@@ -474,6 +483,7 @@ const Backend = (() => {
       addDiscussion, listDiscussions, deleteDiscussion, listDiscussionReplies, addDiscussionReply, deleteDiscussionReply, pollDiscussions, getDiscussionQuestion,
       listUserNotes, saveUserNote, deleteUserNote,
       uploadTeaFile, setReaction, myReactions, listChatRooms, createChatRoom, listChatMessages, sendChatMessage, markRoomRead, pollChat, listChatPeople,
+      listMemberCards, uploadAvatar, getNotifSeen, setNotifSeen,
       getAiFeatures, saveAiFeatures, getModelPricing, saveModelPricing, getTeaConfig, saveTeaConfig, listSharedUsage, saveQuestionTags, listQuestionTags, getAccessToken };
   })();
 
@@ -557,6 +567,8 @@ const Backend = (() => {
         isDeveloper: norm(data.user.email) === devEmail,
         featureFlags: prof?.feature_flags || {},
         prefs: prof?.prefs || {},
+        avatar: prof?.avatar_url || '',
+        notifSeen: prof?.notif_seen || {},
         status: prof?.status || 'approved'
       };
     }
@@ -1004,11 +1016,17 @@ const Backend = (() => {
       await ensureClient(); const id = await uid(); if (!id) throw new Error('Not signed in.');
       const { data: room, error } = await sb.from('chat_rooms')
         .insert({ kind: kind || 'group', title: title || null, created_by: id }).select().single();
-      if (error) throw error;
-      const rows = [{ room_id: room.id, user_id: id, display_name: myName || null }];
-      (memberIds || []).filter(u => u && u !== id).forEach(u => rows.push({ room_id: room.id, user_id: u }));
-      const { error: mErr } = await sb.from('chat_members').insert(rows);
-      if (mErr) throw mErr;
+      if (error) throw new Error('Could not create the room: ' + error.message);
+      // Own membership FIRST: the policies that let you add other people check
+      // membership (or creatorship) of the room, and a multi-row insert cannot
+      // see its own earlier rows.
+      const { error: meErr } = await sb.from('chat_members').insert({ room_id: room.id, user_id: id, display_name: myName || null });
+      if (meErr) throw new Error('Could not join the room: ' + meErr.message);
+      const others = (memberIds || []).filter(u => u && u !== id).map(u => ({ room_id: room.id, user_id: u }));
+      if (others.length) {
+        const { error: oErr } = await sb.from('chat_members').insert(others);
+        if (oErr) throw new Error('Room made, but adding members failed: ' + oErr.message);
+      }
       return room;
     }
     async function listChatMessages(roomId, sinceIso) {
@@ -1043,11 +1061,45 @@ const Backend = (() => {
         .order('created_at', { ascending: true }).limit(120);
       return (data || []).map(m => ({ ...m, mine: m.user_id === id }));
     }
-    /** Everyone who could be added to a room (approved users only). */
+    /** Everyone who could be added to a room, with their avatar. */
     async function listChatPeople() {
       await ensureClient(); const id = await uid();
-      const { data } = await sb.from('profiles').select('id,name,email').neq('id', id).limit(200);
-      return (data || []).map(p => ({ id: p.id, name: p.name || (p.email || '').split('@')[0] }));
+      const { data } = await sb.from('profiles').select('id,name,email,avatar_url').neq('id', id).limit(200);
+      return (data || []).map(p => ({ id: p.id, name: p.name || (p.email || '').split('@')[0], avatar: p.avatar_url || '' }));
+    }
+    /** Name + avatar for everyone, so the wall and chat can show faces. */
+    async function listMemberCards() {
+      await ensureClient();
+      const { data } = await sb.from('profiles').select('id,name,email,avatar_url').limit(300);
+      const m = {};
+      (data || []).forEach(p => m[p.id] = { name: p.name || (p.email || '').split('@')[0], avatar: p.avatar_url || '' });
+      return m;
+    }
+
+    /* ---- profile picture ---- */
+    async function uploadAvatar(file) {
+      await ensureClient(); const id = await uid(); if (!id) throw new Error('Not signed in.');
+      const ext = (file.name || '').split('.').pop().replace(/[^a-z0-9]/gi, '').slice(0, 5) || 'jpg';
+      const path = `${id}/avatar-${Date.now()}.${ext}`;
+      const { error } = await sb.storage.from('avatars').upload(path, file, { upsert: true, cacheControl: '3600' });
+      if (error) throw new Error('Upload failed: ' + error.message);
+      const { data } = sb.storage.from('avatars').getPublicUrl(path);
+      await sb.from('profiles').update({ avatar_url: data.publicUrl }).eq('id', id);
+      return data.publicUrl;
+    }
+
+    /* ---- cross-device notification state ----
+       Seen marks live on the profile row, so reading on one device clears the
+       badge on every other. */
+    async function getNotifSeen() {
+      await ensureClient(); const id = await uid(); if (!id) return {};
+      const { data } = await sb.from('profiles').select('notif_seen').eq('id', id).single();
+      return data?.notif_seen || {};
+    }
+    async function setNotifSeen(patch) {
+      await ensureClient(); const id = await uid(); if (!id) return;
+      const cur = await getNotifSeen();
+      await sb.from('profiles').update({ notif_seen: { ...cur, ...patch } }).eq('id', id);
     }
 
     /* AI feature registry (app_config), shared pools, question tags */
@@ -1227,6 +1279,7 @@ const Backend = (() => {
       addDiscussion, listDiscussions, deleteDiscussion, listDiscussionReplies, addDiscussionReply, deleteDiscussionReply, pollDiscussions, getDiscussionQuestion,
       listUserNotes, saveUserNote, deleteUserNote,
       uploadTeaFile, setReaction, myReactions, listChatRooms, createChatRoom, listChatMessages, sendChatMessage, markRoomRead, pollChat, listChatPeople,
+      listMemberCards, uploadAvatar, getNotifSeen, setNotifSeen,
       getAiFeatures, saveAiFeatures, getModelPricing, saveModelPricing, getTeaConfig, saveTeaConfig, listSharedUsage, saveQuestionTags, listQuestionTags, getAccessToken };
   })();
 

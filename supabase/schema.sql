@@ -73,6 +73,15 @@ create policy "profiles dev update" on public.profiles for update
   using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
   with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
 
+-- Avatar + cross-device notification state. `notif_seen` holds the last-seen
+-- timestamps ({wall, chat}) so reading on the iPad clears the laptop too.
+alter table public.profiles add column if not exists avatar_url text;
+alter table public.profiles add column if not exists notif_seen jsonb default '{}'::jsonb;
+-- every signed-in member may read another member's public card (name + avatar)
+-- so the wall and chat can show who is speaking
+drop policy if exists "profiles card read" on public.profiles;
+create policy "profiles card read" on public.profiles for select using (auth.role() = 'authenticated');
+
 -- ---------- 2) ATTEMPTS (completed runs) ----------
 create table if not exists public.attempts (
   id text primary key,
@@ -803,7 +812,11 @@ alter table public.chat_messages enable row level security;
 drop policy if exists "rooms read" on public.chat_rooms;
 drop policy if exists "rooms insert" on public.chat_rooms;
 drop policy if exists "rooms update" on public.chat_rooms;
-create policy "rooms read" on public.chat_rooms for select using (public.is_room_member(id));
+-- The creator must also be able to READ the row: `insert ... returning` runs
+-- the SELECT policy, and at that instant no membership row exists yet — which
+-- is what produced "new row violates row-level security policy".
+create policy "rooms read" on public.chat_rooms for select
+  using (public.is_room_member(id) or created_by = auth.uid());
 create policy "rooms insert" on public.chat_rooms for insert with check (auth.uid() = created_by);
 create policy "rooms update" on public.chat_rooms for update using (public.is_room_member(id));
 drop policy if exists "members read" on public.chat_members;
@@ -811,9 +824,14 @@ drop policy if exists "members insert" on public.chat_members;
 drop policy if exists "members own update" on public.chat_members;
 drop policy if exists "members own delete" on public.chat_members;
 create policy "members read" on public.chat_members for select using (public.is_room_member(room_id));
--- you may add yourself, or anyone to a room you already belong to
+-- you may add yourself, anyone to a room you already belong to, or anyone to
+-- a room you just created (own membership row isn't visible mid-statement)
+create or replace function public.is_room_creator(r uuid)
+returns boolean language sql security definer stable as $$
+  select exists (select 1 from public.chat_rooms c where c.id = r and c.created_by = auth.uid());
+$$;
 create policy "members insert" on public.chat_members for insert
-  with check (auth.uid() = user_id or public.is_room_member(room_id));
+  with check (auth.uid() = user_id or public.is_room_member(room_id) or public.is_room_creator(room_id));
 create policy "members own update" on public.chat_members for update using (auth.uid() = user_id);
 create policy "members own delete" on public.chat_members for delete using (auth.uid() = user_id);
 drop policy if exists "messages read" on public.chat_messages;
@@ -838,6 +856,15 @@ create trigger on_chat_message after insert on public.chat_messages
 insert into storage.buckets (id, name, public)
   values ('tearoom', 'tearoom', true)
   on conflict (id) do nothing;
+insert into storage.buckets (id, name, public)
+  values ('avatars', 'avatars', true)
+  on conflict (id) do nothing;
+drop policy if exists "avatars read" on storage.objects;
+drop policy if exists "avatars upload" on storage.objects;
+create policy "avatars read" on storage.objects for select using (bucket_id = 'avatars');
+create policy "avatars upload" on storage.objects for all
+  using (bucket_id = 'avatars' and auth.role() = 'authenticated')
+  with check (bucket_id = 'avatars' and auth.role() = 'authenticated');
 drop policy if exists "tearoom read" on storage.objects;
 drop policy if exists "tearoom upload" on storage.objects;
 drop policy if exists "tearoom own delete" on storage.objects;

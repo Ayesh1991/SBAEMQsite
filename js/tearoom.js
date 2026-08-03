@@ -43,6 +43,7 @@ const TeaRoom = (() => {
 
   let rooms = [], activeRoom = null, roomMsgs = {}, lastChatPoll = null;
   let me = null;
+  let cards = {};                     // userId → { name, avatar }
 
   let pollTimer = null, lastPoll = null;
   let wallEl = null, chatEl = null;
@@ -70,10 +71,35 @@ const TeaRoom = (() => {
   const now = () => Date.now();
   const ts = r => new Date(r.created_at || 0).getTime() || 0;
   const num = v => Number(v) || 0;
-  function seenAt() { return num(localStorage.getItem(SEEN_KEY)); }
-  function markSeen(t) { try { localStorage.setItem(SEEN_KEY, String(t || now())); } catch {} emit(); }
-  function chatSeenAt() { return num(localStorage.getItem(CHAT_SEEN)); }
-  function markChatSeen(t) { try { localStorage.setItem(CHAT_SEEN, String(t || now())); } catch {} emit(); }
+  /* Seen marks are mirrored to the profile row, so clearing the badge on the
+     iPad clears it on the laptop too. The local copy is the fast path; the
+     server copy is the truth we merge in on load and on every poll. */
+  let remoteSeen = { wall: 0, chat: 0 };
+  let pushSeenT = null;
+  function seenAt() { return Math.max(num(localStorage.getItem(SEEN_KEY)), num(remoteSeen.wall)); }
+  function chatSeenAt() { return Math.max(num(localStorage.getItem(CHAT_SEEN)), num(remoteSeen.chat)); }
+  function pushSeen(patch) {
+    Object.assign(remoteSeen, patch);
+    clearTimeout(pushSeenT);
+    pushSeenT = setTimeout(() => { try { Backend.setNotifSeen?.(remoteSeen); } catch {} }, 1200);
+  }
+  function markSeen(t) {
+    const v = Math.max(t || now(), seenAt());
+    try { localStorage.setItem(SEEN_KEY, String(v)); } catch {}
+    pushSeen({ wall: v }); emit();
+  }
+  function markChatSeen(t) {
+    const v = Math.max(t || now(), chatSeenAt());
+    try { localStorage.setItem(CHAT_SEEN, String(v)); } catch {}
+    pushSeen({ chat: v }); emit();
+  }
+  async function syncSeen() {
+    try {
+      const r = (await Backend.getNotifSeen?.()) || {};
+      remoteSeen = { wall: Math.max(num(r.wall), num(remoteSeen.wall)), chat: Math.max(num(r.chat), num(remoteSeen.chat)) };
+    } catch {}
+    emit();
+  }
   function muteUntil() { const v = num(localStorage.getItem(MUTE_KEY)); return v > now() ? v : 0; }
   function setMute(ms) {
     try { ms ? localStorage.setItem(MUTE_KEY, String(now() + ms)) : localStorage.removeItem(MUTE_KEY); } catch {}
@@ -89,6 +115,15 @@ const TeaRoom = (() => {
     return new Date(d).toLocaleDateString();
   }
   const initials = n => String(n || '?').trim().split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase();
+  /** Avatar chip: real picture when the member has uploaded one, initials otherwise. */
+  function av(userId, name, small) {
+    const c = cards[userId] || {};
+    const nm = c.name || name || '?';
+    const cls = 'tr-av' + (small ? ' sm' : '');
+    return c.avatar
+      ? `<img class="${cls} is-photo" src="${esc(c.avatar)}" alt="${esc(nm)}" loading="lazy">`
+      : `<span class="${cls}" style="background:${tint(nm)}">${esc(initials(nm))}</span>`;
+  }
   function tint(name) { let h = 0; for (const ch of String(name || '')) h = (h * 31 + ch.charCodeAt(0)) % 360; return `hsl(${h} 62% 46%)`; }
   const isImg = m => /^image\//.test(m?.type || '') || /\.(png|jpe?g|gif|webp|avif)$/i.test(m?.name || '');
   const kb = n => n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
@@ -137,10 +172,12 @@ const TeaRoom = (() => {
   }
   /** Fire a real OS notification, but never while muted or on your own posts. */
   function notify(title, body, onClick) {
-    if (muteUntil() || !notifAllowed()) return;
+    if (muteUntil()) return;
+    toast(title, body, onClick);            // always: works on every device
+    if (!notifAllowed()) return;
     if (!('Notification' in window) || Notification.permission !== 'granted') return;
     try {
-      const n = new Notification(title, { body: String(body || '').slice(0, 160), tag: 'aureum-tea', icon: 'assets/logo-mark-192.png' });
+      const n = new Notification(title, { body: String(body || '').slice(0, 160), tag: 'aureum-tea-' + Date.now(), icon: 'assets/logo-mark-192.png' });
       n.onclick = () => { window.focus(); try { onClick?.(); } catch {} n.close(); };
     } catch {}
   }
@@ -188,7 +225,7 @@ const TeaRoom = (() => {
       for (const c of (out?.replies || [])) {
         const list = comments[c.discussion_id];
         if (list) { if (!list.some(x => x.id === c.id)) { list.push(c); changed = true; } }
-        else { const p = posts.find(x => x.id === c.discussion_id); if (p) { p.reply_count = (p.reply_count || 0) + 1; changed = true; } }
+        else { const p = posts.find(x => x.id === c.discussion_id); if (p) { p.reply_count = (p.reply_count || 0) + 1; if (!c.mine) p._newCm = true; changed = true; } }
         // a comment on YOUR post is the notification people actually want
         const parent = posts.find(x => x.id === c.discussion_id);
         if (!c.mine && parent?.mine) notify(`${c.author_name || 'Someone'} commented on your post`, c.body, () => { openWall(); openComments(c.discussion_id); });
@@ -213,6 +250,8 @@ const TeaRoom = (() => {
       if (msgs?.length) lastChatPoll = new Date(Math.max(latestChatStamp(), Date.parse(lastChatPoll) || 0)).toISOString();
     } catch {}
     if (changed) { posts.sort((a, b) => ts(b) - ts(a)); repaint(); emit(); }
+    // another device may have read things — pull the shared seen mark in
+    if ((poll._n = (poll._n || 0) + 1) % 6 === 0) syncSeen();
   }
 
   function interval() {
@@ -229,6 +268,8 @@ const TeaRoom = (() => {
   async function init() {
     if (!Backend.listDiscussions) return;
     await loadCfg();
+    await syncSeen();
+    try { cards = (await Backend.listMemberCards?.()) || {}; } catch { cards = {}; }
     await ensureLoaded();
     await loadRooms();
     lastChatPoll = new Date(now() - 60000).toISOString();
@@ -293,6 +334,74 @@ const TeaRoom = (() => {
     return out;
   }
 
+  /* ---------------- paste & drag-drop ----------------
+     A screenshot is the single most useful thing to share in exam prep, and
+     nobody wants a file dialog for it. Any composer accepts:
+       • Cmd/Ctrl-V of an image straight off the clipboard,
+       • pasted rich text (kept as plain text, so a pasted paragraph from a
+         guideline arrives clean rather than as markup),
+       • files dragged anywhere onto the surface.
+     `bag` is the caller's pending-file array; `redraw` repaints its chips. */
+  function attachDropPaste(root, bag, redraw) {
+    if (root.dataset.dropWired === '1') return;
+    root.dataset.dropWired = '1';
+
+    const add = files => { if (files.length) { bag.push(...files); redraw(); } };
+
+    root.addEventListener('paste', e => {
+      const items = [...(e.clipboardData?.items || [])];
+      const files = items.filter(i => i.kind === 'file').map(i => i.getAsFile()).filter(Boolean);
+      if (files.length) {
+        e.preventDefault();
+        // clipboard images arrive unnamed — give them something readable
+        add(files.map((f, i) => f.name && f.name !== 'image.png' ? f
+          : new File([f], `screenshot-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}${i || ''}.png`, { type: f.type || 'image/png' })));
+        return;
+      }
+      // plain-text paste: strip formatting so pasted guideline text stays clean
+      const html = e.clipboardData?.getData('text/html');
+      if (html && e.target.tagName === 'TEXTAREA') {
+        e.preventDefault();
+        const txt = e.clipboardData.getData('text/plain') || html.replace(/<[^>]+>/g, ' ');
+        const t = e.target, st = t.selectionStart, en = t.selectionEnd;
+        t.value = t.value.slice(0, st) + txt + t.value.slice(en);
+        t.selectionStart = t.selectionEnd = st + txt.length;
+        t.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    });
+
+    let depth = 0;
+    const over = e => { e.preventDefault(); };
+    root.addEventListener('dragenter', e => { e.preventDefault(); if (depth++ === 0) root.classList.add('is-dropping'); });
+    root.addEventListener('dragover', over);
+    root.addEventListener('dragleave', () => { if (--depth <= 0) { depth = 0; root.classList.remove('is-dropping'); } });
+    root.addEventListener('drop', e => {
+      e.preventDefault(); depth = 0; root.classList.remove('is-dropping');
+      add([...(e.dataTransfer?.files || [])]);
+    });
+  }
+
+  /* ---------------- in-app notifications ----------------
+     The OS Notification API is unavailable on iPad Safari unless the site is
+     installed as a PWA, so a toast inside the app is the delivery that always
+     works. It doubles as the click-through to the thing that changed. */
+  function toast(title, body, onClick) {
+    if (muteUntil()) return;
+    let stack = document.querySelector('.tr-toasts');
+    if (!stack) { stack = document.createElement('div'); stack.className = 'tr-toasts'; document.body.appendChild(stack); }
+    const t = document.createElement('div');
+    t.className = 'tr-toast';
+    t.innerHTML = `<span class="tr-toast-ico">🔔</span>
+      <span class="tr-toast-txt"><b>${esc(title)}</b><i>${esc(String(body || '').slice(0, 90))}</i></span>
+      <button class="tr-toast-x" aria-label="Dismiss">✕</button>`;
+    stack.appendChild(t);
+    requestAnimationFrame(() => t.classList.add('is-open'));
+    const kill = () => { t.classList.remove('is-open'); setTimeout(() => t.remove(), 250); };
+    t.querySelector('.tr-toast-x').addEventListener('click', e => { e.stopPropagation(); kill(); });
+    t.addEventListener('click', () => { try { onClick?.(); } catch {} kill(); });
+    setTimeout(kill, 7000);
+  }
+
   /* ---------------- wall rendering ---------------- */
 
   function mediaHTML(media, compact) {
@@ -345,14 +454,24 @@ const TeaRoom = (() => {
       ${q.hook ? `<p class="tw-q-hook">💡 ${esc(q.hook)}</p>` : ''}`;
   }
 
+  /** Does this post carry comments the reader hasn't seen? */
+  function postHasNewComments(p) {
+    const list = comments[p.id];
+    if (list) return list.some(c => !c.mine && ts(c) > seenAt());
+    // not opened yet: the poll bumps _newCm when a comment arrives for it
+    return !!p._newCm;
+  }
   function postHTML(p) {
     const n = comments[p.id] ? comments[p.id].length : (p.reply_count || 0);
     const fresh = !p.mine && ts(p) > seenAt();
+    const newCm = postHasNewComments(p);
     const liked = !!myRx[p.id];
-    return `<article class="tw-post ${fresh ? 'is-new' : ''}" data-pid="${esc(p.id)}">
+    return `<article class="tw-post ${fresh ? 'is-new' : ''} ${newCm ? 'has-newcm' : ''}" data-pid="${esc(p.id)}">
       <header class="tw-head">
-        <span class="tr-av" style="background:${tint(p.author_name)}">${esc(initials(p.author_name))}</span>
+        ${av(p.user_id, p.author_name)}
         <span class="tw-who"><b>${esc(p.author_name || 'A friend')}</b><i>${esc(relTime(p.created_at))}${p.kind === 'question' ? ' · shared a question' : ''}</i></span>
+        ${fresh ? '<span class="tw-flag is-post" title="New post you haven\'t seen">NEW</span>' : ''}
+        ${newCm ? '<span class="tw-flag is-cm" title="New comments since you last looked">💬 new</span>' : ''}
         ${p.mine ? `<button class="tr-del" data-act="del-post" title="Delete">🗑</button>` : ''}
       </header>
       ${p.topic ? `<p class="tw-text">${esc(p.topic)}</p>` : ''}
@@ -360,7 +479,7 @@ const TeaRoom = (() => {
       ${mediaHTML(p.media)}
       ${(p.reaction_count || n) ? `<div class="tw-counts">
         ${p.reaction_count ? `<span>👍 ${p.reaction_count}</span>` : '<span></span>'}
-        ${n ? `<span class="tw-cn" data-act="comments">${n} comment${n === 1 ? '' : 's'}</span>` : ''}
+        ${n ? `<span class="tw-cn ${newCm ? 'is-new' : ''}" data-act="comments">${n} comment${n === 1 ? '' : 's'}${newCm ? ' · new' : ''}</span>` : ''}
       </div>` : ''}
       <div class="tw-bar">
         <button class="tw-act ${liked ? 'is-on' : ''}" data-act="like">👍 <span>Like</span></button>
@@ -375,7 +494,7 @@ const TeaRoom = (() => {
     const kids = c => list.filter(x => x.parent_id === c.id);
     const one = (c, depth) => `
       <div class="tw-cm ${depth ? 'is-reply' : ''} ${!c.mine && ts(c) > seenAt() ? 'is-new' : ''}" data-cid="${esc(c.id)}">
-        <span class="tr-av sm" style="background:${tint(c.author_name)}">${esc(initials(c.author_name))}</span>
+        ${av(c.user_id, c.author_name, true)}
         <div class="tw-cm-body">
           <div class="tw-cm-bubble"><span class="tw-cm-who">${esc(c.author_name || 'A friend')}</span><p>${esc(c.body)}</p>
             ${mediaHTML(c.media)}</div>
@@ -422,6 +541,7 @@ const TeaRoom = (() => {
     m.addEventListener('click', e => { if (e.target === m) close(); });
 
     await loadComments(postId);
+    p._newCm = false;                       // opening the thread clears its flag
     const list = m.querySelector('#tw-cms');
     list.innerHTML = commentTreeHTML(postId);
     markSeen(Math.max(latestStamp(), seenAt()));
@@ -470,6 +590,7 @@ const TeaRoom = (() => {
       } catch (err) { alert('Could not comment: ' + (err.message || err)); }
       btn.disabled = false;
     });
+    attachDropPaste(m.querySelector('.tw-sheet'), pending, paintPending);
     m.addEventListener('keydown', e => {
       if (e.target.tagName === 'TEXTAREA' && e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault(); m.querySelector('[data-act="cm-send"]').click();
@@ -485,7 +606,7 @@ const TeaRoom = (() => {
   function composerHTML() {
     return `<div class="tw-composer">
       <div class="tw-comp-row">
-        <span class="tr-av" style="background:${tint(me?.name)}">${esc(initials(me?.name || 'me'))}</span>
+        ${av(me?.id, me?.name || 'me')}
         <textarea id="tw-new" rows="1" placeholder="Share a case, a question, a screenshot…"></textarea>
       </div>
       <div class="tw-pending" id="tw-pending"></div>
@@ -566,6 +687,7 @@ const TeaRoom = (() => {
       }
     });
     root.addEventListener('input', e => { if (e.target.tagName === 'TEXTAREA') autoGrow(e.target); });
+    attachDropPaste(root, pending, paintPending);
     root.addEventListener('toggle', e => {
       const d = e.target;
       if (d.matches?.('[data-q-shell]') && d.open) {
@@ -607,7 +729,7 @@ const TeaRoom = (() => {
       const sep = day !== lastDay ? `<div class="tc-day">${esc(new Date(m.created_at).toLocaleDateString())}</div>` : '';
       lastDay = day;
       return `${sep}<div class="tc-msg ${m.mine ? 'is-mine' : ''}">
-        ${m.mine ? '' : `<span class="tr-av sm" style="background:${tint(m.author_name)}">${esc(initials(m.author_name))}</span>`}
+        ${m.mine ? '' : av(m.user_id, m.author_name, true)}
         <div class="tc-bubble">
           ${m.mine ? '' : `<span class="tc-from">${esc(m.author_name || '')}</span>`}
           ${m.body ? `<p>${esc(m.body)}</p>` : ''}
@@ -687,6 +809,7 @@ const TeaRoom = (() => {
       btn.disabled = false;
     });
     root.addEventListener('input', e => { if (e.target.tagName === 'TEXTAREA') autoGrow(e.target); });
+    attachDropPaste(root, pending, paintPending);
     root.addEventListener('keydown', e => {
       if (e.target.tagName === 'TEXTAREA' && e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault(); root.querySelector('[data-act="csend"]')?.click();
@@ -856,7 +979,7 @@ const TeaRoom = (() => {
   function releasePanel() { panelHost = null; schedule(); }
 
   return {
-    init, onChange, unreadCount, unreadWall, unreadChat,
+    init, onChange, unreadCount, toast, syncSeen, unreadWall, unreadChat,
     renderPanel, releasePanel, mountLauncher, unmountLauncher,
     openWall, closeWall, toggleWall, openChat, closeChat, toggleChat,
     openComments, share, post, setMute, muteUntil,

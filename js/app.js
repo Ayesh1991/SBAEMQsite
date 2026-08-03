@@ -1318,6 +1318,22 @@
         </div>
 
         <div class="card" data-animate>
+          <h3 class="card-title">Profile picture</h3>
+          <p class="muted">Shown beside everything you post in the tea room, so friends recognise you at a glance.</p>
+          <div class="avatar-row">
+            <div class="avatar-preview" id="avatar-prev">${user.avatar
+              ? `<img src="${esc(user.avatar)}" alt="Your picture">`
+              : `<span>${esc((user.name || '?').trim().split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase())}</span>`}</div>
+            <div class="avatar-acts">
+              <label class="btn btn-gold btn-sm" style="cursor:pointer">⬆ Upload a picture
+                <input type="file" id="avatar-file" accept="image/*" hidden></label>
+              <span class="dev-status" id="avatar-msg"></span>
+              <p class="muted tiny">A square photo works best. Max 4 MB.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" data-animate>
           <h3 class="card-title">Appearance</h3>
           <p class="muted">Choose how AUREUM looks. Your choice follows your account across devices.</p>
           <div class="theme-picker" id="theme-picker">
@@ -1377,6 +1393,19 @@
         if (note) { note.hidden = false; setTimeout(() => note.hidden = true, 1500); }
       } catch (e) { /* localStorage already holds it for this device */ }
     }
+    view.querySelector('#avatar-file')?.addEventListener('change', async e => {
+      const f = e.target.files[0]; if (!f) return;
+      const msg = view.querySelector('#avatar-msg');
+      if (f.size > 4 * 1048576) { msg.innerHTML = '<span class="bad">That image is over 4 MB.</span>'; return; }
+      msg.textContent = 'Uploading…'; msg.className = 'dev-status';
+      try {
+        const url = await Backend.uploadAvatar(f);
+        view.querySelector('#avatar-prev').innerHTML = `<img src="${esc(url)}" alt="Your picture">`;
+        msg.innerHTML = '<span class="good">✓ Saved</span>';
+        invalidateUser();
+      } catch (err) { msg.innerHTML = `<span class="bad">${esc(err.message || err)}</span>`; }
+      e.target.value = '';
+    });
     view.querySelector('#theme-picker')?.addEventListener('click', e => {
       const btn = e.target.closest('[data-theme-opt]'); if (!btn) return;
       view.querySelectorAll('.theme-opt').forEach(b => b.classList.toggle('active', b === btn));
@@ -1441,6 +1470,28 @@
       ...sumAll.shared.map(l => ({ feature: l.feature, label: l.label, icon: Billing.featureIcon(l.feature), cost: l.cost, n: l.n, kind: 'shared' }))
     ].sort((a, b) => b.cost - a.cost);
 
+    /* Month-by-month ledger: personal spend plus this user's share of the
+       shared pools, so "what did AI cost me in June?" has an answer rather
+       than only "this month" and a running total. */
+    const thisMonthKey = new Date().toISOString().slice(0, 7);
+    const monthKeys = [...new Set([
+      ...myRows.map(r => String(r.day).slice(0, 7)),
+      ...(sharedCtx?.rows || []).map(r => String(r.day).slice(0, 7))
+    ])].filter(Boolean).sort().reverse();
+    const monthRows = monthKeys.map(month => {
+      const sum = Billing.summarise(myRows.filter(r => String(r.day).slice(0, 7) === month));
+      const shared = Billing.sharedLines(user, sharedCtx, month).reduce((a, l) => a + l.cost, 0);
+      return {
+        month, label: Billing.monthLabel ? Billing.monthLabel(month) : month,
+        calls: sum.calls, tokens: sum.inputTokens + sum.outputTokens,
+        personal: sum.total, shared, total: sum.total + shared
+      };
+    });
+    const allTime = monthRows.reduce((a, r) => ({
+      calls: a.calls + r.calls, tokens: a.tokens + r.tokens,
+      personal: a.personal + r.personal, shared: a.shared + r.shared, total: a.total + r.total
+    }), { calls: 0, tokens: 0, personal: 0, shared: 0, total: 0 });
+
     // 30-day cost sparkline (personal spend)
     const series = Billing.dailyCost(myRows, 30);
     const maxDay = Math.max(...series.map(d => d.cost), 0.0001);
@@ -1467,6 +1518,24 @@
             <span class="aiu-mech-cost">${Billing.usd(l.cost, l.cost < 0.1 ? 4 : 2)}</span>
           </div>`).join('') : `<p class="muted">No spend yet.</p>`}
       </div>
+
+      <h4 class="aiu-sub">Month by month</h4>
+      <div class="table-scroll"><table class="table aiu-months">
+        <thead><tr><th>Month</th><th class="num">Calls</th><th class="num">Tokens</th><th class="num">Personal</th><th class="num">Shared</th><th class="num">Total</th></tr></thead>
+        <tbody>${monthRows.length ? monthRows.map(r => `
+          <tr class="${r.month === thisMonthKey ? 'is-current' : ''}">
+            <td>${esc(r.label)}${r.month === thisMonthKey ? ' <span class="muted tiny">(this month)</span>' : ''}</td>
+            <td class="num">${Billing.fmtInt(r.calls)}</td>
+            <td class="num">${Billing.fmtInt(r.tokens)}</td>
+            <td class="num">${Billing.usd(r.personal, r.personal < 0.1 ? 4 : 2)}</td>
+            <td class="num">${Billing.usd(r.shared, r.shared < 0.1 ? 4 : 2)}</td>
+            <td class="num"><strong>${Billing.usd(r.total, r.total < 0.1 ? 4 : 2)}</strong></td>
+          </tr>`).join('') : '<tr><td colspan="6" class="muted">No metered months yet.</td></tr>'}
+        </tbody>
+        <tfoot><tr><th>All time</th><th class="num">${Billing.fmtInt(allTime.calls)}</th><th class="num">${Billing.fmtInt(allTime.tokens)}</th>
+          <th class="num">${Billing.usd(allTime.personal, 2)}</th><th class="num">${Billing.usd(allTime.shared, 2)}</th>
+          <th class="num"><strong>${Billing.usd(allTime.total, 2)}</strong></th></tr></tfoot>
+      </table></div>
 
       <h4 class="aiu-sub">Last 30 days</h4>
       <svg class="aiu-spark" viewBox="0 0 240 48" preserveAspectRatio="none" role="img" aria-label="Daily AI cost, last 30 days">${spark}</svg>

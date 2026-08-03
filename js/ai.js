@@ -127,6 +127,7 @@ const AI = (() => {
         <div class="ai-chat" id="ai-chat">
           <div class="ai-chat-labelrow">
             <p class="ai-chat-label">💬 Chat to elaborate on this topic</p>
+            <button class="btn btn-ghost btn-sm" id="ai-web" title="Search the web for the guidelines and trials behind this question">🌐 Search the web</button>
             <button class="btn btn-ghost btn-sm ai-save-chat" id="ai-save-chat" title="Save this whole conversation to your Studio">💾 Save chat to Studio</button>
           </div>
           <div class="ai-messages" id="ai-messages"></div>
@@ -165,6 +166,7 @@ const AI = (() => {
     });
     panel.querySelector('#ai-ask').addEventListener('submit', e => { e.preventDefault(); ask(panel, ctx, st); });
     panel.querySelector('#ai-save-chat').addEventListener('click', () => saveChatToStudio(panel, ctx, st));
+    panel.querySelector('#ai-web').addEventListener('click', () => webSearch(panel, ctx, st));
     panel.querySelector('#ai-hist').addEventListener('click', () => toggleHistory(panel, ctx, st));
     panel.querySelectorAll('[data-aid]').forEach(b => b.addEventListener('click', () => genAid(panel, ctx, st, b.dataset.aid)));
 

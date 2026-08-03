@@ -127,8 +127,10 @@ const Simulator = (() => {
     // the weakness profile tracks the candidate you are NOW, not the one
     // who sat a paper two months ago.
     const HALF_LIFE_DAYS = 14;
+    const lastSeenAt = {};
     mocks.forEach(m => {
-      (m.questionKeys || []).forEach(k => seen.add(k));
+      const when = new Date(m.date || 0).getTime() || 0;
+      (m.questionKeys || []).forEach(k => { seen.add(k); if (when > (lastSeenAt[k] || 0)) lastSeenAt[k] = when; });
       const ageDays = Math.max(0, (Date.now() - new Date(m.date || Date.now()).getTime()) / 86400000);
       const w = Math.pow(0.5, ageDays / HALF_LIFE_DAYS);
       for (const b in (m.buckets || {})) {
@@ -149,7 +151,7 @@ const Simulator = (() => {
     });
     const recent = mocks.slice(0, 3);
     const acc = recent.length ? recent.reduce((a, m) => a + (m.percent || 0), 0) / recent.length / 100 : 0.5;
-    return { seen, excluded, flagged: new Set(flaggedArr), bucketAgg, areaAgg, targetDifficulty: clamp(0.35 + acc * 0.4, 0.3, 0.8), mocks };
+    return { seen, excluded, flagged: new Set(flaggedArr), bucketAgg, areaAgg, lastSeenAt, targetDifficulty: clamp(0.35 + acc * 0.4, 0.3, 0.8), mocks };
   }
 
   function perfFactor(label, hist) {
@@ -223,8 +225,17 @@ const Simulator = (() => {
           if (prior?.seen) pen -= Math.min(3, 1 + Math.log2(prior.seen));   // seen before: taper
           return pen;
         };
-        // Unseen questions are strongly preferred; a seen one is a last resort.
-        const freshBonus = r => unseen(r) ? 5 : 0;
+        /* Unseen questions are near-absolutely preferred. The bonus is larger
+           than the whole rest of the score can reach, so a seen question is
+           only ever taken when the area has literally nothing new left —
+           which is what makes every paper feel like new material. Among seen
+           ones, the longest-ago is preferred over a recent repeat. */
+        const freshBonus = r => {
+          if (unseen(r)) return 40;
+          const last = hist.lastSeenAt?.[r.qkey] || 0;
+          const days = last ? (Date.now() - last) / 86400000 : 90;
+          return Math.min(6, days / 15);          // stale repeats beat fresh repeats
+        };
         const rank = list => list
           .map(r => ({ r, s: scoreFor(b, r) + freshBonus(r) + areaPenalty(r) }))
           .sort((x, y) => y.s - x.s);
@@ -254,7 +265,10 @@ const Simulator = (() => {
       });
       // top up if any bucket was starved — unseen first, always
       if (chosen.length < total) {
-        const rest = pool.filter(r => !used.has(r.qkey)).sort((a, c) => (unseen(c) - unseen(a)) || (rnd() - 0.5));
+        const rest = pool.filter(r => !used.has(r.qkey))
+          .sort((a, c) => (unseen(c) - unseen(a))
+            || ((hist.lastSeenAt?.[a.qkey] || 0) - (hist.lastSeenAt?.[c.qkey] || 0))   // oldest repeat first
+            || (rnd() - 0.5));
         for (const r of rest) { if (chosen.length >= total) break; used.add(r.qkey); chosen.push({ ...r, bucket: r.group || r.category || 'General' }); }
       }
       return chosen.slice(0, total);

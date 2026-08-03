@@ -104,12 +104,12 @@ export async function onRequest(context) {
 
   // one model round-trip + token metering, shared by every action below.
   // `feature` records WHICH mechanism spent the tokens (per-user breakdown).
-  const run = async (p, feature = 'tutor') => {
+  const run = async (p, feature = 'tutor', maxTok) => {
     const r = provider === 'claude'
-      ? await callClaude(p.system, p.user, model, env)
+      ? await callClaude(p.system, p.user, model, env, maxTok)
       : provider === 'gpt'
-        ? await callOpenAI(p.system, p.user, defaultGpt, env)
-        : await callGemini(p.system, p.user, effectiveModel, env, geminiRestricted);
+        ? await callOpenAI(p.system, p.user, defaultGpt, env, maxTok)
+        : await callGemini(p.system, p.user, effectiveModel, env, geminiRestricted, maxTok);
     await logTokens(token, env, provider, r, feature);   // true billing meter (dev included)
     return r;
   };
@@ -167,8 +167,13 @@ export async function onRequest(context) {
       const r = await run(p, 'paper_architect');
       return json({ text: r.text, model: r.model, usage: { in: r.in || 0, out: r.out || 0 } });
     }
+    if (action === 'searchterms') {
+      const r = await run(buildSearchTermsPrompt(body), 'tutor', 900);
+      return json({ text: r.text, model: r.model, usage: { in: r.in || 0, out: r.out || 0 } });
+    }
     if (action === 'artifact') {
-      const art = await generateArtifact({ artifact, question, run: p => run(p, 'study_aids') });
+      // charts, mind maps and infographics emit whole SVG/HTML documents
+      const art = await generateArtifact({ artifact, question, run: p => run(p, 'study_aids', 9000) });
       return json({ artifact: art.artifact, model: art.model });
     }
     if (action === 'coach') {
@@ -543,6 +548,21 @@ async function callClaude(system, user, model, env, maxTokens) {
  * loose phrasing all mean a hand-written area can silently match nothing —
  * this maps it onto wording the bank actually uses.
  */
+/**
+ * Search terms a candidate could usefully take to Google: the guideline, the
+ * named trial, the condition. Kept deliberately short so it is a cheap call.
+ */
+function buildSearchTermsPrompt(body) {
+  const q = body.question || {};
+  return {
+    system: 'You suggest precise web-search terms for postgraduate O&G revision. Reply with STRICT JSON only.',
+    user: `Question topic: ${q.theme || ''}\n${String(q.stem || '').slice(0, 700)}\n` +
+      `Correct answer: ${(q.options || [])[q.answer] || ''}\nRationale: ${String(body.rationale || q.rationale || '').slice(0, 500)}\n\n` +
+      `Return JSON: {"terms":[{"q":"<search phrase>","why":"<max 8 words>","kind":"guideline|trial|topic|drug"}]}\n` +
+      `6 to 8 entries. Prefer NAMED guidelines (RCOG Green-top number, NICE NG number), named trials, and the exact clinical entity. No generic phrases.`
+  };
+}
+
 function buildAreaMatchPrompt(body) {
   const typed = String(body.text || '').slice(0, 300);
   const bucket = String(body.bucket || '').slice(0, 200);
@@ -562,12 +582,17 @@ function buildAreaMatchPrompt(body) {
 
 async function callOpenAI(system, user, model, env, maxTokens) {
   if (!env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not configured on the server.');
+  // max_completion_tokens covers REASONING as well as visible output on the
+  // current GPT line. A small cap therefore gets spent thinking and returns an
+  // empty message — which is exactly what "GPT returned an empty response"
+  // was. Give it real headroom; we still pay only for what it uses.
+  const cap = Math.max(2048, maxTokens || 4096);
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + env.OPENAI_API_KEY },
     body: JSON.stringify({
       model: model || 'gpt-5.6-luna',
-      max_completion_tokens: maxTokens || 1200,
+      max_completion_tokens: cap,
       messages: [{ role: 'system', content: system }, { role: 'user', content: user }]
     })
   });
@@ -577,8 +602,21 @@ async function callOpenAI(system, user, model, env, maxTokens) {
     throw new Error(`GPT error (HTTP ${res.status})${detail ? ': ' + detail : '. Check OPENAI_API_KEY and the model id.'}`);
   }
   const data = await res.json();
-  const text = (data.choices || []).map(c => c.message?.content || '').join('') || '';
-  if (!text) throw new Error('GPT returned an empty response.');
+  // content may be a plain string or an array of parts depending on the model
+  const partsOf = c => {
+    const v = c?.message?.content;
+    if (typeof v === 'string') return v;
+    if (Array.isArray(v)) return v.map(x => (typeof x === 'string' ? x : (x?.text || ''))).join('');
+    return '';
+  };
+  const text = (data.choices || []).map(partsOf).join('') || '';
+  if (!text) {
+    const why = data.choices?.[0]?.finish_reason;
+    const reasoned = data.usage?.completion_tokens_details?.reasoning_tokens;
+    throw new Error(why === 'length'
+      ? `GPT hit its ${cap}-token ceiling before writing an answer${reasoned ? ` (${reasoned} spent reasoning)` : ''}. Try a shorter study aid, or raise the cap.`
+      : `GPT returned no content${why ? ` (finish_reason: ${why})` : ''}.`);
+  }
   return { text, model: data.model || model || 'gpt',
     in: data.usage?.prompt_tokens || 0, out: data.usage?.completion_tokens || 0 };
 }
