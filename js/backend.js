@@ -420,9 +420,13 @@ const Backend = (() => {
       return out;
     }
     async function listChatRooms() { const e = sessionEmail(); if (!e) return []; return read('rooms', []); }
-    async function createChatRoom({ title, kind }) {
+    async function createChatRoom({ title, kind, memberIds, myName }) {
       const e = sessionEmail(); if (!e) throw new Error('Not signed in.');
-      const room = { id: 'r' + Date.now(), kind: kind || 'group', title: title || 'Room', created_by: e, created_at: new Date().toISOString(), last_message_at: new Date().toISOString(), members: [], mine: true };
+      // keep the roster: room names and the WhatsApp-style sender labels are
+      // resolved from it, so an empty members array reads as "Direct chat"
+      const members = [{ room_id: null, user_id: e, display_name: myName || null }]
+        .concat((memberIds || []).filter(u => u && u !== e).map(u => ({ user_id: u, display_name: null })));
+      const room = { id: 'r' + Date.now(), kind: kind || 'group', title: title || null, created_by: e, created_at: new Date().toISOString(), last_message_at: new Date().toISOString(), members, mine: true };
       const list = read('rooms', []); list.unshift(room); write('rooms', list); return room;
     }
     async function listChatMessages(roomId, sinceIso) {

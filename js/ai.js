@@ -222,6 +222,87 @@ const AI = (() => {
       ? (cfg().geminiFollowUpLimit || cfg().followUpLimit || 6)
       : (cfg().followUpLimit || 6);
   }
+  /* ---------------- search the web ----------------
+     The tutor's answer is a starting point; the guideline behind it is the
+     real study material. This asks the model for the exact things worth
+     Googling — named Green-tops, NICE numbers, trials — then opens the one
+     you pick. Where it opens is the user's choice (Profile → Appearance):
+     a new browser tab, or a side window kept beside AUREUM. */
+
+  const WEB_MODE_KEY = 'aureum.web.mode';
+  const webMode = () => { try { return localStorage.getItem(WEB_MODE_KEY) || 'tab'; } catch { return 'tab'; } };
+  function setWebMode(m) { try { localStorage.setItem(WEB_MODE_KEY, m); } catch {} }
+
+  async function webSearch(panel, ctx, st) {
+    const chat = panel.querySelector('#ai-chat');
+    let box = panel.querySelector('#ai-web-out');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'ai-web-out'; box.className = 'ai-web-out';
+      chat.parentNode.insertBefore(box, chat);
+    }
+    if (box.dataset.open === '1') { box.dataset.open = '0'; box.innerHTML = ''; return; }
+    box.dataset.open = '1';
+    box.innerHTML = LOADING;
+    let terms = st.webTerms;
+    if (!terms) {
+      try {
+        const { text } = await call({ action: 'searchterms', provider: st.provider, geminiModel: st.geminiModel,
+          questionKey: ctx.questionKey, question: ctx, rationale: ctx.rationale });
+        const m = String(text || '').match(/\{[\s\S]*\}/);
+        terms = (JSON.parse(m ? m[0] : text) || {}).terms || [];
+        st.webTerms = terms;
+      } catch (e) {
+        box.innerHTML = `<p class="ai-error">${esc(e.message || e)}</p>
+          <button class="btn btn-ghost btn-sm" data-web-fallback>Search Google for this topic anyway</button>`;
+        box.querySelector('[data-web-fallback]').addEventListener('click', () =>
+          openSearch(box, `${ctx.theme || ''} ${String(ctx.stem || '').slice(0, 90)}`.trim()));
+        return;
+      }
+    }
+    if (!terms.length) { box.innerHTML = `<p class="muted">No specific sources suggested for this one.</p>`; return; }
+    const ico = k => ({ guideline: '📘', trial: '🧪', drug: '💊' }[k] || '🔎');
+    box.innerHTML = `
+      <div class="ai-web-head">
+        <span>🌐 Worth reading — pick one to search</span>
+        <label class="ai-web-mode"><select id="ai-web-mode" title="Where searches open">
+          <option value="tab" ${webMode() === 'tab' ? 'selected' : ''}>New tab</option>
+          <option value="inline" ${webMode() === 'inline' ? 'selected' : ''}>Side window</option>
+        </select></label>
+      </div>
+      <div class="ai-web-terms">${terms.map(t => `
+        <button class="ai-web-term" data-q="${esc(t.q)}">
+          <span class="ai-web-ico">${ico(t.kind)}</span>
+          <span class="ai-web-q">${esc(t.q)}</span>
+          <span class="ai-web-why">${esc(t.why || '')}</span>
+        </button>`).join('')}</div>
+      <div id="ai-web-frame"></div>`;
+    box.querySelector('#ai-web-mode').addEventListener('change', e => setWebMode(e.target.value));
+    // the box outlives each render, so delegate exactly once — re-attaching
+    // here would open one window per past render
+    if (box.dataset.wired !== '1') {
+      box.dataset.wired = '1';
+      box.addEventListener('click', e => {
+        const b = e.target.closest('[data-q]'); if (!b) return;
+        openSearch(box, b.dataset.q);
+      });
+    }
+  }
+
+  /** Open a Google search either in a new tab or in a side window. */
+  function openSearch(box, term) {
+    const url = 'https://www.google.com/search?q=' + encodeURIComponent(term);
+    if (webMode() !== 'inline') { window.open(url, '_blank', 'noopener'); return; }
+    // Google refuses to be framed, so "inside AUREUM" means a narrow window
+    // parked beside it rather than an iframe that would only show an error.
+    const w = window.open(url, 'aureum-web', 'width=520,height=780,left=' + (screen.width - 540));
+    if (!w) {
+      const host = box.querySelector('#ai-web-frame') || box;
+      host.innerHTML = `<p class="ai-error">Your browser blocked the side window.
+        <a class="link" href="${esc(url)}" target="_blank" rel="noopener">Open in a new tab</a>, or allow pop-ups for AUREUM.</p>`;
+    }
+  }
+
   async function saveChatToStudio(panel, ctx, st) {
     const btn = panel.querySelector('#ai-save-chat');
     if (!st.messages.length) { flash(btn, 'Ask a question first'); return; }
@@ -449,5 +530,5 @@ const AI = (() => {
     return '<p>' + h + '</p>';
   }
 
-  return { attach, renderSavedItem, kindIcon, kindLabel, featureOn, preferredProvider, allowedProviders };
+  return { attach, renderSavedItem, kindIcon, kindLabel, featureOn, preferredProvider, allowedProviders, webMode, setWebMode };
 })();

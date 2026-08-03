@@ -2465,7 +2465,7 @@ textarea.nc-input { min-height: 90px; resize: vertical; }
 /* --- docks --- */
 .tw-dock { width: min(440px, calc(100vw - 32px)); }
 .tw-dock .tr-surface { max-height: min(78vh, 720px); }
-.tc-dock { width: min(400px, calc(100vw - 32px)); }
+.tc-dock { width: min(440px, calc(100vw - 32px)); }
 .tc-dock .tr-surface { max-height: min(72vh, 620px); }
 .tr-dock-head .tr-mute-wrap { margin-left: auto; }
 
@@ -2571,7 +2571,7 @@ textarea.nc-input { min-height: 90px; resize: vertical; }
 
 /* --- chat --- */
 .tc-body { display: flex; min-height: 0; height: 100%; }
-.tc-rooms { width: 148px; flex: 0 0 148px; border-right: 1px solid var(--hairline); overflow-y: auto; padding: 6px; }
+.tc-rooms { width: 170px; flex: 0 0 170px; border-right: 1px solid var(--hairline); overflow-y: auto; padding: 6px; }
 .tc-view { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .tc-room { width: 100%; display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 10px;
   background: none; border: none; cursor: pointer; color: inherit; text-align: left; margin-bottom: 3px; }
@@ -2700,3 +2700,35 @@ img.tr-av.sm { width: 22px; height: 22px; flex-basis: 22px; }
 :root[data-theme="light"] .tr-toast { box-shadow: 0 16px 40px rgba(15,23,42,.18); }
 :root[data-theme="light"] .tw-flag.is-cm { background: rgba(154,107,18,.14); color: #8a6212; }
 .energy-saving .tr-toast { transition: none; }
+
+/* collapsible long sections (Profile → Full history) */
+.fold > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 10px; }
+.fold > summary::-webkit-details-marker { display: none; }
+.fold > summary .card-title { margin: 0; }
+.fold > summary::before {
+  content: '▸'; color: var(--gold); font-size: .9rem; line-height: 1;
+  transition: transform .18s ease; flex: 0 0 auto;
+}
+.fold[open] > summary::before { transform: rotate(90deg); }
+.fold-hint { margin-left: auto; }
+.fold[open] .fold-hint { visibility: hidden; }
+.fold-body { margin-top: 12px; }
+.table-cap { max-height: min(48vh, 420px); overflow-y: auto; overscroll-behavior: contain; }
+.table-cap thead th { position: sticky; top: 0; z-index: 1; background: var(--surface); }
+.energy-saving .fold > summary::before { transition: none; }
+
+/* appearance: where web searches open */
+#websearch-mode { background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink-2);
+  border-radius: 9px; padding: 7px 10px; font: inherit; font-size: .8rem; flex: 0 0 auto; }
+
+/* chat: WhatsApp-style group runs */
+.tc-group-av { display: grid; place-items: center; background: var(--surface-2); }
+.tc-headtxt { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.tc-sub { font-size: .66rem; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tc-av-gap { flex: 0 0 22px; width: 22px; }
+/* the face sits with the FIRST bubble of a run, so align it to the top */
+.tc-msg:not(.is-run):not(.is-mine) { align-items: flex-start; }
+.tc-msg.is-run { margin-top: -5px; }
+.tc-msg.is-run .tc-bubble { border-radius: 14px; }
+.tc-msg.is-run.is-mine .tc-bubble { border-radius: 14px; }
+.tc-from { margin-bottom: 1px; }

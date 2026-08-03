@@ -1226,6 +1226,7 @@
     const progress = await Backend.getProgress();
     const stats = Progression.summarise(progress);
     const tier = stats.tier;
+    const webPref = (typeof AI !== 'undefined' && AI.webMode) ? AI.webMode() : 'tab';
 
     view.innerHTML = `
       <section class="page narrow">
@@ -1288,20 +1289,27 @@
         </div>
 
         <div class="card" data-animate>
-          <h3 class="card-title">Full history (${(progress.attempts || []).length})</h3>
-          ${(progress.attempts || []).length ? `
-            <div class="table-scroll"><table class="table">
-              <thead><tr><th>Paper</th><th>Type</th><th>Mode</th><th>Score</th><th>Date</th><th></th></tr></thead>
-              <tbody>${progress.attempts.map(a => `
-                <tr>
-                  <td>${esc(a.paperTitle)}</td>
-                  <td><span class="chip chip-${a.kind.toLowerCase()}">${a.kind}</span></td>
-                  <td class="muted">${a.studyMode ? 'Study' : 'Exam'}</td>
-                  <td><strong class="${a.percent >= 70 ? 'good' : a.percent >= 50 ? '' : 'bad'}">${a.percent}%</strong></td>
-                  <td class="muted">${new Date(a.date).toLocaleDateString()}</td>
-                  <td><a class="link" href="#/results/${a.id}">Review</a></td>
-                </tr>`).join('')}</tbody>
-            </table></div>` : `<p class="muted">Nothing yet — your history builds as you complete sets.</p>`}
+          <details class="fold" id="history-fold">
+            <summary class="fold-sum">
+              <h3 class="card-title">Full history (${(progress.attempts || []).length})</h3>
+              <span class="fold-hint muted tiny">Tap to open</span>
+            </summary>
+            <div class="fold-body">
+            ${(progress.attempts || []).length ? `
+              <div class="table-scroll table-cap"><table class="table">
+                <thead><tr><th>Paper</th><th>Type</th><th>Mode</th><th>Score</th><th>Date</th><th></th></tr></thead>
+                <tbody>${progress.attempts.map(a => `
+                  <tr>
+                    <td>${esc(a.paperTitle)}</td>
+                    <td><span class="chip chip-${a.kind.toLowerCase()}">${a.kind}</span></td>
+                    <td class="muted">${a.studyMode ? 'Study' : 'Exam'}</td>
+                    <td><strong class="${a.percent >= 70 ? 'good' : a.percent >= 50 ? '' : 'bad'}">${a.percent}%</strong></td>
+                    <td class="muted">${new Date(a.date).toLocaleDateString()}</td>
+                    <td><a class="link" href="#/results/${a.id}">Review</a></td>
+                  </tr>`).join('')}</tbody>
+              </table></div>` : `<p class="muted">Nothing yet — your history builds as you complete sets.</p>`}
+            </div>
+          </details>
         </div>
 
         <div class="card" data-animate>
@@ -1347,6 +1355,13 @@
           <label class="pref-toggle" style="margin-top:14px">
             <span><strong>🔋 Energy-saving mode</strong><br><span class="muted tiny">Stops the animated background and heavy motion to save battery. Core features and layout are unchanged.</span></span>
             <label class="dev-flag"><input type="checkbox" id="energy-toggle" ${(user.prefs?.energySaving) ? 'checked' : ''}><span></span></label>
+          </label>
+          <label class="pref-toggle" style="margin-top:10px">
+            <span><strong>🌐 Where web searches open</strong><br><span class="muted tiny">Used by “Search the web” in the AI tutor. A side window keeps the question on screen beside the source.</span></span>
+            <select class="sel" id="websearch-mode">
+              <option value="tab" ${webPref !== 'inline' ? 'selected' : ''}>New tab</option>
+              <option value="inline" ${webPref === 'inline' ? 'selected' : ''}>Side window</option>
+            </select>
           </label>
           <p class="save-note" id="appearance-note" hidden>Saved ✓</p>
         </div>
@@ -1416,6 +1431,21 @@
       applyEnergySaving(e.target.checked);
       saveAppearancePref({ energySaving: e.target.checked });
     });
+    view.querySelector('#websearch-mode')?.addEventListener('change', e => {
+      if (typeof AI !== 'undefined' && AI.setWebMode) AI.setWebMode(e.target.value);
+      const note = view.querySelector('#appearance-note');
+      if (note) { note.hidden = false; setTimeout(() => note.hidden = true, 1500); }
+    });
+
+    // The history table is long; remember whether it was left open so the
+    // cards below it (picture, appearance) stay within easy reach.
+    const fold = view.querySelector('#history-fold');
+    if (fold) {
+      try { fold.open = localStorage.getItem('aureum.history.open') === '1'; } catch {}
+      fold.addEventListener('toggle', () => {
+        try { localStorage.setItem('aureum.history.open', fold.open ? '1' : '0'); } catch {}
+      });
+    }
 
     view.querySelector('#position-picker').addEventListener('click', async e => {
       const btn = e.target.closest('.pos-btn'); if (!btn) return;

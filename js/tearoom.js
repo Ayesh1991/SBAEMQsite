@@ -209,6 +209,9 @@ const TeaRoom = (() => {
   }
   async function loadRooms() {
     try { rooms = (await Backend.listChatRooms?.()) || []; } catch { rooms = []; }
+    // names come from the cards map; make sure it covers everyone in these rooms
+    const missing = rooms.flatMap(r => (r.members || []).map(m => m.user_id)).some(id => id && !cards[id]);
+    if (missing) { try { cards = { ...cards, ...((await Backend.listMemberCards?.()) || {}) }; } catch {} }
     return rooms;
   }
 
@@ -699,19 +702,36 @@ const TeaRoom = (() => {
 
   /* ---------------- chat surface ---------------- */
 
+  /** A member's real name: the cards map first (always current), then the
+      name stored on the membership row, then a neutral fallback. */
+  function memberName(m) {
+    return (cards[m.user_id]?.name) || m.display_name || 'Member';
+  }
   function roomName(r) {
     if (r.title) return r.title;
     const others = (r.members || []).filter(m => m.user_id !== me?.id);
-    return others.map(m => m.display_name || 'Member').join(', ') || 'Direct chat';
+    return others.map(memberName).join(', ') || 'Direct chat';
   }
+  /** WhatsApp shows the roster under a group's name — so do we. */
+  function roomSubtitle(r) {
+    if (!r || r.kind !== 'group') return '';
+    const names = (r.members || []).map(m => m.user_id === me?.id ? 'You' : memberName(m));
+    return names.length ? names.join(', ') : '';
+  }
+  /** Stable per-sender colour, the way group chats colour each speaker. */
+  function senderColor(id, name) { return tint(cards[id]?.name || name || id); }
   function roomsHTML() {
     if (!rooms.length) return `<p class="tr-empty big">No conversations yet.<br>Start one with a study partner.</p>`;
     return rooms.map(r => {
       const msgs = roomMsgs[r.id] || [];
       const last = msgs[msgs.length - 1];
       const unread = msgs.filter(m => !m.mine && ts(m) > chatSeenAt()).length;
+      const other = (r.members || []).find(m => m.user_id !== me?.id);
+      const face = (r.kind !== 'group' && !r.title && other)
+        ? av(other.user_id, memberName(other))
+        : `<span class="tr-av tc-group-av">👥</span>`;
       return `<button class="tc-room ${activeRoom === r.id ? 'is-active' : ''}" data-room="${esc(r.id)}">
-        <span class="tr-av" style="background:${tint(roomName(r))}">${esc(initials(roomName(r)))}</span>
+        ${face}
         <span class="tc-room-main">
           <span class="tc-room-name">${esc(roomName(r))}${r.kind === 'group' ? ` <i>· ${(r.members || []).length}</i>` : ''}</span>
           <span class="tc-room-last">${last ? esc((last.mine ? 'You: ' : '') + (last.body || '📎 attachment')).slice(0, 60) : 'No messages yet'}</span>
@@ -723,15 +743,22 @@ const TeaRoom = (() => {
   function messagesHTML(roomId) {
     const msgs = roomMsgs[roomId] || [];
     if (!msgs.length) return `<p class="tr-empty">No messages yet — say hello.</p>`;
-    let lastDay = '';
+    let lastDay = '', prevUser = null;
     return msgs.map(m => {
       const day = new Date(m.created_at || 0).toDateString();
       const sep = day !== lastDay ? `<div class="tc-day">${esc(new Date(m.created_at).toLocaleDateString())}</div>` : '';
       lastDay = day;
-      return `${sep}<div class="tc-msg ${m.mine ? 'is-mine' : ''}">
-        ${m.mine ? '' : av(m.user_id, m.author_name, true)}
+      const room = rooms.find(x => x.id === roomId);
+      const isGroup = room?.kind === 'group' || !!room?.title;
+      const who = cards[m.user_id]?.name || m.author_name || '';
+      // in a group, only the FIRST message of a run carries the face + name,
+      // exactly as WhatsApp stacks consecutive messages from one sender
+      const runStart = !prevUser || prevUser !== m.user_id || sep;
+      prevUser = m.user_id;
+      return `${sep}<div class="tc-msg ${m.mine ? 'is-mine' : ''} ${runStart ? '' : 'is-run'}">
+        ${m.mine ? '' : (runStart ? av(m.user_id, who, true) : '<span class="tc-av-gap"></span>')}
         <div class="tc-bubble">
-          ${m.mine ? '' : `<span class="tc-from">${esc(m.author_name || '')}</span>`}
+          ${(!m.mine && isGroup && runStart) ? `<span class="tc-from" style="color:${senderColor(m.user_id, who)}">${esc(who)}</span>` : ''}
           ${m.body ? `<p>${esc(m.body)}</p>` : ''}
           ${mediaHTML(m.media)}
           <span class="tc-time">${esc(relTime(m.created_at))}</span>
@@ -762,8 +789,12 @@ const TeaRoom = (() => {
     viewEl.innerHTML = `
       <header class="tc-head">
         <button class="tc-back" data-act="back">‹</button>
-        <span class="tr-av" style="background:${tint(roomName(r || {}))}">${esc(initials(roomName(r || {})))}</span>
-        <span class="tc-title">${esc(roomName(r || {}))}</span>
+        ${(() => { const o = (r?.members || []).find(m => m.user_id !== me?.id);
+          return (r?.kind !== 'group' && o) ? av(o.user_id, memberName(o)) : `<span class="tr-av tc-group-av">👥</span>`; })()}
+        <span class="tc-headtxt">
+          <span class="tc-title">${esc(roomName(r || {}))}</span>
+          ${roomSubtitle(r) ? `<span class="tc-sub">${esc(roomSubtitle(r))}</span>` : ''}
+        </span>
       </header>
       <div class="tc-stream" data-tc-stream>${messagesHTML(activeRoom)}</div>
       <div class="tw-pending" id="tc-pending"></div>
@@ -951,6 +982,20 @@ const TeaRoom = (() => {
     launchBar?.remove(); launchBar = null;
     closeWall(); closeChat();
     wallEl?.remove(); wallEl = null; chatEl?.remove(); chatEl = null;
+    reset();
+  }
+
+  /** Drop every trace of the signed-in person. Sign-out does not reload the
+      page, so without this the next account inherits the previous one's
+      identity, rooms and member cards until the tab is refreshed. */
+  function reset() {
+    clearTimeout(pollTimer); pollTimer = null; lastPoll = null;
+    me = null; cards = {};
+    posts = []; loaded = false; loading = null; moreAvailable = false;
+    myRx = {}; openPosts.clear();
+    for (const k in comments) delete comments[k];
+    rooms = []; activeRoom = null; roomMsgs = {}; lastChatPoll = null;
+    remoteSeen = { wall: 0, chat: 0 };
   }
 
   /* ---------------- Studio panel (full-page wall) ---------------- */
