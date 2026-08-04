@@ -194,7 +194,9 @@ const Ecosystem = (() => {
     const p = provider();
     const url = urlFor(p);
 
-    const isLive = id => { const w = wins[id]; return !!w && !w.closed; };
+    // "open" means we opened it this session. We cannot verify it — COOP
+     // severs the handle — so the wording promises only what is true.
+    const isLive = id => everOpened(id);
     const liveIds = PROVIDERS.filter(x => isLive(x.id));
     const live = isLive(p.id);
 
@@ -203,13 +205,13 @@ const Ecosystem = (() => {
         <div class="eco-card-top">
           <span class="eco-card-ico">${p.ico}</span>
           <span class="eco-card-name">${esc(p.name)}</span>
-          ${live ? `<span class="eco-live" title="This window is already open">● open</span>` : ''}
+          ${live ? `<span class="eco-live" title="AUREUM opened this earlier in this browser session">● open</span>` : ''}
         </div>
         <button class="btn btn-gold btn-block eco-open-btn" id="eco-launch">${
-          live ? `Show ${esc(p.name)} ↗` : `Open ${esc(p.name)} →`}</button>
+          live ? `Where is my ${esc(p.name)}? ↗` : `Open ${esc(p.name)} →`}</button>
         ${liveIds.length ? `<div class="eco-live-row">
-          ${liveIds.map(x => `<button class="eco-live-chip" data-goto="${x.id}" title="Bring ${esc(x.name)} to the front">${x.ico} ${esc(x.name)}</button>`).join('')}
-          <button class="eco-live-close" id="eco-close-all" title="Close every platform window">Close all</button>
+          ${liveIds.map(x => `<button class="eco-live-chip" data-goto="${x.id}" title="${esc(x.name)} is already open">${x.ico} ${esc(x.name)}</button>`).join('')}
+          <button class="eco-live-close" id="eco-close-all" title="Forget these, so the next tap opens fresh ones">Reset</button>
         </div>` : ''}
         <p class="eco-note" id="eco-note"></p>
         <details class="eco-pin">
@@ -315,26 +317,30 @@ const Ecosystem = (() => {
     try { win.resizeTo(g.w, g.h); win.moveTo(g.left, g.top); } catch { /* some browsers refuse; harmless */ }
   }
 
-  /* ONE WINDOW PER PLATFORM, and never re-navigated.
+  /* WHY THIS DOES NOT TRY TO RE-FIND A WINDOW ANY MORE.
 
-     Passing a URL to window.open() with an existing window name NAVIGATES
-     that window — which reloads ChatGPT and throws away the conversation you
-     had going, costing time and data for nothing. So each platform gets its
-     own name, and a second click merely focuses it.
+     Every one of these platforms sends Cross-Origin-Opener-Policy, which is
+     designed to CUT the link between the page that opened the window and the
+     window itself. Once ChatGPT loads:
+       • the handle we were holding is severed — it reports .closed === true
+         even though the window is plainly still on screen; and
+       • the window's NAME stops resolving from our context group, so
+         window.open('', name) does not find it — it makes a brand-new blank
+         window instead.
+     That is the whole explanation for "it opens a new chat every time" on
+     Windows. It is a deliberate browser security boundary, not a bug we can
+     code around, and the earlier fix only looked right because the test
+     mocked window.open and so never met COOP.
 
-     Re-acquiring a window whose handle we lost (you reloaded AUREUM) is done
-     by opening its NAME with an empty URL, which returns the existing window
-     untouched. Telling "existing" from "just created" is the same same-origin
-     trick the embed probe uses: a live ChatGPT window is cross-origin, so
-     reading its location throws; a window the call just created is readable
-     and sitting at about:blank. */
+     On Safari it was worse. The probe spent the ONE pop-up a browser grants
+     per user gesture, so the real open that followed was refused outright —
+     the "Your browser blocked the tab" message. Hence: no probe, ever.
+
+     So the dock now opens a platform AT MOST ONCE per browser session and
+     afterwards points you at the window you already have. Switching to it is
+     an OS gesture (Alt-Tab, ⌘-`, the tab bar) that no web page may perform. */
   const winName = p => 'aureum-ai-' + p.id;
 
-  /* Probing for a window we never opened would CREATE a blank one, which the
-     user sees flash past before we close it. sessionStorage remembers which
-     platforms this browser session has actually launched, so the probe only
-     runs when there is genuinely something to find — it survives reloading
-     AUREUM, which is exactly when the in-memory handle is gone. */
   const OPENED_KEY = 'aureum.eco.opened';
   function everOpened(id) {
     try { return (JSON.parse(sessionStorage.getItem(OPENED_KEY)) || []).includes(id); } catch { return false; }
@@ -345,41 +351,52 @@ const Ecosystem = (() => {
       if (!l.includes(id)) { l.push(id); sessionStorage.setItem(OPENED_KEY, JSON.stringify(l)); }
     } catch {}
   }
-
-  function existingWindow(p) {
-    let w = wins[p.id];
-    if (w && !w.closed) return w;
-    if (!everOpened(p.id)) return null;                                              // nothing to find
-    try { w = window.open('', winName(p)); } catch { return null; }
-    if (!w) return null;
-    let blank = false;
-    try { blank = (w.location.href === 'about:blank'); } catch { blank = false; }   // threw ⇒ loaded ⇒ real
-    if (blank) { try { w.close(); } catch {} return null; }                          // we just made it; discard
-    wins[p.id] = w;
-    return w;
+  function forgetOpened(id) {
+    try {
+      const l = (JSON.parse(sessionStorage.getItem(OPENED_KEY)) || []).filter(x => x !== id);
+      sessionStorage.setItem(OPENED_KEY, JSON.stringify(l));
+    } catch {}
+  }
+  /** True only while a handle survives — i.e. before COOP severs it. */
+  function liveHandle(p) {
+    const w = wins[p.id];
+    try { return (w && !w.closed) ? w : null; } catch { return null; }
   }
 
-  function launch(p) {
+  function launch(p, force) {
     const url = urlFor(p);
     const touch = isTouchOS();
 
-    // Already have it open? Bring it forward. This is the whole point, and it
-    // applies to iPad tabs exactly as much as to desktop windows.
-    const live = existingWindow(p);
+    // Rare but free: some browsers do not sever the handle. If ours survived,
+    // focusing it is the real thing — same window, same conversation.
+    const live = !force && liveHandle(p);
     if (live) {
       aiWin = live;
       try { live.focus(); } catch {}
       paintBody();          // repaint first — it rewrites the note with its default
-      note(`Brought your existing ${esc(p.name)} back to the front — same ${touch ? 'tab' : 'window'}, same conversation, nothing reloaded.`, 'good');
+      note(`Brought your existing ${esc(p.name)} back to the front — nothing reloaded.`, 'good');
       return;
     }
 
-    /* NEVER '_blank'. It is DEFINED to create a fresh browsing context every
-       time, so the result can never be found again — and 'noopener' makes
-       window.open return null, so we would hold no handle at all. The two
-       together guaranteed a brand-new chat on every press, which is precisely
-       what iPad was doing. A stable per-platform NAME is what makes the tab
-       re-findable, on Safari as much as anywhere else. */
+    /* Opened this session, but the handle is gone (COOP severed it). Opening
+       again would make a SECOND window with a brand-new chat — the exact thing
+       that was going wrong. So: do not open. Say where it is, and leave an
+       explicit way out if it really was closed. */
+    if (!force && everOpened(p.id)) {
+      paintBody();
+      const how = touch
+        ? 'switch to it from Safari’s tab bar'
+        : 'switch to it with Alt-Tab (⌘-` on a Mac)';
+      note(`${esc(p.name)} is already open in another ${touch ? 'tab' : 'window'} — ${how}, then paste.
+        <button class="link eco-force" data-force>I closed it — open a fresh one</button>`, '');
+      dockEl?.querySelector('[data-force]')?.addEventListener('click', () => { forgetOpened(p.id); launch(p, true); });
+      return;
+    }
+
+    /* NEVER '_blank': it is defined to create a fresh context every time, and
+       'noopener' would make window.open return null so we would hold nothing.
+       A stable name is still worth passing — it costs nothing and helps the
+       browsers that do honour it. */
     const g = halfScreen();
     const feats = touch ? '' : `popup=yes,width=${g.w},height=${g.h},left=${g.left},top=${g.top}`;
     let w = null;
@@ -394,17 +411,21 @@ const Ecosystem = (() => {
     paintBody();
     if (touch && read(HINT_KEY, '0') !== '1') {
       write(HINT_KEY, '1');
-      note(`Opened as a tab — and AUREUM will re-use this same tab from now on, so your chat stays. For a true side-by-side, drag it out with iPadOS Split View; Safari will not let a web page position its own windows.`, '');
+      note(`Opened as a tab. AUREUM will not open it again — from now on it points you back to this tab, so your chat is never thrown away. For a true side-by-side, drag it out with iPadOS Split View.`, '');
     } else {
-      note(`${esc(p.name)} is open. Copy a question and paste it straight in — this ${touch ? 'tab' : 'window'} stays put, so your chat is still there next time.`, 'good');
+      note(`${esc(p.name)} is open. Copy a question and paste it straight in — AUREUM will not open a second one, so this chat keeps going.`, 'good');
     }
   }
 
-  /** Close every platform window this dock opened. */
+  /** Forget every platform, so the next tap opens a fresh one. We try to close
+      the windows too, but a severed handle cannot be closed — hence "Reset"
+      rather than "Close all", which would have been a promise we cannot keep. */
   function closeAll() {
     Object.keys(wins).forEach(id => { try { wins[id]?.close(); } catch {} delete wins[id]; });
+    PROVIDERS.forEach(x => forgetOpened(x.id));
     aiWin = null;
     paintBody();
+    note('Forgotten. The next tap opens a fresh window for whichever platform you pick.', '');
   }
 
   /* ---------------- the clipboard tray ---------------- */

@@ -2847,12 +2847,18 @@ body.eco-dragging .eco-frame { pointer-events: none; }   /* the frame must not e
 [data-qe="copy"].is-done { color: var(--teal); border-color: var(--teal); }
 .eco-caveat { margin-top: 10px; line-height: 1.55; }
 
-@media (max-width: 900px) {
-  /* a phone has no room for a split; the dock takes the screen instead */
+@media (max-width: 620px) {
+  /* only a PHONE lacks room for a split — an iPad has plenty, and hiding the
+     page there left the whole left half blank */
   .eco-dock { width: min(var(--eco-w), 100vw); }
   body.eco-open #nav, body.eco-open .view { margin-right: 0; }
   body.eco-open .view { display: none; }
   .eco-grip { display: none; }
+}
+@media (min-width: 621px) and (max-width: 900px) {
+  /* tablet: keep the split, but do not let the dock eat the page */
+  .eco-dock { width: min(var(--eco-w), 46vw); }
+  body.eco-open #nav, body.eco-open .view { margin-right: min(var(--eco-w), 46vw); }
 }
 
 /* ============================================================
@@ -2924,3 +2930,4 @@ body.eco-dragging .eco-frame { pointer-events: none; }   /* the frame must not e
   font: inherit; font-size: .66rem; cursor: pointer; text-decoration: underline; }
 .eco-live-close:hover { color: var(--bad); }
 :root[data-theme="light"] .eco-live-chip { background: rgba(13,143,125,.10); }
+.eco-force { display: block; margin-top: 6px; font-size: .7rem; }
