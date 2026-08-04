@@ -57,6 +57,7 @@ const Ecosystem = (() => {
   /* ---------------- state ---------------- */
 
   let dockEl = null, tabEl = null, aiWin = null, open = false;
+  const wins = {};                    // provider id → its own window handle
   let lastCopied = '';
   const listeners = new Set();
 
@@ -178,12 +179,12 @@ const Ecosystem = (() => {
     paintTray();
 
     dockEl.querySelector('#eco-close').addEventListener('click', closeDock);
+    // Switching platform only re-points the DOCK. It must never navigate an
+    // open window: each platform keeps its own, so your ChatGPT thread and
+    // your NotebookLM both survive being switched between.
     dockEl.querySelector('#eco-prov').addEventListener('change', e => {
       write(PROV_KEY, e.target.value);
       paintBody();
-      // switching provider re-points the window that is already open, rather
-      // than leaving the old platform stranded behind the new one
-      if (aiWin && !aiWin.closed) launch(byId(e.target.value));
     });
     wireGrip(dockEl.querySelector('#eco-grip'));
   }
@@ -193,13 +194,23 @@ const Ecosystem = (() => {
     const p = provider();
     const url = urlFor(p);
 
+    const isLive = id => { const w = wins[id]; return !!w && !w.closed; };
+    const liveIds = PROVIDERS.filter(x => isLive(x.id));
+    const live = isLive(p.id);
+
     host.innerHTML = `
       <div class="eco-card" style="--eco-tint:${p.tint}">
         <div class="eco-card-top">
           <span class="eco-card-ico">${p.ico}</span>
           <span class="eco-card-name">${esc(p.name)}</span>
+          ${live ? `<span class="eco-live" title="This window is already open">● open</span>` : ''}
         </div>
-        <button class="btn btn-gold btn-block eco-open-btn" id="eco-launch">Open ${esc(p.name)} →</button>
+        <button class="btn btn-gold btn-block eco-open-btn" id="eco-launch">${
+          live ? `Show ${esc(p.name)} ↗` : `Open ${esc(p.name)} →`}</button>
+        ${liveIds.length ? `<div class="eco-live-row">
+          ${liveIds.map(x => `<button class="eco-live-chip" data-goto="${x.id}" title="Bring ${esc(x.name)} to the front">${x.ico} ${esc(x.name)}</button>`).join('')}
+          <button class="eco-live-close" id="eco-close-all" title="Close every platform window">Close all</button>
+        </div>` : ''}
         <p class="eco-note" id="eco-note"></p>
         <details class="eco-pin">
           <summary>Pin a page</summary>
@@ -221,6 +232,13 @@ const Ecosystem = (() => {
       </div>`;
 
     host.querySelector('#eco-launch').addEventListener('click', () => launch(p));
+    host.querySelector('#eco-close-all')?.addEventListener('click', closeAll);
+    host.querySelectorAll('[data-goto]').forEach(b => b.addEventListener('click', () => {
+      // jump straight to another open platform without disturbing this one
+      write(PROV_KEY, b.dataset.goto);
+      const sel = dockEl?.querySelector('#eco-prov'); if (sel) sel.value = b.dataset.goto;
+      launch(byId(b.dataset.goto));
+    }));
     host.querySelector('#eco-url-save').addEventListener('click', () => {
       const v = host.querySelector('#eco-url').value.trim();
       const m = pinnedUrls();
@@ -297,11 +315,37 @@ const Ecosystem = (() => {
     try { win.resizeTo(g.w, g.h); win.moveTo(g.left, g.top); } catch { /* some browsers refuse; harmless */ }
   }
 
+  /* ONE WINDOW PER PLATFORM, and never re-navigated.
+
+     Passing a URL to window.open() with an existing window name NAVIGATES
+     that window — which reloads ChatGPT and throws away the conversation you
+     had going, costing time and data for nothing. So each platform gets its
+     own name, and a second click merely focuses it.
+
+     Re-acquiring a window whose handle we lost (you reloaded AUREUM) is done
+     by opening its NAME with an empty URL, which returns the existing window
+     untouched. Telling "existing" from "just created" is the same same-origin
+     trick the embed probe uses: a live ChatGPT window is cross-origin, so
+     reading its location throws; a window the call just created is readable
+     and sitting at about:blank. */
+  const winName = p => 'aureum-ai-' + p.id;
+
+  function existingWindow(p) {
+    let w = wins[p.id];
+    if (w && !w.closed) return w;
+    try { w = window.open('', winName(p)); } catch { return null; }
+    if (!w) return null;
+    let blank = false;
+    try { blank = (w.location.href === 'about:blank'); } catch { blank = false; }   // threw ⇒ loaded ⇒ real
+    if (blank) { try { w.close(); } catch {} return null; }                          // we just made it; discard
+    wins[p.id] = w;
+    return w;
+  }
+
   function launch(p) {
     const url = urlFor(p);
     if (isTouchOS()) {
-      // Safari on iPad cannot be told where to put a window — it makes a tab.
-      // Say so once, and point at the gesture that does give a true split.
+      // Safari on iPad ignores window names and geometry — it makes tabs.
       const w = window.open(url, '_blank', 'noopener');
       if (!w) return note(`Your browser blocked the new tab. <a class="link" href="${esc(url)}" target="_blank" rel="noopener">Open ${esc(p.name)}</a>, or allow pop-ups for AUREUM.`, 'warn');
       if (read(HINT_KEY, '0') !== '1') {
@@ -310,16 +354,35 @@ const Ecosystem = (() => {
       }
       return;
     }
-    // One named window, reused: switching provider re-points it.
+
+    const live = existingWindow(p);
+    if (live) {
+      aiWin = live;
+      try { live.focus(); } catch {}
+      paintBody();          // repaint first — it rewrites the note with its default
+      note(`Brought your existing ${esc(p.name)} back to the front — same conversation, nothing reloaded.`, 'good');
+      return;
+    }
+
     const g = halfScreen();
     const feats = `popup=yes,width=${g.w},height=${g.h},left=${g.left},top=${g.top}`;
-    try { aiWin = window.open(url, 'aureum-ai', feats); } catch { aiWin = null; }
-    if (!aiWin) {
+    let w = null;
+    try { w = window.open(url, winName(p), feats); } catch { w = null; }
+    if (!w) {
       return note(`Your browser blocked the window. <a class="link" href="${esc(url)}" target="_blank" rel="noopener">Open ${esc(p.name)} in a tab</a>, or allow pop-ups for AUREUM.`, 'warn');
     }
-    snap(aiWin);
-    try { aiWin.focus(); } catch {}
-    note(`${esc(p.name)} is open beside AUREUM. Copy a question and paste it straight in.`, 'good');
+    wins[p.id] = w; aiWin = w;
+    snap(w);
+    try { w.focus(); } catch {}
+    paintBody();
+    note(`${esc(p.name)} is open beside AUREUM. Copy a question and paste it straight in — this window stays put, so your chat is still there next time.`, 'good');
+  }
+
+  /** Close every platform window this dock opened. */
+  function closeAll() {
+    Object.keys(wins).forEach(id => { try { wins[id]?.close(); } catch {} delete wins[id]; });
+    aiWin = null;
+    paintBody();
   }
 
   /* ---------------- the clipboard tray ---------------- */

@@ -170,6 +170,20 @@ const TeaRoom = (() => {
     if (Notification.permission === 'denied') return false;
     try { return (await Notification.requestPermission()) === 'granted'; } catch { return false; }
   }
+  /* One row announces itself ONCE. The poll asks for a time window, so the
+     same row legitimately comes back on several cycles; without this the
+     window turns into a drumbeat of identical toasts that only stops when
+     the tab is closed. Keyed by row id, so it survives any path into
+     notify() — new toast, re-poll, or a repaint. */
+  const announced = new Set();
+  function announceOnce(id, title, body, onClick) {
+    if (!id || announced.has(id)) return;
+    announced.add(id);
+    // a long session should not grow this without bound
+    if (announced.size > 600) { const it = announced.values(); for (let i = 0; i < 200; i++) announced.delete(it.next().value); }
+    notify(title, body, onClick);
+  }
+
   /** Fire a real OS notification, but never while muted or on your own posts. */
   function notify(title, body, onClick) {
     if (muteUntil()) return;
@@ -223,19 +237,29 @@ const TeaRoom = (() => {
       const out = await Backend.pollDiscussions?.(lastPoll);
       for (const p of (out?.threads || [])) if (!posts.some(x => x.id === p.id)) {
         posts.unshift(p); changed = true;
-        if (!p.mine) notify(`${p.author_name || 'A friend'} posted`, p.topic, () => openWall());
+        if (!p.mine) announceOnce(p.id, `${p.author_name || 'A friend'} posted`, p.topic, () => openWall());
       }
       for (const c of (out?.replies || [])) {
         const list = comments[c.discussion_id];
-        if (list) { if (!list.some(x => x.id === c.id)) { list.push(c); changed = true; } }
+        const known = list ? list.some(x => x.id === c.id) : false;
+        if (list) { if (!known) { list.push(c); changed = true; } }
         else { const p = posts.find(x => x.id === c.discussion_id); if (p) { p.reply_count = (p.reply_count || 0) + 1; if (!c.mine) p._newCm = true; changed = true; } }
-        // a comment on YOUR post is the notification people actually want
+        // a comment on YOUR post is the notification people actually want —
+        // but only the first time we meet it, and never while you are already
+        // looking at that thread
         const parent = posts.find(x => x.id === c.discussion_id);
-        if (!c.mine && parent?.mine) notify(`${c.author_name || 'Someone'} commented on your post`, c.body, () => { openWall(); openComments(c.discussion_id); });
+        if (!c.mine && parent?.mine && !known && !openPosts.has(c.discussion_id)) {
+          announceOnce(c.id, `${c.author_name || 'Someone'} commented on your post`, c.body,
+            () => { openWall(); openComments(c.discussion_id); });
+        }
       }
-      if (out?.threads?.length || out?.replies?.length) {
-        lastPoll = new Date(Math.max(latestStamp(), Date.parse(lastPoll) || 0)).toISOString();
-      }
+      // Advance the window past everything this response carried. latestStamp()
+      // cannot be trusted here: a comment on a thread whose replies are not
+      // loaded is never stored, so it would leave lastPoll where it was and
+      // the same rows would return on every cycle, for ever.
+      const newestWall = Math.max(
+        ...(out?.threads || []).map(ts), ...(out?.replies || []).map(ts), 0);
+      if (newestWall) lastPoll = new Date(Math.max(newestWall, Date.parse(lastPoll) || 0)).toISOString();
     } catch {}
     // ---- chat ----
     try {
@@ -244,13 +268,14 @@ const TeaRoom = (() => {
         const list = roomMsgs[m.room_id] || (roomMsgs[m.room_id] = []);
         if (!list.some(x => x.id === m.id)) {
           list.push(m); changed = true;
-          if (!m.mine) {
+          if (!m.mine && !(chatOpen && activeRoom === m.room_id)) {
             const r = rooms.find(x => x.id === m.room_id);
-            notify(`${m.author_name || 'New message'}${r?.title ? ' · ' + r.title : ''}`, m.body, () => openChat(m.room_id));
+            announceOnce(m.id, `${m.author_name || 'New message'}${r?.title ? ' · ' + r.title : ''}`, m.body, () => openChat(m.room_id));
           }
         }
       }
-      if (msgs?.length) lastChatPoll = new Date(Math.max(latestChatStamp(), Date.parse(lastChatPoll) || 0)).toISOString();
+      const newestChat = Math.max(...(msgs || []).map(ts), 0);
+      if (newestChat) lastChatPoll = new Date(Math.max(newestChat, Date.parse(lastChatPoll) || 0)).toISOString();
     } catch {}
     if (changed) { posts.sort((a, b) => ts(b) - ts(a)); repaint(); emit(); }
     // another device may have read things — pull the shared seen mark in
@@ -392,8 +417,12 @@ const TeaRoom = (() => {
     if (muteUntil()) return;
     let stack = document.querySelector('.tr-toasts');
     if (!stack) { stack = document.createElement('div'); stack.className = 'tr-toasts'; document.body.appendChild(stack); }
+    // last line of defence: never stack a toast that is already on screen
+    const sig = title + ' ' + body;
+    if ([...stack.children].some(el => el.dataset.sig === sig)) return;
     const t = document.createElement('div');
     t.className = 'tr-toast';
+    t.dataset.sig = sig;
     t.innerHTML = `<span class="tr-toast-ico">🔔</span>
       <span class="tr-toast-txt"><b>${esc(title)}</b><i>${esc(String(body || '').slice(0, 90))}</i></span>
       <button class="tr-toast-x" aria-label="Dismiss">✕</button>`;
@@ -515,7 +544,9 @@ const TeaRoom = (() => {
   /** Facebook-style: comments live in their own popup over the feed. */
   async function openComments(postId) {
     const p = posts.find(x => x.id === postId); if (!p) return;
+    // a modal swapped out from under us never runs its own close()
     document.querySelector('.tw-modal')?.remove();
+    openPosts.clear();
     const m = document.createElement('div');
     m.className = 'tw-modal';
     m.innerHTML = `<div class="tw-sheet" role="dialog" aria-modal="true">
@@ -539,7 +570,10 @@ const TeaRoom = (() => {
       </div>`;
     document.body.appendChild(m);
     requestAnimationFrame(() => m.classList.add('is-open'));
-    const close = () => m.remove();
+    // while this thread is on screen, its new comments arrive in the list —
+    // announcing them as well would be telling you what you are already reading
+    openPosts.add(postId);
+    const close = () => { openPosts.delete(postId); m.remove(); };
     m.querySelector('.cov-x').addEventListener('click', close);
     m.addEventListener('click', e => { if (e.target === m) close(); });
 
@@ -992,7 +1026,7 @@ const TeaRoom = (() => {
     clearTimeout(pollTimer); pollTimer = null; lastPoll = null;
     me = null; cards = {};
     posts = []; loaded = false; loading = null; moreAvailable = false;
-    myRx = {}; openPosts.clear();
+    myRx = {}; openPosts.clear(); announced.clear();
     for (const k in comments) delete comments[k];
     rooms = []; activeRoom = null; roomMsgs = {}; lastChatPoll = null;
     remoteSeen = { wall: 0, chat: 0 };
@@ -1029,6 +1063,9 @@ const TeaRoom = (() => {
     openWall, closeWall, toggleWall, openChat, closeChat, toggleChat,
     openComments, share, post, setMute, muteUntil,
     loadCfg, config, setNotif, askNotifPermission,
+    // test seam: drive one poll cycle deterministically instead of waiting
+    // on the timer, so the "same notification over and over" bug stays fixed
+    _pollNow: poll, _reload: () => ensureLoaded(true),
     // kept for callers written against v1
     openDock: openWall, closeDock: closeWall, toggleDock: toggleWall
   };

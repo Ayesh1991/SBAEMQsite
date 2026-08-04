@@ -2909,3 +2909,17 @@ body.eco-dragging .eco-frame { pointer-events: none; }   /* the frame must not e
    otherwise out-ranks the UA rule and stays on screen with .hidden = true —
    which is how the essay paper list kept showing behind its search results. */
 [hidden] { display: none !important; }
+
+/* ecosystem: which platform windows are already open */
+.eco-live { margin-left: auto; font-size: .62rem; font-weight: 650; color: var(--teal); letter-spacing: .04em; }
+.eco-live-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; align-items: center; }
+.eco-live-chip {
+  display: inline-flex; align-items: center; gap: 5px; padding: 5px 9px; cursor: pointer;
+  border: 1px solid var(--teal); border-radius: 999px; background: rgba(94,234,212,.10);
+  color: var(--ink-2); font: inherit; font-size: .68rem;
+}
+.eco-live-chip:hover { background: rgba(94,234,212,.2); }
+.eco-live-close { margin-left: auto; background: none; border: none; color: var(--ink-3);
+  font: inherit; font-size: .66rem; cursor: pointer; text-decoration: underline; }
+.eco-live-close:hover { color: var(--bad); }
+:root[data-theme="light"] .eco-live-chip { background: rgba(13,143,125,.10); }
