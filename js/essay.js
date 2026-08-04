@@ -64,7 +64,17 @@ const Essay = (() => {
           answers, and upload the marking report to see a full examiner breakdown — richer than a printed report, with an
           AI tutor and weakness analysis built in.</p>
       </div>
-      <div class="es-papers" data-animate>
+      <div class="es-search-wrap" data-animate>
+        <div class="es-search-row">
+          <span class="es-search-ico">🔎</span>
+          <input type="search" id="es-search" class="es-search" autocomplete="off" spellcheck="false"
+            placeholder="Search every essay question — e.g. hypertension, shoulder dystocia, PPH">
+          <button class="es-search-x" id="es-search-x" hidden aria-label="Clear search">✕</button>
+        </div>
+        <p class="muted tiny es-search-hint">Searches the stem and every sub-part across all ${list.length} paper${list.length > 1 ? 's' : ''}. Several words = all of them must appear.</p>
+      </div>
+      <div id="es-results" hidden></div>
+      <div class="es-papers" id="es-paper-list" data-animate>
         ${list.map(p => {
           const qs = questionsOf(p);
           const done = qs.filter(q => fbByCode[q.code]).length;
@@ -84,7 +94,85 @@ const Essay = (() => {
           </a>`;
         }).join('')}
       </div>`;
+    wireEssaySearch(body, list, fbByCode);
     renderFeedbackInbox(view, user, fb);
+  }
+
+  /* ---------- search every question in every paper ----------
+     People remember essays by their topic, never by "Paper 4, question 2",
+     so the index is built over the stem AND every sub-part, and a hit links
+     straight to writing that question. Multi-word queries are AND-ed, which
+     is what "hypertension pregnancy" is meant to do. */
+  function searchIndex(list) {
+    const rows = [];
+    list.forEach(p => questionsOf(p).forEach((q, i) => {
+      const parts = (q.parts || []).map(pt => `${pt.label || ''} ${pt.text || ''}`).join(' ');
+      rows.push({
+        p, q, i,
+        hay: `${q.code || ''} ${q.sectionTitle || ''} ${q.stem || ''} ${parts}`.toLowerCase()
+      });
+    }));
+    return rows;
+  }
+
+  function wireEssaySearch(body, list, fbByCode) {
+    const input = body.querySelector('#es-search');
+    const clear = body.querySelector('#es-search-x');
+    const results = body.querySelector('#es-results');
+    const papersEl = body.querySelector('#es-paper-list');
+    if (!input) return;
+    const index = searchIndex(list);
+
+    function draw(raw) {
+      const terms = raw.toLowerCase().split(/\s+/).filter(Boolean);
+      const hits = index.filter(r => terms.every(t => r.hay.includes(t)));
+      if (!hits.length) {
+        results.innerHTML = `<div class="card"><p class="muted">No essay question mentions “${esc(raw)}”. Try a single word — <em>hypertension</em> rather than <em>hypertensive disorders</em>.</p></div>`;
+        return;
+      }
+      results.innerHTML = `
+        <p class="muted lib-results-count">${hits.length} question${hits.length > 1 ? 's' : ''} matching “${esc(raw)}”</p>
+        <div class="es-hits">${hits.map(r => {
+          const marked = fbByCode[r.q.code];
+          return `
+          <div class="es-hit">
+            <div class="es-hit-top">
+              <span class="chip chip-${r.q.type === 'SAQ' ? 'sba' : 'emq'}">${esc(r.q.type || 'SEQ')}</span>
+              <span class="es-hit-code">${esc(r.q.code || '')}</span>
+              <span class="es-hit-paper">${esc(r.p.paperLabel || ('Paper ' + (r.p.paperNumber || '')))}</span>
+              ${marked ? `<span class="es-fb-band es-band-${bandClass(marked.score?.band)}">${esc(marked.score?.band || '')} · ${marked.score?.percent}%</span>` : ''}
+            </div>
+            <p class="es-hit-stem">${mark(r.q.stem, terms)}</p>
+            ${(r.q.parts || []).length ? `<ul class="es-hit-parts">${r.q.parts.map(pt =>
+              `<li><strong>${esc(pt.label || '')}</strong> ${mark(pt.text, terms)}</li>`).join('')}</ul>` : ''}
+            <div class="es-hit-acts">
+              <a class="btn btn-gold btn-sm" href="#/library/essay/${encodeURIComponent(r.p.id)}/write/${r.i}">✍ Write this</a>
+              <a class="btn btn-ghost btn-sm" href="#/library/essay/${encodeURIComponent(r.p.id)}">Open the paper</a>
+              ${marked ? `<a class="btn btn-ghost btn-sm" href="#/library/essay/feedback/${encodeURIComponent(r.q.code)}">📊 Feedback</a>` : ''}
+            </div>
+          </div>`;
+        }).join('')}</div>`;
+    }
+
+    function run() {
+      const raw = input.value.trim();
+      clear.hidden = !raw;
+      if (!raw) { results.hidden = true; results.innerHTML = ''; papersEl.hidden = false; return; }
+      results.hidden = false; papersEl.hidden = true;
+      draw(raw);
+    }
+    input.addEventListener('input', run);
+    clear.addEventListener('click', () => { input.value = ''; run(); input.focus(); });
+  }
+
+  /** Escape, then highlight each search term inside the escaped text. */
+  function mark(text, terms) {
+    let h = esc(String(text || '')).replace(/\n/g, '<br>');
+    terms.forEach(t => {
+      const safe = esc(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (safe) h = h.replace(new RegExp('(' + safe + ')', 'gi'), '<mark>$1</mark>');
+    });
+    return h;
   }
 
   // a shared "feedback inbox" card under the paper list: upload + recent reports

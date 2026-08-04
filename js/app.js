@@ -91,6 +91,7 @@
     if (user) applyPrefsAppearance(user);       // theme + energy-saving from prefs
     renderNav(user);
     startTeaRoom(user);                         // live chat + dock, once per session
+    if (typeof Ecosystem !== 'undefined') { if (user) Ecosystem.sync(); else Ecosystem.suspend(); }
     if (typeof TeaRoom !== 'undefined') TeaRoom.releasePanel();   // leaving a page drops its panel mount
     view.className = 'view';
     _lastHash = hash;
@@ -130,6 +131,11 @@
     if (_apChecked) return; _apChecked = true;
     if (user?.prefs?.theme) applyTheme(user.prefs.theme);
     if (user?.prefs?.energySaving != null) applyEnergySaving(user.prefs.energySaving);
+    // the ecosystem follows the account, so switching on at home shows up at work
+    if (user?.prefs?.aiEcosystem != null && typeof Ecosystem !== 'undefined'
+        && Ecosystem.enabled() !== !!user.prefs.aiEcosystem) {
+      Ecosystem.setEnabled(!!user.prefs.aiEcosystem);
+    }
   }
 
   /* ================= nav ================= */
@@ -1366,6 +1372,22 @@
           <p class="save-note" id="appearance-note" hidden>Saved ✓</p>
         </div>
 
+        <div class="card" data-animate>
+          <h3 class="card-title">AUREUM AI ecosystem</h3>
+          <p class="muted">Keep Gemini, ChatGPT, NotebookLM, Claude, Perplexity or Grok open beside AUREUM. A dock appears
+            on the left, the page makes room for it, and a <strong>📋 Copy question</strong> button appears under every
+            question so you can paste the stem and options straight into the model — without the answer, rationale or hook,
+            so you are asking it cold.</p>
+          <label class="pref-toggle" style="margin-top:12px">
+            <span><strong>✦ Turn the ecosystem on</strong><br><span class="muted tiny">Adds the AI dock, the resizable split and the copy button. Nothing changes for anyone else.</span></span>
+            <label class="dev-flag"><input type="checkbox" id="eco-toggle" ${(typeof Ecosystem !== 'undefined' && Ecosystem.enabled()) ? 'checked' : ''}><span></span></label>
+          </label>
+          <p class="muted tiny eco-caveat">Those platforms send headers that forbid any website from displaying them in a
+            frame, so AUREUM opens each one in a companion window it positions beside your browser and re-uses when you
+            switch platform. On iPad, Safari makes it a tab instead — use iPadOS Split View for a true side-by-side.</p>
+          <p class="save-note" id="eco-note-saved" hidden>Saved ✓</p>
+        </div>
+
         <div class="card danger-zone" data-animate>
           <h3 class="card-title">Data</h3>
           <p class="muted">${Backend.mode === 'cloud' ? 'Synced to your account across devices.' : 'Stored in this browser.'}</p>
@@ -1430,6 +1452,12 @@
     view.querySelector('#energy-toggle')?.addEventListener('change', e => {
       applyEnergySaving(e.target.checked);
       saveAppearancePref({ energySaving: e.target.checked });
+    });
+    view.querySelector('#eco-toggle')?.addEventListener('change', e => {
+      if (typeof Ecosystem !== 'undefined') Ecosystem.setEnabled(e.target.checked);
+      saveAppearancePref({ aiEcosystem: e.target.checked });
+      const note = view.querySelector('#eco-note-saved');
+      if (note) { note.hidden = false; setTimeout(() => note.hidden = true, 1500); }
     });
     view.querySelector('#websearch-mode')?.addEventListener('change', e => {
       if (typeof AI !== 'undefined' && AI.setWebMode) AI.setWebMode(e.target.value);

@@ -235,6 +235,11 @@ const Flashcards = (() => {
           <div class="fc-progress"><span id="fc-fill"></span></div>
           <p class="fc-counter" id="fc-counter"></p>
           <div id="fc-stage"></div>
+          <div class="fc-ai" id="fc-ai">
+            <button class="fc-ai-tab" id="fc-ai-tab" aria-expanded="false"
+              title="Ask the AI tutor about this card">✨ <span>Ask the AI tutor about this card</span></button>
+            <div class="fc-ai-panel" id="fc-ai-panel" hidden></div>
+          </div>
         </section>`;
       // Gesture control, attached once to the persistent stage element:
       // swipe left/right = next/back card, swipe up/down = flip, tap = flip.
@@ -255,7 +260,54 @@ const Flashcards = (() => {
           if (dx < 0 && s.revealed) grade('easy'); else nav(dx < 0 ? 1 : -1);
         } else if (Math.abs(dy) > 48 && Math.abs(dy) > Math.abs(dx) * 1.5) flip();
       }, { passive: true });
+      wireAi();
       paintCard();
+    }
+
+    /* --- AI tutor, docked at the foot of the card ---
+       A card you are drilling wants your whole attention, so the tutor stays
+       a single closed strip until you ask for it; nothing about the card
+       moves when it opens, because the strip lives below the grade buttons.
+       Wired once against the persistent frame — the panel is re-pointed at
+       whichever card is on screen rather than rebuilt with the stage. */
+    function wireAi() {
+      const tab = view.querySelector('#fc-ai-tab');
+      const panel = view.querySelector('#fc-ai-panel');
+      if (!tab || !panel || tab.dataset.wired === '1') return;
+      tab.dataset.wired = '1';
+      tab.addEventListener('click', () => {
+        const opening = panel.hidden;
+        panel.hidden = !opening;
+        tab.setAttribute('aria-expanded', String(opening));
+        tab.classList.toggle('is-open', opening);
+        if (opening) { openAi(); panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+        else panel.innerHTML = '';
+      });
+    }
+
+    /** Point the tutor at the card currently on screen. */
+    function openAi() {
+      const panel = view.querySelector('#fc-ai-panel');
+      const c = card();
+      if (!panel || !c || typeof AI === 'undefined') return;
+      panel.dataset.card = c.id;
+      // A flashcard has one "option" — its answer — so the tutor reads it as a
+      // question with a known correct response and explains around it.
+      AI.attach(panel, {
+        questionKey: `card:${deckId}:${c.id}`,
+        kind: 'CARD', theme: deck.title || '', stem: c.question, lead: '',
+        options: [c.answer], answer: 0, chosen: null, preLettered: true,
+        rationale: c.keyPoint || '', hook: c.keyPoint || '', paperTitle: deck.title || 'Flashcards'
+      });
+    }
+
+    /** Called after every card change: keep an open tutor in step. */
+    function refreshAi() {
+      const panel = view.querySelector('#fc-ai-panel');
+      const c = card();
+      if (!panel || panel.hidden || !c || panel.dataset.card === c.id) return;
+      panel.innerHTML = '';
+      openAi();
     }
 
     function paintCard() {
@@ -311,6 +363,7 @@ const Flashcards = (() => {
       if (typeof gsap !== 'undefined' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
         gsap.fromTo('#fc-card', { opacity: 0, y: 18, scale: 0.98 }, { opacity: 1, y: 0, scale: 1, duration: 0.35, ease: 'power2.out' });
       }
+      refreshAi();
     }
 
     function previewInterval(st, g) { const n = schedule(st, g).interval; return n <= 0 ? '<1d' : n === 1 ? '1d' : n < 30 ? n + 'd' : Math.round(n / 30) + 'mo'; }
@@ -329,6 +382,8 @@ const Flashcards = (() => {
     function paintComplete() {
       const stage = view.querySelector('#fc-stage');
       view.querySelector('#fc-fill').style.width = '100%';
+      const ai = view.querySelector('#fc-ai');           // no card left to ask about
+      if (ai) { ai.hidden = true; view.querySelector('#fc-ai-panel').innerHTML = ''; }
       const stats = deckStats(deck, s.prog);
       stage.innerHTML = `
         <div class="fc-complete card" data-animate>

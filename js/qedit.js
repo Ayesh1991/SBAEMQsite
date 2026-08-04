@@ -62,6 +62,8 @@ const QEdit = (() => {
           <button class="btn btn-ghost btn-sm" data-qe="flag">${c && c.flagged ? '⚑ Edit flag' : '⚑ Flag this question as wrong'}</button>
           <button class="btn btn-ghost btn-sm" data-qe="expl">${c && c.explanation ? '✎ Edit explanation' : '✎ Add explanation'}</button>
           <button class="btn btn-ghost btn-sm" data-qe="discuss" title="Send this concept to the tea room in your Studio, for a chat with friends">☕ Discuss with friends</button>
+          ${(typeof Ecosystem !== 'undefined' && Ecosystem.enabled() && ctx.question) ? `
+          <button class="btn btn-ghost btn-sm" data-qe="copy" title="Copy the stem and options as plain text — without the answer, rationale or hook — to paste into Gemini, ChatGPT, NotebookLM…">📋 Copy question</button>` : ''}
           <span class="qedit-tag ${dev ? '' : 'qedit-tag-me'}">${dev ? 'developer · everyone sees this' : 'flags go to the editor for review — scrutiny keeps the bank sharp'}</span>
         </div>
         <div class="qedit-editor" id="qedit-editor"></div>`;
@@ -72,6 +74,22 @@ const QEdit = (() => {
       slot.querySelector('[data-qe="flag"]').addEventListener('click', openFlag);
       slot.querySelector('[data-qe="expl"]').addEventListener('click', openExpl);
       slot.querySelector('[data-qe="discuss"]')?.addEventListener('click', openDiscuss);
+      slot.querySelector('[data-qe="copy"]')?.addEventListener('click', copyQuestion);
+    }
+
+    /* Hand the question to whichever outside AI the user keeps in the dock.
+       Only the stem and the options travel — the answer, the rationale and
+       the hook stay here, so the outside model is asked cold. */
+    async function copyQuestion() {
+      const btn = slot.querySelector('[data-qe="copy"]');
+      const ok = await Ecosystem.copyQuestion(ctx.question);
+      btn.textContent = ok ? '✓ Copied — paste it in' : '⚠ Press ⌘/Ctrl-C';
+      btn.classList.toggle('is-done', ok);
+      setTimeout(() => {
+        if (!btn.isConnected) return;
+        btn.textContent = '📋 Copy question';
+        btn.classList.remove('is-done');
+      }, 2200);
     }
 
     // Send this question/concept to the shared "tea room" in the Studio tab.
