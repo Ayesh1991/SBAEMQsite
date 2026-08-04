@@ -2,25 +2,34 @@
    ecosystem.js — the AUREUM AI Ecosystem.
 
    A Flexcil-style companion rail: AUREUM narrows to make room for a
-   dock on the left, and the dock puts the outside AI platforms
+   dock on the right, and the dock puts the outside AI platforms
    (Gemini, ChatGPT, Perplexity, NotebookLM, Claude, Grok) one tap
    away, with the question you are looking at already on the
    clipboard, ready to paste.
 
-   Why the platforms open in a PAIRED WINDOW rather than inside the
-   dock: every one of them serves `X-Frame-Options`/`frame-ancestors`
-   headers that tell the browser to refuse to render them inside
-   another site. Flexcil can do it because a native app's webview is
-   not a website and those headers do not bind it; a page served over
-   https cannot opt out of them. So the dock does the next best
-   thing — it opens ONE reusable window, snapped beside the browser,
-   and drives it. Switching provider re-points the same window
-   instead of littering the desktop with tabs.
+   TWO BROWSER LIMITS SHAPE ALL OF THIS, and neither can be coded
+   around from a web page:
 
-   Anything that CAN be framed (a provider marked `embeds`, or a URL
-   the user pins themselves) is rendered inline in the dock, and a
-   runtime probe demotes it to the paired window if the embed is
-   refused after all.
+   1. They cannot be shown inside the dock. Every one serves
+      `X-Frame-Options`/`frame-ancestors`, which tells the browser to
+      refuse to render them inside another site. Flexcil manages it
+      because a native webview is not a website and those headers do
+      not bind it.
+
+   2. A window we open cannot be found again. They all send
+      Cross-Origin-Opener-Policy, whose purpose is to sever the tie to
+      the opener: our handle starts reporting `closed` while the
+      window sits in plain sight, and the window's name stops
+      resolving. So "focus the one you already have" is not available,
+      and attempting it produced both a second window on Windows and,
+      on Safari, a blocked pop-up — the probe spent the single pop-up
+      a browser grants per gesture.
+
+   Hence the honest design: the button just OPENS the page, and says
+   nothing about state it cannot observe. The cure for a cluttered
+   chat history is PINNING — a platform's home page is defined to
+   start a new conversation, so pin the address of the one chat you
+   want and it reopens that instead.
 
    Off by default. Each user turns it on in Profile → AI ecosystem.
    ============================================================ */
@@ -45,12 +54,19 @@ const Ecosystem = (() => {
      frame first. Flip one to true the day it starts allowing it — the
      runtime probe will still catch a wrong guess. */
   const PROVIDERS = [
-    { id: 'gemini',     name: 'Google Gemini', ico: '✦', url: 'https://gemini.google.com/app',   tint: '#4285f4', embeds: false },
-    { id: 'chatgpt',    name: 'ChatGPT',       ico: '◍', url: 'https://chatgpt.com/',            tint: '#10a37f', embeds: false },
-    { id: 'notebooklm', name: 'NotebookLM',    ico: '📓', url: 'https://notebooklm.google.com/',  tint: '#f9ab00', embeds: false },
-    { id: 'claude',     name: 'Claude',        ico: '✳', url: 'https://claude.ai/new',           tint: '#d97757', embeds: false },
-    { id: 'perplexity', name: 'Perplexity',    ico: '⌖', url: 'https://www.perplexity.ai/',      tint: '#20a4a4', embeds: false },
-    { id: 'grok',       name: 'Grok',          ico: '𝕏', url: 'https://grok.com/',               tint: '#8b8b8b', embeds: false }
+    { id: 'gemini',     name: 'Google Gemini', ico: '✦', url: 'https://gemini.google.com/app',   tint: '#4285f4', embeds: false,
+      pinHint: 'https://gemini.google.com/app/…' },
+    { id: 'chatgpt',    name: 'ChatGPT',       ico: '◍', url: 'https://chatgpt.com/',            tint: '#10a37f', embeds: false,
+      pinHint: 'https://chatgpt.com/c/…' },
+    { id: 'notebooklm', name: 'NotebookLM',    ico: '📓', url: 'https://notebooklm.google.com/',  tint: '#f9ab00', embeds: false,
+      pinHint: 'https://notebooklm.google.com/notebook/…' },
+    // NOT /new — that URL is explicitly "start a fresh chat"
+    { id: 'claude',     name: 'Claude',        ico: '✳', url: 'https://claude.ai/',              tint: '#d97757', embeds: false,
+      pinHint: 'https://claude.ai/chat/…' },
+    { id: 'perplexity', name: 'Perplexity',    ico: '⌖', url: 'https://www.perplexity.ai/',      tint: '#20a4a4', embeds: false,
+      pinHint: 'https://www.perplexity.ai/search/…' },
+    { id: 'grok',       name: 'Grok',          ico: '𝕏', url: 'https://grok.com/',               tint: '#8b8b8b', embeds: false,
+      pinHint: 'https://grok.com/c/…' }
   ];
   const byId = id => PROVIDERS.find(p => p.id === id) || PROVIDERS[0];
 
@@ -196,33 +212,29 @@ const Ecosystem = (() => {
 
     // "open" means we opened it this session. We cannot verify it — COOP
      // severs the handle — so the wording promises only what is true.
-    const isLive = id => everOpened(id);
-    const liveIds = PROVIDERS.filter(x => isLive(x.id));
-    const live = isLive(p.id);
+    const pinned = !!pinnedUrls()[p.id];
 
     host.innerHTML = `
       <div class="eco-card" style="--eco-tint:${p.tint}">
         <div class="eco-card-top">
           <span class="eco-card-ico">${p.ico}</span>
           <span class="eco-card-name">${esc(p.name)}</span>
-          ${live ? `<span class="eco-live" title="AUREUM opened this earlier in this browser session">● open</span>` : ''}
+          ${pinned ? `<span class="eco-live" title="Opens your pinned conversation">📌 pinned</span>` : ''}
         </div>
-        <button class="btn btn-gold btn-block eco-open-btn" id="eco-launch">${
-          live ? `Where is my ${esc(p.name)}? ↗` : `Open ${esc(p.name)} →`}</button>
-        ${liveIds.length ? `<div class="eco-live-row">
-          ${liveIds.map(x => `<button class="eco-live-chip" data-goto="${x.id}" title="${esc(x.name)} is already open">${x.ico} ${esc(x.name)}</button>`).join('')}
-          <button class="eco-live-close" id="eco-close-all" title="Forget these, so the next tap opens fresh ones">Reset</button>
-        </div>` : ''}
+        <button class="btn btn-gold btn-block eco-open-btn" id="eco-launch">Open ${esc(p.name)} →</button>
         <p class="eco-note" id="eco-note"></p>
-        <details class="eco-pin">
-          <summary>Pin a page</summary>
-          <p class="muted tiny">Open straight to one place — your NotebookLM notebook, or a project you keep coming back to.</p>
+
+        <div class="eco-pin-block ${pinned ? 'is-pinned' : ''}">
+          <p class="eco-pin-lead">${pinned
+            ? `📌 Opening <strong>your pinned conversation</strong> — the same chat every time, so nothing new piles up in your history.`
+            : `<strong>Tired of a new chat every time?</strong> ${esc(p.name)}'s home page always starts a fresh one. Open the conversation you want to keep using, copy its address from the browser bar, and paste it here — this button will reopen <em>that</em> chat from now on.`}</p>
           <div class="eco-pin-row">
-            <input type="url" id="eco-url" value="${esc(url)}" spellcheck="false" placeholder="https://…">
-            <button class="btn btn-ghost btn-sm" id="eco-url-save">Save</button>
+            <input type="url" id="eco-url" value="${esc(url)}" spellcheck="false"
+              placeholder="${esc(p.pinHint || 'https://…')}">
+            <button class="btn btn-ghost btn-sm" id="eco-url-save">${pinned ? 'Update' : 'Pin'}</button>
           </div>
-          <button class="link tiny" id="eco-url-reset">Reset to ${esc(p.name)}'s home</button>
-        </details>
+          ${pinned ? `<button class="link tiny" id="eco-url-reset">Unpin — go back to ${esc(p.name)}'s home</button>` : ''}
+        </div>
       </div>
       <div class="eco-frame-host" id="eco-frame"></div>
       <div class="eco-layout">
@@ -234,25 +246,19 @@ const Ecosystem = (() => {
       </div>`;
 
     host.querySelector('#eco-launch').addEventListener('click', () => launch(p));
-    host.querySelector('#eco-close-all')?.addEventListener('click', closeAll);
-    host.querySelectorAll('[data-goto]').forEach(b => b.addEventListener('click', () => {
-      // jump straight to another open platform without disturbing this one
-      write(PROV_KEY, b.dataset.goto);
-      const sel = dockEl?.querySelector('#eco-prov'); if (sel) sel.value = b.dataset.goto;
-      launch(byId(b.dataset.goto));
-    }));
     host.querySelector('#eco-url-save').addEventListener('click', () => {
       const v = host.querySelector('#eco-url').value.trim();
       const m = pinnedUrls();
-      if (v) m[p.id] = v; else delete m[p.id];
+      if (v && v !== p.url) m[p.id] = v; else delete m[p.id];
       write(URLS_KEY, JSON.stringify(m));
-      note('Saved — ' + esc(p.name) + ' will open there.', 'good');
+      paintBody();
+      note(v && v !== p.url ? `Pinned. ${esc(p.name)} now opens that conversation every time.` : 'Unpinned.', 'good');
     });
-    host.querySelector('#eco-url-reset').addEventListener('click', () => {
+    host.querySelector('#eco-url-reset')?.addEventListener('click', () => {
       const m = pinnedUrls(); delete m[p.id];
       write(URLS_KEY, JSON.stringify(m));
-      host.querySelector('#eco-url').value = p.url;
-      note('Back to the default page.', '');
+      paintBody();
+      note(`Back to ${esc(p.name)}'s home page.`, '');
     });
     host.querySelector('#eco-side').addEventListener('click', e => {
       const b = e.target.closest('[data-side]'); if (!b) return;
@@ -341,63 +347,12 @@ const Ecosystem = (() => {
      an OS gesture (Alt-Tab, ⌘-`, the tab bar) that no web page may perform. */
   const winName = p => 'aureum-ai-' + p.id;
 
-  const OPENED_KEY = 'aureum.eco.opened';
-  function everOpened(id) {
-    try { return (JSON.parse(sessionStorage.getItem(OPENED_KEY)) || []).includes(id); } catch { return false; }
-  }
-  function rememberOpened(id) {
-    try {
-      const l = JSON.parse(sessionStorage.getItem(OPENED_KEY)) || [];
-      if (!l.includes(id)) { l.push(id); sessionStorage.setItem(OPENED_KEY, JSON.stringify(l)); }
-    } catch {}
-  }
-  function forgetOpened(id) {
-    try {
-      const l = (JSON.parse(sessionStorage.getItem(OPENED_KEY)) || []).filter(x => x !== id);
-      sessionStorage.setItem(OPENED_KEY, JSON.stringify(l));
-    } catch {}
-  }
-  /** True only while a handle survives — i.e. before COOP severs it. */
-  function liveHandle(p) {
-    const w = wins[p.id];
-    try { return (w && !w.closed) ? w : null; } catch { return null; }
-  }
-
-  function launch(p, force) {
+  function launch(p) {
     const url = urlFor(p);
     const touch = isTouchOS();
-
-    // Rare but free: some browsers do not sever the handle. If ours survived,
-    // focusing it is the real thing — same window, same conversation.
-    const live = !force && liveHandle(p);
-    if (live) {
-      aiWin = live;
-      try { live.focus(); } catch {}
-      paintBody();          // repaint first — it rewrites the note with its default
-      note(`Brought your existing ${esc(p.name)} back to the front — nothing reloaded.`, 'good');
-      return;
-    }
-
-    /* Opened this session, but the handle is gone (COOP severed it). Opening
-       again would make a SECOND window with a brand-new chat — the exact thing
-       that was going wrong. So: do not open. Say where it is, and leave an
-       explicit way out if it really was closed. */
-    if (!force && everOpened(p.id)) {
-      paintBody();
-      const how = touch
-        ? 'switch to it from Safari’s tab bar'
-        : 'switch to it with Alt-Tab (⌘-` on a Mac)';
-      note(`${esc(p.name)} is already open in another ${touch ? 'tab' : 'window'} — ${how}, then paste.
-        <button class="link eco-force" data-force>I closed it — open a fresh one</button>`, '');
-      dockEl?.querySelector('[data-force]')?.addEventListener('click', () => { forgetOpened(p.id); launch(p, true); });
-      return;
-    }
-
-    /* NEVER '_blank': it is defined to create a fresh context every time, and
-       'noopener' would make window.open return null so we would hold nothing.
-       A stable name is still worth passing — it costs nothing and helps the
-       browsers that do honour it. */
     const g = halfScreen();
+    // never '_blank' (always a fresh context) and never 'noopener' (returns
+    // null); a stable name still helps the browsers that honour it
     const feats = touch ? '' : `popup=yes,width=${g.w},height=${g.h},left=${g.left},top=${g.top}`;
     let w = null;
     try { w = window.open(url, winName(p), feats); } catch { w = null; }
@@ -405,28 +360,18 @@ const Ecosystem = (() => {
       return note(`Your browser blocked the ${touch ? 'tab' : 'window'}. <a class="link" href="${esc(url)}" target="_blank" rel="noopener">Open ${esc(p.name)}</a>, or allow pop-ups for AUREUM.`, 'warn');
     }
     wins[p.id] = w; aiWin = w;
-    rememberOpened(p.id);
     snap(w);
     try { w.focus(); } catch {}
-    paintBody();
-    if (touch && read(HINT_KEY, '0') !== '1') {
+    if (pinnedUrls()[p.id]) {
+      note(`Opened your pinned ${esc(p.name)} conversation. Paste the question straight in.`, 'good');
+    } else if (touch && read(HINT_KEY, '0') !== '1') {
       write(HINT_KEY, '1');
-      note(`Opened as a tab. AUREUM will not open it again — from now on it points you back to this tab, so your chat is never thrown away. For a true side-by-side, drag it out with iPadOS Split View.`, '');
+      note(`Opened in a tab. For a side-by-side, drag it out with iPadOS Split View. To stop a new chat appearing each time, pin one below.`, '');
     } else {
-      note(`${esc(p.name)} is open. Copy a question and paste it straight in — AUREUM will not open a second one, so this chat keeps going.`, 'good');
+      note(`${esc(p.name)} is open. Paste the question straight in.`, 'good');
     }
   }
 
-  /** Forget every platform, so the next tap opens a fresh one. We try to close
-      the windows too, but a severed handle cannot be closed — hence "Reset"
-      rather than "Close all", which would have been a promise we cannot keep. */
-  function closeAll() {
-    Object.keys(wins).forEach(id => { try { wins[id]?.close(); } catch {} delete wins[id]; });
-    PROVIDERS.forEach(x => forgetOpened(x.id));
-    aiWin = null;
-    paintBody();
-    note('Forgotten. The next tap opens a fresh window for whichever platform you pick.', '');
-  }
 
   /* ---------------- the clipboard tray ---------------- */
 

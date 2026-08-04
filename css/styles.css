@@ -2804,10 +2804,10 @@ body.eco-dragging .eco-frame { pointer-events: none; }   /* the frame must not e
 .eco-note.is-good { color: var(--teal); }
 .eco-note.is-warn { color: var(--gold); }
 
-.eco-pin { margin-top: 10px; }
-.eco-pin > summary { cursor: pointer; font-size: .72rem; color: var(--ink-3); }
-.eco-pin > summary:hover { color: var(--ink-2); }
-.eco-pin p { margin: 6px 0; }
+.eco-pin-block { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--hairline); }
+.eco-pin-block.is-pinned { border-top-color: var(--teal); }
+.eco-pin-lead { margin: 0 0 8px; font-size: .72rem; line-height: 1.55; color: var(--ink-3); }
+.eco-pin-lead strong { color: var(--ink-2); }
 .eco-pin-row { display: flex; gap: 6px; margin: 6px 0; }
 .eco-pin-row input {
   flex: 1; min-width: 0; background: var(--surface); border: 1px solid var(--hairline); color: var(--ink);
