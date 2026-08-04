@@ -330,9 +330,26 @@ const Ecosystem = (() => {
      and sitting at about:blank. */
   const winName = p => 'aureum-ai-' + p.id;
 
+  /* Probing for a window we never opened would CREATE a blank one, which the
+     user sees flash past before we close it. sessionStorage remembers which
+     platforms this browser session has actually launched, so the probe only
+     runs when there is genuinely something to find — it survives reloading
+     AUREUM, which is exactly when the in-memory handle is gone. */
+  const OPENED_KEY = 'aureum.eco.opened';
+  function everOpened(id) {
+    try { return (JSON.parse(sessionStorage.getItem(OPENED_KEY)) || []).includes(id); } catch { return false; }
+  }
+  function rememberOpened(id) {
+    try {
+      const l = JSON.parse(sessionStorage.getItem(OPENED_KEY)) || [];
+      if (!l.includes(id)) { l.push(id); sessionStorage.setItem(OPENED_KEY, JSON.stringify(l)); }
+    } catch {}
+  }
+
   function existingWindow(p) {
     let w = wins[p.id];
     if (w && !w.closed) return w;
+    if (!everOpened(p.id)) return null;                                              // nothing to find
     try { w = window.open('', winName(p)); } catch { return null; }
     if (!w) return null;
     let blank = false;
@@ -344,38 +361,43 @@ const Ecosystem = (() => {
 
   function launch(p) {
     const url = urlFor(p);
-    if (isTouchOS()) {
-      // Safari on iPad ignores window names and geometry — it makes tabs.
-      const w = window.open(url, '_blank', 'noopener');
-      if (!w) return note(`Your browser blocked the new tab. <a class="link" href="${esc(url)}" target="_blank" rel="noopener">Open ${esc(p.name)}</a>, or allow pop-ups for AUREUM.`, 'warn');
-      if (read(HINT_KEY, '0') !== '1') {
-        write(HINT_KEY, '1');
-        note(`Opened in a new tab. For a true side-by-side on iPad, drag that tab out to the edge (or swipe up the dock and drag AUREUM beside it) — Safari will not let a web page position its own windows.`, '');
-      }
-      return;
-    }
+    const touch = isTouchOS();
 
+    // Already have it open? Bring it forward. This is the whole point, and it
+    // applies to iPad tabs exactly as much as to desktop windows.
     const live = existingWindow(p);
     if (live) {
       aiWin = live;
       try { live.focus(); } catch {}
       paintBody();          // repaint first — it rewrites the note with its default
-      note(`Brought your existing ${esc(p.name)} back to the front — same conversation, nothing reloaded.`, 'good');
+      note(`Brought your existing ${esc(p.name)} back to the front — same ${touch ? 'tab' : 'window'}, same conversation, nothing reloaded.`, 'good');
       return;
     }
 
+    /* NEVER '_blank'. It is DEFINED to create a fresh browsing context every
+       time, so the result can never be found again — and 'noopener' makes
+       window.open return null, so we would hold no handle at all. The two
+       together guaranteed a brand-new chat on every press, which is precisely
+       what iPad was doing. A stable per-platform NAME is what makes the tab
+       re-findable, on Safari as much as anywhere else. */
     const g = halfScreen();
-    const feats = `popup=yes,width=${g.w},height=${g.h},left=${g.left},top=${g.top}`;
+    const feats = touch ? '' : `popup=yes,width=${g.w},height=${g.h},left=${g.left},top=${g.top}`;
     let w = null;
     try { w = window.open(url, winName(p), feats); } catch { w = null; }
     if (!w) {
-      return note(`Your browser blocked the window. <a class="link" href="${esc(url)}" target="_blank" rel="noopener">Open ${esc(p.name)} in a tab</a>, or allow pop-ups for AUREUM.`, 'warn');
+      return note(`Your browser blocked the ${touch ? 'tab' : 'window'}. <a class="link" href="${esc(url)}" target="_blank" rel="noopener">Open ${esc(p.name)}</a>, or allow pop-ups for AUREUM.`, 'warn');
     }
     wins[p.id] = w; aiWin = w;
+    rememberOpened(p.id);
     snap(w);
     try { w.focus(); } catch {}
     paintBody();
-    note(`${esc(p.name)} is open beside AUREUM. Copy a question and paste it straight in — this window stays put, so your chat is still there next time.`, 'good');
+    if (touch && read(HINT_KEY, '0') !== '1') {
+      write(HINT_KEY, '1');
+      note(`Opened as a tab — and AUREUM will re-use this same tab from now on, so your chat stays. For a true side-by-side, drag it out with iPadOS Split View; Safari will not let a web page position its own windows.`, '');
+    } else {
+      note(`${esc(p.name)} is open. Copy a question and paste it straight in — this ${touch ? 'tab' : 'window'} stays put, so your chat is still there next time.`, 'good');
+    }
   }
 
   /** Close every platform window this dock opened. */
@@ -458,7 +480,9 @@ const Ecosystem = (() => {
     if (!grip || grip.dataset.wired === '1') return;
     grip.dataset.wired = '1';
     let dragging = false;
-    const move = x => applyWidth(x);
+    // the dock is anchored to the RIGHT edge, so its width grows as the
+    // pointer moves left — measure from the right edge, not from zero
+    const move = x => applyWidth(window.innerWidth - x);
     const onMove = e => { if (!dragging) return; move((e.touches ? e.touches[0].clientX : e.clientX)); };
     const stop = () => {
       if (!dragging) return;
@@ -480,8 +504,8 @@ const Ecosystem = (() => {
     window.addEventListener('touchend', stop);
     // keyboard: the divider is a real control, not a mouse-only affordance
     grip.addEventListener('keydown', e => {
-      if (e.key === 'ArrowLeft') { applyWidth(width() - 24); e.preventDefault(); }
-      if (e.key === 'ArrowRight') { applyWidth(width() + 24); e.preventDefault(); }
+      if (e.key === 'ArrowLeft') { applyWidth(width() + 24); e.preventDefault(); }   // wider
+      if (e.key === 'ArrowRight') { applyWidth(width() - 24); e.preventDefault(); }  // narrower
     });
   }
 
