@@ -29,6 +29,9 @@
     { re: /^#\/library\/essay\/feedback\/([^/]+)$/, fn: (code, u) => Essay.renderFeedback(view, code, u) },
     { re: /^#\/library\/essay\/([^/]+)\/write\/(\d+)$/, fn: (id, qi, u) => Essay.renderWrite(view, id, qi, u) },
     { re: /^#\/library\/essay\/([^/]+)$/, fn: (id, u) => Essay.renderPaper(view, id, u) },
+    { re: /^#\/library\/cpd$/, fn: (u) => cpdGate(u) && CPD.renderList(view, u) },
+    { re: /^#\/library\/cpd\/([^/]+)\/([^/]+)$/, fn: (v, sec, u) => cpdGate(u) && CPD.renderTopic(view, v, sec, u) },
+    { re: /^#\/library\/cpd\/([^/]+)$/, fn: (v, u) => cpdGate(u) && CPD.renderVolume(view, v, u) },
     { re: /^#\/paper\/([^/]+)$/, fn: renderPaper },
     { re: /^#\/quiz\/([^/]+)\/(SBA|EMQ)\/(exam|study)$/, fn: renderQuiz },
     { re: /^#\/quiz\/([^/]+)\/(SBA|EMQ)\/(exam|study)\/fresh$/, fn: (p, k, m, u) => renderQuiz(p, k, m, u, true) },
@@ -67,6 +70,13 @@
   // remember scroll position per route so returning to a tab lands where you left
   const _scroll = {};
   let _lastHash = location.hash;
+
+  /** Bounce anyone who has not been granted CPD back to the Library. */
+  function cpdGate(user) {
+    if (cpdAllowed(user)) return true;
+    location.hash = '#/library';
+    return false;
+  }
 
   async function route() {
     Quiz.destroy();
@@ -662,12 +672,14 @@
   function librarySubnav(active, user) {
     const u = user || window.__aureumUser;
     const fcOn = u && (devOnly(u) || (isPaid(u) && u.featureFlags?.flashcards && u.prefs?.flashcards));
+    const cpdOn = u && (devOnly(u) || (isPaid(u) && u.featureFlags?.cpd && u.prefs?.cpd));
     const simOn = u && (devOnly(u) || (isPaid(u) && u.featureFlags?.simulator && u.prefs?.simulator));
     const tab = (id, href, label) => `<a class="lib-tab ${active === id ? 'active' : ''}" href="${href}">${label}</a>`;
     return `<div class="lib-subnav" data-animate>
       ${tab('bank', '#/library', 'Question bank')}
       ${tab('essay', '#/library/essay', 'Essay')}
       ${tab('notes', '#/library/notes', 'Notes')}
+      ${cpdOn ? tab('cpd', '#/library/cpd', 'CPD') : ''}
       ${fcOn ? tab('cards', '#/cards', 'Flashcards') : ''}
       ${simOn ? tab('mistakes', '#/mistakes', 'My mistakes') : ''}
     </div>`;
@@ -1252,13 +1264,13 @@
           <p class="save-note" id="pos-note" hidden>Saved ✓</p>
         </div>
 
-        ${(!isPaid(user) && (isGranted(user, 'simulator') || isGranted(user, 'flashcards'))) ? `
+        ${(!isPaid(user) && (isGranted(user, 'simulator') || isGranted(user, 'flashcards') || isGranted(user, 'cpd'))) ? `
         <div class="card" data-animate>
           <h3 class="card-title">Study tools</h3>
           <p class="muted">🔒 These tools are approved for your account but need an <strong>active payment</strong> —
             contact the site owner to activate your access.</p>
         </div>` : ''}
-        ${(isPaid(user) && (isGranted(user, 'simulator') || isGranted(user, 'flashcards'))) ? `
+        ${(isPaid(user) && (isGranted(user, 'simulator') || isGranted(user, 'flashcards') || isGranted(user, 'cpd'))) ? `
         <div class="card" data-animate>
           <h3 class="card-title">Study tools</h3>
           <p class="muted">The site owner has approved these tools for your account. Switch one on and it stays on.</p>
@@ -1272,6 +1284,11 @@
             <label class="pref-toggle">
               <span><strong>🃏 Flashcards</strong><br><span class="muted tiny">Spaced-repetition decks with tap-to-flip and swipe gestures.</span></span>
               <label class="dev-flag"><input type="checkbox" data-pref="flashcards" ${user.prefs?.flashcards ? 'checked' : ''}><span></span></label>
+            </label>` : ''}
+            ${isGranted(user, 'cpd') ? `
+            <label class="pref-toggle">
+              <span><strong>📖 CPD</strong><br><span class="muted tiny">TOG true/false self-assessment by volume and topic, with the reasoning and a memory hook behind every answer.</span></span>
+              <label class="dev-flag"><input type="checkbox" data-pref="cpd" ${user.prefs?.cpd ? 'checked' : ''}><span></span></label>
             </label>` : ''}
           </div>
           <p class="save-note" id="pref-note" hidden>Saved ✓</p>
@@ -2123,6 +2140,10 @@
   const isPaid = user => devOnly(user) || !!user?.featureFlags?.paid;
   const canUse = (user, flag) => devOnly(user) || (isPaid(user) && !!user?.featureFlags?.[flag] && !!user?.prefs?.[flag]);
   const isGranted = (user, flag) => devOnly(user) || !!user?.featureFlags?.[flag];
+  /** CPD needs BOTH the developer's grant and the user's own switch. Used by
+      the Library tab and by the routes, so a typed-in URL cannot walk past the
+      gate the tab respects. */
+  const cpdAllowed = user => !!user && (devOnly(user) || (isPaid(user) && user.featureFlags?.cpd && user.prefs?.cpd));
   const touchUse = () => {};   // retained no-op (activation no longer expires)
   const routeFlag = () => null;
   async function renderReview(user) { await ReviewQueue.renderRun(view, user); }

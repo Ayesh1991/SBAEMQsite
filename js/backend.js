@@ -325,6 +325,26 @@ const Backend = (() => {
     async function getEssayPapers() { return read('essaypapers', []); }
     async function publishEssayPaper(meta) { const l = read('essaypapers', []); const i = l.findIndex(x => x.id === meta.id); if (i >= 0) l[i] = meta; else l.push(meta); write('essaypapers', l); return meta; }
     async function unpublishEssayPaper(id) { write('essaypapers', read('essaypapers', []).filter(x => x.id !== id)); }
+
+    /* ---- CPD (TOG true/false) ---- */
+    async function getCpdVolumes() { return read('cpdvolumes', []); }
+    async function publishCpdVolume(meta) {
+      const l = read('cpdvolumes', []); const i = l.findIndex(x => x.id === meta.id);
+      if (i >= 0) l[i] = meta; else l.push(meta); write('cpdvolumes', l); return meta;
+    }
+    async function unpublishCpdVolume(id) { write('cpdvolumes', read('cpdvolumes', []).filter(x => x.id !== id)); }
+    const cpdKey = e => 'cpdprog.' + e;
+    async function getCpdProgress() { const e = sessionEmail(); return e ? read(cpdKey(e), {}) : {}; }
+    async function saveCpdAnswer(row) {
+      const e = sessionEmail(); if (!e) return;
+      const m = read(cpdKey(e), {}); m[row.qkey] = row; write(cpdKey(e), m);
+    }
+    async function resetCpdSection(volumeId, sectionId) {
+      const e = sessionEmail(); if (!e) return;
+      const m = read(cpdKey(e), {});
+      Object.keys(m).forEach(k => { if (m[k].volume_id === volumeId && m[k].section_id === sectionId) delete m[k]; });
+      write(cpdKey(e), m);
+    }
     const efKey = e => 'essayfb.' + e;
     async function saveEssayFeedback(fb) {
       const e = sessionEmail(); if (!e) return null;
@@ -472,6 +492,7 @@ const Backend = (() => {
     return { init, signUp, signIn, signOut, requestPasswordReset, updatePassword, onPasswordRecovery, currentUser, updateProfile,
       getRegistrationOpen, setRegistrationOpen, setUserStatus, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
       getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
+      getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
       getPublishedPapers, publishPaper, unpublishPaper,
       getExamDate, setExamDate, saveSession, loadSession, clearSession, listSessions,
@@ -1211,6 +1232,24 @@ const Backend = (() => {
     async function getEssayPapers() { await ensureClient(); const { data } = await sb.from('essay_papers').select('meta'); return (data || []).map(r => r.meta); }
     async function publishEssayPaper(meta) { await ensureClient(); await sb.from('essay_papers').upsert({ id: meta.id, meta }); return meta; }
     async function unpublishEssayPaper(id) { await ensureClient(); await sb.from('essay_papers').delete().eq('id', id); }
+
+    /* ---- CPD (TOG true/false) ---- */
+    async function getCpdVolumes() { await ensureClient(); const { data } = await sb.from('cpd_volumes').select('meta'); return (data || []).map(r => r.meta); }
+    async function publishCpdVolume(meta) { await ensureClient(); await sb.from('cpd_volumes').upsert({ id: meta.id, meta }); return meta; }
+    async function unpublishCpdVolume(id) { await ensureClient(); await sb.from('cpd_volumes').delete().eq('id', id); }
+    async function getCpdProgress() {
+      await ensureClient(); const id = await uid(); if (!id) return {};
+      const { data } = await sb.from('cpd_progress').select('qkey,volume_id,section_id,answer,correct').eq('user_id', id);
+      const m = {}; (data || []).forEach(r => m[r.qkey] = r); return m;
+    }
+    async function saveCpdAnswer(row) {
+      await ensureClient(); const id = await uid(); if (!id) return;
+      await sb.from('cpd_progress').upsert({ user_id: id, ...row });
+    }
+    async function resetCpdSection(volumeId, sectionId) {
+      await ensureClient(); const id = await uid(); if (!id) return;
+      await sb.from('cpd_progress').delete().eq('user_id', id).eq('volume_id', volumeId).eq('section_id', sectionId);
+    }
     /* per-user essay feedback */
     async function saveEssayFeedback(fb) {
       await ensureClient(); const id = await uid(); if (!id) return null;
@@ -1268,6 +1307,7 @@ const Backend = (() => {
     return { init, signUp, signIn, signOut, requestPasswordReset, updatePassword, onPasswordRecovery, currentUser, updateProfile,
       getRegistrationOpen, setRegistrationOpen, setUserStatus, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
       getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
+      getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
       getPublishedPapers, publishPaper, unpublishPaper,
       getExamDate, setExamDate, saveSession, loadSession, clearSession, listSessions,

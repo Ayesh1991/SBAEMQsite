@@ -2931,3 +2931,133 @@ body.eco-dragging .eco-frame { pointer-events: none; }   /* the frame must not e
 .eco-live-close:hover { color: var(--bad); }
 :root[data-theme="light"] .eco-live-chip { background: rgba(13,143,125,.10); }
 .eco-force { display: block; margin-top: 6px; font-size: .7rem; }
+
+/* ============================================================
+   CPD — TOG true/false self-assessment
+   ============================================================ */
+
+/* No overflow:hidden here. Clipping a blurred element leaves a visible
+   rectangle where the blur is cut off, however soft the gradient is — the
+   only reliable fix is to let it bleed and keep it inside the page's own
+   width so it cannot cause horizontal overflow. */
+.cpd-hero { position: relative; padding: 30px 0 22px; }
+.cpd-hero-glow {
+  position: absolute; top: -60px; left: 0; width: min(560px, 100%); height: 330px;
+  pointer-events: none; z-index: 0;
+  background: radial-gradient(closest-side, rgba(94,234,212,.20), rgba(94,234,212,.05) 58%, transparent 100%);
+}
+.cpd-hero > :not(.cpd-hero-glow) { position: relative; z-index: 1; }
+.cpd-hero .page-title { margin: 4px 0 10px; }
+
+/* volume cards */
+.cpd-vols { display: flex; flex-direction: column; gap: 14px; margin-top: 8px; }
+.cpd-vol {
+  display: flex; align-items: center; gap: 18px; padding: 18px 20px; border-radius: 18px;
+  background: var(--surface); border: 1px solid var(--hairline); text-decoration: none; color: inherit;
+  transition: border-color .18s ease, transform .18s ease;
+}
+.cpd-vol:hover { border-color: var(--teal); transform: translateY(-2px); }
+.cpd-vol-ring {
+  --p: 0;
+  flex: 0 0 64px; width: 64px; height: 64px; border-radius: 50%; display: grid; place-items: center;
+  background: conic-gradient(var(--teal) calc(var(--p) * 1%), var(--surface-2) 0);
+  position: relative;
+}
+.cpd-vol-ring::after {
+  content: ''; position: absolute; inset: 5px; border-radius: 50%; background: var(--surface);
+}
+.cpd-vol-ring span { position: relative; z-index: 1; font-size: .86rem; font-weight: 700; }
+.cpd-vol-ring i { font-style: normal; font-size: .58rem; color: var(--ink-3); }
+.cpd-vol-main { flex: 1; min-width: 0; }
+.cpd-vol-main h3 { margin: 0 0 3px; font-size: 1.02rem; }
+.cpd-vol-meta { margin: 6px 0 0; font-size: .78rem; color: var(--ink-3); }
+.cpd-vol-go { font-size: 1.1rem; color: var(--ink-3); }
+.cpd-vol:hover .cpd-vol-go { color: var(--teal); }
+.cpd-vol-sum { margin-top: 8px; font-size: .84rem; color: var(--ink-2); }
+
+/* topic list */
+.cpd-topics { display: flex; flex-direction: column; gap: 10px; margin-top: 20px; }
+.cpd-topic {
+  display: flex; align-items: center; gap: 14px; padding: 14px 18px; border-radius: 14px;
+  background: var(--surface); border: 1px solid var(--hairline); text-decoration: none; color: inherit;
+  border-left: 3px solid var(--hairline); transition: border-color .18s ease, background .18s ease;
+}
+.cpd-topic:hover { background: var(--surface-2); border-left-color: var(--teal); }
+.cpd-topic.is-part { border-left-color: var(--gold); }
+.cpd-topic.is-done { border-left-color: var(--teal); }
+.cpd-topic-n { font-family: var(--font-ui); font-size: .78rem; font-weight: 700; color: var(--ink-3); flex: 0 0 auto; }
+.cpd-topic-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.cpd-topic-title { font-size: .92rem; font-weight: 600; line-height: 1.4; }
+.cpd-topic-tag { font-size: .68rem; color: var(--ink-3); }
+.cpd-topic-bar { height: 3px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
+.cpd-topic-bar i { display: block; height: 100%; background: var(--teal); transition: width .3s ease; }
+.cpd-topic-side { flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.cpd-topic-count { font-size: .76rem; font-weight: 650; }
+.cpd-topic-pct { font-size: .7rem; font-weight: 700; }
+
+/* the runner */
+.cpd-run-head { margin-bottom: 20px; }
+.cpd-meter { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 14px; }
+.cpd-meter-bar { flex: 1; min-width: 160px; height: 5px; border-radius: 5px; background: var(--surface-2); overflow: hidden; }
+.cpd-meter-bar i { display: block; height: 100%; width: 0;
+  background: linear-gradient(90deg, var(--teal), var(--gold)); transition: width .35s ease; }
+.cpd-meter-txt { margin: 0; font-size: .8rem; color: var(--ink-3); }
+
+.cpd-cards { display: flex; flex-direction: column; gap: 16px; }
+.cpd-card {
+  padding: 20px 22px; border-radius: 16px; background: var(--surface);
+  border: 1px solid var(--hairline); border-left: 3px solid var(--hairline);
+  transition: border-color .22s ease;
+}
+.cpd-card.is-right { border-left-color: var(--teal); }
+.cpd-card.is-wrong { border-left-color: var(--bad); }
+.cpd-card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.cpd-num { font-size: .7rem; font-weight: 700; letter-spacing: .1em; color: var(--ink-3); }
+.cpd-verdict { margin-left: auto; font-size: .74rem; font-weight: 700; }
+.cpd-stem { margin: 0 0 16px; font-size: .98rem; line-height: 1.6; }
+
+.cpd-tf { display: flex; gap: 12px; }
+.cpd-tf-btn {
+  flex: 1; padding: 13px 10px; border-radius: 12px; cursor: pointer; font: inherit;
+  font-size: .82rem; font-weight: 700; letter-spacing: .08em;
+  background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink-2);
+  transition: border-color .16s ease, background .16s ease, color .16s ease, transform .12s ease;
+}
+.cpd-tf-btn:not(:disabled):hover { transform: translateY(-1px); }
+.cpd-true:not(:disabled):hover { border-color: var(--teal); color: var(--teal); }
+.cpd-false:not(:disabled):hover { border-color: var(--gold); color: var(--gold); }
+.cpd-tf-btn:disabled { cursor: default; opacity: .5; }
+.cpd-tf-btn.is-picked { opacity: 1; }
+.cpd-card.is-right .cpd-tf-btn.is-picked { background: rgba(94,234,212,.16); border-color: var(--teal); color: var(--teal); }
+.cpd-card.is-wrong .cpd-tf-btn.is-picked { background: rgba(224,82,99,.14); border-color: var(--bad); color: var(--bad); }
+
+.cpd-reveal { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--hairline); }
+.cpd-answer { margin: 0 0 10px; font-size: .84rem; color: var(--ink-2); }
+.cpd-rationale { font-size: .88rem; line-height: 1.65; color: var(--ink-2);
+  padding: 12px 14px; border-radius: 12px; background: var(--surface-2); }
+.cpd-hook { display: flex; gap: 9px; align-items: flex-start; margin: 12px 0 0;
+  font-size: .84rem; line-height: 1.55; color: var(--gold); }
+.cpd-hook span { flex: 0 0 auto; }
+.cpd-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+.cpd-actions .is-on { border-color: var(--gold); color: var(--gold); }
+.cpd-actions .is-done { border-color: var(--teal); color: var(--teal); }
+.cpd-ai:empty { display: none; }
+.cpd-ai { margin-top: 12px; }
+
+.cpd-done { text-align: center; margin-top: 22px; }
+.cpd-done-ring {
+  width: 92px; height: 92px; margin: 0 auto 14px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 1.5rem; font-weight: 700; border: 3px solid var(--teal); color: var(--teal);
+}
+.cpd-done-ring.bad { border-color: var(--bad); color: var(--bad); }
+.cpd-done-ring i { font-style: normal; font-size: .8rem; }
+.cpd-done-acts { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 16px; }
+
+@media (max-width: 620px) {
+  .cpd-vol { gap: 12px; padding: 14px; }
+  .cpd-vol-ring { flex-basis: 52px; width: 52px; height: 52px; }
+  .cpd-card { padding: 16px; }
+  .cpd-tf { flex-direction: column; }
+}
+.energy-saving .cpd-vol, .energy-saving .cpd-tf-btn, .energy-saving .cpd-topic-bar i,
+.energy-saving .cpd-meter-bar i { transition: none; }

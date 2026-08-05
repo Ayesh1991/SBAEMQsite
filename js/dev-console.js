@@ -41,6 +41,7 @@ const DevConsole = (() => {
     if (section === 'ai') return renderAiSection(view);
     if (section === 'tearoom') return renderTeaSection(view);
     if (section === 'essays') return renderEssaysSection(view);
+    if (section === 'cpd') return renderCpdSection(view);
     return renderHub(view);
   }
 
@@ -105,12 +106,23 @@ const DevConsole = (() => {
             <p>Scan Drive for structured-essay mock papers (SAQ/SEQ), validate and publish to the Essay section.</p>
             <span class="dev-hub-count" id="hub-essays">…</span>
           </a>
+          <a class="dev-hub-card" href="#/dev/cpd" style="--hub-accent:linear-gradient(135deg,#5eead4,#818cf8)">
+            <span class="dev-hub-ico">📖</span>
+            <h3>CPD importer</h3>
+            <p>Scan Drive for TOG true/false CPD volumes (ogr-cpd-v1), validate and publish to Library → CPD.</p>
+            <span class="dev-hub-count" id="hub-cpd">…</span>
+          </a>
         </div>
       </section>`;
     ctx.FX.viewIn(view);
     // decorate counts asynchronously (all reads are device-cached)
     try { paperN = (await ctx.Data.publishedPapers()).length + ' published'; } catch { paperN = '—'; }
     try { deckN = ((await ctx.Backend.getFlashcardDecks()) || []).length + ' decks live'; } catch { deckN = '—'; }
+    let cpdN = '—';
+    try { const cv = (await ctx.Backend.getCpdVolumes()) || [];
+      const qn = cv.reduce((n, v) => n + (v.sections || []).reduce((m, x) => m + (x.questions || []).length, 0), 0);
+      cpdN = cv.length ? `${cv.length} volume${cv.length !== 1 ? 's' : ''} · ${qn} statements` : 'none yet';
+    } catch { cpdN = 'run schema.sql'; }
     try { userN = ((await ctx.Backend.listAllUsers()) || []).length + ' accounts'; } catch { userN = 'run schema.sql'; }
     let bpN = 'bundled default';
     try { const bp = await Blueprint.load(); if (bp?.sba?.length) bpN = `v${bp.version} · ${bp.sba.length}+${bp.emq.length} topics`; } catch { /* keep default */ }
@@ -123,6 +135,7 @@ const DevConsole = (() => {
     const put = (id, v) => { const el = view.querySelector(id); if (el) el.textContent = v; };
     put('#hub-papers', paperN); put('#hub-decks', deckN); put('#hub-users', userN); put('#hub-bp', bpN);
     put('#hub-flags', flagN); put('#hub-ai', aiN); put('#hub-essays', essayN);
+    put('#hub-cpd', cpdN);
   }
 
   const backLink = `<a class="link muted dev-back" href="#/dev">← Developer</a>`;
@@ -1467,7 +1480,7 @@ const DevConsole = (() => {
                 </div>
                 <div class="dev-up-block">
                   <h4>Tool approvals</h4>
-                  ${[['simulator', 'Simulator'], ['flashcards', 'Flashcards']].map(([f, lbl]) => `
+                  ${[['simulator', 'Simulator'], ['flashcards', 'Flashcards'], ['cpd', 'CPD (TOG true/false)']].map(([f, lbl]) => `
                     <label class="dev-up-flag"><label class="dev-flag"><input type="checkbox" data-uflag="${f}" data-uid="${ctx.esc(u.id)}" ${u.featureFlags?.[f] ? 'checked' : ''}><span></span></label> ${lbl}
                       <span class="tiny muted">${u.prefs?.[f] ? '· user has it ON' : '· not activated by user'}</span></label>`).join('')}
                 </div>
@@ -2362,6 +2375,180 @@ const DevConsole = (() => {
     d.id = essayId(d);
     try { await ctx.Backend.publishEssayPaper(d); if (typeof Essay !== 'undefined') Essay.bustPapers();
       out.innerHTML = `<p class="good">✓ Published “${ctx.esc(d.paperLabel || d.id)}”.</p>`; await refreshEssayPublished(document.getElementById('view'));
+    } catch (e) { out.innerHTML = `<p class="bad">${ctx.esc(e.message || e)}</p>`; }
+  }
+
+  /* ================================================================
+     CPD IMPORTER — publish TOG true/false volumes (ogr-cpd-v1)
+     ================================================================ */
+
+  function validateCpdVolume(d) {
+    const e = [];
+    if (!d || typeof d !== 'object') return ['File is not a JSON object.'];
+    if (d.schema && d.schema !== 'ogr-cpd-v1') e.push(`Unexpected schema "${d.schema}" — expected ogr-cpd-v1.`);
+    if (!d.volume) e.push('Missing "volume" (e.g. "Volume 23, Issue 1").');
+    if (!Array.isArray(d.sections) || !d.sections.length) e.push('Missing "sections" array.');
+    let n = 0;
+    (d.sections || []).forEach((sec, si) => {
+      if (!sec.id) e.push(`Section ${si + 1}: missing "id".`);
+      if (!sec.topic) e.push(`Section ${si + 1}: missing "topic".`);
+      const qs = sec.questions || [];
+      if (!qs.length) e.push(`Section ${si + 1} ("${sec.topic || sec.id}"): no questions.`);
+      qs.forEach((q, qi) => {
+        n++;
+        const where = `Section ${si + 1} Q${qi + 1}`;
+        if (!q.id) e.push(`${where}: missing "id".`);
+        if (!q.stem) e.push(`${where}: missing "stem".`);
+        // a true/false item is meaningless without a real boolean
+        if (typeof q.answer !== 'boolean') e.push(`${where}: "answer" must be true or false.`);
+        if (!q.rationale) e.push(`${where}: missing "rationale".`);
+      });
+    });
+    if (!n) e.push('No questions found in any section.');
+    return e;
+  }
+  function cpdId(d) {
+    const m = String(d.volume || '').match(/(\d+)\D+(\d+)/);
+    return 'cpd-' + (m ? `v${m[1]}i${m[2]}` : slug(d.volume || 'volume'));
+  }
+  const cpdCounts = d => {
+    const secs = (d.sections || []).length;
+    const qs = (d.sections || []).reduce((n, x) => n + (x.questions || []).length, 0);
+    return { secs, qs };
+  };
+
+  async function renderCpdSection(view) {
+    const { esc } = ctx;
+    view.innerHTML = `
+      <section class="page">
+        ${backLink}
+        <header data-animate>
+          <p class="kicker">DEVELOPER · CPD IMPORTER</p>
+          <h1 class="page-title">CPD volumes</h1>
+          <p class="muted">TOG true/false self-assessment sets in <code>ogr-cpd-v1</code> JSON. Source folder:
+            <code>${esc(ctx.cfg.drive.cpdFolderId || '(set drive.cpdFolderId)')}</code>. Published volumes appear in
+            <strong>Library → CPD</strong>, for users you have granted the <strong>CPD</strong> flag in
+            <a class="link" href="#/dev/users">Users &amp; access</a> and who have switched it on in their Profile.</p>
+        </header>
+        <div class="dev-toolbar" data-animate>
+          <button class="btn btn-gold" id="cp-scan">Scan Drive for CPD volumes</button>
+          <span class="dev-status" id="cp-status"></span>
+        </div>
+        <div id="cp-list" data-animate></div>
+
+        <div class="card" data-animate>
+          <details class="dev-collapse">
+            <summary><span class="card-title">Published volumes (<span id="cp-pub-count">…</span>)</span><span class="dc-caret">▸</span></summary>
+            <div id="cp-published"></div>
+          </details>
+        </div>
+
+        <div class="card" data-animate>
+          <details class="dev-collapse">
+            <summary><span class="card-title">Paste a volume manually</span><span class="dc-caret">▸</span></summary>
+            <textarea id="cp-paste" class="dev-textarea" placeholder='{ "schema": "ogr-cpd-v1", "volume": "Volume 23, Issue 1", "sections": [ … ] }'></textarea>
+            <button class="btn btn-primary" id="cp-paste-btn" style="margin-top:12px">Validate &amp; publish</button>
+            <div id="cp-paste-result"></div>
+          </details>
+        </div>
+      </section>`;
+    view.querySelector('#cp-scan').addEventListener('click', scanCpd);
+    view.querySelector('#cp-paste-btn').addEventListener('click', pasteCpd);
+    await refreshCpdPublished(view);
+    ctx.FX.viewIn(view);
+  }
+
+  async function refreshCpdPublished(view) {
+    const list = (await ctx.Backend.getCpdVolumes().catch(() => [])) || [];
+    const host = view.querySelector('#cp-published'), count = view.querySelector('#cp-pub-count');
+    if (count) count.textContent = list.length;
+    if (!host) return;
+    host.innerHTML = list.length ? `<div class="table-scroll"><table class="table">
+      <thead><tr><th>Volume</th><th>Topics</th><th>Statements</th><th></th></tr></thead>
+      <tbody>${list.map(v => { const c = cpdCounts(v); return `<tr>
+        <td>${ctx.esc(v.volume || v.id)}</td><td class="muted">${c.secs}</td><td class="muted">${c.qs}</td>
+        <td><button class="link-btn" data-unpub-cpd="${ctx.esc(v.id)}">unpublish</button></td></tr>`; }).join('')}</tbody>
+    </table></div>` : `<p class="muted">No CPD volumes published yet.</p>`;
+    host.querySelectorAll('[data-unpub-cpd]').forEach(b => b.addEventListener('click', async () => {
+      if (!confirm('Unpublish this CPD volume? Answers already given are kept.')) return;
+      await ctx.Backend.unpublishCpdVolume(b.dataset.unpubCpd);
+      if (typeof CPD !== 'undefined') CPD.bustVolumes();
+      await refreshCpdPublished(view);
+    }));
+  }
+
+  async function scanCpd() {
+    const status = document.getElementById('cp-status'), list = document.getElementById('cp-list');
+    status.textContent = 'Scanning…'; list.innerHTML = '';
+    let files = [];
+    try {
+      const base = ctx.cfg.drive.apiBase;
+      const fid = ctx.cfg.drive.cpdFolderId;
+      if (!fid) throw new Error('drive.cpdFolderId is not set in config.js.');
+      const res = await fetch(`${base}?action=list&folderId=${encodeURIComponent(fid)}`, { cache: 'no-cache' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      files = data.files || [];
+    } catch (e) { status.innerHTML = `<span class="bad">${ctx.esc(e.message || e)}</span>`; return; }
+
+    const published = (await ctx.Backend.getCpdVolumes().catch(() => [])) || [];
+    const pubIds = new Set(published.map(v => v.id));
+    const staged = [], rejected = [];
+    for (const f of files) {
+      let doc = f.volume && typeof f.volume === 'object' ? f.volume : (f.paper || f.deck || null);
+      if (!doc && f.id) { try { const r = await fetch(`${ctx.cfg.drive.apiBase}?action=file&id=${encodeURIComponent(f.id)}`); doc = await r.json(); } catch { doc = null; } }
+      if (!doc || !Array.isArray(doc.sections)) continue;                 // not a CPD file at all
+      if (doc.schema && doc.schema !== 'ogr-cpd-v1') continue;            // someone else's schema
+      const errs = validateCpdVolume(doc);
+      if (errs.length) { rejected.push({ name: f.name || doc.volume || 'file', errs }); continue; }
+      doc.id = cpdId(doc);
+      if (!pubIds.has(doc.id)) staged.push(doc);
+    }
+    status.innerHTML = `${files.length} file${files.length !== 1 ? 's' : ''} · <strong>${staged.length} new volume${staged.length !== 1 ? 's' : ''}</strong>` +
+      (rejected.length ? ` · <span class="bad">${rejected.length} rejected</span>` : '');
+    list.innerHTML = '';
+    if (rejected.length) {
+      list.innerHTML += rejected.map(r => `<div class="dev-row card">
+        <p class="dev-file">⚠ ${ctx.esc(r.name)}</p>
+        <p class="dev-row-msg bad">${r.errs.slice(0, 6).map(ctx.esc).join('<br>')}</p></div>`).join('');
+    }
+    if (!staged.length) {
+      list.innerHTML += `<p class="muted">No new CPD volumes found (already published, or the folder holds other schemas).</p>`;
+      return;
+    }
+    list.innerHTML += staged.map((d, i) => { const c = cpdCounts(d); return `
+      <div class="dev-row card" data-ci="${i}">
+        <div class="dev-row-head">
+          <div><p class="dev-file">📖 ${ctx.esc(d.volume || d.id)}</p>
+            <p class="muted tiny">${c.secs} topics · ${c.qs} statements${d.doi ? ' · DOI ' + ctx.esc(d.doi) : ''}</p>
+            <p class="muted tiny">${(d.sections || []).map(x => ctx.esc(x.topic || x.id)).join(' · ')}</p></div>
+          <button class="btn btn-gold btn-sm" data-cp-approve="${i}">Publish</button>
+        </div><p class="dev-row-msg" data-cp-msg="${i}"></p>
+      </div>`; }).join('');
+    staged.forEach((d, i) => document.querySelector(`[data-cp-approve="${i}"]`).addEventListener('click', async e => {
+      const msg = document.querySelector(`[data-cp-msg="${i}"]`);
+      e.target.disabled = true; msg.textContent = 'Publishing…'; msg.className = 'dev-row-msg muted';
+      try {
+        await ctx.Backend.publishCpdVolume(d);
+        if (typeof CPD !== 'undefined') CPD.bustVolumes();
+        msg.textContent = '✓ Published to Library → CPD.'; msg.className = 'dev-row-msg good';
+        await refreshCpdPublished(document.getElementById('view'));
+      } catch (err) { msg.textContent = err.message || String(err); msg.className = 'dev-row-msg bad'; e.target.disabled = false; }
+    }));
+  }
+
+  async function pasteCpd() {
+    const ta = document.getElementById('cp-paste'), out = document.getElementById('cp-paste-result');
+    let d; try { d = JSON.parse(ta.value); } catch (e) { out.innerHTML = `<p class="bad">Invalid JSON: ${ctx.esc(e.message)}</p>`; return; }
+    const errs = validateCpdVolume(d);
+    if (errs.length) { out.innerHTML = `<p class="bad">${errs.slice(0, 10).map(ctx.esc).join('<br>')}</p>`; return; }
+    d.id = cpdId(d);
+    try {
+      await ctx.Backend.publishCpdVolume(d);
+      if (typeof CPD !== 'undefined') CPD.bustVolumes();
+      const c = cpdCounts(d);
+      out.innerHTML = `<p class="good">✓ Published “${ctx.esc(d.volume || d.id)}” — ${c.secs} topics, ${c.qs} statements.</p>`;
+      await refreshCpdPublished(document.getElementById('view'));
     } catch (e) { out.innerHTML = `<p class="bad">${ctx.esc(e.message || e)}</p>`; }
   }
 

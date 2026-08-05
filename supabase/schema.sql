@@ -912,3 +912,39 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
+
+-- ---------- 10) CPD (TOG true/false self-assessment) ----------
+-- One row per published volume, schema ogr-cpd-v1. Readable by everyone
+-- (the Library only shows the section to users the developer has granted
+-- the `cpd` flag AND who switched it on themselves), writable by the
+-- developer alone — the same shape as essay_papers and flashcard_decks.
+create table if not exists public.cpd_volumes (
+  id text primary key,
+  meta jsonb not null,                  -- { id, volume, doi, source, sections[…] }
+  updated_at timestamptz default now()
+);
+alter table public.cpd_volumes enable row level security;
+drop policy if exists "cpd read"  on public.cpd_volumes;
+drop policy if exists "cpd write" on public.cpd_volumes;
+create policy "cpd read" on public.cpd_volumes for select using (true);
+create policy "cpd write" on public.cpd_volumes for all
+  using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
+  with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+
+-- Per-user answers. One row per user per question; the latest answer wins,
+-- so re-doing a topic simply overwrites and the score stays truthful.
+create table if not exists public.cpd_progress (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  qkey text not null,                   -- volumeId:sectionId:questionId
+  volume_id text not null,
+  section_id text not null,
+  answer boolean not null,              -- what the user picked
+  correct boolean not null,
+  answered_at timestamptz default now(),
+  primary key (user_id, qkey)
+);
+create index if not exists cpdp_user_idx on public.cpd_progress (user_id, volume_id);
+alter table public.cpd_progress enable row level security;
+drop policy if exists "own cpd progress all" on public.cpd_progress;
+create policy "own cpd progress all" on public.cpd_progress for all
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
