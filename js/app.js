@@ -49,7 +49,7 @@
     { re: /^#\/mistakes$/, fn: renderMistakes },
     { re: /^#\/mistakes\/deck\/([^/]+)$/, fn: renderMistakeDeck },
     { re: /^#\/simulator\/result\/([^/]+)$/, fn: renderSimResult },
-    { re: /^#\/dev(?:\/(papers|cards|users|blueprint|review|ai|essays|tearoom))?$/, fn: renderDev }
+    { re: /^#\/dev(?:\/(papers|cards|users|blueprint|review|ai|essays|tearoom|cpd))?$/, fn: renderDev }
   ];
   const devOnly = user => !!(user && (user.email === cfg.developer.email || sessionStorage.getItem('aureum-dev') === '1'));
 
