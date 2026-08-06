@@ -944,6 +944,13 @@ create table if not exists public.cpd_progress (
   primary key (user_id, qkey)
 );
 create index if not exists cpdp_user_idx on public.cpd_progress (user_id, volume_id);
+
+-- ogr-cpd-v2 adds SBA questions alongside true/false, so what the user picked
+-- is no longer always a boolean. `choice` records the pick for every type
+-- ('true'/'false' for TF, the option key for SBA) and `answer` stays for the
+-- rows written before this, so existing progress is not lost.
+alter table public.cpd_progress add column if not exists choice text;
+alter table public.cpd_progress alter column answer drop not null;
 alter table public.cpd_progress enable row level security;
 drop policy if exists "own cpd progress all" on public.cpd_progress;
 create policy "own cpd progress all" on public.cpd_progress for all

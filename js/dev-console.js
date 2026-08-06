@@ -109,7 +109,7 @@ const DevConsole = (() => {
           <a class="dev-hub-card" href="#/dev/cpd" style="--hub-accent:linear-gradient(135deg,#5eead4,#818cf8)">
             <span class="dev-hub-ico">📖</span>
             <h3>CPD importer</h3>
-            <p>Scan Drive for TOG true/false CPD volumes (ogr-cpd-v1), validate and publish to Library → CPD.</p>
+            <p>Scan Drive for TOG CPD volumes (ogr-cpd-v1/v2, true/false + SBA), validate and publish to Library → CPD.</p>
             <span class="dev-hub-count" id="hub-cpd">…</span>
           </a>
         </div>
@@ -121,7 +121,7 @@ const DevConsole = (() => {
     let cpdN = '—';
     try { const cv = (await ctx.Backend.getCpdVolumes()) || [];
       const qn = cv.reduce((n, v) => n + (v.sections || []).reduce((m, x) => m + (x.questions || []).length, 0), 0);
-      cpdN = cv.length ? `${cv.length} volume${cv.length !== 1 ? 's' : ''} · ${qn} statements` : 'none yet';
+      cpdN = cv.length ? `${cv.length} volume${cv.length !== 1 ? 's' : ''} · ${qn} questions` : 'none yet';
     } catch { cpdN = 'run schema.sql'; }
     try { userN = ((await ctx.Backend.listAllUsers()) || []).length + ' accounts'; } catch { userN = 'run schema.sql'; }
     let bpN = 'bundled default';
@@ -2382,10 +2382,12 @@ const DevConsole = (() => {
      CPD IMPORTER — publish TOG true/false volumes (ogr-cpd-v1)
      ================================================================ */
 
+  const CPD_SCHEMAS = ['ogr-cpd-v1', 'ogr-cpd-v2'];
   function validateCpdVolume(d) {
     const e = [];
     if (!d || typeof d !== 'object') return ['File is not a JSON object.'];
-    if (d.schema && d.schema !== 'ogr-cpd-v1') e.push(`Unexpected schema "${d.schema}" — expected ogr-cpd-v1.`);
+    if (d.schema && !CPD_SCHEMAS.includes(d.schema))
+      e.push(`Unexpected schema "${d.schema}" — expected ${CPD_SCHEMAS.join(' or ')}.`);
     if (!d.volume) e.push('Missing "volume" (e.g. "Volume 23, Issue 1").');
     if (!Array.isArray(d.sections) || !d.sections.length) e.push('Missing "sections" array.');
     let n = 0;
@@ -2399,9 +2401,38 @@ const DevConsole = (() => {
         const where = `Section ${si + 1} Q${qi + 1}`;
         if (!q.id) e.push(`${where}: missing "id".`);
         if (!q.stem) e.push(`${where}: missing "stem".`);
-        // a true/false item is meaningless without a real boolean
-        if (typeof q.answer !== 'boolean') e.push(`${where}: "answer" must be true or false.`);
         if (!q.rationale) e.push(`${where}: missing "rationale".`);
+        // v2 tags the type; an untagged question is true/false, as in v1
+        const type = String(q.qtype || 'TF').toUpperCase();
+        if (type !== 'TF' && type !== 'SBA') {
+          e.push(`${where}: "qtype" must be TF or SBA (found "${q.qtype}").`);
+          return;
+        }
+        if (type === 'SBA') {
+          const opts = q.options;
+          if (!Array.isArray(opts) || opts.length < 2) {
+            e.push(`${where}: an SBA question needs an "options" array of at least 2.`);
+            return;
+          }
+          const keys = [];
+          opts.forEach((o, oi) => {
+            if (typeof o === 'string') { keys.push(String.fromCharCode(65 + oi)); return; }
+            if (!o || !o.key) e.push(`${where} option ${oi + 1}: missing "key".`);
+            if (!o || !o.text) e.push(`${where} option ${oi + 1}: missing "text".`);
+            if (o && o.key) keys.push(String(o.key).toUpperCase());
+          });
+          const dupes = keys.filter((k, i) => keys.indexOf(k) !== i);
+          if (dupes.length) e.push(`${where}: duplicate option key${dupes.length > 1 ? 's' : ''} ${[...new Set(dupes)].join(', ')}.`);
+          // an answer key that is not one of the options makes the question unmarkable
+          if (typeof q.answer !== 'string' || !q.answer.trim()) {
+            e.push(`${where}: an SBA "answer" must be the key of the correct option, e.g. "C".`);
+          } else if (keys.length && !keys.includes(q.answer.trim().toUpperCase())) {
+            e.push(`${where}: answer "${q.answer}" is not one of the options (${keys.join(', ')}).`);
+          }
+        } else if (typeof q.answer !== 'boolean') {
+          // a true/false item is meaningless without a real boolean
+          e.push(`${where}: a true/false "answer" must be true or false.`);
+        }
       });
     });
     if (!n) e.push('No questions found in any section.');
@@ -2413,8 +2444,9 @@ const DevConsole = (() => {
   }
   const cpdCounts = d => {
     const secs = (d.sections || []).length;
-    const qs = (d.sections || []).reduce((n, x) => n + (x.questions || []).length, 0);
-    return { secs, qs };
+    const all = (d.sections || []).flatMap(x => x.questions || []);
+    const sba = all.filter(q => String(q.qtype || 'TF').toUpperCase() === 'SBA').length;
+    return { secs, qs: all.length, sba };
   };
 
   async function renderCpdSection(view) {
@@ -2425,7 +2457,8 @@ const DevConsole = (() => {
         <header data-animate>
           <p class="kicker">DEVELOPER · CPD IMPORTER</p>
           <h1 class="page-title">CPD volumes</h1>
-          <p class="muted">TOG true/false self-assessment sets in <code>ogr-cpd-v1</code> JSON. Source folder:
+          <p class="muted">TOG self-assessment sets in <code>ogr-cpd-v1</code> (true/false) or <code>ogr-cpd-v2</code>
+            (true/false + SBA) JSON. Source folder:
             <code>${esc(ctx.cfg.drive.cpdFolderId || '(set drive.cpdFolderId)')}</code>. Published volumes appear in
             <strong>Library → CPD</strong>, for users you have granted the <strong>CPD</strong> flag in
             <a class="link" href="#/dev/users">Users &amp; access</a> and who have switched it on in their Profile.</p>
@@ -2464,9 +2497,9 @@ const DevConsole = (() => {
     if (count) count.textContent = list.length;
     if (!host) return;
     host.innerHTML = list.length ? `<div class="table-scroll"><table class="table">
-      <thead><tr><th>Volume</th><th>Topics</th><th>Statements</th><th></th></tr></thead>
+      <thead><tr><th>Volume</th><th>Topics</th><th>Questions</th><th>SBA</th><th></th></tr></thead>
       <tbody>${list.map(v => { const c = cpdCounts(v); return `<tr>
-        <td>${ctx.esc(v.volume || v.id)}</td><td class="muted">${c.secs}</td><td class="muted">${c.qs}</td>
+        <td>${ctx.esc(v.volume || v.id)}</td><td class="muted">${c.secs}</td><td class="muted">${c.qs}</td><td class="muted">${c.sba || '—'}</td>
         <td><button class="link-btn" data-unpub-cpd="${ctx.esc(v.id)}">unpublish</button></td></tr>`; }).join('')}</tbody>
     </table></div>` : `<p class="muted">No CPD volumes published yet.</p>`;
     host.querySelectorAll('[data-unpub-cpd]').forEach(b => b.addEventListener('click', async () => {
@@ -2498,7 +2531,7 @@ const DevConsole = (() => {
       let doc = f.volume && typeof f.volume === 'object' ? f.volume : (f.paper || f.deck || null);
       if (!doc && f.id) { try { const r = await fetch(`${ctx.cfg.drive.apiBase}?action=file&id=${encodeURIComponent(f.id)}`); doc = await r.json(); } catch { doc = null; } }
       if (!doc || !Array.isArray(doc.sections)) continue;                 // not a CPD file at all
-      if (doc.schema && doc.schema !== 'ogr-cpd-v1') continue;            // someone else's schema
+      if (doc.schema && !CPD_SCHEMAS.includes(doc.schema)) continue;      // someone else's schema
       const errs = validateCpdVolume(doc);
       if (errs.length) { rejected.push({ name: f.name || doc.volume || 'file', errs }); continue; }
       doc.id = cpdId(doc);
@@ -2520,7 +2553,7 @@ const DevConsole = (() => {
       <div class="dev-row card" data-ci="${i}">
         <div class="dev-row-head">
           <div><p class="dev-file">📖 ${ctx.esc(d.volume || d.id)}</p>
-            <p class="muted tiny">${c.secs} topics · ${c.qs} statements${d.doi ? ' · DOI ' + ctx.esc(d.doi) : ''}</p>
+            <p class="muted tiny">${c.secs} topics · ${c.qs} questions${c.sba ? ` (${c.qs - c.sba} true/false · ${c.sba} SBA)` : ''}${d.doi ? ' · DOI ' + ctx.esc(d.doi) : ''}</p>
             <p class="muted tiny">${(d.sections || []).map(x => ctx.esc(x.topic || x.id)).join(' · ')}</p></div>
           <button class="btn btn-gold btn-sm" data-cp-approve="${i}">Publish</button>
         </div><p class="dev-row-msg" data-cp-msg="${i}"></p>

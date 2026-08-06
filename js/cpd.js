@@ -1,9 +1,12 @@
 /* ============================================================
    cpd.js — the CPD section (TOG true/false self-assessment).
 
-   Source JSON is `ogr-cpd-v1`: a VOLUME holds several topics
-   ("sections"), each holding true/false questions carrying an
-   answer, a rationale and a memory hook.
+   Source JSON is `ogr-cpd-v1` or `ogr-cpd-v2`: a VOLUME holds several
+   topics ("sections"), each holding questions with a rationale and a
+   memory hook. v1 is entirely true/false. v2 tags each question with
+   `qtype` and mixes in single-best-answer items, which carry their
+   own lettered options and answer key — the later TOG issues do this,
+   usually as a separate SBA section per topic. Both render here.
 
    The reading model is deliberately unlike the SBA runner. A CPD
    set is not an exam — it is a self-check you work through at your
@@ -47,6 +50,27 @@ const CPD = (() => {
   const questionsOf = s => s.questions || [];
   const qKey = (v, s, q) => `${v.id}:${s.id}:${q.id}`;
 
+  /* ogr-cpd-v2 mixes true/false and single-best-answer questions in one
+     volume, tagged by `qtype`. v1 files have no tag and are all true/false,
+     so an absent tag means TF. Everything below branches on this one call. */
+  const isSBA = q => String(q.qtype || 'TF').toUpperCase() === 'SBA';
+  const optionsOf = q => (q.options || []).map((o, i) =>
+    typeof o === 'string' ? { key: String.fromCharCode(65 + i), text: o } : o);
+  /** The pick, as stored: 'true'/'false' for TF, the option key for SBA. */
+  const choiceOf = row => row ? (row.choice != null ? String(row.choice) : String(row.answer)) : null;
+  const isRight = (q, choice) => isSBA(q)
+    ? String(choice).toUpperCase() === String(q.answer).toUpperCase()
+    : (String(choice) === 'true') === !!q.answer;
+  /** What the section is made of — used for the badge on the topic row. */
+  function kindOf(sec) {
+    const qs = questionsOf(sec);
+    const sba = qs.filter(isSBA).length;
+    if (!qs.length) return '';
+    if (sba === qs.length) return 'SBA';
+    if (sba === 0) return 'True / false';
+    return `${qs.length - sba} T/F · ${sba} SBA`;
+  }
+
   function scoreOf(v, s, prog) {
     const qs = questionsOf(s);
     let done = 0, right = 0;
@@ -76,7 +100,7 @@ const CPD = (() => {
         <div class="card" data-animate>
           <h3 class="card-title">No CPD volumes yet</h3>
           <p class="muted">The site owner publishes TOG CPD question sets here. Each volume covers several topics of
-            true/false self-assessment, with the reasoning and a memory hook behind every answer.</p>
+            true/false and single-best-answer self-assessment, with the reasoning and a memory hook behind every answer.</p>
         </div>`;
       return;
     }
@@ -86,9 +110,9 @@ const CPD = (() => {
         <div class="cpd-hero-glow" aria-hidden="true"></div>
         <p class="kicker">CONTINUING PROFESSIONAL DEVELOPMENT</p>
         <h1 class="page-title">CPD</h1>
-        <p class="muted">True/false self-assessment from <em>The Obstetrician &amp; Gynaecologist</em>. Answer a statement and the
-          verdict, the reasoning and the memory hook open straight away — no submit, nothing to lose. Every answer is saved as
-          you give it.</p>
+        <p class="muted">Self-assessment from <em>The Obstetrician &amp; Gynaecologist</em> — true/false statements and, in the later
+          issues, single-best-answer questions. Answer one and the verdict, the reasoning and the memory hook open straight
+          away — no submit, nothing to lose. Every answer is saved as you give it.</p>
       </div>
       <div class="cpd-vols" data-animate>
         ${list.map(v => {
@@ -102,7 +126,9 @@ const CPD = (() => {
             <div class="cpd-vol-main">
               <h3>${esc(v.volume || v.id)}</h3>
               <p class="muted tiny">${esc(v.source || 'TOG CPD')}</p>
-              <p class="cpd-vol-meta">${secs.length} topic${secs.length !== 1 ? 's' : ''} · ${sc.total} statements
+              <p class="cpd-vol-meta">${secs.length} topic${secs.length !== 1 ? 's' : ''} · ${sc.total} question${sc.total !== 1 ? 's' : ''}${
+                (() => { const n = secs.reduce((m, x) => m + questionsOf(x).filter(isSBA).length, 0);
+                  return n ? ` <span class="cpd-mix">incl. ${n} SBA</span>` : ''; })()}
                 ${sc.done ? ` · <strong class="${sc.pct >= 70 ? 'good' : sc.pct >= 50 ? '' : 'bad'}">${sc.pct}% correct</strong>` : ''}</p>
             </div>
             <span class="cpd-vol-go">→</span>
@@ -144,7 +170,7 @@ const CPD = (() => {
             <span class="cpd-topic-n">${String(i + 1).padStart(2, '0')}</span>
             <span class="cpd-topic-main">
               <span class="cpd-topic-title">${esc(s.topic || s.id)}</span>
-              ${s.folderTag ? `<span class="cpd-topic-tag">${esc(s.folderTag)}</span>` : ''}
+              <span class="cpd-topic-tag">${s.folderTag ? esc(s.folderTag) + ' · ' : ''}${esc(kindOf(s))}</span>
               <span class="cpd-topic-bar"><i style="width:${x.total ? (x.done / x.total) * 100 : 0}%"></i></span>
             </span>
             <span class="cpd-topic-side">
@@ -174,7 +200,7 @@ const CPD = (() => {
     }
     const qs = questionsOf(s);
     const answers = {};                                   // qid → { picked, correct }
-    qs.forEach(q => { const r = prog[qKey(v, s, q)]; if (r) answers[q.id] = { picked: r.answer, correct: r.correct }; });
+    qs.forEach(q => { const r = prog[qKey(v, s, q)]; if (r) answers[q.id] = { picked: choiceOf(r), correct: r.correct }; });
 
     view.innerHTML = `
       <section class="page cpd-run">
@@ -198,8 +224,8 @@ const CPD = (() => {
     // one delegated listener on the persistent list — re-wiring per card on
     // every answer is how listener stacks are born
     cardsEl.addEventListener('click', async e => {
-      const tf = e.target.closest('[data-tf]');
-      if (tf) return answer(tf);
+      const pick = e.target.closest('[data-pick]');
+      if (pick) return answer(pick);
       const aiBtn = e.target.closest('[data-cpd-ai]');
       if (aiBtn) return toggleAi(aiBtn);
       const cp = e.target.closest('[data-cpd-copy]');
@@ -221,22 +247,46 @@ const CPD = (() => {
     function cardHTML(q, i, state) {
       const shown = !!state;
       const right = state?.correct;
+      const sba = isSBA(q);
       const ecoOn = (typeof Ecosystem !== 'undefined' && Ecosystem.enabled());
+      const opts = optionsOf(q);
+      const correctKey = String(q.answer).toUpperCase();
+      const picks = sba
+        ? `<div class="cpd-opts" role="group" aria-label="Single best answer">
+            ${opts.map(o => {
+              const k = String(o.key).toUpperCase();
+              const isPick = shown && String(state.picked).toUpperCase() === k;
+              const isKey = shown && k === correctKey;
+              return `<button class="cpd-opt ${isKey ? 'is-key' : ''} ${isPick ? 'is-picked' : ''}"
+                data-pick="${esc(o.key)}" data-qid="${esc(q.id)}" ${shown ? 'disabled' : ''}>
+                <span class="cpd-opt-key">${esc(o.key)}</span>
+                <span class="cpd-opt-txt">${esc(o.text)}</span>
+                ${isKey ? '<span class="cpd-opt-mark good">✓</span>' : isPick ? '<span class="cpd-opt-mark bad">✗</span>' : ''}
+              </button>`;
+            }).join('')}
+          </div>`
+        : `<div class="cpd-tf" role="group" aria-label="True or false">
+            <button class="cpd-tf-btn cpd-true ${shown && String(state.picked) === 'true' ? 'is-picked' : ''}"
+              data-pick="true" data-qid="${esc(q.id)}" ${shown ? 'disabled' : ''}>TRUE</button>
+            <button class="cpd-tf-btn cpd-false ${shown && String(state.picked) === 'false' ? 'is-picked' : ''}"
+              data-pick="false" data-qid="${esc(q.id)}" ${shown ? 'disabled' : ''}>FALSE</button>
+          </div>`;
+      const verdictLine = sba
+        ? `The answer is <strong>${esc(correctKey)}</strong>${
+            opts.find(o => String(o.key).toUpperCase() === correctKey)
+              ? ' — ' + esc(opts.find(o => String(o.key).toUpperCase() === correctKey).text) : ''}.`
+        : `The statement is <strong>${q.answer ? 'TRUE' : 'FALSE'}</strong>.`;
       return `
-        <article class="cpd-card ${shown ? (right ? 'is-right' : 'is-wrong') : ''}" data-q="${esc(q.id)}" data-animate>
+        <article class="cpd-card ${sba ? 'is-sba' : ''} ${shown ? (right ? 'is-right' : 'is-wrong') : ''}" data-q="${esc(q.id)}" data-animate>
           <div class="cpd-card-head">
             <span class="cpd-num">${String(i + 1).padStart(2, '0')}</span>
+            <span class="cpd-type">${sba ? 'SBA' : 'True / false'}</span>
             ${shown ? `<span class="cpd-verdict ${right ? 'good' : 'bad'}">${right ? '✓ Correct' : '✗ Not quite'}</span>` : ''}
           </div>
           <p class="cpd-stem">${esc(q.stem)}</p>
-          <div class="cpd-tf" role="group" aria-label="True or false">
-            <button class="cpd-tf-btn cpd-true ${state && state.picked === true ? 'is-picked' : ''}"
-              data-tf="true" data-qid="${esc(q.id)}" ${shown ? 'disabled' : ''}>TRUE</button>
-            <button class="cpd-tf-btn cpd-false ${state && state.picked === false ? 'is-picked' : ''}"
-              data-tf="false" data-qid="${esc(q.id)}" ${shown ? 'disabled' : ''}>FALSE</button>
-          </div>
+          ${picks}
           <div class="cpd-reveal" ${shown ? '' : 'hidden'}>
-            <p class="cpd-answer">The statement is <strong>${q.answer ? 'TRUE' : 'FALSE'}</strong>.</p>
+            <p class="cpd-answer">${verdictLine}</p>
             <div class="cpd-rationale">${esc(q.rationale || '')}</div>
             ${q.hook ? `<p class="cpd-hook"><span>💡</span>${esc(q.hook)}</p>` : ''}
             <div class="cpd-actions">
@@ -253,15 +303,28 @@ const CPD = (() => {
     async function answer(btn) {
       const qid = btn.dataset.qid;
       const q = qs.find(x => x.id === qid); if (!q || answers[qid]) return;
-      const picked = btn.dataset.tf === 'true';
-      const correct = picked === !!q.answer;
+      const picked = btn.dataset.pick;                 // 'true'/'false' or an option key
+      const correct = isRight(q, picked);
       answers[qid] = { picked, correct };
 
       const card = btn.closest('.cpd-card');
       card.classList.add(correct ? 'is-right' : 'is-wrong');
-      card.querySelectorAll('[data-tf]').forEach(b => {
+      const correctKey = String(q.answer).toUpperCase();
+      card.querySelectorAll('[data-pick]').forEach(b => {
         b.disabled = true;
-        b.classList.toggle('is-picked', (b.dataset.tf === 'true') === picked);
+        const val = b.dataset.pick;
+        b.classList.toggle('is-picked', val === picked);
+        if (isSBA(q)) {
+          const isKey = String(val).toUpperCase() === correctKey;
+          b.classList.toggle('is-key', isKey);
+          // mark the right one green and a wrong pick red, the way a paper is marked
+          if (isKey || val === picked) {
+            const m = document.createElement('span');
+            m.className = 'cpd-opt-mark ' + (isKey ? 'good' : 'bad');
+            m.textContent = isKey ? '✓' : '✗';
+            if (!b.querySelector('.cpd-opt-mark')) b.appendChild(m);
+          }
+        }
       });
       const head = card.querySelector('.cpd-card-head');
       if (!head.querySelector('.cpd-verdict')) {
@@ -277,7 +340,11 @@ const CPD = (() => {
       paintMeter();
       try {
         await Backend.saveCpdAnswer({
-          qkey: qKey(v, s, q), volume_id: v.id, section_id: s.id, answer: picked, correct
+          qkey: qKey(v, s, q), volume_id: v.id, section_id: s.id,
+          // `answer` stays boolean for true/false so older rows and any code
+          // reading it keep working; `choice` is the general record
+          answer: isSBA(q) ? null : (picked === 'true'),
+          choice: String(picked), correct
         });
       } catch { /* the answer is on screen either way; it re-saves next time */ }
       if (typeof Progression !== 'undefined' && correct) { try { await Backend.addXp?.(2); } catch {} }
@@ -294,11 +361,20 @@ const CPD = (() => {
       // A true/false claim reads to the tutor as a two-option question whose
       // correct option is the truth value — so the usual explain/chat/web
       // machinery works unchanged.
+      const opts = optionsOf(q);
+      const sba = isSBA(q);
+      const keyIdx = sba ? Math.max(0, opts.findIndex(o => String(o.key).toUpperCase() === String(q.answer).toUpperCase()))
+                         : (q.answer ? 0 : 1);
+      const pickIdx = answers[qid]
+        ? (sba ? opts.findIndex(o => String(o.key).toUpperCase() === String(answers[qid].picked).toUpperCase())
+               : (String(answers[qid].picked) === 'true' ? 0 : 1))
+        : null;
       AI.attach(host, {
         questionKey: `cpd:${qKey(v, s, q)}`,
-        kind: 'CPD', theme: s.topic || '', stem: q.stem, lead: 'True or false?',
-        options: ['True', 'False'], answer: q.answer ? 0 : 1,
-        chosen: answers[qid] ? (answers[qid].picked ? 0 : 1) : null,
+        kind: sba ? 'SBA' : 'CPD', theme: s.topic || '', stem: q.stem,
+        lead: sba ? 'Which is the single best answer?' : 'True or false?',
+        options: sba ? opts.map(o => o.text) : ['True', 'False'],
+        answer: keyIdx, chosen: pickIdx != null && pickIdx >= 0 ? pickIdx : null,
         rationale: q.rationale || '', hook: q.hook || '',
         paperTitle: `${v.volume || 'CPD'} · ${s.topic || ''}`
       });
@@ -307,10 +383,15 @@ const CPD = (() => {
     /* ---- copy for the outside models ---- */
     async function copyOne(btn) {
       const q = qs.find(x => x.id === btn.dataset.qid); if (!q) return;
+      const sba = isSBA(q);
+      const opts = optionsOf(q);
       const ok = await Ecosystem.copyQuestion({
-        theme: `${s.topic || ''} (CPD · true or false)`,
-        stem: q.stem, lead: 'Is this statement true or false, and why?',
-        options: ['True', 'False'], answer: q.answer ? 0 : 1
+        theme: `${s.topic || ''} (CPD · ${sba ? 'single best answer' : 'true or false'})`,
+        stem: q.stem,
+        lead: sba ? 'Which is the single best answer, and why?' : 'Is this statement true or false, and why?',
+        // the option letters are already in the source, so keep them verbatim
+        options: sba ? opts.map(o => `${o.key}. ${o.text}`) : ['True', 'False'],
+        preLettered: sba, answer: 0
       });
       btn.textContent = ok ? '✓ Copied — paste it in' : '⚠ Press ⌘/Ctrl-C';
       btn.classList.toggle('is-done', ok);
@@ -327,7 +408,7 @@ const CPD = (() => {
       if (fill) fill.style.width = (qs.length ? (done / qs.length) * 100 : 0) + '%';
       if (txt) txt.innerHTML = done
         ? `<strong>${done}</strong> of ${qs.length} answered · <strong class="${pct >= 70 ? 'good' : pct >= 50 ? '' : 'bad'}">${pct}%</strong> correct`
-        : `${qs.length} statements · answer one to begin`;
+        : `${qs.length} question${qs.length !== 1 ? 's' : ''} · answer one to begin`;
       const doneEl = view.querySelector('#cpd-done');
       if (!doneEl) return;
       if (done === qs.length && qs.length) {

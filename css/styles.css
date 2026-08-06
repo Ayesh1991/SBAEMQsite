@@ -3154,3 +3154,33 @@ body.eco-dragging .eco-frame { pointer-events: none; }   /* the frame must not e
   .es-wa-metric { flex-basis: calc(50% - 5px); }
   .es-block { padding: 10px 12px; }
 }
+
+/* CPD — single-best-answer questions (ogr-cpd-v2) */
+.cpd-type { font-size: .6rem; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3);
+  padding: 2px 8px; border-radius: 999px; border: 1px solid var(--hairline); }
+.cpd-card.is-sba .cpd-type { color: var(--teal); border-color: var(--teal); }
+.cpd-mix { font-size: .7rem; color: var(--teal); }
+
+.cpd-opts { display: flex; flex-direction: column; gap: 8px; }
+.cpd-opt {
+  display: flex; align-items: flex-start; gap: 11px; width: 100%; text-align: left;
+  padding: 12px 14px; border-radius: 12px; cursor: pointer; font: inherit; font-size: .88rem;
+  background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink);
+  transition: border-color .16s ease, background .16s ease;
+}
+.cpd-opt:not(:disabled):hover { border-color: var(--teal); }
+.cpd-opt:disabled { cursor: default; }
+.cpd-opt-key {
+  flex: 0 0 24px; height: 24px; border-radius: 7px; display: grid; place-items: center;
+  background: var(--surface); border: 1px solid var(--hairline);
+  font-size: .72rem; font-weight: 700; color: var(--ink-2);
+}
+.cpd-opt-txt { flex: 1; min-width: 0; line-height: 1.5; }
+.cpd-opt-mark { flex: 0 0 auto; font-weight: 700; }
+/* the key is always shown once answered; a wrong pick is shown alongside it */
+.cpd-opt.is-key { border-color: var(--teal); background: rgba(94,234,212,.12); }
+.cpd-opt.is-key .cpd-opt-key { border-color: var(--teal); color: var(--teal); }
+.cpd-opt.is-picked:not(.is-key) { border-color: var(--bad); background: rgba(224,82,99,.12); }
+.cpd-opt.is-picked:not(.is-key) .cpd-opt-key { border-color: var(--bad); color: var(--bad); }
+.cpd-opt:disabled:not(.is-key):not(.is-picked) { opacity: .55; }
+.energy-saving .cpd-opt { transition: none; }
