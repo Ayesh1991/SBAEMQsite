@@ -392,8 +392,11 @@ const Essay = (() => {
         <a class="link muted dev-back" href="#/library/essay">← Essay papers</a>
         <header class="es-report-head es-band-head-${band}" data-animate>
           <div class="es-report-id">
-            <p class="kicker">${esc(f.subject || 'O&G')} · ${esc(f.questionType || 'SEQ')} · scheme v${esc(f.schemeVersion || '1.0')}${f.markedOn ? ' · marked ' + esc(f.markedOn) : ''}</p>
+            <p class="kicker">${esc(f.subject || 'O&G')} · ${esc(f.questionType || 'SEQ')} · scheme v${esc(f.schemeVersion || '1.0')}${
+              f.schemeSource ? ' (' + esc(f.schemeSource) + ')' : ''}${f.markedOn ? ' · marked ' + esc(f.markedOn) : ''}</p>
             <h1 class="page-title">${esc(f.code)} — ${esc(f.topic || '')}</h1>
+            ${(f.topicTags || []).length
+              ? `<div class="es-tags">${f.topicTags.map(t => `<span class="es-tag">${esc(t)}</span>`).join('')}</div>` : ''}
           </div>
           <div class="es-scoredial">
             <div class="es-dial" id="es-dial" data-pct="${sc.percent || 0}"><span>${sc.percent != null ? sc.percent + '%' : '—'}</span></div>
@@ -401,6 +404,13 @@ const Essay = (() => {
             <span class="muted tiny">${sc.raw != null ? `${sc.raw}/${sc.rawMax || 100} raw · ${sc.scaled != null ? sc.scaled + '/' + (sc.scaledMax || 20) : ''}` : ''}</span>
           </div>
         </header>
+
+        ${(sc.deductions || []).length ? `
+        <div class="card es-deduct" data-animate>
+          <h3 class="card-title">➖ Deductions applied</h3>
+          <ul class="es-flag-list">${sc.deductions.map(d => `<li>${typeof d === 'string' ? esc(d)
+            : `${esc(d.reason || d.cause || '')}${d.marks != null ? ` <strong>−${d.marks}</strong>` : ''}`}</li>`).join('')}</ul>
+        </div>` : ''}
 
         ${f.questionStem ? `<div class="card es-r-q" data-animate><p class="es-q-stem">${esc(f.questionStem).replace(/\n/g, '<br>')}</p>
           ${(f.subQuestions || []).length ? `<ul class="es-q-parts">${f.subQuestions.map(sqp => `<li><strong>${esc(sqp.label)}</strong> ${esc(sqp.text)} <span class="muted tiny">(${sqp.maxMarks || sqp.marks || ''})</span></li>`).join('')}</ul>` : ''}</div>` : ''}
@@ -424,20 +434,54 @@ const Essay = (() => {
         <div class="card" data-animate>
           <h3 class="card-title">Mark-scheme assessment</h3>
           <p class="muted tiny">Every scheme point, marked against your answer. <span class="es-dot cov"></span> covered ·
-            <span class="es-dot par"></span> partial · <span class="es-dot mis"></span> missed.</p>
+            <span class="es-dot par"></span> partial · <span class="es-dot mis"></span> missed ·
+            <span class="es-safety-key">⚠</span> safety-critical.</p>
           ${f.markScheme.map(sec => `
             <details class="es-scheme-sec" open>
-              <summary><strong>${esc(sec.section)}</strong> <span class="muted">${sec.raw != null ? sec.raw + '/' + sec.max : ''}</span></summary>
-              <div class="es-points">${(sec.points || []).map(pt => `
-                <div class="es-point es-st-${stClass(pt.status)}">
-                  <span class="es-point-icon">${stIcon(pt.status)}</span>
-                  <div class="es-point-body">
-                    <p class="es-point-text">${esc(pt.point)}</p>
-                    ${pt.note ? `<p class="es-point-note">${esc(pt.note)}</p>` : ''}
-                    ${pt.guideline ? `<span class="es-point-guide">${esc(pt.guideline)}</span>` : ''}
-                  </div>
-                </div>`).join('')}</div>
+              <summary><strong>${esc(sec.section)}</strong>
+                <span class="muted">${sec.raw != null ? sec.raw + '/' + sec.max : ''}</span></summary>
+              ${schemeBody(sec)}
             </details>`).join('')}
+        </div>` : ''}
+
+        ${f.lossAnalysis ? `
+        <div class="card es-loss" data-animate>
+          <h3 class="card-title">📉 Where the marks went</h3>
+          ${f.lossAnalysis.totalLost != null
+            ? `<p class="es-loss-total"><strong>${f.lossAnalysis.totalLost}</strong> marks lost in total.</p>` : ''}
+          ${(f.lossAnalysis.byCause || []).length ? `
+            <div class="es-cause-list">${f.lossAnalysis.byCause
+              .slice().sort((a, b) => (b.marks || 0) - (a.marks || 0)).map(c => {
+                const share = f.lossAnalysis.totalLost ? Math.round(((c.marks || 0) / f.lossAnalysis.totalLost) * 100) : 0;
+                return `<div class="es-cause">
+                  <div class="es-cause-head">
+                    <span class="es-cause-name">${esc(c.cause)}</span>
+                    <span class="es-cause-mk">−${c.marks}</span>
+                  </div>
+                  <div class="es-cause-bar"><i style="width:${share}%"></i></div>
+                  ${c.detail ? `<p class="es-cause-detail">${esc(c.detail)}</p>` : ''}
+                </div>`;
+              }).join('')}</div>` : ''}
+          ${f.lossAnalysis.biggestSingleLoss
+            ? `<p class="es-loss-big"><strong>Biggest single loss.</strong> ${esc(f.lossAnalysis.biggestSingleLoss)}</p>` : ''}
+        </div>` : ''}
+
+        ${(f.priorityActions || []).length ? `
+        <div class="card es-prio" data-animate>
+          <h3 class="card-title">🚀 Do these first</h3>
+          <p class="muted tiny">Ranked by the marks each would have won back.</p>
+          <ol class="es-prio-list">${f.priorityActions
+            .slice().sort((a, b) => (a.rank || 99) - (b.rank || 99)).map(a => `
+            <li class="es-prio-item">
+              <span class="es-prio-rank">${a.rank != null ? a.rank : '•'}</span>
+              <div class="es-prio-body">
+                <p>${esc(a.action)}</p>
+                <span class="es-prio-meta">
+                  ${a.estimatedMarkGain != null ? `<span class="es-prio-gain">+${a.estimatedMarkGain} marks</span>` : ''}
+                  ${a.type ? `<span class="es-prio-type">${esc(a.type)}</span>` : ''}
+                </span>
+              </div>
+            </li>`).join('')}</ol>
         </div>` : ''}
 
         ${(f.improvementAdvice || []).length ? `
@@ -457,6 +501,87 @@ const Essay = (() => {
                 <p class="es-rw-new">→ ${esc(qq.rewrite)}</p></div>`).join('')}
               ${(w.proTips || []).length ? `<ul class="es-protips">${w.proTips.map(t => `<li>${esc(t)}</li>`).join('')}</ul>` : ''}
             </div>`).join('')}
+        </div>` : ''}
+
+        ${f.writingAnalysis ? (() => {
+          const w = f.writingAnalysis, st = w.structure || {};
+          const metrics = [
+            ['Sub-parts labelled', st.subPartsLabelled == null ? null : (st.subPartsLabelled ? 'Yes' : 'No')],
+            ['Answered in order', st.answeredInOrder == null ? null : (st.answeredInOrder ? 'Yes' : 'No')],
+            ['Mean sentence length', st.meanSentenceWords != null ? st.meanSentenceWords + ' words' : null],
+            ['Over-long sentences', st.longSentenceCount != null ? String(st.longSentenceCount) : null],
+            ['Run-on sentences', st.runOnCount != null ? String(st.runOnCount) : null],
+            ['Signposting', st.signpostingScore || null]
+          ].filter(m => m[1] != null);
+          return `
+        <div class="card es-wa" data-animate>
+          <h3 class="card-title">🖊 Writing analysis</h3>
+          ${w.overallVerdict ? `<p class="es-wa-verdict">${esc(w.overallVerdict)}</p>` : ''}
+          ${metrics.length ? `<div class="es-wa-metrics">${metrics.map(([k, v]) =>
+            `<div class="es-wa-metric"><span class="es-wa-mv">${esc(v)}</span><span class="es-wa-mk">${esc(k)}</span></div>`).join('')}</div>` : ''}
+          ${st.proseVsList ? `<p class="es-wa-note"><strong>Prose vs list.</strong> ${esc(st.proseVsList)}</p>` : ''}
+
+          ${(w.buriedItems || []).length ? `
+            <h4 class="es-wa-h">Points the examiner could not credit</h4>
+            ${w.buriedItems.map(b => `<div class="es-buried">
+              <p class="es-buried-item">${esc(b.item)}${b.where ? ` <span class="muted tiny">— ${esc(b.where)}</span>` : ''}</p>
+              ${b.issue ? `<p class="es-buried-issue">${esc(b.issue)}</p>` : ''}
+              ${b.fix ? `<p class="es-buried-fix">→ ${esc(b.fix)}</p>` : ''}
+            </div>`).join('')}` : ''}
+
+          ${(w.recurringErrors || []).length ? `
+            <h4 class="es-wa-h">Patterns that repeated</h4>
+            ${w.recurringErrors.map(r => `<div class="es-recur">
+              <p class="es-recur-head">${esc(r.pattern)}${r.count != null ? ` <span class="es-recur-n">×${r.count}</span>` : ''}</p>
+              ${(r.examples || []).length ? `<ul class="es-recur-eg">${r.examples.map(x => `<li>“${esc(x)}”</li>`).join('')}</ul>` : ''}
+              ${r.fix ? `<p class="es-recur-fix">→ ${esc(r.fix)}</p>` : ''}
+            </div>`).join('')}` : ''}
+
+          ${w.paragraphRewrite ? `
+            <h4 class="es-wa-h">Rewritten in full${w.paragraphRewrite.label ? ` — ${esc(w.paragraphRewrite.label)}` : ''}</h4>
+            <div class="es-rewrite big">
+              ${w.paragraphRewrite.original ? `<p class="es-rw-orig">“${esc(w.paragraphRewrite.original)}”</p>` : ''}
+              ${w.paragraphRewrite.rewritten ? `<p class="es-rw-new">→ ${esc(w.paragraphRewrite.rewritten)}</p>` : ''}
+            </div>
+            ${(w.paragraphRewrite.whatChanged || []).length
+              ? `<ul class="es-changed">${w.paragraphRewrite.whatChanged.map(c => `<li>${esc(c)}</li>`).join('')}</ul>` : ''}` : ''}
+
+          ${(w.phraseBank || []).length ? `
+            <h4 class="es-wa-h">Phrase bank</h4>
+            <div class="es-phrases">${w.phraseBank.map(p => `<span class="es-phrase">${esc(p)}</span>`).join('')}</div>` : ''}
+        </div>`; })() : ''}
+
+        ${f.timeManagement ? (() => { const t = f.timeManagement; return `
+        <div class="card es-time" data-animate>
+          <h3 class="card-title">⏱ Time &amp; volume</h3>
+          <div class="es-wa-metrics">
+            ${t.budgetMinutes != null ? `<div class="es-wa-metric"><span class="es-wa-mv">${t.budgetMinutes} min</span><span class="es-wa-mk">Budget</span></div>` : ''}
+            ${t.estimatedWordCount != null ? `<div class="es-wa-metric"><span class="es-wa-mv">${t.estimatedWordCount}</span><span class="es-wa-mk">Words written</span></div>` : ''}
+            ${t.fitsBudget != null ? `<div class="es-wa-metric"><span class="es-wa-mv ${t.fitsBudget ? 'good' : 'bad'}">${t.fitsBudget ? 'Yes' : 'No'}</span><span class="es-wa-mk">Fits the budget</span></div>` : ''}
+            ${t.subPartConsumingBudget ? `<div class="es-wa-metric"><span class="es-wa-mv">${esc(t.subPartConsumingBudget)}</span><span class="es-wa-mk">Took the most time</span></div>` : ''}
+          </div>
+          ${t.comment ? `<p class="es-wa-note">${esc(t.comment)}</p>` : ''}
+        </div>`; })() : ''}
+
+        ${f.transcription ? `
+        <div class="card es-trans" data-animate>
+          <details class="dev-collapse">
+            <summary><span class="card-title">📄 What the marker read from your script</span><span class="dc-caret">▸</span></summary>
+            <p class="muted tiny">${f.transcription.pageCount != null ? f.transcription.pageCount + ' page' + (f.transcription.pageCount === 1 ? '' : 's') : ''}${
+              f.transcription.illegiblePercent != null ? ` · about ${f.transcription.illegiblePercent}% could not be read` : ''}.
+              Check this against what you meant to write — anything mis-read here was marked as it appears.</p>
+            ${(f.transcription.pages || []).map(pg => `<div class="es-page">
+              <span class="es-page-n">Page ${pg.page}</span>
+              <p class="es-page-text">${esc(pg.text).replace(/\n/g, '<br>')}</p>
+            </div>`).join('')}
+          </details>
+        </div>` : ''}
+
+        ${(f.flags || []).length ? `
+        <div class="card es-flags" data-animate>
+          <h3 class="card-title">⚑ Marker's caveats</h3>
+          <p class="muted tiny">The marker flagged these for checking — treat them as provisional.</p>
+          <ul class="es-flag-list">${f.flags.map(x => `<li>${esc(x)}</li>`).join('')}</ul>
         </div>` : ''}
 
         ${(f.keyLearningPoints || []).length ? `
@@ -488,6 +613,16 @@ const Essay = (() => {
           <div id="es-ai-out"></div>
           <div class="ai-slot" id="es-ai-slot"></div>
         </div>
+
+        ${(() => { const u = unknownFields(f); return u.length ? `
+        <div class="card es-unknown" data-animate>
+          <h3 class="card-title">⚠ Not shown above</h3>
+          <p class="muted tiny">This report carries fields the page does not yet know how to draw. They are listed
+            raw rather than dropped, so nothing in your marking is lost — tell the developer and they will be given
+            a proper section.</p>
+          ${u.map(k => `<details class="es-raw"><summary><code>${esc(k)}</code></summary>
+            <pre class="es-raw-body">${esc(JSON.stringify(f[k], null, 2))}</pre></details>`).join('')}
+        </div>` : ''; })()}
 
         <div class="es-report-foot">
           <button class="btn btn-ghost btn-sm qr-danger" id="es-del">🗑 Delete this report</button>
@@ -550,6 +685,59 @@ const Essay = (() => {
 
   const stClass = s => /cover/i.test(s) ? 'cov' : /partial/i.test(s) ? 'par' : 'mis';
   const stIcon = s => /cover/i.test(s) ? '✓' : /partial/i.test(s) ? '~' : '✗';
+
+  /* The mark scheme changed shape at ogr-essay-feedback-v3: a section now holds
+     BLOCKS, each with its own mark, guideline, status and cap, and each block
+     holds the individual items. The old shape was a flat `points` array. The
+     renderer only knew the old one, so every v3 section drew an empty box —
+     the section headers were there and nothing was inside them. Both shapes
+     render here, so old reports keep working. */
+  function schemeItem(it) {
+    const text = it.item || it.point || '';
+    return `
+      <div class="es-point es-st-${stClass(it.status)}${it.safety ? ' is-safety' : ''}">
+        <span class="es-point-icon">${stIcon(it.status)}</span>
+        <div class="es-point-body">
+          <p class="es-point-text">${it.safety ? '<span class="es-safety" title="Safety-critical point">⚠</span>' : ''}${esc(text)}</p>
+          ${it.note ? `<p class="es-point-note">${esc(it.note)}</p>` : ''}
+          ${it.guideline ? `<span class="es-point-guide">${esc(it.guideline)}</span>` : ''}
+        </div>
+      </div>`;
+  }
+  function schemeBody(sec) {
+    if ((sec.blocks || []).length) {
+      return `<div class="es-blocks">${sec.blocks.map(b => `
+        <div class="es-block es-st-${stClass(b.status)}">
+          <div class="es-block-head">
+            <span class="es-block-name">${esc(b.block || '')}</span>
+            <span class="es-block-mk">${b.awarded != null ? b.awarded + '/' + b.max : ''}</span>
+          </div>
+          <div class="es-block-tags">
+            ${b.status ? `<span class="es-chip es-st-${stClass(b.status)}">${esc(b.status)}</span>` : ''}
+            ${b.capped ? `<span class="es-chip es-capped" title="An error in this block zeroed it, whatever else was written">capped to zero</span>` : ''}
+            ${b.guideline ? `<span class="es-chip es-guide">${esc(b.guideline)}</span>` : ''}
+          </div>
+          <div class="es-points">${(b.items || []).map(schemeItem).join('')}</div>
+        </div>`).join('')}</div>`;
+    }
+    // pre-v3 flat shape
+    return `<div class="es-points">${(sec.points || []).map(schemeItem).join('')}</div>`;
+  }
+
+  /* Every key the report knows how to draw. Anything in the JSON that is not
+     here is shown as an explicit gap rather than silently dropped — which is
+     exactly how the v3 mark scheme went missing without anyone noticing. */
+  const KNOWN_FIELDS = new Set([
+    'schema', 'code', 'paper', 'topic', 'subject', 'questionType', 'topicTags',
+    'schemeVersion', 'schemeSource', 'markedOn', 'questionStem', 'subQuestions',
+    'score', 'breakdown', 'lossAnalysis', 'examinerComment', 'transcription',
+    'markScheme', 'improvementAdvice', 'writingAnalysis', 'writingImprovement',
+    'timeManagement', 'priorityActions', 'guidelines', 'keyLearningPoints',
+    'flags', 'modelAnswer',
+    // storage/bookkeeping keys the app itself adds
+    'id', 'user_id', 'created', 'created_at', 'updated_at', 'percent', 'band'
+  ]);
+  const unknownFields = f => Object.keys(f || {}).filter(k => !KNOWN_FIELDS.has(k));
   function animateDial(el, pct) {
     el.style.setProperty('--pct', pct);
     const col = pct >= 75 ? '#34d399' : pct >= 65 ? '#5eead4' : pct >= 50 ? '#e8a33d' : '#e05263';

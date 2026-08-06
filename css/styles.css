@@ -3061,3 +3061,96 @@ body.eco-dragging .eco-frame { pointer-events: none; }   /* the frame must not e
 }
 .energy-saving .cpd-vol, .energy-saving .cpd-tf-btn, .energy-saving .cpd-topic-bar i,
 .energy-saving .cpd-meter-bar i { transition: none; }
+
+/* ============================================================
+   essay feedback report — v3 fields
+   ============================================================ */
+
+.es-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.es-tag { font-size: .66rem; padding: 3px 9px; border-radius: 999px;
+  background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink-3); }
+
+/* mark scheme: blocks inside a section */
+.es-blocks { display: flex; flex-direction: column; gap: 12px; margin-top: 10px; }
+.es-block { border: 1px solid var(--hairline); border-left: 3px solid var(--hairline); border-radius: 12px; padding: 12px 14px; }
+.es-block.es-st-cov { border-left-color: var(--teal); }
+.es-block.es-st-par { border-left-color: var(--gold); }
+.es-block.es-st-mis { border-left-color: var(--bad); }
+.es-block-head { display: flex; align-items: baseline; gap: 10px; }
+.es-block-name { font-size: .88rem; font-weight: 650; flex: 1; min-width: 0; }
+.es-block-mk { font-size: .8rem; font-weight: 700; color: var(--ink-2); }
+.es-block-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
+.es-chip { font-size: .62rem; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--hairline); color: var(--ink-3); }
+.es-chip.es-st-cov { border-color: var(--teal); color: var(--teal); }
+.es-chip.es-st-par { border-color: var(--gold); color: var(--gold); }
+.es-chip.es-st-mis { border-color: var(--bad); color: var(--bad); }
+.es-chip.es-capped { border-color: var(--bad); background: rgba(224,82,99,.12); color: var(--bad); font-weight: 650; }
+.es-chip.es-guide { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.es-safety { color: var(--bad); margin-right: 5px; font-weight: 700; }
+.es-safety-key { color: var(--bad); font-weight: 700; }
+.es-point.is-safety .es-point-text { font-weight: 600; }
+
+/* where the marks went */
+.es-loss-total { margin: 4px 0 14px; font-size: .92rem; }
+.es-cause-list { display: flex; flex-direction: column; gap: 14px; }
+.es-cause-head { display: flex; align-items: baseline; gap: 10px; }
+.es-cause-name { flex: 1; min-width: 0; font-size: .86rem; font-weight: 600; }
+.es-cause-mk { font-size: .84rem; font-weight: 700; color: var(--bad); }
+.es-cause-bar { height: 5px; border-radius: 5px; background: var(--surface-2); overflow: hidden; margin: 6px 0; }
+.es-cause-bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--bad), var(--gold)); }
+.es-cause-detail { margin: 0; font-size: .78rem; line-height: 1.55; color: var(--ink-3); }
+.es-loss-big { margin: 16px 0 0; padding: 12px 14px; border-radius: 12px;
+  background: var(--surface-2); font-size: .84rem; line-height: 1.6; }
+
+/* priority actions */
+.es-prio-list { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.es-prio-item { display: flex; gap: 12px; align-items: flex-start; }
+.es-prio-rank { flex: 0 0 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--gold); color: #1a1408; font-size: .74rem; font-weight: 700; }
+.es-prio-body { flex: 1; min-width: 0; }
+.es-prio-body p { margin: 0; font-size: .88rem; line-height: 1.55; }
+.es-prio-meta { display: flex; gap: 8px; margin-top: 5px; }
+.es-prio-gain { font-size: .68rem; font-weight: 700; color: var(--teal); }
+.es-prio-type { font-size: .68rem; color: var(--ink-3); }
+
+/* writing analysis */
+.es-wa-verdict { font-size: .9rem; line-height: 1.65; margin: 4px 0 14px; }
+.es-wa-metrics { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
+.es-wa-metric { flex: 1 1 118px; padding: 11px 13px; border-radius: 12px;
+  background: var(--surface-2); border: 1px solid var(--hairline); }
+.es-wa-mv { display: block; font-size: 1rem; font-weight: 700; }
+.es-wa-mk { display: block; font-size: .64rem; letter-spacing: .06em; color: var(--ink-3); margin-top: 3px; }
+.es-wa-note { font-size: .82rem; line-height: 1.6; color: var(--ink-2); margin: 10px 0 0; }
+.es-wa-h { margin: 22px 0 10px; font-size: .74rem; letter-spacing: .1em; text-transform: uppercase; color: var(--gold); }
+.es-buried, .es-recur { padding: 12px 14px; border-radius: 12px; background: var(--surface-2); margin-bottom: 10px; }
+.es-buried-item { margin: 0 0 4px; font-size: .86rem; font-weight: 600; }
+.es-buried-issue { margin: 0 0 6px; font-size: .8rem; color: var(--ink-3); line-height: 1.55; }
+.es-buried-fix, .es-recur-fix { margin: 0; font-size: .8rem; line-height: 1.55; color: var(--teal); }
+.es-recur-head { margin: 0 0 6px; font-size: .86rem; font-weight: 600; }
+.es-recur-n { font-size: .7rem; color: var(--bad); font-weight: 700; }
+.es-recur-eg { margin: 0 0 8px; padding-left: 18px; font-size: .78rem; color: var(--ink-3); line-height: 1.6; }
+.es-rewrite.big { padding: 12px 14px; border-radius: 12px; background: var(--surface-2); }
+.es-changed { margin: 10px 0 0; padding-left: 18px; font-size: .78rem; color: var(--ink-3); line-height: 1.6; }
+.es-phrases { display: flex; flex-wrap: wrap; gap: 7px; }
+.es-phrase { font-size: .74rem; padding: 5px 11px; border-radius: 999px;
+  background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink-2); }
+
+/* transcription */
+.es-page { margin-top: 14px; }
+.es-page-n { display: inline-block; font-size: .64rem; letter-spacing: .08em; color: var(--gold); margin-bottom: 5px; }
+.es-page-text { margin: 0; font-size: .82rem; line-height: 1.7; color: var(--ink-2);
+  padding: 12px 14px; border-radius: 12px; background: var(--surface-2); }
+
+/* flags, deductions, unknown fields */
+.es-flag-list { margin: 10px 0 0; padding-left: 18px; font-size: .84rem; line-height: 1.7; color: var(--ink-2); }
+.es-unknown { border-color: var(--gold); }
+.es-raw { margin-top: 8px; }
+.es-raw > summary { cursor: pointer; font-size: .78rem; }
+.es-raw-body { margin: 8px 0 0; padding: 11px 13px; border-radius: 10px; background: var(--surface-2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .7rem; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow: auto; }
+
+@media (max-width: 620px) {
+  .es-wa-metric { flex-basis: calc(50% - 5px); }
+  .es-block { padding: 10px 12px; }
+}
