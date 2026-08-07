@@ -419,7 +419,7 @@ const Essay = (() => {
         <div class="card" data-animate>
           <h3 class="card-title">Sub-question breakdown</h3>
           <div class="es-break">${f.breakdown.map(b => {
-            const pct = b.max ? Math.round((b.raw / b.max) * 100) : 0;
+            const pct = b.percent != null ? b.percent : (b.max ? Math.round((b.raw / b.max) * 100) : 0);
             return `<div class="es-break-row">
               <span class="es-break-lbl">${esc(b.section)}</span>
               <div class="es-break-bar"><span class="${pct < 50 ? 'bad' : pct < 65 ? '' : 'good'}" style="width:${pct}%"></span></div>
@@ -443,6 +443,8 @@ const Essay = (() => {
               ${schemeBody(sec)}
             </details>`).join('')}
         </div>` : ''}
+
+        ${generatedSchemeCard(f)}
 
         ${f.lossAnalysis ? `
         <div class="card es-loss" data-animate>
@@ -570,8 +572,12 @@ const Essay = (() => {
             <p class="muted tiny">${f.transcription.pageCount != null ? f.transcription.pageCount + ' page' + (f.transcription.pageCount === 1 ? '' : 's') : ''}${
               f.transcription.illegiblePercent != null ? ` · about ${f.transcription.illegiblePercent}% could not be read` : ''}.
               Check this against what you meant to write — anything mis-read here was marked as it appears.</p>
+            ${(f.transcription.subPartMapping || []).length ? `
+              <div class="es-sp-map">${f.transcription.subPartMapping.map(m => `<span class="es-sp">
+                <b>${esc(m.label)}</b> ${(m.pages || []).length ? 'p' + m.pages.join(', ') : ''}</span>`).join('')}</div>` : ''}
             ${(f.transcription.pages || []).map(pg => `<div class="es-page">
               <span class="es-page-n">Page ${pg.page}</span>
+              ${pg.subPart ? `<span class="es-page-sub">${esc(pg.subPart)}</span>` : ''}
               <p class="es-page-text">${esc(pg.text).replace(/\n/g, '<br>')}</p>
             </div>`).join('')}
           </details>
@@ -617,11 +623,11 @@ const Essay = (() => {
         ${(() => { const u = unknownFields(f); return u.length ? `
         <div class="card es-unknown" data-animate>
           <h3 class="card-title">⚠ Not shown above</h3>
-          <p class="muted tiny">This report carries fields the page does not yet know how to draw. They are listed
-            raw rather than dropped, so nothing in your marking is lost — tell the developer and they will be given
-            a proper section.</p>
-          ${u.map(k => `<details class="es-raw"><summary><code>${esc(k)}</code></summary>
-            <pre class="es-raw-body">${esc(JSON.stringify(f[k], null, 2))}</pre></details>`).join('')}
+          <p class="muted tiny">This report carries ${u.length} field${u.length === 1 ? '' : 's'} the page does not yet know
+            how to draw — checked at every level of the file, not just the top. They are listed raw rather than dropped,
+            so nothing in your marking is lost. Tell the developer and each will be given a proper section.</p>
+          ${u.map(x => `<details class="es-raw"><summary><code>${esc(x.path)}</code></summary>
+            <pre class="es-raw-body">${esc(JSON.stringify(x.value, null, 2))}</pre></details>`).join('')}
         </div>` : ''; })()}
 
         <div class="es-report-foot">
@@ -636,7 +642,16 @@ const Essay = (() => {
       questionKey: 'essay:' + f.code,
       kind: 'ESSAY', theme: f.topic || '', stem: (f.questionStem || '') + '\n\n' + (f.subQuestions || []).map(s => s.label + ' ' + s.text).join('\n'),
       options: [], answer: 0,
-      rationale: 'Examiner comment: ' + (f.examinerComment || '') + '\nKey points: ' + (f.keyLearningPoints || []).join('; '),
+      // Ground the tutor on the blank scheme too, so "what should I have written
+      // for section 3?" is answerable from the real scheme rather than invented.
+      rationale: 'Examiner comment: ' + (f.examinerComment || '') +
+        '\nKey points: ' + (f.keyLearningPoints || []).join('; ') +
+        ((f.generatedScheme?.sections || []).length
+          ? '\n\nThe full mark scheme for this question:\n' + f.generatedScheme.sections.map(s =>
+              `${s.label} ${s.title} (${s.rawMarks} marks) — ideal answer: ${s.model || ''}\n` +
+              (s.blocks || []).map(b => `  • ${b.block} (${b.marks}): ${(b.items || []).join('; ')}`).join('\n') +
+              (s.calibration ? `\n  Calibration: ${s.calibration}` : '')).join('\n\n')
+          : ''),
       paperTitle: f.code + ' — ' + (f.topic || ''), preLettered: true
     };
     if (typeof AI !== 'undefined' && cfg().ai?.enabled) AI.attach(view.querySelector('#es-ai-slot'), ctx);
@@ -656,9 +671,12 @@ const Essay = (() => {
       const token = await Backend.getAccessToken();
       if (!token) throw new Error('Sign in to use AI analysis.');
       const prov = await pickProvider();
-      const missed = (f.markScheme || []).flatMap(s => (s.points || []).filter(p => /missed|partial/i.test(p.status)).map(p => `[${p.status}] ${p.point}${p.note ? ' — ' + p.note : ''}`)).slice(0, 30);
+      const missed = missedPoints(f).slice(0, 40);
+      const cal = (f.generatedScheme?.sections || [])
+        .filter(s => s.calibration).map(s => `${s.label} ${s.title}: ${s.calibration}`).join('\n');
       const q = `You are an O&G examiner-coach. A PGIM MD Part II candidate scored ${f.score?.percent}% (${f.score?.band}) on "${f.code} — ${f.topic}". ` +
         `The marks they lost, from the official scheme:\n${missed.join('\n')}\n\n` +
+        (cal ? `The scheme's own calibration notes for this question:\n${cal}\n\n` : '') +
         `In under 220 words with **bold** headers: (1) the single recurring WEAKNESS pattern behind these losses; (2) the 3 highest-yield facts/figures to memorise to fix it; (3) one concrete drill for their next attempt. Be specific and practical.`;
       const messages = [{ role: 'user', content: q }];
       const res = await fetch(cfg().ai.apiBase, {
@@ -714,9 +732,10 @@ const Essay = (() => {
           </div>
           <div class="es-block-tags">
             ${b.status ? `<span class="es-chip es-st-${stClass(b.status)}">${esc(b.status)}</span>` : ''}
-            ${b.capped ? `<span class="es-chip es-capped" title="An error in this block zeroed it, whatever else was written">capped to zero</span>` : ''}
+            ${b.capped ? `<span class="es-chip es-capped">capped</span>` : ''}
             ${b.guideline ? `<span class="es-chip es-guide">${esc(b.guideline)}</span>` : ''}
           </div>
+          ${b.capReason ? `<p class="es-cap-why"><strong>${b.capped ? 'Why it was capped.' : "Marker's note."}</strong> ${esc(b.capReason)}</p>` : ''}
           <div class="es-points">${(b.items || []).map(schemeItem).join('')}</div>
         </div>`).join('')}</div>`;
     }
@@ -724,20 +743,191 @@ const Essay = (() => {
     return `<div class="es-points">${(sec.points || []).map(schemeItem).join('')}</div>`;
   }
 
-  /* Every key the report knows how to draw. Anything in the JSON that is not
-     here is shown as an explicit gap rather than silently dropped — which is
-     exactly how the v3 mark scheme went missing without anyone noticing. */
-  const KNOWN_FIELDS = new Set([
-    'schema', 'code', 'paper', 'topic', 'subject', 'questionType', 'topicTags',
-    'schemeVersion', 'schemeSource', 'markedOn', 'questionStem', 'subQuestions',
-    'score', 'breakdown', 'lossAnalysis', 'examinerComment', 'transcription',
-    'markScheme', 'improvementAdvice', 'writingAnalysis', 'writingImprovement',
-    'timeManagement', 'priorityActions', 'guidelines', 'keyLearningPoints',
-    'flags', 'modelAnswer',
+  /* ---------- the blank scheme (generatedScheme) ---------- */
+
+  /* `markScheme` says what YOU scored; `generatedScheme` is the whole scheme the
+     question was built from — every available point, the ideal answer per
+     section, and the examiner's calibration note. The two use identical block
+     names, so the award carries across per block. Item text does NOT match
+     (the marked copy abbreviates and sometimes merges bullets), so nothing is
+     claimed at item level — the blank list stays blank. */
+  const reEsc = s => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const TAG_CLASS = { SAFETY: 'safety', VERIFY: 'verify', 'SLCOG-CHECK': 'local' };
+
+  // Scheme bullets carry inline "[SAFETY]" / "[VERIFY …]" / "[SLCOG-CHECK]"
+  // markers and an optional " | guideline" tail. Lift both out of the prose.
+  function schemeLine(raw) {
+    let text = String(raw == null ? '' : raw), guide = '';
+    const bar = text.split(' | ');
+    if (bar.length > 1) { text = bar[0]; guide = bar.slice(1).join(' | '); }
+    const chips = [];
+    text = text.replace(/\[(SAFETY|VERIFY|SLCOG-CHECK)([^\]]*)\]/gi, (_, key, rest) => {
+      const k = key.toUpperCase();
+      chips.push(`<span class="es-gs-tag is-${TAG_CLASS[k]}">${esc((k + rest).trim())}</span>`);
+      return '';
+    }).replace(/\s{2,}/g, ' ').replace(/\s+([,.;:])/g, '$1').trim();
+    return `<li class="es-gs-item${chips.length && /SAFETY/i.test(chips.join('')) ? ' is-safety' : ''}">
+      <span class="es-gs-txt">${esc(text)}</span>${chips.join('')}
+      ${guide ? `<span class="es-chip es-guide">${esc(guide)}</span>` : ''}</li>`;
+  }
+
+  function generatedSchemeCard(f) {
+    const gs = f.generatedScheme;
+    if (!gs || !(gs.sections || []).length) return '';
+    const secs = gs.sections;
+    const msSecs = f.markScheme || [];
+    // block name → the marked block, so each blank block can show your award
+    const awardOf = {};
+    msSecs.forEach(s => (s.blocks || []).forEach(b => { awardOf[b.block] = b; }));
+    const secMark = (g, i) => msSecs.find(s => new RegExp('^\\s*' + reEsc(g.label) + '\\s*[-–—]').test(s.section || ''))
+      || (msSecs.length === secs.length ? msSecs[i] : null);
+    const totalRaw = secs.reduce((s, x) => s + (x.rawMarks || 0), 0);
+    const totalScaled = secs.reduce((s, x) => s + (x.scaledMarks || 0), 0);
+
+    return `
+      <div class="card es-gs" data-animate>
+        <h3 class="card-title">📘 The mark scheme in full</h3>
+        <p class="muted tiny">Every point that was <em>available</em> on this question — not only the ones you were marked on.
+          ${gs.builtOn ? 'Built ' + esc(gs.builtOn) + ' · ' : ''}${gs.schemeVersion ? 'scheme v' + esc(gs.schemeVersion) + ' · ' : ''}${
+          secs.length} sections · ${totalRaw} raw marks${totalScaled ? ' → ' + (Math.round(totalScaled * 10) / 10) + ' scaled' : ''}.</p>
+        <div class="es-gs-secs">
+          ${secs.map((g, i) => {
+            const ms = secMark(g, i);
+            const pct = ms && ms.max ? Math.round((ms.raw / ms.max) * 100) : null;
+            return `
+            <details class="es-gs-sec" ${i === 0 ? 'open' : ''}>
+              <summary>
+                <span class="es-gs-lbl">${esc(g.label || (i + 1))}</span>
+                <span class="es-gs-title">${esc(g.title || '')}</span>
+                <span class="es-gs-marks">${g.rawMarks != null ? g.rawMarks + ' raw' : ''}${
+                  g.scaledMarks != null ? ' · ' + g.scaledMarks + ' scaled' : ''}</span>
+                ${ms && ms.raw != null
+                  ? `<span class="es-gs-got ${pct < 50 ? 'bad' : pct < 65 ? '' : 'good'}">you scored ${ms.raw}/${ms.max}</span>` : ''}
+                <span class="dc-caret">▸</span>
+              </summary>
+              <div class="es-gs-body">
+                ${g.model ? `<div class="es-gs-model">
+                  <span class="es-gs-h">What a full-mark answer says</span>
+                  <p>${esc(g.model)}</p></div>` : ''}
+                <div class="es-gs-blocks">${(g.blocks || []).map(b => {
+                  const a = awardOf[b.block];
+                  return `
+                  <div class="es-gs-block${a && a.status ? ' es-st-' + stClass(a.status) : ''}">
+                    <div class="es-gs-bhead">
+                      <span class="es-gs-bname">${esc(b.block || '')}</span>
+                      <span class="es-gs-bmk">${b.marks != null ? b.marks + ' mark' + (b.marks === 1 ? '' : 's') : ''}</span>
+                      ${a && a.awarded != null
+                        ? `<span class="es-gs-award es-st-${stClass(a.status)}">${a.awarded}/${a.max != null ? a.max : b.marks}</span>` : ''}
+                    </div>
+                    ${b.guideline ? `<span class="es-chip es-guide">${esc(b.guideline)}</span>` : ''}
+                    <ul class="es-gs-items">${(b.items || []).map(schemeLine).join('')}</ul>
+                  </div>`;
+                }).join('')}</div>
+                ${g.calibration ? `<div class="es-gs-cal">
+                  <span class="es-gs-h">Examiner's calibration</span>
+                  <p>${esc(g.calibration)}</p></div>` : ''}
+              </div>
+            </details>`;
+          }).join('')}
+        </div>
+
+        ${(gs.guidelinesUsed || []).length ? `
+          <h4 class="es-gs-sub">Built from these guidelines</h4>
+          <div class="table-scroll"><table class="table"><thead><tr><th>Guideline</th><th>Edition / year</th><th>Note</th></tr></thead>
+            <tbody>${gs.guidelinesUsed.map(g => `<tr><td>${esc(g.guideline || '')}</td><td class="muted">${
+              esc(g.year || '')}</td><td class="muted">${esc(g.note || '—')}</td></tr>`).join('')}</tbody></table></div>` : ''}
+
+        ${(gs.flags || []).length ? `
+          <h4 class="es-gs-sub">Points in the scheme still to be verified</h4>
+          <p class="muted tiny">The scheme itself flagged these — they are marked, but confirm the figure or the local
+            pathway before you learn them as fact.</p>
+          <ul class="es-flag-list">${gs.flags.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+      </div>`;
+  }
+
+  /* Every scheme point you did not fully earn, in both scheme shapes, for the
+     AI weakness analysis. The old code read only the pre-v3 `points` array, so
+     for every v3 report the analysis was handed an empty list. */
+  function missedPoints(f) {
+    const out = [];
+    const take = (it, blk) => {
+      if (!/missed|partial/i.test(it.status || '')) return;
+      out.push(`[${it.status}] ${blk ? blk + ' — ' : ''}${it.item || it.point || ''}${it.note ? ' — ' + it.note : ''}`);
+    };
+    (f.markScheme || []).forEach(sec => {
+      (sec.points || []).forEach(p => take(p, ''));
+      (sec.blocks || []).forEach(b => {
+        if (b.capped && b.capReason) out.push(`[capped] ${b.block} — ${b.capReason}`);
+        (b.items || []).forEach(it => take(it, b.block));
+      });
+    });
+    return out;
+  }
+
+  /* Every key the report knows how to draw, AT EVERY DEPTH. Anything in the
+     JSON that is not here is shown raw rather than silently dropped.
+     This used to be a flat list of top-level keys, which was the wrong shape
+     to catch the drift it exists to catch: when the mark scheme moved from
+     `section.points` to `section.blocks[].items` the top-level key was still
+     `markScheme`, so the guard stayed quiet while every scheme box on the page
+     rendered empty. Nesting the spec means a new key three levels down
+     announces itself. `true` = a leaf, don't descend; `[spec]` = array of. */
+  const L = true;
+  const FIELD_SPEC = {
+    schema: L, code: L, paper: L, topic: L, subject: L, questionType: L, topicTags: L,
+    schemeVersion: L, schemeSource: L, markedOn: L, questionStem: L,
+    subQuestions: [{ label: L, text: L, maxMarks: L, marks: L }],
+    generatedScheme: {
+      builtOn: L, schemeVersion: L, flags: L,
+      sections: [{ label: L, title: L, rawMarks: L, scaledMarks: L, model: L, calibration: L,
+        blocks: [{ block: L, marks: L, guideline: L, items: L }] }],
+      guidelinesUsed: [{ guideline: L, year: L, note: L }]
+    },
+    score: { raw: L, rawMax: L, scaled: L, scaledMax: L, percent: L, band: L,
+      deductions: [{ reason: L, cause: L, marks: L }] },
+    breakdown: [{ section: L, raw: L, max: L, percent: L }],
+    lossAnalysis: { totalLost: L, biggestSingleLoss: L, byCause: [{ cause: L, marks: L, detail: L }] },
+    examinerComment: L,
+    transcription: { pageCount: L, illegiblePercent: L,
+      subPartMapping: [{ label: L, pages: L }],
+      pages: [{ page: L, subPart: L, text: L }] },
+    markScheme: [{ section: L, raw: L, max: L,
+      points: [{ point: L, item: L, status: L, note: L, safety: L, guideline: L }],
+      blocks: [{ block: L, max: L, awarded: L, guideline: L, status: L, capped: L, capReason: L,
+        items: [{ item: L, point: L, status: L, note: L, safety: L, guideline: L }] }] }],
+    improvementAdvice: [{ label: L, points: L }],
+    writingAnalysis: {
+      overallVerdict: L, phraseBank: L,
+      structure: { subPartsLabelled: L, answeredInOrder: L, meanSentenceWords: L,
+        longSentenceCount: L, runOnCount: L, signpostingScore: L, proseVsList: L },
+      buriedItems: [{ item: L, where: L, issue: L, fix: L }],
+      recurringErrors: [{ pattern: L, count: L, examples: L, fix: L }],
+      paragraphRewrite: { label: L, original: L, rewritten: L, whatChanged: L }
+    },
+    writingImprovement: [{ label: L, proTips: L, quotes: [{ original: L, rewrite: L }] }],
+    timeManagement: { budgetMinutes: L, estimatedWordCount: L, fitsBudget: L,
+      subPartConsumingBudget: L, comment: L },
+    priorityActions: [{ rank: L, action: L, estimatedMarkGain: L, type: L }],
+    guidelines: [{ guideline: L, year: L, relevance: L }],
+    keyLearningPoints: L, flags: L, modelAnswer: L,
     // storage/bookkeeping keys the app itself adds
-    'id', 'user_id', 'created', 'created_at', 'updated_at', 'percent', 'band'
-  ]);
-  const unknownFields = f => Object.keys(f || {}).filter(k => !KNOWN_FIELDS.has(k));
+    id: L, user_id: L, created: L, created_at: L, updated_at: L, percent: L, band: L
+  };
+  function auditFields(val, spec, path, out) {
+    if (spec === true || val == null) return;
+    if (Array.isArray(spec)) {
+      if (Array.isArray(val)) val.forEach(v => auditFields(v, spec[0], path + '[]', out));
+      return;
+    }
+    if (typeof val !== 'object' || Array.isArray(val)) return;
+    Object.keys(val).forEach(k => {
+      const p = path ? path + '.' + k : k;
+      if (!Object.prototype.hasOwnProperty.call(spec, k)) {
+        if (!out.some(u => u.path === p)) out.push({ path: p, value: val[k] });
+      } else auditFields(val[k], spec[k], p, out);
+    });
+  }
+  const unknownFields = f => { const out = []; auditFields(f, FIELD_SPEC, '', out); return out; };
   function animateDial(el, pct) {
     el.style.setProperty('--pct', pct);
     const col = pct >= 75 ? '#34d399' : pct >= 65 ? '#5eead4' : pct >= 50 ? '#e8a33d' : '#e05263';

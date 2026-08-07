@@ -3089,6 +3089,64 @@ body.eco-dragging .eco-frame { pointer-events: none; }   /* the frame must not e
 .es-safety { color: var(--bad); margin-right: 5px; font-weight: 700; }
 .es-safety-key { color: var(--bad); font-weight: 700; }
 .es-point.is-safety .es-point-text { font-weight: 600; }
+.es-cap-why { margin: 6px 0 2px; font-size: .78rem; line-height: 1.55; color: var(--bad);
+  padding: 8px 11px; border-radius: 10px; background: rgba(224,82,99,.09); }
+
+/* the blank scheme in full — generatedScheme */
+.es-gs { border-color: color-mix(in srgb, var(--gold) 34%, var(--hairline)); }
+.es-gs-secs { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+.es-gs-sec { border: 1px solid var(--hairline); border-radius: 14px; background: var(--surface-2); overflow: hidden; }
+.es-gs-sec > summary { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 13px 15px; cursor: pointer; list-style: none; }
+.es-gs-sec > summary::-webkit-details-marker { display: none; }
+.es-gs-sec > summary:hover { background: color-mix(in srgb, var(--gold) 7%, transparent); }
+.es-gs-sec[open] > summary { border-bottom: 1px solid var(--hairline); }
+.es-gs-sec[open] > summary .dc-caret { transform: rotate(90deg); }
+.es-gs-lbl { flex: 0 0 auto; min-width: 26px; height: 26px; padding: 0 7px; border-radius: 8px;
+  display: grid; place-items: center; background: var(--gold); color: #1a1408; font-size: .75rem; font-weight: 700; }
+.es-gs-title { flex: 1 1 180px; min-width: 0; font-size: .9rem; font-weight: 650; }
+.es-gs-marks { font-size: .68rem; letter-spacing: .05em; color: var(--ink-3); white-space: nowrap; }
+.es-gs-got { font-size: .68rem; font-weight: 700; padding: 3px 9px; border-radius: 999px;
+  border: 1px solid var(--hairline); color: var(--ink-2); white-space: nowrap; }
+.es-gs-got.good { border-color: var(--teal); color: var(--teal); }
+.es-gs-got.bad { border-color: var(--bad); color: var(--bad); }
+.es-gs-sec .dc-caret { color: var(--ink-3); transition: transform .18s ease; }
+.es-gs-body { padding: 14px 15px 16px; }
+.es-gs-h { display: block; font-size: .62rem; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--gold); margin-bottom: 5px; }
+.es-gs-model { padding: 12px 14px; border-radius: 12px; background: var(--surface);
+  border-left: 3px solid var(--teal); margin-bottom: 14px; }
+.es-gs-model p { margin: 0; font-size: .85rem; line-height: 1.65; }
+.es-gs-cal { margin-top: 14px; padding: 12px 14px; border-radius: 12px; background: var(--surface);
+  border-left: 3px solid var(--gold); }
+.es-gs-cal p { margin: 0; font-size: .82rem; line-height: 1.65; color: var(--ink-2); }
+.es-gs-blocks { display: flex; flex-direction: column; gap: 12px; }
+.es-gs-block { padding: 11px 13px; border-radius: 12px; background: var(--surface);
+  border: 1px solid var(--hairline); border-left: 3px solid var(--hairline); }
+.es-gs-block.es-st-cov { border-left-color: var(--teal); }
+.es-gs-block.es-st-par { border-left-color: var(--gold); }
+.es-gs-block.es-st-mis { border-left-color: var(--bad); }
+.es-gs-bhead { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; margin-bottom: 4px; }
+.es-gs-bname { flex: 1 1 auto; min-width: 0; font-size: .85rem; font-weight: 650; }
+.es-gs-bmk { font-size: .68rem; color: var(--ink-3); white-space: nowrap; }
+.es-gs-award { font-size: .66rem; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--hairline); white-space: nowrap; }
+.es-gs-award.es-st-cov { border-color: var(--teal); color: var(--teal); }
+.es-gs-award.es-st-par { border-color: var(--gold); color: var(--gold); }
+.es-gs-award.es-st-mis { border-color: var(--bad); color: var(--bad); }
+.es-gs-items { list-style: none; margin: 8px 0 0; padding: 0; }
+.es-gs-item { position: relative; padding: 4px 0 4px 16px; font-size: .81rem; line-height: 1.6; color: var(--ink-2); }
+.es-gs-item::before { content: '·'; position: absolute; left: 4px; top: 4px; color: var(--ink-3); font-weight: 700; }
+.es-gs-item.is-safety { color: var(--ink); font-weight: 550; }
+.es-gs-txt { margin-right: 6px; }
+.es-gs-tag { display: inline-block; font-size: .58rem; letter-spacing: .06em; font-weight: 700;
+  padding: 1px 6px; border-radius: 5px; margin-right: 5px; vertical-align: 1px; white-space: nowrap; }
+.es-gs-tag.is-safety { background: rgba(224,82,99,.14); color: var(--bad); }
+.es-gs-tag.is-verify { background: rgba(232,163,61,.14); color: var(--gold); }
+.es-gs-tag.is-local { background: rgba(94,234,212,.13); color: var(--teal); }
+.es-gs-item .es-chip.es-guide { display: inline-block; margin-top: 3px; }
+.es-gs-sub { margin: 24px 0 8px; font-size: .74rem; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--gold); }
 
 /* where the marks went */
 .es-loss-total { margin: 4px 0 14px; font-size: .92rem; }
@@ -3136,8 +3194,14 @@ body.eco-dragging .eco-frame { pointer-events: none; }   /* the frame must not e
   background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink-2); }
 
 /* transcription */
+.es-sp-map { display: flex; flex-wrap: wrap; gap: 7px; margin: 10px 0 4px; }
+.es-sp { font-size: .68rem; padding: 4px 10px; border-radius: 999px; background: var(--surface-2);
+  border: 1px solid var(--hairline); color: var(--ink-3); }
+.es-sp b { color: var(--ink); font-weight: 700; margin-right: 4px; }
 .es-page { margin-top: 14px; }
 .es-page-n { display: inline-block; font-size: .64rem; letter-spacing: .08em; color: var(--gold); margin-bottom: 5px; }
+.es-page-sub { display: inline-block; font-size: .6rem; letter-spacing: .06em; margin-left: 8px;
+  padding: 1px 8px; border-radius: 999px; border: 1px solid var(--hairline); color: var(--ink-3); }
 .es-page-text { margin: 0; font-size: .82rem; line-height: 1.7; color: var(--ink-2);
   padding: 12px 14px; border-radius: 12px; background: var(--surface-2); }
 
@@ -3153,6 +3217,9 @@ body.eco-dragging .eco-frame { pointer-events: none; }   /* the frame must not e
 @media (max-width: 620px) {
   .es-wa-metric { flex-basis: calc(50% - 5px); }
   .es-block { padding: 10px 12px; }
+  .es-gs-sec > summary { padding: 11px 12px; gap: 8px; }
+  .es-gs-body { padding: 12px; }
+  .es-gs-marks, .es-gs-got { font-size: .62rem; }
 }
 
 /* CPD — single-best-answer questions (ogr-cpd-v2) */

@@ -137,3 +137,47 @@ schema `ogr-essay-feedback-v1`, from the SAME marked data (never re-mark).
   Essay → Upload report**, or auto-imported by the developer from the same Drive folder.
 - The website routes each Drive file by its `schema`/shape, so papers and feedback can live
   in the same folder.
+
+---
+
+## Schema `ogr-essay-feedback-v3` — what the site now reads
+
+v3 is a superset of v1: every v1 key still works, and every v3 key below is drawn on the
+report page. The site renders whatever is present and skips whatever is not, so a report
+may carry all of these or none of them.
+
+**Changed from v1**
+
+| Key | Shape in v3 |
+|---|---|
+| `markScheme[]` | a section is `{ section, raw, max, blocks[] }`. Each block is `{ block, max, awarded, guideline, status, capped, capReason, items[] }` and each item is `{ item, status, note, safety }`. The v1 flat `points[]` array still renders for old reports. |
+| `transcription` | gains `subPartMapping: [{ label, pages[] }]`, and each page gains `subPart`. |
+| `breakdown[]` | may carry its own `percent`; the site uses it in place of computing one. |
+
+**New in v3**
+
+| Key | What it is | Where it appears |
+|---|---|---|
+| `generatedScheme` | the **blank** scheme — everything that was available, not only what was marked | "📘 The mark scheme in full" |
+| `generatedScheme.sections[]` | `{ label, title, rawMarks, scaledMarks, model, calibration, blocks[] }` | one collapsible per section; `model` is shown as "What a full-mark answer says", `calibration` as "Examiner's calibration" |
+| `generatedScheme.sections[].blocks[]` | `{ block, marks, guideline, items[] }` — here `items` are **plain strings**, not objects | bulleted under each block |
+| `generatedScheme.guidelinesUsed[]` | `{ guideline, year, note }` | "Built from these guidelines" table |
+| `generatedScheme.flags[]` | strings | "Points in the scheme still to be verified" |
+| `markScheme[].blocks[].capReason` | why a block was capped, or a marker's note when it was not capped | shown under the block, in red |
+| `lossAnalysis`, `priorityActions`, `writingAnalysis`, `timeManagement`, `flags`, `modelAnswer` | as in the v3 files already marked | their own cards |
+
+**Two conventions the site understands inside `generatedScheme` item strings**
+
+- `[SAFETY]`, `[VERIFY …]`, `[SLCOG-CHECK …]` anywhere in a bullet are lifted out and
+  drawn as coloured tags; the bullet text itself renders clean.
+- A ` | ` in a bullet splits it into text and a guideline citation chip.
+
+**Block names must match.** `generatedScheme.sections[].blocks[].block` and
+`markScheme[].blocks[].block` are matched by exact name so the blank scheme can show the
+mark you actually earned for each block. Item text is *not* matched — the marked copy
+abbreviates and sometimes merges bullets — so nothing is claimed at item level.
+
+**Nothing is silently dropped.** The report page audits the whole file against the keys it
+knows, at every depth. Any key it does not recognise — even three levels down — is listed
+raw under "⚠ Not shown above" with its full path, so a schema change surfaces on the page
+instead of quietly disappearing.
