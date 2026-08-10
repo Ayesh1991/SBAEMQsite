@@ -23,9 +23,32 @@ const Essay = (() => {
   async function papers() {
     const loader = () => Backend.getEssayPapers().then(r => r || []);
     const list = (typeof Cache !== 'undefined') ? await Cache.wrap('essay-papers', 15 * 60 * 1000, loader) : await loader();
-    return list.slice().sort((a, b) => (a.paperNumber || 0) - (b.paperNumber || 0));
+    return list.slice().sort(byPaperOrder);
   }
   function bustPapers() { if (typeof Cache !== 'undefined') Cache.bust('essay-papers'); }
+
+  /* ---------- mock papers vs real PGIM past papers ----------
+     A past paper is not practice material with the same status as a mock —
+     it is what the examiners actually set — so it is kept in its own list,
+     carries its own colour everywhere it appears, and never gets counted or
+     sorted alongside the mocks. */
+  const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june',
+    'july', 'august', 'september', 'october', 'november', 'december'];
+  const isPgim = p => /official_past_paper|past_paper|pgim/i.test(String(p.paperType || ''))
+    || (p.paperNumber == null && !!p.year);
+  const paperKind = p => isPgim(p) ? 'pgim' : 'mock';
+  const paperTitle = p => p.paperLabel
+    || (isPgim(p) ? `${p.sittingMonth || ''} ${p.year || ''}`.trim() : `Mock Paper ${p.paperNumber || ''}`.trim());
+  // past papers newest first (that is how anyone revises them); mocks in order
+  function byPaperOrder(a, b) {
+    const ka = isPgim(a), kb = isPgim(b);
+    if (ka !== kb) return ka ? 1 : -1;
+    if (ka) return sitting(b) - sitting(a);
+    return (a.paperNumber || 0) - (b.paperNumber || 0);
+  }
+  const sitting = p => (Number(p.year) || 0) * 100 +
+    (MONTHS.indexOf(String(p.sittingMonth || '').toLowerCase()) + 1);
+
   // flatten a paper's sections into an ordered question list
   function questionsOf(p) {
     const out = [];
@@ -33,11 +56,24 @@ const Essay = (() => {
       out.push({ ...q, sectionTitle: sec.sectionTitle })));
     return out;
   }
-  const qMarks = q => q.totalMarks || q.marks || (q.parts || []).reduce((s, x) => s + (x.marks || 0), 0) || 100;
+  /* A part may itself be split into sub-parts (PGIM 6.2.1, 6.2.2 …). Flatten
+     one level so the whole question is visible wherever parts are listed. */
+  function partsOf(q) {
+    const out = [];
+    (q.parts || []).forEach(pt => {
+      out.push({ label: pt.label, text: pt.text, marks: pt.marks });
+      (pt.subparts || pt.subParts || []).forEach(sp =>
+        out.push({ label: sp.label, text: sp.text, marks: sp.marks, sub: true }));
+    });
+    return out;
+  }
+  const qMarks = q => q.totalMarks || q.marks
+    || partsOf(q).reduce((s, x) => s + (x.marks || 0), 0) || 100;
 
   /* ================= list of papers (#/library/essay) ================= */
 
-  async function renderList(view, user) {
+  async function renderList(view, user, kind) {
+    kind = kind === 'pgim' ? 'pgim' : 'mock';
     view.innerHTML = libraryShell('essay', `
       <div id="es-body"><p class="muted">Loading essay papers…</p></div>`);
     FX.viewIn(view);
@@ -46,24 +82,48 @@ const Essay = (() => {
     try { fb = (await Backend.listEssayFeedback()) || []; } catch { fb = []; }
     const fbByCode = {}; fb.forEach(f => fbByCode[f.code] = f);
     const body = view.querySelector('#es-body');
+    const mine = list.filter(p => paperKind(p) === kind);
+    const nMock = list.filter(p => paperKind(p) === 'mock').length;
+    const nPgim = list.length - nMock;
+
+    const tabs = `
+      <div class="es-kindnav" data-animate>
+        <a class="es-kind ${kind === 'mock' ? 'active' : ''}" href="#/library/essay">
+          <span class="es-kind-label">Mock papers</span>
+          <span class="es-kind-n">${nMock}</span>
+        </a>
+        <a class="es-kind is-pgim ${kind === 'pgim' ? 'active' : ''}" href="#/library/essay/pgim">
+          <span class="es-kind-label">PGIM past papers</span>
+          <span class="es-kind-n">${nPgim}</span>
+        </a>
+      </div>`;
+
+    const intro = kind === 'pgim'
+      ? `<div class="es-intro card is-pgim" data-animate>
+          <span class="es-real-tag">★ REAL EXAMINATION PAPER</span>
+          <p class="muted">These are the papers the PGIM actually set — not practice written for the site. Everything about
+            them is marked in this colour wherever it appears, so a past-paper question is never mistaken for a mock. Write
+            them exactly as you would sit them.</p>
+        </div>`
+      : `<div class="es-intro card" data-animate>
+          <p class="muted">Structured-essay practice for PGIM MD Part II. Write a paper against the clock, photograph your
+            answers, and upload the marking report to see a full examiner breakdown — richer than a printed report, with an
+            AI tutor and weakness analysis built in.</p>
+        </div>`;
 
     if (!list.length) {
-      body.innerHTML = `
+      body.innerHTML = tabs + `
         <div class="card" data-animate>
           <h3 class="card-title">No essay papers yet</h3>
-          <p class="muted">The site owner publishes structured-essay mock papers here. Once a paper is live you'll write it
-            against a timer, photograph your answers, and upload the AI marking report for a detailed breakdown.</p>
+          <p class="muted">The site owner publishes structured-essay mock papers and real PGIM past papers here. Once a paper
+            is live you'll write it against a timer, photograph your answers, and upload the AI marking report for a
+            detailed breakdown.</p>
         </div>`;
       renderFeedbackInbox(view, user, fb);
       return;
     }
 
-    body.innerHTML = `
-      <div class="es-intro card" data-animate>
-        <p class="muted">Structured-essay practice for PGIM MD Part II. Write a paper against the clock, photograph your
-          answers, and upload the marking report to see a full examiner breakdown — richer than a printed report, with an
-          AI tutor and weakness analysis built in.</p>
-      </div>
+    body.innerHTML = tabs + intro + `
       <div class="es-search-wrap" data-animate>
         <div class="es-search-row">
           <span class="es-search-ico">🔎</span>
@@ -71,20 +131,23 @@ const Essay = (() => {
             placeholder="Search every essay question — e.g. hypertension, shoulder dystocia, PPH">
           <button class="es-search-x" id="es-search-x" hidden aria-label="Clear search">✕</button>
         </div>
-        <p class="muted tiny es-search-hint">Searches the stem and every sub-part across all ${list.length} paper${list.length > 1 ? 's' : ''}. Several words = all of them must appear.</p>
+        <p class="muted tiny es-search-hint">Searches the stem and every sub-part across <strong>all ${list.length} paper${list.length > 1 ? 's' : ''}</strong> —
+          both lists at once. Real PGIM questions come back marked <span class="es-real-dot">★ PGIM</span>. Several words = all of them must appear.</p>
       </div>
       <div id="es-results" hidden></div>
       <div class="es-papers" id="es-paper-list" data-animate>
-        ${list.map(p => {
+        ${mine.length ? mine.map(p => {
           const qs = questionsOf(p);
+          const pg = isPgim(p);
           const done = qs.filter(q => fbByCode[q.code]).length;
           const avg = done ? Math.round(qs.filter(q => fbByCode[q.code]).reduce((s, q) => s + (fbByCode[q.code].score?.percent || 0), 0) / done) : null;
           return `
-          <a class="es-paper-card" href="#/library/essay/${encodeURIComponent(p.id)}">
-            <div class="es-paper-num">${p.paperNumber || '•'}</div>
+          <a class="es-paper-card ${pg ? 'is-pgim' : ''}" href="#/library/essay/${encodeURIComponent(p.id)}">
+            <div class="es-paper-num">${pg ? (p.year || '★') : (p.paperNumber || '•')}</div>
             <div class="es-paper-main">
-              <h3>${esc(p.paperLabel || ('Mock Paper ' + (p.paperNumber || '')))}</h3>
-              <p class="muted tiny">${esc(p.examTitle || 'MD (O&G) Examination')} · ${qs.length} questions · ${p.durationHours || 3} h</p>
+              <h3>${esc(paperTitle(p))}${pg ? '<span class="es-real-tag sm">★ REAL PAPER</span>' : ''}</h3>
+              <p class="muted tiny">${esc(p.examTitle || 'MD (O&G) Examination')} · ${qs.length} questions · ${p.durationHours || 3} h${
+                pg && p.date ? ' · sat ' + esc(p.date) : ''}</p>
               <div class="es-paper-prog"><span style="width:${qs.length ? (done / qs.length) * 100 : 0}%"></span></div>
             </div>
             <div class="es-paper-side">
@@ -92,7 +155,9 @@ const Essay = (() => {
               <span class="muted tiny">${avg != null ? 'avg ' + avg + '%' : 'marked'}</span>
             </div>
           </a>`;
-        }).join('')}
+        }).join('') : `<div class="card"><p class="muted">${kind === 'pgim'
+          ? 'No PGIM past papers published yet. The site owner imports them in Developer → Essay importer; any paper marked <code>"paperType": "official_past_paper"</code> lands here.'
+          : 'No mock papers published yet.'}</p></div>`}
       </div>`;
     wireEssaySearch(body, list, fbByCode);
     renderFeedbackInbox(view, user, fb);
@@ -106,7 +171,7 @@ const Essay = (() => {
   function searchIndex(list) {
     const rows = [];
     list.forEach(p => questionsOf(p).forEach((q, i) => {
-      const parts = (q.parts || []).map(pt => `${pt.label || ''} ${pt.text || ''}`).join(' ');
+      const parts = partsOf(q).map(pt => `${pt.label || ''} ${pt.text || ''}`).join(' ');
       rows.push({
         p, q, i,
         hay: `${q.code || ''} ${q.sectionTitle || ''} ${q.stem || ''} ${parts}`.toLowerCase()
@@ -134,17 +199,19 @@ const Essay = (() => {
         <p class="muted lib-results-count">${hits.length} question${hits.length > 1 ? 's' : ''} matching “${esc(raw)}”</p>
         <div class="es-hits">${hits.map(r => {
           const marked = fbByCode[r.q.code];
+          const pg = isPgim(r.p);
           return `
-          <div class="es-hit">
+          <div class="es-hit ${pg ? 'is-pgim' : ''}">
             <div class="es-hit-top">
+              ${pg ? '<span class="es-real-dot">★ PGIM</span>' : '<span class="es-mock-dot">MOCK</span>'}
               <span class="chip chip-${r.q.type === 'SAQ' ? 'sba' : 'emq'}">${esc(r.q.type || 'SEQ')}</span>
               <span class="es-hit-code">${esc(r.q.code || '')}</span>
-              <span class="es-hit-paper">${esc(r.p.paperLabel || ('Paper ' + (r.p.paperNumber || '')))}</span>
+              <span class="es-hit-paper">${esc(paperTitle(r.p))}</span>
               ${marked ? `<span class="es-fb-band es-band-${bandClass(marked.score?.band)}">${esc(marked.score?.band || '')} · ${marked.score?.percent}%</span>` : ''}
             </div>
             <p class="es-hit-stem">${mark(r.q.stem, terms)}</p>
-            ${(r.q.parts || []).length ? `<ul class="es-hit-parts">${r.q.parts.map(pt =>
-              `<li><strong>${esc(pt.label || '')}</strong> ${mark(pt.text, terms)}</li>`).join('')}</ul>` : ''}
+            ${partsOf(r.q).length ? `<ul class="es-hit-parts">${partsOf(r.q).map(pt =>
+              `<li class="${pt.sub ? 'is-sub' : ''}"><strong>${esc(pt.label || '')}</strong> ${mark(pt.text, terms)}</li>`).join('')}</ul>` : ''}
             <div class="es-hit-acts">
               <a class="btn btn-gold btn-sm" href="#/library/essay/${encodeURIComponent(r.p.id)}/write/${r.i}">✍ Write this</a>
               <a class="btn btn-ghost btn-sm" href="#/library/essay/${encodeURIComponent(r.p.id)}">Open the paper</a>
@@ -281,27 +348,32 @@ const Essay = (() => {
     const qs = questionsOf(p);
     let fb = {}; try { ((await Backend.listEssayFeedback()) || []).forEach(f => fb[f.code] = f); } catch {}
 
+    const pg = isPgim(p);
     view.innerHTML = `
-      <section class="page">
-        <a class="link muted dev-back" href="#/library/essay">← Essay papers</a>
+      <section class="page ${pg ? 'es-pgim-page' : ''}">
+        <a class="link muted dev-back" href="#/library/essay${pg ? '/pgim' : ''}">← ${pg ? 'PGIM past papers' : 'Essay papers'}</a>
         <header data-animate>
-          <p class="kicker">${esc(p.examTitle || 'MD (O&G)')} · ${qs.length} questions · ${p.durationHours || 3} hours</p>
-          <h1 class="page-title">${esc(p.paperLabel || ('Mock Paper ' + p.paperNumber))}</h1>
+          ${pg ? '<span class="es-real-tag">★ REAL EXAMINATION PAPER — PGIM</span>' : ''}
+          <p class="kicker">${esc(p.examTitle || 'MD (O&G)')} · ${qs.length} questions · ${p.durationHours || 3} hours${
+            pg && p.date ? ' · sat ' + esc(p.date) : ''}${p.time ? ' · ' + esc(p.time) : ''}</p>
+          <h1 class="page-title">${esc(paperTitle(p))}</h1>
           <p class="muted">${(p.instructions || []).map(esc).join(' · ')}</p>
         </header>
         <div class="es-qlist" data-animate>
           ${qs.map((q, i) => {
             const marked = fb[q.code];
             return `
-            <div class="es-q-card">
+            <div class="es-q-card ${pg ? 'is-pgim' : ''}">
               <div class="es-q-top">
+                ${pg ? '<span class="es-real-dot">★ PGIM</span>' : ''}
                 <span class="chip chip-${q.type === 'SAQ' ? 'sba' : 'emq'}">${esc(q.type || 'SEQ')}</span>
                 <span class="es-q-code">${esc(q.code)}</span>
                 <span class="es-q-marks">${qMarks(q)} marks</span>
                 ${marked ? `<span class="es-fb-band es-band-${bandClass(marked.score?.band)}">${esc(marked.score?.band || '')} · ${marked.score?.percent}%</span>` : ''}
               </div>
               <p class="es-q-stem">${esc(q.stem).replace(/\n/g, '<br>')}</p>
-              ${(q.parts || []).length ? `<ul class="es-q-parts">${q.parts.map(pt => `<li><strong>${esc(pt.label)}</strong> ${esc(pt.text)} <span class="muted tiny">(${pt.marks})</span></li>`).join('')}</ul>` : ''}
+              ${partsOf(q).length ? `<ul class="es-q-parts">${partsOf(q).map(pt => `<li class="${pt.sub ? 'is-sub' : ''}"><strong>${esc(pt.label)}</strong> ${esc(pt.text)}${
+                pt.marks != null ? ` <span class="muted tiny">(${pt.marks})</span>` : ''}</li>`).join('')}</ul>` : ''}
               <div class="es-q-actions">
                 <a class="btn btn-gold btn-sm" href="#/library/essay/${encodeURIComponent(p.id)}/write/${i}">✍ Write (${q.type === 'SAQ' ? 30 : 30} min)</a>
                 ${marked ? `<a class="btn btn-ghost btn-sm" href="#/library/essay/feedback/${encodeURIComponent(q.code)}">📊 View feedback</a>` : `<span class="muted tiny">write it, then upload your marking report</span>`}
@@ -332,10 +404,10 @@ const Essay = (() => {
 
     view.innerHTML = `
       <section class="page es-write">
-        <a class="link muted dev-back" href="#/library/essay/${encodeURIComponent(p.id)}">← ${esc(p.paperLabel || 'Paper')}</a>
+        <a class="link muted dev-back" href="#/library/essay/${encodeURIComponent(p.id)}">← ${esc(paperTitle(p))}</a>
         <div class="es-write-top" data-animate>
           <div>
-            <p class="kicker">${esc(p.paperLabel || '')} · Question ${idx + 1} of ${qs.length}</p>
+            <p class="kicker">${isPgim(p) ? '<span class="es-real-dot">★ PGIM</span> ' : ''}${esc(paperTitle(p))} · Question ${idx + 1} of ${qs.length}</p>
             <h1 class="page-title">${esc(q.code)} <span class="muted">· ${qMarks(q)} marks</span></h1>
           </div>
           <div class="es-timer-wrap">
@@ -351,7 +423,8 @@ const Essay = (() => {
           <span class="chip chip-${q.type === 'SAQ' ? 'sba' : 'emq'}">${esc(q.type || 'SEQ')}</span>
           ${q.sectionTitle ? `<span class="muted tiny"> · ${esc(q.sectionTitle)}</span>` : ''}
           <p class="es-q-stem big">${esc(q.stem).replace(/\n/g, '<br>')}</p>
-          ${(q.parts || []).length ? `<ul class="es-q-parts">${q.parts.map(pt => `<li><strong>${esc(pt.label)}</strong> ${esc(pt.text)} <span class="muted tiny">(${pt.marks} marks)</span></li>`).join('')}</ul>` : ''}
+          ${partsOf(q).length ? `<ul class="es-q-parts">${partsOf(q).map(pt => `<li class="${pt.sub ? 'is-sub' : ''}"><strong>${esc(pt.label)}</strong> ${esc(pt.text)}${
+            pt.marks != null ? ` <span class="muted tiny">(${pt.marks} marks)</span>` : ''}</li>`).join('')}</ul>` : ''}
           <p class="es-write-hint muted tiny">✍ Write your answer on paper. This timer paces you at 30 minutes — pause it whenever
             real life interrupts; your remaining time is saved. When done, photograph your answer and upload the marking report
             from the Essay home.</p>
@@ -631,6 +704,7 @@ const Essay = (() => {
         </div>` : ''; })()}
 
         <div class="es-report-foot">
+          <button class="btn btn-gold" id="es-print">🖨 Print / Save as PDF</button>
           <button class="btn btn-ghost btn-sm qr-danger" id="es-del">🗑 Delete this report</button>
         </div>
       </section>`;
@@ -657,6 +731,10 @@ const Essay = (() => {
     if (typeof AI !== 'undefined' && cfg().ai?.enabled) AI.attach(view.querySelector('#es-ai-slot'), ctx);
 
     view.querySelector('#es-ai-analyse').addEventListener('click', e => runAnalysis(e.target, view.querySelector('#es-ai-out'), f));
+    view.querySelector('#es-print').addEventListener('click', () => {
+      if (typeof EssayPrint === 'undefined') return alert('The print module did not load. Reload the page and try again.');
+      EssayPrint.open(f);
+    });
     view.querySelector('#es-del').addEventListener('click', async () => {
       if (!confirm('Delete this marking report? You can re-upload it later.')) return;
       try { await Backend.deleteEssayFeedback(f.code); location.hash = '#/library/essay'; } catch (e) { alert('Could not delete: ' + (e.message || e)); }
@@ -1060,5 +1138,5 @@ const Essay = (() => {
     return window.__aureumLibraryShell ? window.__aureumLibraryShell(active, inner) : `<section class="page">${inner}</section>`;
   }
 
-  return { renderList, renderPaper, renderWrite, renderFeedback, renderWritingLab, writingSummary, renderHow, bustPapers, papers, questionsOf, validateFeedback, normaliseFeedback };
+  return { renderList, renderPaper, renderWrite, renderFeedback, renderWritingLab, writingSummary, renderHow, bustPapers, papers, questionsOf, partsOf, isPgim, paperTitle, validateFeedback, normaliseFeedback };
 })();

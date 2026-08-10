@@ -184,7 +184,73 @@ const CPD = (() => {
     FX.viewIn(view);
   }
 
-  /* ================= the runner (#/library/cpd/:vol/:sec) ================= */
+  /* ================= the runner (#/library/cpd/:vol/:sec) =================
+
+     Redesigned for reading speed. A TOG CPD paper does not ask five
+     unrelated questions — it sets ONE lead-in and hangs five statements
+     off it:
+
+         With regard to the suboptimal intrauterine environment,
+           1. around 20% of women in the UK are obese at booking.
+           2. 1% of women globally experience gestational diabetes.
+
+     The import repeats that lead-in inside every stem, so the old card
+     list made you read the same twenty words five times over. The lead-in
+     is now detected, printed ONCE as a group heading, and each statement
+     is a single tight line with TRUE/FALSE at the end of it — the shape of
+     the paper itself.
+
+     Answering keeps its full feedback: verdict, rationale and memory hook
+     open under the line. Nothing was removed to make it fast; the
+     repetition was removed. "Detailed" restores the old roomy cards for
+     anyone who prefers them, and the choice is remembered.
+
+     Keys, because the mouse is the slow part: T/Y = true, F/N = false,
+     1..9 = pick an option, ↑/↓ move, and focus jumps to the next
+     unanswered line the moment you answer one.
+     ======================================================================= */
+
+  const DENS_KEY = 'aureum.cpd.density';
+  const density = () => { try { return localStorage.getItem(DENS_KEY) === 'detailed' ? 'detailed' : 'rapid'; } catch { return 'rapid'; } };
+  const setDensity = d => { try { localStorage.setItem(DENS_KEY, d); } catch {} };
+
+  /* ---- find the lead-in shared by consecutive statements ---- */
+  const lcp = (a, b) => { let i = 0; while (i < a.length && i < b.length && a[i] === b[i]) i++; return a.slice(0, i); };
+  /* Trim a raw common prefix back to a point where it reads as a whole
+     lead-in. The trailing space must be OPTIONAL: once a third statement
+     joins a group the shared prefix is the previous lead-in itself, which
+     ends exactly at the comma with nothing after it. Requiring a space there
+     dropped the clause match and fell through to the cut-at-last-word rule,
+     which chopped "…suboptimal intrauterine environment," back to
+     "…suboptimal intrauterine" and pushed the noun into every statement. */
+  function tidyLead(p) {
+    if (!p) return '';
+    const clause = p.match(/^(.*[,:;])(?:\s|$)/);      // "With regard to X," — the usual TOG shape
+    if (clause && clause[1].length >= 16) return clause[1];
+    const word = p.replace(/\s+\S*$/, '').trim();      // otherwise cut at the last whole word
+    return word.length >= 20 ? word : '';
+  }
+  /** Group consecutive questions under the longest lead-in they all share. */
+  function groupStems(qs) {
+    const groups = [];
+    qs.forEach(q => {
+      const g = groups[groups.length - 1];
+      if (g) {
+        const lead = tidyLead(lcp(g.lead || g.qs[0].stem || '', q.stem || ''));
+        if (lead) { g.lead = lead; g.qs.push(q); return; }
+      }
+      groups.push({ lead: '', qs: [q] });
+    });
+    // a lead-in over a single statement saves nothing, so drop it
+    groups.forEach(g => { if (g.qs.length < 2) g.lead = ''; });
+    return groups;
+  }
+  /** What is left of a stem once its group's lead-in is lifted off. */
+  function tailOf(q, lead) {
+    const s = String(q.stem || '');
+    if (!lead || !s.startsWith(lead)) return s;
+    return s.slice(lead.length).replace(/^[\s,;:]+/, '').trim() || s;
+  }
 
   async function renderTopic(view, volumeId, sectionId, user) {
     const [list, prog] = await Promise.all([
@@ -199,11 +265,14 @@ const CPD = (() => {
       FX.viewIn(view); return;
     }
     const qs = questionsOf(s);
+    const groups = groupStems(qs);
+    const numOf = {}; qs.forEach((q, i) => numOf[q.id] = i + 1);
     const answers = {};                                   // qid → { picked, correct }
     qs.forEach(q => { const r = prog[qKey(v, s, q)]; if (r) answers[q.id] = { picked: choiceOf(r), correct: r.correct }; });
+    let dens = density();
 
     view.innerHTML = `
-      <section class="page cpd-run">
+      <section class="page cpd-run cpd-d-${dens}">
         <a class="link muted dev-back" href="#/library/cpd/${encodeURIComponent(v.id)}">← ${esc(v.volume || 'Volume')}</a>
         <header class="cpd-run-head" data-animate>
           <p class="kicker">${esc(v.volume || '')}${s.folderTag ? ' · ' + esc(s.folderTag) : ''}</p>
@@ -211,15 +280,25 @@ const CPD = (() => {
           <div class="cpd-meter">
             <div class="cpd-meter-bar"><i id="cpd-fill"></i></div>
             <p class="cpd-meter-txt" id="cpd-meter"></p>
+            <div class="cpd-dens" role="group" aria-label="Reading density">
+              <button class="cpd-dens-b ${dens === 'rapid' ? 'active' : ''}" data-dens="rapid"
+                title="One line a statement, lead-in shown once">⚡ Rapid</button>
+              <button class="cpd-dens-b ${dens === 'detailed' ? 'active' : ''}" data-dens="detailed"
+                title="Full cards, each statement written out in full">☰ Detailed</button>
+            </div>
             <button class="btn btn-ghost btn-sm" id="cpd-reset" title="Clear your answers for this topic and start again">↺ Start over</button>
           </div>
+          <p class="cpd-keys muted tiny">${groups.filter(g => g.lead).length
+            ? `<strong>${groups.filter(g => g.lead).length}</strong> shared lead-in${groups.filter(g => g.lead).length === 1 ? '' : 's'} lifted out of ${qs.length} statements — read each one once. `
+            : ''}Keys: <kbd>T</kbd>/<kbd>F</kbd> answer · <kbd>1</kbd>–<kbd>9</kbd> pick an option · <kbd>↑</kbd><kbd>↓</kbd> move.</p>
         </header>
         <div class="cpd-cards" id="cpd-cards"></div>
         <div class="cpd-done card" id="cpd-done" hidden></div>
+        <div id="cpd-recap"></div>
       </section>`;
 
     const cardsEl = view.querySelector('#cpd-cards');
-    cardsEl.innerHTML = qs.map((q, i) => cardHTML(q, i, answers[q.id])).join('');
+    paint();
 
     // one delegated listener on the persistent list — re-wiring per card on
     // every answer is how listener stacks are born
@@ -231,24 +310,96 @@ const CPD = (() => {
       const cp = e.target.closest('[data-cpd-copy]');
       if (cp) return copyOne(cp);
     });
+    cardsEl.addEventListener('keydown', onKey);
+
+    view.querySelector('.cpd-dens').addEventListener('click', e => {
+      const b = e.target.closest('[data-dens]'); if (!b || b.dataset.dens === dens) return;
+      dens = b.dataset.dens; setDensity(dens);
+      view.querySelector('.cpd-run').className = `page cpd-run cpd-d-${dens}`;
+      view.querySelectorAll('.cpd-dens-b').forEach(x => x.classList.toggle('active', x === b));
+      paint(); paintMeter();
+    });
 
     view.querySelector('#cpd-reset').addEventListener('click', async () => {
       if (!confirm('Clear your answers for this topic?')) return;
       try { await Backend.resetCpdSection(v.id, s.id); } catch {}
       Object.keys(answers).forEach(k => delete answers[k]);
-      cardsEl.innerHTML = qs.map((q, i) => cardHTML(q, i, null)).join('');
-      paintMeter();
+      paint(); paintMeter();
     });
 
     paintMeter();
     FX.viewIn(view);
 
-    /* ---- one card ---- */
-    function cardHTML(q, i, state) {
-      const shown = !!state;
-      const right = state?.correct;
+    function paint() {
+      cardsEl.innerHTML = dens === 'rapid'
+        ? groups.map(groupHTML).join('')
+        : qs.map(q => cardHTML(q, numOf[q.id] - 1, answers[q.id])).join('');
+    }
+
+    /* ---------- rapid: a lead-in, then one line a statement ---------- */
+    function groupHTML(g) {
+      return `
+        <section class="cpdr-group${g.lead ? ' has-lead' : ''}">
+          ${g.lead ? `<p class="cpdr-lead">${esc(g.lead)}</p>` : ''}
+          <div class="cpdr-rows">${g.qs.map(q => rowHTML(q, g.lead)).join('')}</div>
+        </section>`;
+    }
+    function rowHTML(q, lead) {
+      const state = answers[q.id];
+      const shown = !!state, right = state?.correct, sba = isSBA(q);
+      const opts = optionsOf(q);
+      const key = String(q.answer).toUpperCase();
+      const picks = sba
+        ? `<div class="cpdr-opts">${opts.map((o, i) => {
+            const k = String(o.key).toUpperCase();
+            const isPick = shown && String(state.picked).toUpperCase() === k;
+            const isKey = shown && k === key;
+            return `<button class="cpdr-opt ${isKey ? 'is-key' : ''} ${isPick ? 'is-picked' : ''}"
+              data-pick="${esc(o.key)}" data-qid="${esc(q.id)}" ${shown ? 'disabled' : ''}>
+              <span class="cpdr-opt-k">${esc(o.key)}</span><span>${esc(o.text)}</span></button>`;
+          }).join('')}</div>`
+        : `<div class="cpdr-tf">
+            <button class="cpdr-b cpdr-t ${shown && String(state.picked) === 'true' ? 'is-picked' : ''} ${shown && q.answer ? 'is-key' : ''}"
+              data-pick="true" data-qid="${esc(q.id)}" ${shown ? 'disabled' : ''} title="True (T)">T</button>
+            <button class="cpdr-b cpdr-f ${shown && String(state.picked) === 'false' ? 'is-picked' : ''} ${shown && !q.answer ? 'is-key' : ''}"
+              data-pick="false" data-qid="${esc(q.id)}" ${shown ? 'disabled' : ''} title="False (F)">F</button>
+          </div>`;
+      return `
+        <article class="cpdr-row ${sba ? 'is-sba' : ''} ${shown ? (right ? 'is-right' : 'is-wrong') : ''}"
+          data-q="${esc(q.id)}" tabindex="0">
+          <span class="cpdr-n">${String(numOf[q.id]).padStart(2, '0')}</span>
+          <p class="cpdr-txt">${esc(tailOf(q, lead))}</p>
+          ${sba ? '<span class="cpdr-sbatag">SBA</span>' : picks}
+          <span class="cpdr-mark">${shown ? (right ? '✓' : '✗') : ''}</span>
+          ${sba ? picks : ''}
+          <div class="cpdr-why" ${shown ? '' : 'hidden'}>${whyHTML(q)}</div>
+        </article>`;
+    }
+    /** The feedback block: verdict, reasoning, memory hook, AI. Same content in both densities. */
+    function whyHTML(q) {
       const sba = isSBA(q);
+      const opts = optionsOf(q);
+      const key = String(q.answer).toUpperCase();
+      const kOpt = opts.find(o => String(o.key).toUpperCase() === key);
       const ecoOn = (typeof Ecosystem !== 'undefined' && Ecosystem.enabled());
+      const verdict = sba
+        ? `The answer is <strong>${esc(key)}</strong>${kOpt ? ' — ' + esc(kOpt.text) : ''}.`
+        : `The statement is <strong>${q.answer ? 'TRUE' : 'FALSE'}</strong>.`;
+      return `
+        <p class="cpd-answer">${verdict}</p>
+        <div class="cpd-rationale">${esc(q.rationale || '')}</div>
+        ${q.hook ? `<p class="cpd-hook"><span>💡</span>${esc(q.hook)}</p>` : ''}
+        <div class="cpd-actions">
+          <button class="btn btn-ghost btn-sm" data-cpd-ai data-qid="${esc(q.id)}">✨ Explore with AI</button>
+          ${ecoOn ? `<button class="btn btn-ghost btn-sm" data-cpd-copy data-qid="${esc(q.id)}"
+            title="Copy the statement as plain text — without the answer, reasoning or hook">📋 Copy question</button>` : ''}
+        </div>
+        <div class="cpd-ai" data-ai-host="${esc(q.id)}"></div>`;
+    }
+
+    /* ---------- detailed: the roomy card ---------- */
+    function cardHTML(q, i, state) {
+      const shown = !!state, right = state?.correct, sba = isSBA(q);
       const opts = optionsOf(q);
       const correctKey = String(q.answer).toUpperCase();
       const picks = sba
@@ -271,13 +422,9 @@ const CPD = (() => {
             <button class="cpd-tf-btn cpd-false ${shown && String(state.picked) === 'false' ? 'is-picked' : ''}"
               data-pick="false" data-qid="${esc(q.id)}" ${shown ? 'disabled' : ''}>FALSE</button>
           </div>`;
-      const verdictLine = sba
-        ? `The answer is <strong>${esc(correctKey)}</strong>${
-            opts.find(o => String(o.key).toUpperCase() === correctKey)
-              ? ' — ' + esc(opts.find(o => String(o.key).toUpperCase() === correctKey).text) : ''}.`
-        : `The statement is <strong>${q.answer ? 'TRUE' : 'FALSE'}</strong>.`;
       return `
-        <article class="cpd-card ${sba ? 'is-sba' : ''} ${shown ? (right ? 'is-right' : 'is-wrong') : ''}" data-q="${esc(q.id)}" data-animate>
+        <article class="cpd-card ${sba ? 'is-sba' : ''} ${shown ? (right ? 'is-right' : 'is-wrong') : ''}"
+          data-q="${esc(q.id)}" tabindex="0" data-animate>
           <div class="cpd-card-head">
             <span class="cpd-num">${String(i + 1).padStart(2, '0')}</span>
             <span class="cpd-type">${sba ? 'SBA' : 'True / false'}</span>
@@ -285,21 +432,40 @@ const CPD = (() => {
           </div>
           <p class="cpd-stem">${esc(q.stem)}</p>
           ${picks}
-          <div class="cpd-reveal" ${shown ? '' : 'hidden'}>
-            <p class="cpd-answer">${verdictLine}</p>
-            <div class="cpd-rationale">${esc(q.rationale || '')}</div>
-            ${q.hook ? `<p class="cpd-hook"><span>💡</span>${esc(q.hook)}</p>` : ''}
-            <div class="cpd-actions">
-              <button class="btn btn-ghost btn-sm" data-cpd-ai data-qid="${esc(q.id)}">✨ Explore with AI</button>
-              ${ecoOn ? `<button class="btn btn-ghost btn-sm" data-cpd-copy data-qid="${esc(q.id)}"
-                title="Copy the statement as plain text — without the answer, reasoning or hook">📋 Copy question</button>` : ''}
-            </div>
-            <div class="cpd-ai" data-ai-host="${esc(q.id)}"></div>
-          </div>
+          <div class="cpd-reveal" ${shown ? '' : 'hidden'}>${whyHTML(q)}</div>
         </article>`;
     }
 
-    /* ---- answering ---- */
+    /* ---------- keys: the mouse is the slow part ---------- */
+    function onKey(e) {
+      const row = e.target.closest('.cpdr-row, .cpd-card');
+      if (!row || e.metaKey || e.ctrlKey || e.altKey) return;
+      const qid = row.dataset.q;
+      const q = qs.find(x => x.id === qid); if (!q) return;
+      const k = e.key.toLowerCase();
+      if (k === 'arrowdown' || k === 'arrowup') {
+        e.preventDefault();
+        const all = [...cardsEl.querySelectorAll('.cpdr-row, .cpd-card')];
+        const n = all[all.indexOf(row) + (k === 'arrowdown' ? 1 : -1)];
+        if (n) { n.focus(); n.scrollIntoView({ block: 'nearest' }); }
+        return;
+      }
+      if (answers[qid]) return;
+      let sel = null;
+      if (!isSBA(q) && (k === 't' || k === 'y')) sel = 'true';
+      else if (!isSBA(q) && (k === 'f' || k === 'n')) sel = 'false';
+      else if (isSBA(q) && /^[1-9]$/.test(k)) {
+        const o = optionsOf(q)[Number(k) - 1]; if (o) sel = String(o.key);
+      } else if (isSBA(q) && /^[a-z]$/.test(k)) {
+        const o = optionsOf(q).find(x => String(x.key).toLowerCase() === k); if (o) sel = String(o.key);
+      }
+      if (!sel) return;
+      e.preventDefault();
+      const btn = row.querySelector(`[data-pick="${CSS.escape(sel)}"]`);
+      if (btn) answer(btn);
+    }
+
+    /* ---------- answering ---------- */
     async function answer(btn) {
       const qid = btn.dataset.qid;
       const q = qs.find(x => x.id === qid); if (!q || answers[qid]) return;
@@ -307,35 +473,39 @@ const CPD = (() => {
       const correct = isRight(q, picked);
       answers[qid] = { picked, correct };
 
-      const card = btn.closest('.cpd-card');
-      card.classList.add(correct ? 'is-right' : 'is-wrong');
-      const correctKey = String(q.answer).toUpperCase();
-      card.querySelectorAll('[data-pick]').forEach(b => {
+      const row = btn.closest('.cpdr-row, .cpd-card');
+      row.classList.add(correct ? 'is-right' : 'is-wrong');
+      const key = String(q.answer).toUpperCase();
+      row.querySelectorAll('[data-pick]').forEach(b => {
         b.disabled = true;
         const val = b.dataset.pick;
         b.classList.toggle('is-picked', val === picked);
-        if (isSBA(q)) {
-          const isKey = String(val).toUpperCase() === correctKey;
-          b.classList.toggle('is-key', isKey);
-          // mark the right one green and a wrong pick red, the way a paper is marked
-          if (isKey || val === picked) {
-            const m = document.createElement('span');
-            m.className = 'cpd-opt-mark ' + (isKey ? 'good' : 'bad');
-            m.textContent = isKey ? '✓' : '✗';
-            if (!b.querySelector('.cpd-opt-mark')) b.appendChild(m);
-          }
+        const isKey = isSBA(q) ? String(val).toUpperCase() === key : (val === 'true') === !!q.answer;
+        b.classList.toggle('is-key', isKey);
+        // mark the right one and a wrong pick, the way a paper is marked
+        if (b.classList.contains('cpd-opt') && (isKey || val === picked) && !b.querySelector('.cpd-opt-mark')) {
+          const m = document.createElement('span');
+          m.className = 'cpd-opt-mark ' + (isKey ? 'good' : 'bad');
+          m.textContent = isKey ? '✓' : '✗';
+          b.appendChild(m);
         }
       });
-      const head = card.querySelector('.cpd-card-head');
-      if (!head.querySelector('.cpd-verdict')) {
-        const v2 = document.createElement('span');
-        v2.className = 'cpd-verdict ' + (correct ? 'good' : 'bad');
-        v2.textContent = correct ? '✓ Correct' : '✗ Not quite';
-        head.appendChild(v2);
+      const tick = row.querySelector('.cpdr-mark');
+      if (tick) tick.textContent = correct ? '✓' : '✗';
+      const head = row.querySelector('.cpd-card-head');
+      if (head && !head.querySelector('.cpd-verdict')) {
+        const el = document.createElement('span');
+        el.className = 'cpd-verdict ' + (correct ? 'good' : 'bad');
+        el.textContent = correct ? '✓ Correct' : '✗ Not quite';
+        head.appendChild(el);
       }
-      const rev = card.querySelector('.cpd-reveal');
-      rev.hidden = false;
-      if (typeof FX !== 'undefined') FX.viewIn?.(rev);
+      const rev = row.querySelector('.cpdr-why, .cpd-reveal');
+      if (rev) { rev.innerHTML = whyHTML(q); rev.hidden = false; }
+
+      // straight on to the next thing you have not answered
+      const all = [...cardsEl.querySelectorAll('.cpdr-row, .cpd-card')];
+      const next = all.slice(all.indexOf(row) + 1).find(r => !answers[r.dataset.q]);
+      if (next && document.activeElement !== document.body) next.focus({ preventScroll: true });
 
       paintMeter();
       try {
@@ -350,11 +520,11 @@ const CPD = (() => {
       if (typeof Progression !== 'undefined' && correct) { try { await Backend.addXp?.(2); } catch {} }
     }
 
-    /* ---- AI tutor, per card ---- */
+    /* ---------- AI tutor, per question ---------- */
     function toggleAi(btn) {
       const qid = btn.dataset.qid;
       const q = qs.find(x => x.id === qid); if (!q) return;
-      const host = btn.closest('.cpd-card').querySelector(`[data-ai-host="${CSS.escape(qid)}"]`);
+      const host = btn.closest('.cpdr-row, .cpd-card').querySelector(`[data-ai-host="${CSS.escape(qid)}"]`);
       if (host.dataset.open === '1') { host.dataset.open = '0'; host.innerHTML = ''; btn.classList.remove('is-on'); return; }
       host.dataset.open = '1'; btn.classList.add('is-on');
       if (typeof AI === 'undefined') return;
@@ -380,7 +550,7 @@ const CPD = (() => {
       });
     }
 
-    /* ---- copy for the outside models ---- */
+    /* ---------- copy for the outside models ---------- */
     async function copyOne(btn) {
       const q = qs.find(x => x.id === btn.dataset.qid); if (!q) return;
       const sba = isSBA(q);
@@ -398,7 +568,7 @@ const CPD = (() => {
       setTimeout(() => { if (btn.isConnected) { btn.textContent = '📋 Copy question'; btn.classList.remove('is-done'); } }, 2200);
     }
 
-    /* ---- progress ---- */
+    /* ---------- progress, and the one-pass recap ---------- */
     function paintMeter() {
       const done = Object.keys(answers).length;
       const right = Object.values(answers).filter(a => a.correct).length;
@@ -410,20 +580,56 @@ const CPD = (() => {
         ? `<strong>${done}</strong> of ${qs.length} answered · <strong class="${pct >= 70 ? 'good' : pct >= 50 ? '' : 'bad'}">${pct}%</strong> correct`
         : `${qs.length} question${qs.length !== 1 ? 's' : ''} · answer one to begin`;
       const doneEl = view.querySelector('#cpd-done');
+      const recapEl = view.querySelector('#cpd-recap');
       if (!doneEl) return;
       if (done === qs.length && qs.length) {
         doneEl.hidden = false;
         doneEl.innerHTML = `
           <div class="cpd-done-ring ${pct >= 70 ? 'good' : pct >= 50 ? '' : 'bad'}">${pct}<i>%</i></div>
           <h2>Topic complete</h2>
-          <p class="muted">${right} of ${qs.length} correct. The ones you missed are worth a second read — their memory hooks
-            are the fastest way to make them stick.</p>
+          <p class="muted">${right} of ${qs.length} correct. Everything worth carrying away is collected below — the ones you
+            missed first, then every memory hook in one pass.</p>
           <div class="cpd-done-acts">
             <a class="btn btn-gold" href="#/library/cpd/${encodeURIComponent(v.id)}">Back to the volume</a>
             <button class="btn btn-ghost" id="cpd-again">↺ Start over</button>
           </div>`;
         doneEl.querySelector('#cpd-again').addEventListener('click', () => view.querySelector('#cpd-reset').click());
-      } else { doneEl.hidden = true; doneEl.innerHTML = ''; }
+        if (recapEl) recapEl.innerHTML = recapHTML();
+      } else {
+        doneEl.hidden = true; doneEl.innerHTML = '';
+        if (recapEl) recapEl.innerHTML = '';
+      }
+    }
+    /* Re-reading the hooks one after another is the fastest revision this
+       section can offer, so they are gathered here rather than left scattered
+       one per card up the page. */
+    function recapHTML() {
+      const wrong = qs.filter(q => answers[q.id] && !answers[q.id].correct);
+      const hooks = qs.filter(q => q.hook);
+      const line = q => `
+        <li>
+          <span class="cpd-rc-n">${String(numOf[q.id]).padStart(2, '0')}</span>
+          <span class="cpd-rc-body">
+            <span class="cpd-rc-stem">${esc(q.stem)}</span>
+            <span class="cpd-rc-ans">${isSBA(q)
+              ? 'Answer: ' + esc(String(q.answer).toUpperCase())
+              : 'Answer: ' + (q.answer ? 'TRUE' : 'FALSE')}</span>
+            ${q.hook ? `<span class="cpd-rc-hook">💡 ${esc(q.hook)}</span>` : ''}
+          </span>
+        </li>`;
+      return `
+        ${wrong.length ? `
+        <div class="card cpd-recap is-wrong" data-animate>
+          <h3 class="card-title">✗ The ${wrong.length} you missed</h3>
+          <p class="muted tiny">Read these again now, while the reasoning is still fresh.</p>
+          <ul class="cpd-rc-list">${wrong.map(line).join('')}</ul>
+        </div>` : ''}
+        ${hooks.length ? `
+        <div class="card cpd-recap" data-animate>
+          <h3 class="card-title">💡 Every memory hook, in one pass</h3>
+          <p class="muted tiny">All ${hooks.length} hooks from this topic together — one screen, one read.</p>
+          <ul class="cpd-hooks">${hooks.map(q => `<li><span class="cpd-rc-n">${String(numOf[q.id]).padStart(2, '0')}</span>${esc(q.hook)}</li>`).join('')}</ul>
+        </div>` : ''}`;
     }
   }
 
