@@ -12,12 +12,18 @@
    and "Save as PDF" in the browser's own print dialog gives the PDF.
    No popup window (blockers eat those), no server, no library.
 
-   Four designs, because a report you file and a sheet you pin above
-   the desk are not the same document:
+   Six designs, because a report you file, a sheet you pin above the
+   desk and a scheme you learn from are not the same document:
      classic   — exam-board formal: serif, ruled, black on white
      clinical  — modern report: sans, accent bar, table-led
+     scheme    — the scheme and the model answer, and nothing else
      compact   — dense: small type, tight leading, fewest pages
      annotated — wide margin column left blank for handwriting
+     custom    — exactly the sections you tick, remembered next time
+
+   A design has a SKIN (how it looks) and CONTENTS (what goes in).
+   Changing a tick flips the design to Custom, because the document no
+   longer matches the design that was chosen.
    ============================================================ */
 
 const EssayPrint = (() => {
@@ -43,27 +49,50 @@ const EssayPrint = (() => {
     ['modelAnswer', 'Model answer', 'The full-mark answer, writable by hand']
   ];
 
+  /* `skin` is how it LOOKS, `on` is what goes IN. Most designs bring their own
+     sensible contents; `scheme` is a deliberately minimal study sheet, and
+     `custom` brings no opinion at all — it keeps whatever you have ticked and
+     remembers it for next time. */
   const TEMPLATES = {
     classic: {
-      name: 'Examiner report',
+      name: 'Examiner report', skin: 'classic',
       blurb: 'Formal and complete, the way an exam board writes it. Serif, ruled headings, black on white — prints cleanly on any printer.',
       on: ['cover', 'question', 'breakdown', 'examiner', 'transcription', 'markScheme', 'loss', 'actions', 'writing', 'time', 'guidelines', 'learning', 'modelAnswer']
     },
     clinical: {
-      name: 'Full dossier',
+      name: 'Full dossier', skin: 'clinical',
       blurb: 'Everything the file holds, including the blank mark scheme. A modern report layout with a colour accent — the one to keep on file.',
       on: SECTIONS.map(s => s[0])
     },
+    scheme: {
+      name: 'Scheme & model answer', skin: 'classic',
+      blurb: 'The revision sheet: the question, the whole mark scheme, and the model answer. None of your marking — just what a full-mark answer contains.',
+      // the blank scheme where the file has one, the marked scheme where it does not
+      on: f => ['question', (f.generatedScheme?.sections || []).length ? 'fullScheme' : 'markScheme', 'modelAnswer']
+    },
     compact: {
-      name: 'Revision brief',
+      name: 'Revision brief', skin: 'compact',
       blurb: 'Only what changes your next attempt: score, where the marks went, what to do first, the learning points and the model answer. Dense, few pages.',
       on: ['cover', 'question', 'loss', 'actions', 'learning', 'modelAnswer']
     },
     annotated: {
-      name: 'Annotation copy',
+      name: 'Annotation copy', skin: 'annotated',
       blurb: 'Wide blank margin down the left of every page for your own notes, and generous line spacing. For working through with a pen.',
       on: ['cover', 'question', 'markScheme', 'fullScheme', 'actions', 'learning', 'modelAnswer']
+    },
+    custom: {
+      name: 'Custom', skin: 'clinical', custom: true,
+      blurb: 'Build your own: tick exactly the sections you want below and nothing is added or taken away. Your choice is remembered for next time.',
+      on: ['cover', 'question', 'markScheme', 'modelAnswer']
     }
+  };
+  const CUSTOM_KEY = 'aureum.print.custom';
+  const loadCustom = () => { try { return JSON.parse(localStorage.getItem(CUSTOM_KEY) || 'null'); } catch { return null; } };
+  const saveCustom = ids => { try { localStorage.setItem(CUSTOM_KEY, JSON.stringify([...ids])); } catch {} };
+  /** The section list a design asks for, resolved against this report. */
+  const wants = (id, f) => {
+    const on = TEMPLATES[id].on;
+    return typeof on === 'function' ? on(f) : on;
   };
 
   const has = {
@@ -89,8 +118,9 @@ const EssayPrint = (() => {
   function open(f) {
     close();
     const avail = SECTIONS.filter(([id]) => has[id](f));
+    const hasSec = id => avail.some(a => a[0] === id);
     let tpl = 'classic';
-    let picked = new Set(TEMPLATES.classic.on.filter(id => avail.some(a => a[0] === id)));
+    let picked = new Set(wants('classic', f).filter(hasSec));
 
     host = document.createElement('div');
     host.className = 'pw-overlay';
@@ -116,9 +146,16 @@ const EssayPrint = (() => {
                   <span class="pw-tpl-blurb">${esc(t.blurb)}</span>
                 </button>`).join('')}
             </div>
-            <h3 class="pw-rail-h">What goes in</h3>
+            <div class="pw-secs-head">
+              <h3 class="pw-rail-h">What goes in</h3>
+              <span class="pw-bulk">
+                <button class="pw-bulk-b" id="pw-all">All</button>
+                <button class="pw-bulk-b" id="pw-none">None</button>
+              </span>
+            </div>
             <p class="pw-rail-note">Only sections your report actually has are listed. Nothing else is dropped —
-              everything ticked is printed in full.</p>
+              everything ticked is printed in full. Change a tick and the design becomes <strong>Custom</strong>,
+              which is remembered for next time.</p>
             <div class="pw-secs" id="pw-secs">
               ${avail.map(([id, label, desc]) => `
                 <label class="pw-sec">
@@ -159,19 +196,43 @@ const EssayPrint = (() => {
       host.querySelector('#pw-print').disabled = !picked.size;
     };
 
+    const markTpl = () => host.querySelectorAll('.pw-tpl')
+      .forEach(x => x.classList.toggle('active', x.dataset.tpl === tpl));
+    const syncTicks = () => host.querySelectorAll('[data-sec]')
+      .forEach(c => c.checked = picked.has(c.dataset.sec));
+    /* Editing the ticks means the document no longer matches the design that
+       was chosen, so say so rather than leaving a lie highlighted. */
+    const toCustom = () => {
+      if (tpl === 'custom') return;
+      tpl = 'custom'; markTpl();
+    };
+
     host.querySelector('.pw-tpls').addEventListener('click', e => {
       const b = e.target.closest('[data-tpl]'); if (!b) return;
       tpl = b.dataset.tpl;
-      host.querySelectorAll('.pw-tpl').forEach(x => x.classList.toggle('active', x === b));
-      // a design carries its own idea of what belongs in it
-      picked = new Set(TEMPLATES[tpl].on.filter(id => avail.some(a => a[0] === id)));
-      host.querySelectorAll('[data-sec]').forEach(c => c.checked = picked.has(c.dataset.sec));
+      markTpl();
+      if (TEMPLATES[tpl].custom) {
+        // Custom has no opinion: reuse what was saved, else keep what is ticked
+        const saved = loadCustom();
+        if (saved) picked = new Set(saved.filter(hasSec));
+        if (!picked.size) picked = new Set(wants('custom', f).filter(hasSec));
+      } else {
+        picked = new Set(wants(tpl, f).filter(hasSec));   // a design brings its contents
+      }
+      syncTicks();
       draw();
     });
     host.querySelector('#pw-secs').addEventListener('change', e => {
       const c = e.target.closest('[data-sec]'); if (!c) return;
       c.checked ? picked.add(c.dataset.sec) : picked.delete(c.dataset.sec);
+      toCustom(); saveCustom(picked);
       draw();
+    });
+    host.querySelector('#pw-all').addEventListener('click', () => {
+      picked = new Set(avail.map(a => a[0])); toCustom(); syncTicks(); saveCustom(picked); draw();
+    });
+    host.querySelector('#pw-none').addEventListener('click', () => {
+      picked = new Set(); toCustom(); syncTicks(); saveCustom(picked); draw();
     });
     host.querySelector('#pw-colour').addEventListener('change', draw);
     host.querySelector('#pw-print').addEventListener('click', () => {
@@ -233,7 +294,9 @@ const EssayPrint = (() => {
     return out;
   }
 
-  function buildDoc(f, tpl, on, colour) {
+  function buildDoc(f, tplId, on, colour) {
+    // the design's LOOK; contents are already resolved into `on`
+    const tpl = (TEMPLATES[tplId] && TEMPLATES[tplId].skin) || tplId;
     const sc = f.score || {};
     const gs = f.generatedScheme;
     const put = id => on.has(id) ? true : false;
