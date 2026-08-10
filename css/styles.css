@@ -1798,13 +1798,33 @@ details[open] > summary .tw-caret { transform: rotate(90deg); }
 :root[data-theme="light"] .table thead th { color: #48546b; }
 :root[data-theme="light"] .palette-cell { background: #eef1f7; }
 
-/* NIGHT theme: dimmed OLED black for late study */
+/* NIGHT theme: dimmed OLED black for late study.
+
+   The gentle desaturation used to be `filter: saturate(.92)` on <body>. A
+   filter other than `none` makes the element a CONTAINING BLOCK for every
+   position:fixed descendant, so in night mode the AI dock, the tea-room
+   bubbles and the settings dock stopped being anchored to the viewport and
+   were pinned to the document instead — scroll down 350px and the dock's top
+   was at -350, off the top of the screen. The AI panel simply vanished.
+
+   The same desaturation is now baked into the accent values (computed through
+   the saturate(.92) matrix), so night looks the same and nothing on the page
+   creates a containing block. Never put filter, transform, perspective,
+   backdrop-filter or will-change on <html> or <body>. */
 :root[data-theme="night"] {
   --bg: #05060c; --surface: #0b0d17; --surface-2: #0f1220;
   --hairline: rgba(255,255,255,0.06);
   --ink: #cfd3e6; --ink-2: #8288a3; --ink-3: #5a6079;
+  --teal: #67e7d3; --violet: #a68cf2; --gold: #f1c966;
+  --blue: #3e86dd; --good: #3ed09b; --bad: #f07373;
+  --grad: linear-gradient(100deg, #67e7d3, #a68cf2);
 }
-:root[data-theme="night"] body { filter: saturate(.92); }
+/* the dock is a peer of the page, not part of it — give it an edge that reads
+   against near-black, where a 6%-white hairline disappears */
+:root[data-theme="night"] .eco-dock { border-left-color: rgba(255,255,255,.14); }
+:root[data-theme="night"] .eco-card,
+:root[data-theme="night"] .ap-sheet,
+:root[data-theme="night"] .pw-modal { border-color: rgba(255,255,255,.12); }
 
 /* Energy-saving: kill the animated canvas + heavy motion, keep layout */
 .energy-saving #bg-canvas { display: none !important; }
@@ -3692,3 +3712,20 @@ body.eco-open .ap-dock { z-index: 2390; }
 :root[data-theme="light"] .cpd-hero-glow,
 :root[data-theme="light"] .hero-glow { display: none; }
 :root[data-theme="light"] .btn:hover { transform: translateY(-1px); }
+
+/* v53 — print wizard: bulk section controls + the two new designs */
+.pw-secs-head { display: flex; align-items: baseline; gap: 10px; }
+.pw-bulk { margin-left: auto; display: inline-flex; gap: 4px; }
+.pw-bulk-b { background: none; border: 1px solid var(--hairline); color: var(--ink-3);
+  font: inherit; font-size: .64rem; font-weight: 600; letter-spacing: .04em;
+  padding: 2px 9px; border-radius: 999px; cursor: pointer; transition: .14s ease; }
+.pw-bulk-b:hover { color: var(--ink); border-color: var(--teal); }
+.pw-th-scheme { padding-left: 4px; }
+.pw-th-scheme i:first-child { width: 52%; background: #3c4353; }
+.pw-th-scheme i:nth-child(2) { height: 2px; width: 90%; }
+.pw-th-scheme i:nth-child(3) { height: 2px; width: 84%; }
+.pw-th-scheme i:last-child { height: 6px; width: 66%; background: #8a6212; margin-top: 4px; }
+.pw-th-custom { background: repeating-linear-gradient(135deg, #fff 0 6px, #f4f6fa 6px 12px); }
+.pw-th-custom i:first-child { width: 64%; background: #0d8f7d; }
+.pw-th-custom i:nth-child(3) { width: 46%; }
+.pw-tpl.active .pw-tpl-name::after { content: ''; }
