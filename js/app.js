@@ -26,6 +26,7 @@
     { re: /^#\/library\/essay$/, fn: (u) => Essay.renderList(view, u) },
     { re: /^#\/library\/essay\/writing$/, fn: (u) => Essay.renderWritingLab(view, u) },
     { re: /^#\/library\/essay\/how$/, fn: (u) => Essay.renderHow(view, u) },
+    { re: /^#\/library\/essay\/pgim$/, fn: (u) => Essay.renderList(view, u, 'pgim') },
     { re: /^#\/library\/essay\/feedback\/([^/]+)$/, fn: (code, u) => Essay.renderFeedback(view, code, u) },
     { re: /^#\/library\/essay\/([^/]+)\/write\/(\d+)$/, fn: (id, qi, u) => Essay.renderWrite(view, id, qi, u) },
     { re: /^#\/library\/essay\/([^/]+)$/, fn: (id, u) => Essay.renderPaper(view, id, u) },
@@ -123,24 +124,17 @@
   /* ================= appearance: theme + energy saving ================= */
 
   const THEMES = ['dark', 'light', 'night'];
-  function applyTheme(theme) {
-    theme = THEMES.includes(theme) ? theme : 'dark';
-    document.documentElement.setAttribute('data-theme', theme);
-    try { localStorage.setItem('aureum.theme', theme); } catch {}
-    const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute('content', theme === 'light' ? '#f4f6fb' : theme === 'night' ? '#05060c' : '#0a0c18');
-  }
-  function applyEnergySaving(on) {
-    try { localStorage.setItem('aureum.energy', on ? '1' : '0'); } catch {}
-    document.documentElement.classList.toggle('energy-saving', !!on);
-    try { ThreeBG.setEnergySaving?.(on); } catch {}
-  }
+  /* The engine in appearance.js owns the palette, the text scale and the
+     per-component colour overrides. These keep their old names because the
+     rest of the app calls them, but they are now thin wrappers — there is
+     exactly one place that decides what the interface looks like. */
+  const applyTheme = theme => Appearance.set({ theme: THEMES.includes(theme) ? theme : 'dark' });
+  const applyEnergySaving = on => Appearance.set({ energy: !!on });
   // apply the user's stored prefs (cloud) once known; localStorage handled the instant boot
   let _apChecked = false;
   function applyPrefsAppearance(user) {
     if (_apChecked) return; _apChecked = true;
-    if (user?.prefs?.theme) applyTheme(user.prefs.theme);
-    if (user?.prefs?.energySaving != null) applyEnergySaving(user.prefs.energySaving);
+    Appearance.adopt(user?.prefs);
     // the ecosystem follows the account, so switching on at home shows up at work
     if (user?.prefs?.aiEcosystem != null && typeof Ecosystem !== 'undefined'
         && Ecosystem.enabled() !== !!user.prefs.aiEcosystem) {
@@ -199,7 +193,9 @@
   let _teaStarted = false;
   function startTeaRoom(user) {
     if (typeof TeaRoom === 'undefined') return;
-    if (!user) { if (_teaStarted) { TeaRoom.unmountLauncher(); _teaStarted = false; } return; }
+    if (!user) { if (_teaStarted) { TeaRoom.unmountLauncher(); _teaStarted = false; }
+      try { Appearance.unmountDock(); } catch {} return; }
+    try { Appearance.mountDock(); } catch {}
     if (_teaStarted) return;
     _teaStarted = true;
     TeaRoom.onChange(paintTeaBadge);
@@ -1366,20 +1362,11 @@
 
         <div class="card" data-animate>
           <h3 class="card-title">Appearance</h3>
-          <p class="muted">Choose how AUREUM looks. Your choice follows your account across devices.</p>
-          <div class="theme-picker" id="theme-picker">
-            ${[['dark', '🌙 Dark', 'The signature deep-navy look'], ['light', '☀️ Light', 'Bright, high-contrast daytime'], ['night', '🌌 Night', 'Dimmed OLED black for late study']].map(([id, label, desc]) => `
-              <button class="theme-opt ${(user.prefs?.theme || localStorage.getItem('aureum.theme') || 'dark') === id ? 'active' : ''}" data-theme-opt="${id}">
-                <span class="theme-swatch theme-sw-${id}"></span>
-                <span class="theme-opt-label">${label}</span>
-                <span class="theme-opt-desc muted tiny">${desc}</span>
-              </button>`).join('')}
-          </div>
+          <p class="muted">Everything about how AUREUM looks. Your choices are saved on this device at once and follow your
+            account to any other. The same controls sit behind the <strong>⚙</strong> button in the bottom-left corner of
+            every page, so you can change them without coming back here.</p>
+          <div id="ap-profile-panel"></div>
           <label class="pref-toggle" style="margin-top:14px">
-            <span><strong>🔋 Energy-saving mode</strong><br><span class="muted tiny">Stops the animated background and heavy motion to save battery. Core features and layout are unchanged.</span></span>
-            <label class="dev-flag"><input type="checkbox" id="energy-toggle" ${(user.prefs?.energySaving) ? 'checked' : ''}><span></span></label>
-          </label>
-          <label class="pref-toggle" style="margin-top:10px">
             <span><strong>🌐 Where web searches open</strong><br><span class="muted tiny">Used by “Search the web” in the AI tutor. A side window keeps the question on screen beside the source.</span></span>
             <select class="sel" id="websearch-mode">
               <option value="tab" ${webPref !== 'inline' ? 'selected' : ''}>New tab</option>
@@ -1460,16 +1447,9 @@
       } catch (err) { msg.innerHTML = `<span class="bad">${esc(err.message || err)}</span>`; }
       e.target.value = '';
     });
-    view.querySelector('#theme-picker')?.addEventListener('click', e => {
-      const btn = e.target.closest('[data-theme-opt]'); if (!btn) return;
-      view.querySelectorAll('.theme-opt').forEach(b => b.classList.toggle('active', b === btn));
-      applyTheme(btn.dataset.themeOpt);
-      saveAppearancePref({ theme: btn.dataset.themeOpt });
-    });
-    view.querySelector('#energy-toggle')?.addEventListener('change', e => {
-      applyEnergySaving(e.target.checked);
-      saveAppearancePref({ energySaving: e.target.checked });
-    });
+    // one panel definition, used here and in the bottom-left dock
+    const apHost = view.querySelector('#ap-profile-panel');
+    if (apHost) { apHost.innerHTML = Appearance.panelHTML({ openColors: false }); Appearance.wire(apHost); }
     view.querySelector('#eco-toggle')?.addEventListener('change', e => {
       if (typeof Ecosystem !== 'undefined') Ecosystem.setEnabled(e.target.checked);
       saveAppearancePref({ aiEcosystem: e.target.checked });
@@ -2203,12 +2183,22 @@
   window.addEventListener('hashchange', route);
   // Apply the last-used appearance from localStorage BEFORE first paint so
   // there's no flash of the wrong theme (prefs sync refines it after auth).
-  try { applyTheme(localStorage.getItem('aureum.theme') || 'dark'); } catch {}
-  const _energyBoot = (() => { try { return localStorage.getItem('aureum.energy') === '1'; } catch { return false; } })();
+  /* The engine writes to the device at once and to the account when signed
+     in, so a change made on the phone is on the laptop next time. */
+  try {
+    Appearance.init(async patch => {
+      try {
+        const u = await Backend.currentUser();
+        if (!u) return;
+        await Backend.updateProfile({ prefs: Object.assign({}, u.prefs, patch) });
+        invalidateUser();
+      } catch { /* the device copy already holds it */ }
+    });
+  } catch (e) { console.warn('appearance:', e); }
+  const _energyBoot = (() => { try { return Appearance.state().energy; } catch { return false; } })();
   window.addEventListener('DOMContentLoaded', async () => {
     const canvas = document.getElementById('bg-canvas');
     if (canvas && !_energyBoot) ThreeBG.init(canvas);
-    if (_energyBoot) document.documentElement.classList.add('energy-saving');
     try { await Backend.init(); } catch (e) { console.warn('Backend init:', e); }
     route();
   });

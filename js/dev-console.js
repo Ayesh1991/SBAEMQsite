@@ -2266,7 +2266,15 @@ const DevConsole = (() => {
     qs.forEach((q, i) => { if (!q.code) e.push(`Question ${i + 1}: missing "code".`); if (!q.stem) e.push(`Question ${i + 1}: missing "stem".`); });
     return e;
   }
-  function essayId(d) { return 'essay-' + (d.paperNumber != null ? 'p' + d.paperNumber : slug(d.paperLabel || 'paper')); }
+  /* Real PGIM past papers have no paper number, so they would all have
+     collided on a slug of their label. They get their own id space keyed on
+     the sitting, which is what actually identifies them. */
+  const isPgimPaper = d => /official_past_paper|past_paper|pgim/i.test(String(d.paperType || ''))
+    || (d.paperNumber == null && !!d.year);
+  function essayId(d) {
+    if (isPgimPaper(d)) return 'essay-pgim-' + (d.year || 'x') + '-' + slug(d.sittingMonth || d.paperLabel || 'sitting');
+    return 'essay-' + (d.paperNumber != null ? 'p' + d.paperNumber : slug(d.paperLabel || 'paper'));
+  }
 
   async function renderEssaysSection(view) {
     const { esc } = ctx;
@@ -2278,7 +2286,9 @@ const DevConsole = (() => {
           <h1 class="page-title">Essay mock papers</h1>
           <p class="muted">Structured-essay papers (SAQ/SEQ) in <code>ogr-essay-paper-v1</code> JSON. Source folder:
             <code>${esc(ctx.cfg.drive.essayFolderId || '(set drive.essayFolderId)')}</code>. Published papers appear in
-            <strong>Library → Essay</strong>.</p>
+            <strong>Library → Essay</strong>. A paper carrying <code>"paperType": "official_past_paper"</code> (or a
+            <code>year</code> with no <code>paperNumber</code>) is treated as a <strong>real PGIM past paper</strong>: it
+            goes into its own list and is marked in its own colour everywhere it appears.</p>
         </header>
         <div class="dev-toolbar" data-animate>
           <button class="btn btn-gold" id="es-scan">Scan Drive for essay papers</button>
@@ -2353,8 +2363,10 @@ const DevConsole = (() => {
     list.innerHTML = staged.map((d, i) => `
       <div class="dev-row card" data-ei="${i}">
         <div class="dev-row-head">
-          <div><p class="dev-file">📝 ${ctx.esc(d.paperLabel || ('Paper ' + d.paperNumber))}</p>
-            <p class="muted tiny">${(d.sections || []).reduce((n, s) => n + (s.questions || []).length, 0)} questions · ${d.durationHours || 3} h</p></div>
+          <div><p class="dev-file">${isPgimPaper(d) ? '★' : '📝'} ${ctx.esc(d.paperLabel || ('Paper ' + d.paperNumber))}
+            <span class="dev-kind ${isPgimPaper(d) ? 'is-pgim' : ''}">${isPgimPaper(d) ? 'PGIM PAST PAPER' : 'MOCK'}</span></p>
+            <p class="muted tiny">${(d.sections || []).reduce((n, s) => n + (s.questions || []).length, 0)} questions · ${d.durationHours || 3} h${
+              isPgimPaper(d) && d.year ? ' · ' + ctx.esc(String(d.sittingMonth || '')) + ' ' + d.year : ''}</p></div>
           <button class="btn btn-gold btn-sm" data-es-approve="${i}">Publish</button>
         </div><p class="dev-row-msg" data-es-msg="${i}"></p>
       </div>`).join('');
