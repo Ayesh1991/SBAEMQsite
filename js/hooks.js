@@ -73,6 +73,9 @@ const Hooks = (() => {
     if (force && typeof Cache !== 'undefined') Cache.bust(KEY);
     const loader = async () => {
       const papers = await Data.publishedPapers();
+      // this feature needs every question, so pull the bank once rather than
+      // one request per paper
+      await Data.primeContent();
       let tags = {};
       try { ((await Backend.listQuestionTags?.()) || []).forEach(t => tags[t.questionKey] = t); } catch { /* untagged is fine */ }
       const out = [];

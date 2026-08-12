@@ -54,6 +54,9 @@ const Coverage = (() => {
     if (force && typeof Cache !== 'undefined') Cache.bust(IDX_KEY);
     const loader = async () => {
       const [papers] = await Promise.all([Data.publishedPapers()]);
+      // the index covers every question in the bank, so pull the content once
+      // rather than issuing one request per paper
+      await Data.primeContent();
       let tags = {};
       try { ((await Backend.listQuestionTags?.()) || []).forEach(t => tags[t.questionKey] = t); } catch {}
       const rows = [];
