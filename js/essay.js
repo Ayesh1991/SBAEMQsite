@@ -22,7 +22,9 @@ const Essay = (() => {
 
   async function papers() {
     const loader = () => Backend.getEssayPapers().then(r => r || []);
-    const list = (typeof Cache !== 'undefined') ? await Cache.wrap('essay-papers', 15 * 60 * 1000, loader) : await loader();
+    const list = (typeof Cache !== 'undefined')
+      ? await Cache.wrap('essay-papers', 15 * 60 * 1000, loader, { keepIfEmptied: true })
+      : await loader();
     return list.slice().sort(byPaperOrder);
   }
   function bustPapers() { if (typeof Cache !== 'undefined') Cache.bust('essay-papers'); }

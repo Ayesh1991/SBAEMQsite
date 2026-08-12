@@ -22,7 +22,9 @@ const Flashcards = (() => {
 
   async function decks() {
     const loader = () => Backend.getFlashcardDecks().then(r => r || []);
-    const published = await ((typeof Cache !== 'undefined') ? Cache.wrap(DECKS_KEY, DECKS_TTL, loader) : loader());
+    const published = await ((typeof Cache !== 'undefined')
+      ? Cache.wrap(DECKS_KEY, DECKS_TTL, loader, { keepIfEmptied: true })
+      : loader());
     // personal decks (e.g. AI cards from wrong answers) — small and fresh, never cached
     let personal = [];
     try { personal = (await Backend.listUserDecks?.()) || []; } catch { personal = []; }

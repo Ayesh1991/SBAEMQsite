@@ -3729,3 +3729,17 @@ body.eco-open .ap-dock { z-index: 2390; }
 .pw-th-custom i:first-child { width: 64%; background: #0d8f7d; }
 .pw-th-custom i:nth-child(3) { width: 46%; }
 .pw-tpl.active .pw-tpl-name::after { content: ''; }
+
+/* v54 — the bank failed to load: say so, never show a silently shrunken bank */
+.bank-alert { display: flex; gap: 14px; align-items: flex-start; margin: 18px 0 4px;
+  padding: 15px 18px; border-radius: 16px; border: 1px solid var(--bad);
+  background: color-mix(in srgb, var(--bad) 9%, var(--surface)); }
+.bank-alert-ico { font-size: 1.15rem; color: var(--bad); line-height: 1.3; }
+.bank-alert-body { flex: 1; min-width: 0; }
+.bank-alert-body strong { display: block; font-size: .92rem; margin-bottom: 4px; }
+.bank-alert-body p { margin: 0 0 4px; font-size: .84rem; line-height: 1.6; color: var(--ink-2); }
+.bank-alert .btn { flex: 0 0 auto; }
+@media (max-width: 620px) {
+  .bank-alert { flex-wrap: wrap; }
+  .bank-alert .btn { width: 100%; }
+}

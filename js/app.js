@@ -716,6 +716,18 @@
           <input type="search" id="lib-search" placeholder="Search papers and topics… e.g. eclampsia, PPH, HRT" autocomplete="off">
         </div>
 
+        ${(() => { const pb = Data.papersProblem?.(); return pb ? `
+        <div class="bank-alert" data-animate role="alert">
+          <span class="bank-alert-ico">⚠</span>
+          <div class="bank-alert-body">
+            <strong>The question bank did not load properly.</strong>
+            <p>${esc(pb.message)}</p>
+            <p class="muted tiny">Papers are stored in the database, not on this device — a failed read cannot delete them.
+              Reload the bank to try again.</p>
+          </div>
+          <button class="btn btn-gold btn-sm" id="bank-reload">↻ Reload the bank</button>
+        </div>` : ''; })()}
+
         <div class="lib-filters" id="lib-filters" data-animate>
           <button class="filter-chip active" data-filter="all">All <span>${papers.length}</span></button>
           ${liveCats.map(({ cat, paperN }) => `
@@ -746,6 +758,14 @@
           gsap.fromTo(d.querySelectorAll('.paper-card'), { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.4, stagger: 0.04, ease: 'power2.out', clearProps: 'transform' });
         }
       });
+    });
+
+    /* A failed bank read is recoverable: throw away every cached copy —
+       including the coverage index built from it — and read again. */
+    view.querySelector('#bank-reload')?.addEventListener('click', async e => {
+      e.target.disabled = true; e.target.textContent = '↻ Reloading…';
+      try { await Data.reloadPapers(); } catch {}
+      route();
     });
 
     // category filter chips

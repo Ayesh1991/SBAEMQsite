@@ -70,20 +70,51 @@ const Cache = (() => {
   function stale(key) { const rec = read(key); return rec ? rec.data : null; }
 
   /**
-   * wrap(key, ttlMs, loader): serve fresh cache, else load + store.
+   * wrap(key, ttlMs, loader, opts): serve fresh cache, else load + store.
    * On loader failure, fall back to any stale cache so the UI survives.
+   *
+   * opts.keepIfEmptied — for CATALOGUES (the question bank, the decks…). A list
+   * that has gone from many entries to none between two reads is far more
+   * likely to be a failed read than a real deletion, so the copy already held
+   * is kept and opts.onSuspect is told. Without this the cache happily
+   * overwrote the whole question bank with `[]` and served that for its full
+   * TTL — the failure looked exactly like the bank having been deleted, and
+   * the stale-fallback below never fired because nothing had thrown.
    */
-  async function wrap(key, ttlMs, loader) {
+  async function wrap(key, ttlMs, loader, opts = {}) {
     const fresh = get(key, ttlMs);
     if (fresh !== null) return fresh;
     try {
       const data = await loader();
+      if (opts.keepIfEmptied && Array.isArray(data)) {
+        const prev = stale(key);
+        const everHad = Math.max(highWater(key), Array.isArray(prev) ? prev.length : 0);
+        if (!data.length && everHad > 0) {
+          try { opts.onSuspect?.(everHad); } catch {}
+          // never store the empty list; serve the copy we have if there is one
+          return (Array.isArray(prev) && prev.length) ? prev : [];
+        }
+        highWater(key, data.length);
+      }
       return write(key, data);
     } catch (err) {
       const fallback = stale(key);
-      if (fallback !== null) return fallback;
+      if (fallback !== null) { try { opts.onStale?.(err); } catch {} return fallback; }
       throw err;
     }
+  }
+
+  /* Catalogues only grow in normal use, so the largest size ever seen on this
+     device is a useful floor. It lets a later read of ZERO be recognised as a
+     failure even when no cached copy survives to compare against — which is
+     exactly the state the question bank was in when it appeared to have been
+     deleted: cache expired, read failed, empty list believed. */
+  const HWM = NS + 'hwm.';
+  function highWater(key, n) {
+    let prev = 0;
+    try { prev = Number(localStorage.getItem(HWM + key)) || 0; } catch {}
+    if (n != null && n > prev) { try { localStorage.setItem(HWM + key, String(n)); } catch {} return n; }
+    return prev;
   }
 
   function bust(key) { remove(key); }
@@ -118,5 +149,5 @@ const Cache = (() => {
     return Math.floor(s / 86400) + ' d ago';
   }
 
-  return { wrap, get, set, stale, bust, clear, ageText, SCHEMA };
+  return { wrap, get, set, stale, bust, clear, ageText, highWater, SCHEMA };
 })();
