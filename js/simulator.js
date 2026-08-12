@@ -49,6 +49,9 @@ const Simulator = (() => {
     if (force && typeof Cache !== 'undefined') Cache.bust(IDX_KEY);
     const loader = async () => {
       const papers = await Data.publishedPapers();
+      // this feature needs every question, so pull the bank once rather than
+      // one request per paper
+      await Data.primeContent();
       const recs = [];
       for (const p of papers) {
         let loaded;

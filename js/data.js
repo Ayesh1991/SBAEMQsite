@@ -237,6 +237,21 @@ const Data = (() => {
     return /^[A-Ta-t][.)\-]\s/.test(String(options[0]).trim());
   }
 
+  /* The whole bank in one read, poured into the per-paper cache.
+     Only the features that genuinely need every question — the simulator's
+     index, the hook library — call this, and only when they are used. Every
+     other screen lists papers from the light catalogue and never downloads a
+     question it is not going to show. */
+  let primed = false;
+  async function primeContent(force) {
+    if (primed && !force) return;
+    try {
+      const rows = (await Backend.getPaperContents?.()) || [];
+      rows.forEach(r => { if (r && r.content) fileCache.set('backend:' + r.id, r.content); });
+      primed = true;
+    } catch (e) { /* fall back to per-paper fetches */ }
+  }
+
   /** Load a published paper by manifest id. Returns { meta, paper, path }. */
   async function loadPaper(paperId) {
     await Promise.all([loadSyllabus(), loadManifest()]);
@@ -248,9 +263,14 @@ const Data = (() => {
     if (!fileCache.has(cacheKey)) {
       let raw;
       if (meta.content) {
-        raw = meta.content;                       // backend-published inline content
-      } else {
+        raw = meta.content;                       // already in hand (just published)
+      } else if (meta.file) {
         raw = await fetchJSON('data/' + meta.file);
+      } else {
+        // published to the backend: the catalogue carries no questions, so
+        // fetch this one paper's content now that it is actually being opened
+        raw = await Backend.getPaperContent(meta.id);
+        if (!raw) throw new Error(`Paper "${meta.id}" has no content.`);
       }
       const errors = validatePaper(raw);
       if (errors.length) throw new Error('This paper is invalid:\n' + errors.join('\n'));
@@ -264,6 +284,6 @@ const Data = (() => {
   return {
     loadSyllabus, loadManifest, publishedPapers, bustPapers, reloadPapers, papersProblem,
     categoryById, topicPath, classifyByTag,
-    countSBA, countEMQ, validatePaper, flatten, looksLettered, loadPaper
+    countSBA, countEMQ, validatePaper, flatten, looksLettered, loadPaper, primeContent
   };
 })();

@@ -120,7 +120,12 @@ const Backend = (() => {
     }
     async function resetProgress() { const e = sessionEmail(); if (e) del(pKey(e)); }
 
-    async function getPublishedPapers() { return read('published', []); }
+    /* The list is a CATALOGUE: light metadata only. `content` — every question
+       of every paper — is fetched per paper, or in one go by the few features
+       that genuinely need the whole bank. Mirrors the cloud impl exactly. */
+    async function getPublishedPapers() { return read('published', []).map(({ content, ...card }) => card); }
+    async function getPaperContent(id) { const p = read('published', []).find(x => x.id === id); return p ? (p.content || null) : null; }
+    async function getPaperContents() { return read('published', []).map(p => ({ id: p.id, content: p.content || null })); }
     async function publishPaper(meta) {
       const list = read('published', []); const i = list.findIndex(p => p.id === meta.id);
       if (i >= 0) list[i] = meta; else list.push(meta); write('published', list); return meta;
@@ -494,7 +499,7 @@ const Backend = (() => {
       getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
-      getPublishedPapers, publishPaper, unpublishPaper,
+      getPublishedPapers, getPaperContent, getPaperContents, publishPaper, unpublishPaper,
       getExamDate, setExamDate, saveSession, loadSession, clearSession, listSessions,
       getNote, saveNote, getNotesForPaper, listAllNotes, getCustomCurriculum, saveCustomCurriculum,
       saveAiItem, saveAiChat, listAiItems, deleteAiItem, getQuestionEdit, saveQuestionEdit,
@@ -659,8 +664,51 @@ const Backend = (() => {
       return out;
     }
 
+    /* ---------- the catalogue vs the content ----------
+       `meta` holds the paper's light metadata AND `content`: every stem,
+       option and rationale in it. Selecting whole rows to draw a LIST of
+       papers therefore shipped the entire question bank on every cache miss —
+       roughly 12 MB at 150 papers — which is what made the read slow enough
+       to time out, and what quietly spent the egress budget.
+
+       PostgREST can project individual JSON keys, so the list now asks for
+       just the fields a paper card needs and `content` never leaves the
+       database. If a server rejects that projection the old whole-row read is
+       used instead, so this can only ever be faster, never broken. */
+    const CARD_SELECT = 'id,' +
+      'title:meta->>title,source:meta->>source,driveKey:meta->>driveKey,file:meta->>file,' +
+      'categoryId:meta->>categoryId,sectionId:meta->>sectionId,topicId:meta->>topicId,' +
+      'sba:meta->sba,emq:meta->emq';
+    let cardSelectOk = true;          // set false once if the server will not project
+    const numOr0 = v => (v == null || v === '') ? 0 : (Number(v) || 0);
+
     async function getPublishedPapers() {
+      if (cardSelectOk) {
+        try {
+          const rows = await catalogue('the question bank',
+            () => sb.from('papers').select(CARD_SELECT).order('id'));
+          return rows.map(r => ({ ...r, sba: numOr0(r.sba), emq: numOr0(r.emq) }));
+        } catch (e) {
+          // only a REJECTED PROJECTION falls back; a genuine read failure must surface
+          if (!/failed to parse|unexpected|selector|42601|PGRST100|PGRST20/i.test(String(e.message || e))) throw e;
+          cardSelectOk = false;
+          console.warn('papers: JSON projection unavailable, falling back to whole rows —', e.message || e);
+        }
+      }
       return (await catalogue('the question bank', () => sb.from('papers').select('id,meta').order('id'))).map(r => r.meta);
+    }
+    /** One paper's questions, fetched when that paper is opened. */
+    async function getPaperContent(id) {
+      await ensureClient();
+      const { data, error } = await sb.from('papers').select('meta').eq('id', id).single();
+      if (error) throw new Error(`Could not load paper "${id}": ${error.message || error.code || 'read failed'}`);
+      return data?.meta?.content || null;
+    }
+    /** Every paper's questions in one paged read — for the features that need the whole bank. */
+    async function getPaperContents() {
+      return (await catalogue('the question bank',
+        () => sb.from('papers').select('id,meta').order('id')))
+        .map(r => ({ id: r.id, content: r.meta?.content || null }));
     }
     async function publishPaper(meta) { await ensureClient(); await sb.from('papers').upsert({ id: meta.id, meta }); return meta; }
     async function unpublishPaper(id) { await ensureClient(); await sb.from('papers').delete().eq('id', id); }
@@ -1343,7 +1391,7 @@ const Backend = (() => {
       getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
-      getPublishedPapers, publishPaper, unpublishPaper,
+      getPublishedPapers, getPaperContent, getPaperContents, publishPaper, unpublishPaper,
       getExamDate, setExamDate, saveSession, loadSession, clearSession, listSessions,
       getNote, saveNote, getNotesForPaper, listAllNotes, getCustomCurriculum, saveCustomCurriculum,
       saveAiItem, saveAiChat, listAiItems, deleteAiItem, getQuestionEdit, saveQuestionEdit,
