@@ -62,16 +62,37 @@ const Data = (() => {
       on-device (Cache) to spare Supabase egress; publishing busts the cache. */
   const PAPERS_KEY = 'published-papers';
   const PAPERS_TTL = 15 * 60 * 1000;   // 15 min freshness; publish/unpublish busts sooner
+
+  /* Why the bank once looked deleted: this function used to swallow every
+     backend failure and quietly return only the five papers bundled in
+     data/manifest.json. From the outside that is indistinguishable from
+     someone having emptied the table — and because the failure never
+     surfaced, the empty result was also cached for 15 minutes.
+
+     Now a failure is RECORDED. Callers can ask papersProblem() and say so on
+     screen instead of showing a bank that has silently shrunk. */
+  let problem = null;                  // { message, kind, atCount } | null
+  function papersProblem() { return problem; }
+
   async function publishedPapers() {
     await loadManifest();
     const fromManifest = manifest.papers || [];
     let fromBackend = [];
+    problem = null;
     try {
       const loader = () => Backend.getPublishedPapers().then(r => r || []);
       fromBackend = (typeof Cache !== 'undefined'
-        ? await Cache.wrap(PAPERS_KEY, PAPERS_TTL, loader)
+        ? await Cache.wrap(PAPERS_KEY, PAPERS_TTL, loader, {
+            keepIfEmptied: true,
+            onSuspect: had => { problem = { kind: 'emptied', atCount: had,
+              message: `The question bank came back empty, but this device has seen ${had} papers before now. That is a failed read, not a deletion — nothing has been removed from the database.` }; },
+            onStale: err => { problem = { kind: 'stale',
+              message: `Could not refresh the question bank (${err.message || err}), so the last copy saved on this device is being used.` }; }
+          })
         : await loader()) || [];
-    } catch { /* backend optional */ }
+    } catch (e) {
+      problem = { kind: 'failed', message: `Could not load the question bank: ${e.message || e}` };
+    }
     const byId = new Map();
     for (const p of fromManifest) byId.set(p.id, p);
     for (const p of fromBackend) byId.set(p.id, p);      // backend overrides/extends
@@ -79,6 +100,12 @@ const Data = (() => {
   }
   /** Call after publishing/unpublishing so the next read re-fetches from Supabase. */
   function bustPapers() { if (typeof Cache !== 'undefined') Cache.bust(PAPERS_KEY); }
+  /** Throw away every cached copy and re-read the bank from Supabase. */
+  async function reloadPapers() {
+    bustPapers();
+    if (typeof Cache !== 'undefined') Cache.bust('coverage-index');
+    return publishedPapers();
+  }
 
   /* ---------- syllabus helpers ---------- */
 
@@ -235,7 +262,7 @@ const Data = (() => {
   }
 
   return {
-    loadSyllabus, loadManifest, publishedPapers, bustPapers,
+    loadSyllabus, loadManifest, publishedPapers, bustPapers, reloadPapers, papersProblem,
     categoryById, topicPath, classifyByTag,
     countSBA, countEMQ, validatePaper, flatten, looksLettered, loadPaper
   };

@@ -633,7 +633,35 @@ const Backend = (() => {
       await sb.from('profiles').update({ xp: 0, streak_count: 0, streak_last_day: null }).eq('id', id);
     }
 
-    async function getPublishedPapers() { await ensureClient(); const { data } = await sb.from('papers').select('*'); return (data || []).map(r => r.meta); }
+    /* ---------- catalogue reads ----------
+       A catalogue (the question bank, the decks, the essay papers, the CPD
+       volumes) must never be able to come back as an empty list because the
+       READ failed. It used to: `const { data } = await sb.from(...)` throws
+       away the error, so an expired token, a dropped connection or a
+       statement timeout all produced `data === null` → `[]` → "the bank is
+       empty", with nothing thrown. Data.publishedPapers() then cached that
+       empty list over the good one for 15 minutes, and the whole SBA/EMQ bank
+       appeared to have been deleted when every row was still in the database.
+
+       So: errors throw, and the read is paged. PostgREST returns at most
+       `max_rows` (1000 by default) per request, so a single unpaged select on
+       a growing bank would silently truncate as well. */
+    const PAGE = 500;
+    async function catalogue(what, make) {
+      await ensureClient();
+      const out = [];
+      for (let from = 0; ; from += PAGE) {
+        const { data, error } = await make().range(from, from + PAGE - 1);
+        if (error) throw new Error(`Could not read ${what}: ${error.message || error.code || 'read failed'}`);
+        out.push(...(data || []));
+        if (!data || data.length < PAGE) break;
+      }
+      return out;
+    }
+
+    async function getPublishedPapers() {
+      return (await catalogue('the question bank', () => sb.from('papers').select('id,meta').order('id'))).map(r => r.meta);
+    }
     async function publishPaper(meta) { await ensureClient(); await sb.from('papers').upsert({ id: meta.id, meta }); return meta; }
     async function unpublishPaper(id) { await ensureClient(); await sb.from('papers').delete().eq('id', id); }
 
@@ -716,7 +744,9 @@ const Backend = (() => {
     }
 
     /* flashcards — decks global (dev-published), SRS progress per-user */
-    async function getFlashcardDecks() { await ensureClient(); const { data } = await sb.from('flashcard_decks').select('*'); return (data || []).map(r => r.meta); }
+    async function getFlashcardDecks() {
+      return (await catalogue('the flashcard decks', () => sb.from('flashcard_decks').select('id,meta').order('id'))).map(r => r.meta);
+    }
     async function publishFlashcardDeck(meta) { await ensureClient(); await sb.from('flashcard_decks').upsert({ id: meta.id, meta }); return meta; }
     async function unpublishFlashcardDeck(id) { await ensureClient(); await sb.from('flashcard_decks').delete().eq('id', id); }
     async function getCardProgress(deckId) {
@@ -1229,12 +1259,16 @@ const Backend = (() => {
     }
 
     /* essay papers (dev-published, everyone reads) */
-    async function getEssayPapers() { await ensureClient(); const { data } = await sb.from('essay_papers').select('meta'); return (data || []).map(r => r.meta); }
+    async function getEssayPapers() {
+      return (await catalogue('the essay papers', () => sb.from('essay_papers').select('id,meta').order('id'))).map(r => r.meta);
+    }
     async function publishEssayPaper(meta) { await ensureClient(); await sb.from('essay_papers').upsert({ id: meta.id, meta }); return meta; }
     async function unpublishEssayPaper(id) { await ensureClient(); await sb.from('essay_papers').delete().eq('id', id); }
 
     /* ---- CPD (TOG true/false) ---- */
-    async function getCpdVolumes() { await ensureClient(); const { data } = await sb.from('cpd_volumes').select('meta'); return (data || []).map(r => r.meta); }
+    async function getCpdVolumes() {
+      return (await catalogue('the CPD volumes', () => sb.from('cpd_volumes').select('id,meta').order('id'))).map(r => r.meta);
+    }
     async function publishCpdVolume(meta) { await ensureClient(); await sb.from('cpd_volumes').upsert({ id: meta.id, meta }); return meta; }
     async function unpublishCpdVolume(id) { await ensureClient(); await sb.from('cpd_volumes').delete().eq('id', id); }
     async function getCpdProgress() {

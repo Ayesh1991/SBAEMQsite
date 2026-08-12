@@ -37,7 +37,9 @@ const CPD = (() => {
 
   async function volumes() {
     const loader = () => Backend.getCpdVolumes().then(r => r || []);
-    const list = (typeof Cache !== 'undefined') ? await Cache.wrap(VOL_KEY, VOL_TTL, loader) : await loader();
+    const list = (typeof Cache !== 'undefined')
+      ? await Cache.wrap(VOL_KEY, VOL_TTL, loader, { keepIfEmptied: true })
+      : await loader();
     // newest volume first; "Volume 23, Issue 1" sorts naturally on the numbers
     return list.slice().sort((a, b) => volOrder(b) - volOrder(a));
   }
