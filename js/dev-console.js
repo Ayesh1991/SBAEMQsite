@@ -2495,11 +2495,16 @@ const DevConsole = (() => {
         <td><button class="link-btn" data-edit-osce="${ctx.esc(v.id)}">edit</button>
             <button class="link-btn qr-danger" data-unpub-osce="${ctx.esc(v.id)}">unpublish</button></td></tr>`).join('')}</tbody>
     </table></div>` : `<p class="muted">No OSCE stations published yet.</p>`;
-    host.querySelectorAll('[data-edit-osce]').forEach(b => b.addEventListener('click', () => {
-      const st = list.find(x => x.id === b.dataset.editOsce); if (!st) return;
+    /* The published list is CARDS — no questions, so the bank loads in a few
+       KB. The editor needs the whole station, so it is fetched here. */
+    host.querySelectorAll('[data-edit-osce]').forEach(b => b.addEventListener('click', async () => {
       const eh = view.querySelector('#os-editor');
-      osceEditor(eh, st, () => refreshOscePublished(view));
+      eh.innerHTML = '<p class="muted">Loading the station…</p>';
       eh.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      let st = null;
+      try { st = await ctx.Backend.getOsceStation(b.dataset.editOsce); } catch {}
+      if (!st) { eh.innerHTML = '<p class="bad">Could not load that station.</p>'; return; }
+      osceEditor(eh, st, () => refreshOscePublished(view));
     }));
     host.querySelectorAll('[data-unpub-osce]').forEach(b => b.addEventListener('click', async () => {
       if (!confirm('Unpublish this station?')) return;

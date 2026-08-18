@@ -50,7 +50,21 @@ const OSCE = (() => {
     return list.slice().sort((a, b) => String(a.topic || '').localeCompare(String(b.topic || '')));
   }
   function bustStations() { if (typeof Cache !== 'undefined') Cache.bust(KEY); }
+  /* The bank list holds CARDS — no questions, no marking points — so opening
+     the tab costs a few KB however big the bank grows. A station's questions
+     are fetched only when that station is actually opened. */
+  const fullCache = new Map();
+  async function station(id) {
+    if (fullCache.has(id)) return fullCache.get(id);
+    let st = null;
+    try { st = await Backend.getOsceStation(id); } catch {}
+    if (!st) st = (await stations().catch(() => [])).find(x => x.id === id) || null;
+    if (st) fullCache.set(id, st);
+    return st;
+  }
   const qsOf = st => st.questions || [];
+  const qCount = st => st.q_count != null ? st.q_count : qsOf(st).length;
+  const ptCount = st => st.points_count != null ? st.points_count : qsOf(st).reduce((n, q) => n + (q.marking_points || []).length, 0);
   const marksOf = st => st.total_marks || qsOf(st).reduce((n, q) => n + (q.marks || 0), 0) || 50;
   const passOf = st => st.pass_mark != null ? st.pass_mark
     : Math.round(marksOf(st) * ((st.pass_mark_percent || 70) / 100));
@@ -150,6 +164,8 @@ const OSCE = (() => {
       stations().catch(() => []),
       Backend.listOsceAttempts().catch(() => [])
     ]);
+    // recordings older than a day are not worth storing; take them out while we are here
+    Backend.sweepOsceAudio?.().catch(() => {});
     const bestOf = {};
     past.forEach(a => { const p = a.result?.percent; if (p != null && (bestOf[a.station_id] == null || p > bestOf[a.station_id])) bestOf[a.station_id] = p; });
     const body = view.querySelector('#os-body');
@@ -201,8 +217,22 @@ const OSCE = (() => {
     const clear = body.querySelector('#os-search-x');
     const grid = body.querySelector('#os-grid');
     const none = body.querySelector('#os-none');
+    /* The cards carry the topic and the scenario, which is enough for most
+       searches. The deep index — every prompt and every marking point — is
+       fetched on the FIRST keystroke and never on a visit that does not
+       search, which is most of them. */
     const hay = {};
-    list.forEach(st => hay[st.id] = `${st.topic || ''} ${st.scenario || ''} ${qsOf(st).map(q => q.prompt + ' ' + (q.marking_points || []).join(' ')).join(' ')}`.toLowerCase());
+    list.forEach(st => hay[st.id] = `${st.topic || ''} ${st.scenario || ''}`.toLowerCase());
+    let deep = false;
+    async function loadDeep() {
+      if (deep) return; deep = true;
+      try {
+        const idx = (typeof Cache !== 'undefined')
+          ? await Cache.wrap('osce-search', TTL, () => Backend.getOsceSearchIndex(), { keepIfEmptied: true })
+          : await Backend.getOsceSearchIndex();
+        (idx || []).forEach(r => { if (r.search) hay[r.id] = (hay[r.id] + ' ' + r.search).toLowerCase(); });
+      } catch { /* topic + scenario search still works */ }
+    }
     const run = () => {
       const terms = input.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
       clear.hidden = !terms.length;
@@ -213,12 +243,12 @@ const OSCE = (() => {
       });
       none.hidden = shown > 0;
     };
-    input.addEventListener('input', run);
+    input.addEventListener('input', async () => { await loadDeep(); run(); });
     clear.addEventListener('click', () => { input.value = ''; run(); input.focus(); });
   }
 
   function card(st, best) {
-    const n = qsOf(st).length;
+    const n = qCount(st);
     return `
       <a class="os-card" data-st="${esc(st.id)}" href="#/osce/station/${encodeURIComponent(st.id)}">
         <div class="os-card-top">
@@ -237,8 +267,7 @@ const OSCE = (() => {
   /* ================= one station's brief (#/osce/station/:id) ================= */
 
   async function renderStation(view, id, user) {
-    const list = await stations().catch(() => []);
-    const st = list.find(x => x.id === id);
+    const st = await station(id);
     if (!st) { view.innerHTML = shell('bank', `<p class="muted">That station is no longer published. <a class="link" href="#/osce">Back</a></p>`); FX.viewIn(view); return; }
     let past = [];
     try { past = (await Backend.listOsceAttempts()).filter(a => a.station_id === id); } catch {}
@@ -253,7 +282,7 @@ const OSCE = (() => {
         <h3 class="card-title">The scenario</h3>
         <p class="os-scenario">${esc(st.scenario || '')}</p>
         <div class="os-brief-grid">
-          <div><strong>${qsOf(st).length}</strong><span>questions</span></div>
+          <div><strong>${qCount(st)}</strong><span>questions</span></div>
           <div><strong>${marksOf(st)}</strong><span>marks</span></div>
           <div><strong>${passOf(st)}</strong><span>to pass (${st.pass_mark_percent || 70}%)</span></div>
           <div><strong>${minsOf(st)}</strong><span>minutes</span></div>
@@ -289,7 +318,7 @@ const OSCE = (() => {
   /* ================= the simulator (#/osce/sim) ================= */
 
   async function renderSim(view, user) {
-    const list = await stations().catch(() => []);
+    const list = await stations().catch(() => []);   // cards only — the circuit needs names, not schemes
     view.innerHTML = shell('sim', `
       <header data-animate>
         <p class="kicker">OSCE EXAM SIMULATOR</p>
@@ -355,7 +384,7 @@ const OSCE = (() => {
         pickHost.innerHTML = `<div class="os-picks">${list.map(s => `
           <label class="os-pick ${chosen.has(s.id) ? 'is-on' : ''}">
             <input type="checkbox" data-pickst="${esc(s.id)}" ${chosen.has(s.id) ? 'checked' : ''}>
-            <span><strong>${esc(s.topic || s.id)}</strong><em>${qsOf(s).length} questions · ${marksOf(s)} marks${done.has(s.id) ? ' · attempted' : ''}</em></span>
+            <span><strong>${esc(s.topic || s.id)}</strong><em>${qCount(s)} questions · ${marksOf(s)} marks${done.has(s.id) ? ' · attempted' : ''}</em></span>
           </label>`).join('')}</div>`;
       } else { pickHost.hidden = true; pickHost.innerHTML = ''; }
     }
@@ -412,10 +441,9 @@ const OSCE = (() => {
   async function renderRun(view, sid, user) {
     stopLive();
     const s = await loadSession(sid);
-    const list = await stations().catch(() => []);
-    if (!s || !list.length) { location.hash = '#/osce'; return; }
-    const st = list.find(x => x.id === s.stations[s.at]);
-    if (!st) { location.hash = '#/osce'; return; }
+    if (!s) { location.hash = '#/osce'; return; }
+    const st = await station(s.stations[s.at]);
+    if (!st || !qsOf(st).length) { location.hash = '#/osce'; return; }
 
     const qs = qsOf(st);
     const total = minsOf(st) * 60;
@@ -616,7 +644,7 @@ const OSCE = (() => {
           ${rec?.url ? `<div class="os-rec-box">
             <audio controls src="${rec.url}"></audio>
             <a class="btn btn-ghost btn-sm" href="${rec.url}" download="OSCE-${esc((st.topic || 'station').replace(/[^a-z0-9]+/gi, '-'))}-${new Date().toISOString().slice(0, 10)}.${rec.ext}">⬇ Download the recording</a>
-            <span class="muted tiny">${rec.mins} — keep it; hearing yourself back is the fastest way to fix pace and waffle.</span>
+            <span class="muted tiny">${rec.mins} — kept with the result for 24 hours once you mark it, then deleted.</span>
           </div>` : `<p class="muted tiny">No audio was captured for this run.</p>`}
         </div>
 
@@ -839,6 +867,15 @@ const OSCE = (() => {
         heard: !!data.heard, elapsed: session?.elapsed || null,
         cost: { inTok: data.usage?.in || 0, outTok: data.usage?.out || 0, usd, lkr: usd * rate, rate }
       };
+      /* Keep the tape for a day. It is what makes the marking checkable —
+         you can hear what you actually said against what you were marked on —
+         and it costs almost nothing at 24 kbps. After 24 hours it is swept. */
+      if (rec?.blob) {
+        try {
+          const up = await Backend.uploadOsceAudio(attempt.id, rec.blob);
+          if (up) { attempt.audioPath = up.path; attempt.audioExpires = up.expires; attempt.audioSecs = rec.secs; }
+        } catch { /* the marking is the point; the tape is a bonus */ }
+      }
       try { await Backend.saveOsceAttempt(attempt); } catch {}
       try { if (typeof Wallet !== 'undefined') Wallet.bust(); } catch {}
       out.innerHTML = '';
@@ -959,6 +996,12 @@ const OSCE = (() => {
           <h3 class="card-title">🔑 Key learning points</h3>
           <ol class="es-klp-list">${r.keyLearning.map((k, i) => `<li class="${i === 0 ? 'top' : ''}">${esc(k)}</li>`).join('')}</ol></div>` : ''}
 
+        ${a.audioPath ? `<div class="card os-audio" data-animate>
+          <h3 class="card-title">🎧 Your recording</h3>
+          <p class="muted" id="os-au-note">Loading the recording…</p>
+          <div id="os-au"></div>
+        </div>` : ''}
+
         ${a.cost ? `<div class="card os-cost" data-animate>
           <h3 class="card-title">🧾 What this marking cost</h3>
           <div class="os-cost-grid">
@@ -985,6 +1028,29 @@ const OSCE = (() => {
         const col = pct >= 70 ? '#34d399' : pct >= 60 ? '#5eead4' : pct >= 50 ? '#e8a33d' : '#e05263';
         d.style.background = `conic-gradient(${col} ${pct * 3.6}deg, rgba(255,255,255,.08) 0)`; }
     }
+    /* The tape is fetched as a signed link only when the report is opened —
+       never as part of a list — and the page says plainly how long it has. */
+    if (a.audioPath) (async () => {
+      const note = view.querySelector('#os-au-note'), host = view.querySelector('#os-au');
+      const left = (a.audioExpires || 0) - Date.now();
+      try {
+        const url = await Backend.getOsceAudioUrl(a.audioPath);
+        if (!url) throw new Error('gone');
+        note.innerHTML = left > 0
+          ? `Kept for <strong>${Math.max(1, Math.round(left / 3600e3))} more hour${Math.round(left / 3600e3) === 1 ? '' : 's'}</strong>, then deleted automatically.
+             Download it if you want to keep it — listening back is the fastest way to hear your own waffle.`
+          : 'This recording is past its 24 hours and will be removed on the next visit.';
+        host.innerHTML = `<div class="os-rec-box">
+          <audio controls src="${esc(url)}"></audio>
+          <a class="btn btn-ghost btn-sm" href="${esc(url)}" download="OSCE-${esc((a.station?.topic || 'station').replace(/[^a-z0-9]+/gi, '-'))}.webm">⬇ Download</a>
+          ${a.audioSecs ? `<span class="muted tiny">${fmt(a.audioSecs)} of audio</span>` : ''}
+        </div>`;
+      } catch {
+        note.textContent = 'The recording has passed its 24 hours and been deleted.';
+        host.innerHTML = '';
+      }
+    })();
+
     view.querySelector('#os-print').addEventListener('click', () => printResult(a));
     view.querySelector('#os-del').addEventListener('click', async () => {
       if (!confirm('Delete this OSCE result?')) return;

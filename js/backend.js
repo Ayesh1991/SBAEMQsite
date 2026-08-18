@@ -52,6 +52,31 @@ const Backend = (() => {
     return xpGained;
   }
 
+  /* ---------- OSCE: a station's CARD vs the station itself ----------
+     A station carries its scenario, every question and every marking point.
+     The bank only needs enough to draw a card, so the counts are computed
+     ONCE at publish time and stored alongside; the list then never has to
+     ship the questions to tell you how many there are. */
+  function withOsceCounts(meta) {
+    const qs = meta.questions || [];
+    return Object.assign({}, meta, {
+      q_count: qs.length,
+      points_count: qs.reduce((n, q) => n + (q.marking_points || []).length, 0),
+      // one lowercased blob so the bank can be searched without the structure
+      search: [meta.topic, meta.scenario, ...qs.map(q => q.prompt), ...qs.flatMap(q => q.marking_points || [])]
+        .join(' ').toLowerCase().slice(0, 4000)
+    });
+  }
+  const OSCE_CARD_KEYS = ['id', 'topic', 'scenario', 'station_time_min', 'reading_time_min',
+    'total_marks', 'pass_mark', 'pass_mark_percent', 'q_count', 'points_count'];
+  const osceCard = m => { const o = {}; OSCE_CARD_KEYS.forEach(k => { if (m[k] != null) o[k] = m[k]; }); return o; };
+  /** An attempt row for a LIST: the score, never the answers. */
+  const osceAttemptCard = a => ({
+    id: a.id, station_id: a.station_id, created: a.created || 0,
+    topic: a.station?.topic || '', passMark: a.station?.pass_mark ?? null,
+    result: { percent: a.result?.percent, total: a.result?.total, max: a.result?.max, pass: !!a.result?.pass }
+  });
+
   /* ================= LOCAL BACKEND ================= */
 
   const Local = (() => {
@@ -125,13 +150,36 @@ const Backend = (() => {
        that genuinely need the whole bank. Mirrors the cloud impl exactly. */
 
     /* ---- OSCE stations + attempts ---- */
-    async function getOsceStations() { return read('oscestations', []); }
-    async function publishOsceStation(meta) { const l = read('oscestations', []); const i = l.findIndex(x => x.id === meta.id); if (i >= 0) l[i] = meta; else l.push(meta); write('oscestations', l); return meta; }
+    async function getOsceStations() { return read('oscestations', []).map(osceCard); }
+    async function getOsceSearchIndex() { return read('oscestations', []).map(x => ({ id: x.id, search: x.search || '' })); }
+    async function getOsceStation(id) { return read('oscestations', []).find(x => x.id === id) || null; }
+    async function publishOsceStation(meta) {
+      const rec = withOsceCounts(meta);
+      const l = read('oscestations', []); const i = l.findIndex(x => x.id === rec.id); if (i >= 0) l[i] = rec; else l.push(rec);
+      write('oscestations', l); return rec;
+    }
     async function unpublishOsceStation(id) { write('oscestations', read('oscestations', []).filter(x => x.id !== id)); }
-    async function listOsceAttempts() { const e = sessionEmail(); if (!e) return []; return Object.values(read('osceattempts:' + e, {})); }
+    async function listOsceAttempts() { const e = sessionEmail(); if (!e) return []; return Object.values(read('osceattempts:' + e, {})).map(osceAttemptCard); }
     async function getOsceAttempt(id) { const e = sessionEmail(); if (!e) return null; return read('osceattempts:' + e, {})[id] || null; }
     async function saveOsceAttempt(a) { const e = sessionEmail(); if (!e) return a; const m = read('osceattempts:' + e, {}); m[a.id] = a; write('osceattempts:' + e, m); return a; }
     async function deleteOsceAttempt(id) { const e = sessionEmail(); if (!e) return; const m = read('osceattempts:' + e, {}); delete m[id]; write('osceattempts:' + e, m); }
+
+    async function uploadOsceAudio(attemptId, blob) {
+      const e = sessionEmail(); if (!e) return null;
+      const b64 = await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(String(fr.result)); fr.readAsDataURL(blob); });
+      const m = read('osceaudio:' + e, {});
+      m[attemptId] = { url: b64, at: Date.now() };
+      write('osceaudio:' + e, m);
+      return { path: attemptId, expires: Date.now() + 24 * 3600e3 };
+    }
+    async function getOsceAudioUrl(attemptId) { const e = sessionEmail(); if (!e) return null; return read('osceaudio:' + e, {})[attemptId]?.url || null; }
+    async function sweepOsceAudio() {
+      const e = sessionEmail(); if (!e) return 0;
+      const m = read('osceaudio:' + e, {}); let n = 0;
+      Object.keys(m).forEach(k => { if (Date.now() - (m[k].at || 0) > 24 * 3600e3) { delete m[k]; n++; } });
+      if (n) write('osceaudio:' + e, m);
+      return n;
+    }
 
     /* ---- prepaid wallet ---- */
     async function getWalletConfig() { return read('walletcfg', { usdRate: 340, minTopUp: 300, packs: [300, 500, 1000, 2000] }); }
@@ -521,8 +569,9 @@ const Backend = (() => {
       getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
-      getOsceStations, publishOsceStation, unpublishOsceStation, listOsceAttempts, getOsceAttempt,
-      saveOsceAttempt, deleteOsceAttempt, getWalletConfig, saveWalletConfig, listMyTopUps, createTopUp,
+      getOsceStations, getOsceStation, getOsceSearchIndex, publishOsceStation, unpublishOsceStation, listOsceAttempts, getOsceAttempt,
+      saveOsceAttempt, deleteOsceAttempt, uploadOsceAudio, getOsceAudioUrl, sweepOsceAudio,
+      getWalletConfig, saveWalletConfig, listMyTopUps, createTopUp,
       listAllTopUps, setTopUpStatus,
       getPublishedPapers, getPaperContent, getPaperContents, publishPaper, unpublishPaper,
       getExamDate, setExamDate, saveSession, loadSession, clearSession, listSessions,
@@ -691,16 +740,56 @@ const Backend = (() => {
 
 
     /* ---- OSCE stations + attempts ---- */
+    /* The card only — the questions and the marking scheme stay in the
+       database until a station is actually opened. */
+    const OSCE_CARD_SELECT = 'id,topic:meta->>topic,scenario:meta->>scenario,' +
+      'station_time_min:meta->station_time_min,reading_time_min:meta->reading_time_min,' +
+      'total_marks:meta->total_marks,pass_mark:meta->pass_mark,pass_mark_percent:meta->pass_mark_percent,' +
+      'q_count:meta->q_count,points_count:meta->points_count';
+    let osceCardsOk = true;
     async function getOsceStations() {
-      return (await catalogue('the OSCE stations', () => sb.from('osce_stations').select('id,meta').order('id'))).map(r => r.meta);
+      if (osceCardsOk) {
+        try {
+          return await catalogue('the OSCE stations',
+            () => sb.from('osce_stations').select(OSCE_CARD_SELECT).order('id'));
+        } catch (e) {
+          if (!/failed to parse|unexpected|selector|42601|PGRST100|PGRST20/i.test(String(e.message || e))) throw e;
+          osceCardsOk = false;
+        }
+      }
+      return (await catalogue('the OSCE stations', () => sb.from('osce_stations').select('id,meta').order('id'))).map(r => osceCard(r.meta));
     }
-    async function publishOsceStation(meta) { await ensureClient(); await sb.from('osce_stations').upsert({ id: meta.id, meta }); return meta; }
+    /* The searchable text — every prompt and every marking point — is most of
+       a card's weight and is needed only if someone actually types in the box,
+       so it is a separate read that most visits never make. */
+    async function getOsceSearchIndex() {
+      return await catalogue('the OSCE search index',
+        () => sb.from('osce_stations').select('id,search:meta->>search').order('id'));
+    }
+    /** The whole station, fetched when one is opened. */
+    async function getOsceStation(id) {
+      await ensureClient();
+      const { data, error } = await sb.from('osce_stations').select('meta').eq('id', id).single();
+      if (error) throw new Error(`Could not load that station: ${error.message || error.code || 'read failed'}`);
+      return data?.meta || null;
+    }
+    async function publishOsceStation(meta) {
+      const rec = withOsceCounts(meta);
+      await ensureClient(); await sb.from('osce_stations').upsert({ id: rec.id, meta: rec }); return rec;
+    }
     async function unpublishOsceStation(id) { await ensureClient(); await sb.from('osce_stations').delete().eq('id', id); }
+    /* A list of attempts needs the score, not the answers. Selecting whole
+       payloads shipped every question, every marking point and every
+       transcript of every past station just to draw a row. */
     async function listOsceAttempts() {
       await ensureClient(); const id = await uid(); if (!id) return [];
-      const { data, error } = await sb.from('osce_attempts').select('id,station_id,payload,created_at').eq('user_id', id).order('created_at', { ascending: false });
+      const light = 'id,station_id,created_at,topic:payload->station->>topic,passMark:payload->station->pass_mark,' +
+        'percent:payload->result->percent,total:payload->result->total,max:payload->result->max,pass:payload->result->pass';
+      const { data, error } = await sb.from('osce_attempts').select(light).eq('user_id', id).order('created_at', { ascending: false });
       if (error) throw new Error('Could not read your OSCE attempts: ' + (error.message || error.code));
-      return (data || []).map(r => Object.assign({}, r.payload, { id: r.id, station_id: r.station_id, created: new Date(r.created_at).getTime() }));
+      return (data || []).map(r => ({ id: r.id, station_id: r.station_id, created: new Date(r.created_at).getTime(),
+        topic: r.topic || '', passMark: r.passMark ?? null,
+        result: { percent: r.percent, total: r.total, max: r.max, pass: !!r.pass } }));
     }
     async function getOsceAttempt(aid) {
       await ensureClient(); const id = await uid(); if (!id) return null;
@@ -714,6 +803,40 @@ const Backend = (() => {
       return a;
     }
     async function deleteOsceAttempt(aid) { await ensureClient(); const id = await uid(); if (!id) return; await sb.from('osce_attempts').delete().eq('id', aid).eq('user_id', id); }
+
+    /* ---- the OSCE recording, kept for 24 hours ----
+       Small enough to store (24 kbps opus), useful enough to keep — hearing
+       yourself back is the point — but not worth paying to store forever, so
+       it is swept the day after. The bucket is private and every object lives
+       under the owner's uid, which the storage policy enforces. */
+    const AUDIO_BUCKET = 'osce-audio';
+    const AUDIO_TTL = 24 * 3600e3;
+    async function uploadOsceAudio(attemptId, blob) {
+      await ensureClient(); const id = await uid(); if (!id) return null;
+      const ext = /mp4|aac/.test(blob.type || '') ? 'm4a' : 'webm';
+      const path = `${id}/${attemptId}.${ext}`;
+      const { error } = await sb.storage.from(AUDIO_BUCKET).upload(path, blob, {
+        cacheControl: '86400', upsert: true, contentType: blob.type || 'audio/webm' });
+      if (error) throw new Error('Could not store the recording: ' + (error.message || ''));
+      return { path, expires: Date.now() + AUDIO_TTL };
+    }
+    /** A signed link, valid for an hour, or null once the sweep has taken it. */
+    async function getOsceAudioUrl(path) {
+      await ensureClient(); if (!path) return null;
+      const { data, error } = await sb.storage.from(AUDIO_BUCKET).createSignedUrl(path, 3600);
+      if (error) return null;
+      return data?.signedUrl || null;
+    }
+    /** Delete this user's own recordings once they are a day old. */
+    async function sweepOsceAudio() {
+      await ensureClient(); const id = await uid(); if (!id) return 0;
+      const { data, error } = await sb.storage.from(AUDIO_BUCKET).list(id, { limit: 200 });
+      if (error || !data) return 0;
+      const stale = data.filter(o => Date.now() - new Date(o.created_at || o.updated_at || 0).getTime() > AUDIO_TTL);
+      if (!stale.length) return 0;
+      await sb.storage.from(AUDIO_BUCKET).remove(stale.map(o => `${id}/${o.name}`));
+      return stale.length;
+    }
 
     /* ---- prepaid wallet ---- */
     async function getWalletConfig() {
@@ -1474,8 +1597,9 @@ const Backend = (() => {
       getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
-      getOsceStations, publishOsceStation, unpublishOsceStation, listOsceAttempts, getOsceAttempt,
-      saveOsceAttempt, deleteOsceAttempt, getWalletConfig, saveWalletConfig, listMyTopUps, createTopUp,
+      getOsceStations, getOsceStation, getOsceSearchIndex, publishOsceStation, unpublishOsceStation, listOsceAttempts, getOsceAttempt,
+      saveOsceAttempt, deleteOsceAttempt, uploadOsceAudio, getOsceAudioUrl, sweepOsceAudio,
+      getWalletConfig, saveWalletConfig, listMyTopUps, createTopUp,
       listAllTopUps, setTopUpStatus,
       getPublishedPapers, getPaperContent, getPaperContents, publishPaper, unpublishPaper,
       getExamDate, setExamDate, saveSession, loadSession, clearSession, listSessions,
