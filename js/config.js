@@ -39,6 +39,8 @@ window.AUREUM_CONFIG = {
     // (ogr-essay-feedback-v1) share this folder — the importer routes each
     // file by its schema. Share as "Anyone with the link — Viewer".
     essayFolderId: '1EwsaTMnAcHbStoINKdhTq7ig87qBUiK8',
+    // spoken OSCE stations (ogr-osce-v1)
+    osceFolderId: '1hiX96x0MzbNvCyvohBsB4tpIiHj7ZKhK',
     // TOG CPD volumes (ogr-cpd-v1). Share as "Anyone with the link — Viewer".
     cpdFolderId: '1tayp7wrVQfW8NLUsrkf0npEMknCbyn-Z',
     apiBase: '/api/drive'
