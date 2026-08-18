@@ -30,6 +30,12 @@
     { re: /^#\/library\/essay\/feedback\/([^/]+)$/, fn: (code, u) => Essay.renderFeedback(view, code, u) },
     { re: /^#\/library\/essay\/([^/]+)\/write\/(\d+)$/, fn: (id, qi, u) => Essay.renderWrite(view, id, qi, u) },
     { re: /^#\/library\/essay\/([^/]+)$/, fn: (id, u) => Essay.renderPaper(view, id, u) },
+    { re: /^#\/osce$/, fn: (u) => OSCE.renderBank(view, u) },
+    { re: /^#\/osce\/sim$/, fn: (u) => OSCE.renderSim(view, u) },
+    { re: /^#\/osce\/station\/([^/]+)$/, fn: (id, u) => OSCE.renderStation(view, id, u) },
+    { re: /^#\/osce\/run\/([^/]+)$/, fn: (sid, u) => OSCE.renderRun(view, sid, u) },
+    { re: /^#\/osce\/result\/([^/]+)$/, fn: (id, u) => OSCE.renderResult(view, id, u) },
+    { re: /^#\/billing$/, fn: (u) => Wallet.renderBilling(view, u) },
     { re: /^#\/library\/cpd$/, fn: (u) => cpdGate(u) && CPD.renderList(view, u) },
     { re: /^#\/library\/cpd\/([^/]+)\/([^/]+)$/, fn: (v, sec, u) => cpdGate(u) && CPD.renderTopic(view, v, sec, u) },
     { re: /^#\/library\/cpd\/([^/]+)$/, fn: (v, u) => cpdGate(u) && CPD.renderVolume(view, v, u) },
@@ -50,7 +56,7 @@
     { re: /^#\/mistakes$/, fn: renderMistakes },
     { re: /^#\/mistakes\/deck\/([^/]+)$/, fn: renderMistakeDeck },
     { re: /^#\/simulator\/result\/([^/]+)$/, fn: renderSimResult },
-    { re: /^#\/dev(?:\/(papers|cards|users|blueprint|review|ai|essays|tearoom|cpd))?$/, fn: renderDev }
+    { re: /^#\/dev(?:\/(papers|cards|users|blueprint|review|ai|essays|tearoom|cpd|osce|settings))?$/, fn: renderDev }
   ];
   const devOnly = user => !!(user && (user.email === cfg.developer.email || sessionStorage.getItem('aureum-dev') === '1'));
 
@@ -158,6 +164,7 @@
         ${user ? `
           <a href="#/dashboard" class="${location.hash === '#/dashboard' ? 'active' : ''}">Dashboard</a>
           <a href="#/library" class="${location.hash.startsWith('#/library') || location.hash.startsWith('#/paper') ? 'active' : ''}">Library</a>
+          <a href="#/osce" class="${location.hash.startsWith('#/osce') ? 'active' : ''}">OSCE</a>
           <a href="#/studio" class="${location.hash === '#/studio' ? 'active' : ''}">Studio<span class="nav-badge nav-badge-tea" id="nav-tea-badge" hidden></span></a>
           <a href="#/peer" class="${location.hash === '#/peer' ? 'active' : ''}">Peer review</a>
           ${simOn ? `<a href="#/simulator" class="${location.hash.startsWith('#/simulator') ? 'active' : ''}">Simulator</a>` : ''}
@@ -1380,6 +1387,16 @@
           </div>
         </div>
 
+        <div class="card wl-profile" data-animate>
+          <h3 class="card-title">💳 Billing &amp; balance</h3>
+          <p class="muted">AUREUM runs on a prepaid balance in rupees. Top up by uploading a bank slip; every AI call
+            is metered and drawn from it.</p>
+          <div class="wl-profile-row">
+            <span class="wl-profile-bal" id="wl-prof-bal">…</span>
+            <a class="btn btn-gold btn-sm" href="#/billing">Open billing &amp; top up →</a>
+          </div>
+        </div>
+
         <div class="card" data-animate>
           <h3 class="card-title">Appearance</h3>
           <p class="muted">Everything about how AUREUM looks. Your choices are saved on this device at once and follow your
@@ -1467,6 +1484,16 @@
       } catch (err) { msg.innerHTML = `<span class="bad">${esc(err.message || err)}</span>`; }
       e.target.value = '';
     });
+    // the prepaid balance, fetched after the page is up
+    (async () => {
+      try {
+        const b = typeof Wallet !== 'undefined' ? await Wallet.badge() : null;
+        const el = view.querySelector('#wl-prof-bal');
+        if (el && b) { el.textContent = b.text; el.classList.toggle('is-empty', b.empty); }
+        else if (el) el.textContent = '—';
+      } catch { const el = view.querySelector('#wl-prof-bal'); if (el) el.textContent = '—'; }
+    })();
+
     // one panel definition, used here and in the bottom-left dock
     const apHost = view.querySelector('#ap-profile-panel');
     if (apHost) { apHost.innerHTML = Appearance.panelHTML({ openColors: false }); Appearance.wire(apHost); }

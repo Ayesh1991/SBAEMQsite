@@ -180,6 +180,29 @@ export async function onRequest(context) {
       const r = await run(buildCoachPrompt(body), 'coach');
       return json({ text: r.text, model: r.model });
     }
+
+    // ---- OSCE: mark a spoken station against its marking scheme ----
+    // The transcript is the expensive part, so only the prompt, the marking
+    // points and what the candidate actually said are sent — never the whole
+    // station file twice.
+    if (action === 'osce') {
+      const r = await run(buildOsceMarkPrompt(body), 'osce', 6000);
+      return json({ text: r.text, model: r.model, usage: { in: r.in, out: r.out } });
+    }
+
+    // ---- a payment slip, read as structured data ----
+    // Deliberately the cheapest call in the app: one small image, a JSON-only
+    // instruction, a 400-token ceiling. Always Gemini Flash Lite regardless of
+    // the caller's chosen provider — reading six fields off a bank receipt is
+    // not a job worth paying a frontier model for.
+    if (action === 'slip') {
+      const img = body.image || {};
+      if (!img.data) return json({ error: 'No image was sent.' }, 400);
+      if (String(img.data).length > 8_000_000) return json({ error: 'That image is too large — please send a screenshot under 5 MB.' }, 413);
+      const rr = await callGeminiVision(SLIP_SYSTEM, SLIP_USER, img, 'gemini-3.1-flash-lite', env, 400);
+      await logTokens(token, env, 'gemini', rr, 'topup_ocr');
+      return json({ text: rr.text, model: rr.model, usage: { in: rr.in, out: rr.out } });
+    }
     const prompt = action === 'chat' ? buildChatPrompt(question, messages) : buildExplainPrompt(question);
     const r = await run(prompt, 'tutor');
     if (cacheable) await cacheSet(question.questionKey, provider, r.text, env);
@@ -275,6 +298,88 @@ async function logTokens(token, env, provider, r, feature) {
       body: JSON.stringify({ p_provider: provider, p_model: r.model || 'unknown', p_input: r.in | 0, p_output: r.out | 0, p_feature: feature || 'tutor' })
     });
   } catch {}
+}
+
+/* ---------------- OSCE marking ---------------- */
+
+function buildOsceMarkPrompt(body) {
+  const st = body.station || {};
+  const answers = body.answers || [];
+  const qs = (st.questions || []).map(q => {
+    const said = (answers.find(a => String(a.id) === String(q.id)) || {}).transcript || '';
+    return [
+      `Q${q.id} (${q.marks} marks): ${q.prompt}`,
+      'Marking points:',
+      ...(q.marking_points || []).map((p, i) => `  ${i + 1}. ${p}`),
+      'CANDIDATE SAID: ' + (said.trim() ? said.trim() : '(nothing was said)')
+    ].join('\n');
+  }).join('\n\n');
+
+  const system = PERSONA + ' You are marking a spoken OSCE station. The candidate SPOKE their answer, so ' +
+    'the transcript is informal, may contain false starts, filler and speech-to-text errors. Mark the CLINICAL ' +
+    'CONTENT, never the phrasing: if the meaning is clearly there, award it. A near-miss word that is obviously ' +
+    'the intended term (e.g. "magnesium" for MgSO4) counts as covered. Be a fair but rigorous examiner — do not ' +
+    'award marks for points that were not made.';
+
+  const user = [
+    `STATION: ${st.topic || ''} — total ${st.total_marks || 50} marks, pass mark ${st.pass_mark || ''}.`,
+    `SCENARIO: ${st.scenario || ''}`,
+    '',
+    qs,
+    '',
+    'Return ONLY valid JSON, no prose and no code fence, exactly this shape:',
+    '{"questions":[{"id":1,"awarded":0,"max":5,"points":[{"point":"<the marking point verbatim>",' +
+      '"status":"covered|partial|missed","note":"<one short clause: what they said, or what was missing>"}],' +
+      '"comment":"<one sentence on this answer>"}],' +
+      '"total":0,"max":50,"percent":0,"pass":false,' +
+      '"examinerComment":"<3-4 sentences: the overall verdict on this performance>",' +
+      '"strengths":["<what was genuinely good>"],' +
+      '"improvements":[{"action":"<what to do differently>","marks":0}],' +
+      '"keyLearning":["<the facts to carry away>"],' +
+      '"structure":{"coverage":"<did they answer what was asked>","fluency":"<pace, hesitancy, clarity>",' +
+      '"safety":"<were the safety-critical points made>"}}',
+    'Every marking point of every question must appear exactly once in its question\'s points array.',
+    'awarded must be between 0 and max, and total must equal the sum of awarded.'
+  ].join('\n');
+  return { system, user };
+}
+
+/* ---------------- payment slip ---------------- */
+
+const SLIP_SYSTEM = 'You read bank payment receipts and return data. Return only JSON.';
+const SLIP_USER = [
+  'Read this bank payment slip / receipt / screenshot and return ONLY this JSON, no prose, no code fence:',
+  '{"amount":<number>,"currency":"<LKR|USD|...>","reference":"<the reference or remark the payer typed, often a short number like 00001>",',
+  '"payee":"<who was paid / the biller or account>","date":"<YYYY-MM-DD or empty>","bank":"<bank name or empty>",',
+  '"txnId":"<the bank\'s own transaction/reference number>","status":"<e.g. Successfully Completed, or empty>",',
+  '"confidence":<0-1, how sure you are this is a genuine completed payment slip>}',
+  'If a field is not visible use "" (or 0 for amount). Do not guess an amount that is not printed.'
+].join('\n');
+
+/** One image + a short instruction. Used only for payment slips. */
+async function callGeminiVision(system, user, image, model, env, maxTokens) {
+  if (!env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not configured on the server.');
+  const key = String(env.GEMINI_API_KEY).trim();
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
+  const res = await fetch(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: system }] },
+      contents: [{ role: 'user', parts: [
+        { inlineData: { mimeType: image.mime || 'image/jpeg', data: image.data } },
+        { text: user }
+      ] }],
+      generationConfig: { maxOutputTokens: maxTokens || 400, temperature: 0, responseMimeType: 'application/json' }
+    })
+  });
+  if (!res.ok) {
+    let detail = ''; try { detail = (await res.json())?.error?.message || ''; } catch {}
+    throw new Error(`Could not read the slip (HTTP ${res.status})${detail ? ': ' + detail : ''}`);
+  }
+  const data = await res.json();
+  const text = (data?.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
+  const u = data?.usageMetadata || {};
+  return { text, model, in: u.promptTokenCount | 0, out: u.candidatesTokenCount | 0 };
 }
 
 /* ---------------- prompts ---------------- */
