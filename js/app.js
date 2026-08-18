@@ -574,6 +574,7 @@
         </div>
 
         <div id="dash-mocks"></div>
+        <div id="dash-osce"></div>
 
         <div class="dash-grid">
           <div class="card readiness-card" data-animate>
@@ -634,6 +635,63 @@
     if (ready) Charts.ring(document.getElementById('ring-ready'), ready.score, 'Ready');
     Charts.scoreTrend(document.getElementById('chart-trend'), Progression.scoreSeries(progress));
     Charts.sectionBars(document.getElementById('chart-cats'), Progression.categoryAccuracy(progress));
+
+    /* OSCE progress, painted after the dashboard is already up — a slow read
+       must never hold back the page. Hidden entirely until there is at least
+       one marked station, so it is never an empty box. */
+    (async () => {
+      try {
+        const host = document.getElementById('dash-osce');
+        if (!host || typeof OSCE === 'undefined') return;
+        const rows = await OSCE.progress();
+        if (!rows.length) return;
+        const passes = rows.filter(r => r.pass).length;
+        const best = Math.max(...rows.map(r => r.percent));
+        const avg = Math.round(rows.reduce((n, r) => n + r.percent, 0) / rows.length);
+        const last5 = rows.slice(-5);
+        const trend = rows.length >= 4
+          ? Math.round(last5.reduce((n, r) => n + r.percent, 0) / last5.length
+              - rows.slice(0, Math.max(1, rows.length - 5)).reduce((n, r) => n + r.percent, 0) / Math.max(1, rows.length - 5))
+          : null;
+        host.innerHTML = `
+          <div class="card os-dash" data-animate>
+            <div class="es-inbox-head">
+              <h3 class="card-title">🎙 OSCE progress</h3>
+              <a class="link" href="#/osce">Open the stations →</a>
+            </div>
+            <div class="os-dash-stats">
+              <div><strong>${rows.length}</strong><span>stations marked</span></div>
+              <div><strong class="${passes / rows.length >= .5 ? 'good' : 'bad'}">${passes}/${rows.length}</strong><span>at or above the pass mark</span></div>
+              <div><strong>${avg}%</strong><span>average</span></div>
+              <div><strong>${best}%</strong><span>best</span></div>
+              ${trend != null ? `<div><strong class="${trend >= 0 ? 'good' : 'bad'}">${trend >= 0 ? '+' : ''}${trend}</strong><span>last 5 vs before</span></div>` : ''}
+            </div>
+            <div class="os-dash-charts">
+              <div class="os-dash-c">
+                <span class="os-dash-k">Where your scores sit</span>
+                <div id="os-hist"></div>
+              </div>
+              <div class="os-dash-c">
+                <span class="os-dash-k">Station by station</span>
+                <div id="os-trend"></div>
+              </div>
+            </div>
+            <div class="os-dash-recent">
+              ${rows.slice(-6).reverse().map(r => `
+                <a class="os-dash-row ${r.pass ? 'is-pass' : 'is-fail'}" href="#/osce/result/${encodeURIComponent(r.id)}">
+                  <span class="os-dash-t">${esc(r.station)}</span>
+                  <span class="os-dash-b"><i style="width:${r.percent}%"></i></span>
+                  <span class="os-dash-p">${r.percent}%</span>
+                </a>`).join('')}
+            </div>
+          </div>`;
+        const passMark = rows.find(r => r.passMark != null && r.max)
+          ? Math.round((rows.find(r => r.passMark != null && r.max).passMark / rows.find(r => r.passMark != null && r.max).max) * 100) : 70;
+        Charts.histogram(document.getElementById('os-hist'), rows.map(r => r.percent), { passMark });
+        Charts.osceTrend(document.getElementById('os-trend'), rows, passMark);
+        FX.viewIn?.(host);
+      } catch { /* the dashboard is fine without it */ }
+    })();
     renderMockChart(document.getElementById('dash-mocks'), user);
 
     const recent = (progress.attempts || []).slice(0, 6);

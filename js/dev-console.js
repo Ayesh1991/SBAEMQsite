@@ -1902,6 +1902,17 @@ const DevConsole = (() => {
     { id: 'question_auditor', name: '⚖️ Question auditor', status: 'live', billing: 'shared',
       desc: 'Chief-examiner audit of flagged questions: verdict against current NICE/RCOG/SLCOG guidance + a paste-ready correction.',
       defaults: { enabled: true, provider: 'claude', model: 'claude-haiku-4-5-20251001', split: 'dev' } },
+    { id: 'osce_marker', name: '🎙 OSCE examiner & marker', status: 'live', billing: 'per-user',
+      desc: 'Spoken 15-minute stations. The candidate answers out loud; the model listens to the recording, ' +
+        'transcribes it and marks every point of the station\'s scheme, then writes the examiner\'s verdict. ' +
+        'Audio is ~32 tokens a second, so a whole station is about 29k input tokens — pennies on Flash-Lite. ' +
+        'The station itself reads its questions aloud and probes thin answers with no model call at all.',
+      defaults: { enabled: true, provider: 'gemini', model: 'gemini-3.1-flash-lite', split: 'per-user' } },
+    { id: 'topup_reader', name: '🧾 Payment slip reader', status: 'live', billing: 'per-user',
+      desc: 'Reads an uploaded bank slip and pulls out the amount, the payer\'s reference and the transaction ' +
+        'number so a top-up can be approved in one click. Deliberately the cheapest call in the app: the image is ' +
+        'shrunk client-side, the prompt is JSON-only and capped at 400 tokens. Billed to the payer as a handling fee.',
+      defaults: { enabled: true, provider: 'gemini', model: 'gemini-3.1-flash-lite', split: 'per-user' } },
     { id: 'viva_examiner', name: '🎓 Viva examiner', status: 'planned', billing: 'per-user',
       desc: 'Structured AI viva: presents a case, questions stepwise, pushes back on vague answers, scores against a rubric. The one thing candidates cannot practise alone.',
       defaults: { enabled: false, provider: 'claude', model: 'claude-haiku-4-5-20251001', split: 'per-user' } },
@@ -2443,16 +2454,17 @@ const DevConsole = (() => {
           <h1 class="page-title">OSCE stations</h1>
           <p class="muted">Spoken stations in <code>ogr-osce-v1</code> JSON — a scenario, questions, marks and the
             marking points behind each. Published stations appear in the <strong>OSCE</strong> tab and in the exam
-            simulator. Source folder: <code>${esc(ctx.cfg.drive.essayFolderId || '(set drive.essayFolderId)')}</code>.</p>
+            simulator. Source folder: <code>${esc(ctx.cfg.drive.osceFolderId || '(set drive.osceFolderId)')}</code>.</p>
         </header>
         <div class="dev-toolbar" data-animate>
           <button class="btn btn-gold" id="os-scan">Scan Drive for OSCE stations</button>
           <span class="dev-status" id="os-status"></span>
         </div>
         <div id="os-list" data-animate></div>
+        <div id="os-editor"></div>
         <div class="card" data-animate>
-          <details class="dev-collapse">
-            <summary><span class="card-title">Published stations (<span id="os-pub-count">…</span>)</span><span class="dc-caret">▸</span></summary>
+          <details class="dev-collapse" open>
+            <summary><span class="card-title">Published stations (<span id="os-pub-count">…</span>) — click <em>edit</em> to change a scheme</span><span class="dc-caret">▸</span></summary>
             <div id="os-published"></div>
           </details>
         </div>
@@ -2480,8 +2492,15 @@ const DevConsole = (() => {
         <td class="muted">${(v.questions || []).length}</td>
         <td class="muted">${v.total_marks || ''}</td>
         <td class="muted">${v.pass_mark || ''} (${v.pass_mark_percent || 70}%)</td>
-        <td><button class="link-btn" data-unpub-osce="${ctx.esc(v.id)}">unpublish</button></td></tr>`).join('')}</tbody>
+        <td><button class="link-btn" data-edit-osce="${ctx.esc(v.id)}">edit</button>
+            <button class="link-btn qr-danger" data-unpub-osce="${ctx.esc(v.id)}">unpublish</button></td></tr>`).join('')}</tbody>
     </table></div>` : `<p class="muted">No OSCE stations published yet.</p>`;
+    host.querySelectorAll('[data-edit-osce]').forEach(b => b.addEventListener('click', () => {
+      const st = list.find(x => x.id === b.dataset.editOsce); if (!st) return;
+      const eh = view.querySelector('#os-editor');
+      osceEditor(eh, st, () => refreshOscePublished(view));
+      eh.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }));
     host.querySelectorAll('[data-unpub-osce]').forEach(b => b.addEventListener('click', async () => {
       if (!confirm('Unpublish this station?')) return;
       await ctx.Backend.unpublishOsceStation(b.dataset.unpubOsce);
@@ -2495,7 +2514,7 @@ const DevConsole = (() => {
     status.textContent = 'Scanning…'; list.innerHTML = '';
     let files = [];
     try {
-      const base = ctx.cfg.drive.apiBase, fid = ctx.cfg.drive.essayFolderId;
+      const base = ctx.cfg.drive.apiBase, fid = ctx.cfg.drive.osceFolderId || ctx.cfg.drive.essayFolderId;
       const res = await fetch(`${base}?action=list&folderId=${encodeURIComponent(fid)}`, { cache: 'no-cache' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -2542,6 +2561,222 @@ const DevConsole = (() => {
       out.innerHTML = `<p class="good">✓ Published “${ctx.esc(d.topic)}”.</p>`;
       await refreshOscePublished(document.getElementById('view'));
     } catch (e) { out.innerHTML = `<p class="bad">${ctx.esc(e.message || e)}</p>`; }
+  }
+
+  /* ================================================================
+     OSCE EDITOR — change a published station in place
+
+     Everything about a station is editable here: the scenario, the times,
+     the pass mark, and every question with its marks and its marking
+     points. Points can be added, edited, removed and reordered, and
+     questions can be added or deleted outright. The marks total is
+     recalculated as you type, because a scheme whose parts do not add up to
+     its total marks a candidate wrongly.
+     ================================================================ */
+
+  let edit = null;                  // the station being edited, as a working copy
+
+  let autoTotal = true;             // does total_marks track the questions?
+  function osceEditor(host, station, onSaved) {
+    edit = JSON.parse(JSON.stringify(station));
+    autoTotal = !edit.total_marks || Number(edit.total_marks) === editorSums().marks;
+    paintEditor(host, onSaved);
+  }
+
+  function editorSums() {
+    const qs = edit.questions || [];
+    const marks = qs.reduce((n, q) => n + (Number(q.marks) || 0), 0);
+    const pts = qs.reduce((n, q) => n + (q.marking_points || []).length, 0);
+    return { marks, pts, qs: qs.length };
+  }
+
+  function paintEditor(host, onSaved) {
+    const { esc } = ctx;
+    const sum = editorSums();
+    const declared = Number(edit.total_marks) || 0;
+    const mismatch = declared && sum.marks !== declared;
+    host.innerHTML = `
+      <div class="oe" data-animate>
+        <div class="oe-head">
+          <div>
+            <p class="kicker">EDITING</p>
+            <h3>${esc(edit.topic || edit.id)}</h3>
+          </div>
+          <div class="oe-sums ${mismatch ? 'is-bad' : ''}">
+            <span><strong>${sum.qs}</strong> questions</span>
+            <span><strong>${sum.marks}</strong> marks in the questions</span>
+            <span><strong>${sum.pts}</strong> marking points</span>
+            ${mismatch ? `<span class="bad">total_marks says ${declared}</span>
+              <button class="link-btn" id="oe-fixtotal">set it to ${sum.marks}</button>` : ''}
+          </div>
+        </div>
+
+        <div class="oe-grid">
+          <label class="wl-f"><span>Topic</span><input type="text" data-f="topic" value="${esc(edit.topic || '')}"></label>
+          <label class="wl-f"><span>Station time (minutes)</span><input type="number" data-f="station_time_min" value="${edit.station_time_min || 15}" min="1"></label>
+          <label class="wl-f"><span>Reading time (minutes)</span><input type="number" data-f="reading_time_min" value="${edit.reading_time_min || 1}" min="0"></label>
+          <label class="wl-f"><span>Total marks</span><input type="number" data-f="total_marks" value="${edit.total_marks || sum.marks}" min="1"></label>
+          <label class="wl-f"><span>Pass mark (%)</span><input type="number" data-f="pass_mark_percent" value="${edit.pass_mark_percent || 70}" min="1" max="100"></label>
+          <label class="wl-f"><span>Pass mark (marks)</span><input type="number" data-f="pass_mark" value="${edit.pass_mark || Math.round((edit.total_marks || sum.marks) * ((edit.pass_mark_percent || 70) / 100))}" min="0"></label>
+        </div>
+        <label class="wl-f"><span>Scenario — what the candidate reads before the clock starts</span>
+          <textarea class="dev-textarea oe-scenario" data-f="scenario" rows="4">${esc(edit.scenario || '')}</textarea></label>
+
+        <h4 class="oe-h">Questions &amp; marking scheme</h4>
+        <div class="oe-qs">
+          ${(edit.questions || []).map((q, qi) => `
+            <div class="oe-q" data-q="${qi}">
+              <div class="oe-q-head">
+                <span class="oe-q-n">Q${qi + 1}</span>
+                <label class="oe-q-marks">marks
+                  <input type="number" data-qf="marks" data-qi="${qi}" value="${q.marks || 0}" min="0" step="0.5"></label>
+                <span class="oe-q-pts">${(q.marking_points || []).length} point${(q.marking_points || []).length === 1 ? '' : 's'}</span>
+                <span class="oe-q-acts">
+                  <button class="link-btn" data-qmove="${qi}" data-dir="-1" ${qi === 0 ? 'disabled' : ''} title="Move up">↑</button>
+                  <button class="link-btn" data-qmove="${qi}" data-dir="1" ${qi === (edit.questions.length - 1) ? 'disabled' : ''} title="Move down">↓</button>
+                  <button class="link-btn qr-danger" data-qdel="${qi}" title="Delete this question">✕</button>
+                </span>
+              </div>
+              <label class="wl-f"><span>What the examiner asks</span>
+                <textarea class="dev-textarea oe-prompt" data-qf="prompt" data-qi="${qi}" rows="2">${esc(q.prompt || '')}</textarea></label>
+              <label class="wl-f"><span>Information revealed before this question (optional — results, a new finding)</span>
+                <textarea class="dev-textarea oe-reveal" data-qf="reveal_before" data-qi="${qi}" rows="2">${esc(q.reveal_before || '')}</textarea></label>
+              <span class="oe-pts-k">Marking points — one mark-worthy idea per line</span>
+              <div class="oe-pts">
+                ${(q.marking_points || []).map((pt, pi) => `
+                  <div class="oe-pt">
+                    <span class="oe-pt-n">${pi + 1}</span>
+                    <textarea class="oe-pt-t" data-pt="${qi}:${pi}" rows="1">${esc(pt)}</textarea>
+                    <button class="link-btn" data-ptmove="${qi}:${pi}" data-dir="-1" ${pi === 0 ? 'disabled' : ''}>↑</button>
+                    <button class="link-btn" data-ptmove="${qi}:${pi}" data-dir="1" ${pi === (q.marking_points.length - 1) ? 'disabled' : ''}>↓</button>
+                    <button class="link-btn qr-danger" data-ptdel="${qi}:${pi}">✕</button>
+                  </div>`).join('')}
+              </div>
+              <button class="btn btn-ghost btn-sm" data-ptadd="${qi}">＋ Add a marking point</button>
+            </div>`).join('')}
+        </div>
+        <button class="btn btn-ghost" id="oe-qadd">＋ Add a question</button>
+
+        <div class="oe-foot">
+          <span class="dev-status" id="oe-msg"></span>
+          <button class="btn btn-ghost" id="oe-cancel">Cancel</button>
+          <button class="btn btn-ghost" id="oe-json">⇩ Export JSON</button>
+          <button class="btn btn-gold" id="oe-save">Save to the database</button>
+        </div>
+      </div>`;
+
+    host.querySelector('#oe-fixtotal')?.addEventListener('click', () => {
+      syncTotal(); autoTotal = true;
+      const t = host.querySelector('[data-f="total_marks"]'); if (t) t.value = edit.total_marks;
+      const pm = host.querySelector('[data-f="pass_mark"]'); if (pm) pm.value = edit.pass_mark;
+      refreshSums(host);
+    });
+    host.querySelector('[data-f="total_marks"]')?.addEventListener('input', () => { autoTotal = false; });
+
+    /* every field writes straight into the working copy */
+    host.querySelectorAll('[data-f]').forEach(el => el.addEventListener('input', () => {
+      const k = el.dataset.f;
+      edit[k] = el.type === 'number' ? (Number(el.value) || 0) : el.value;
+      if (k === 'total_marks' || k === 'pass_mark_percent') {
+        edit.pass_mark = Math.round((Number(edit.total_marks) || 0) * ((Number(edit.pass_mark_percent) || 70) / 100));
+      }
+      refreshSums(host);
+    }));
+    host.querySelectorAll('[data-qf]').forEach(el => el.addEventListener('input', () => {
+      const q = edit.questions[Number(el.dataset.qi)]; if (!q) return;
+      const before = editorSums().marks;
+      q[el.dataset.qf] = el.type === 'number' ? (Number(el.value) || 0) : el.value;
+      // a total that was in step with the questions stays in step; one the
+      // developer has deliberately set to something else is left alone
+      if (el.dataset.qf === 'marks' && Number(edit.total_marks) === before) syncTotal();
+      refreshSums(host);
+    }));
+    host.querySelectorAll('[data-pt]').forEach(el => el.addEventListener('input', () => {
+      const [qi, pi] = el.dataset.pt.split(':').map(Number);
+      edit.questions[qi].marking_points[pi] = el.value;
+    }));
+
+    const redraw = () => paintEditor(host, onSaved);
+    host.querySelectorAll('[data-ptadd]').forEach(b => b.addEventListener('click', () => {
+      const q = edit.questions[Number(b.dataset.ptadd)];
+      (q.marking_points = q.marking_points || []).push(''); redraw();
+    }));
+    host.querySelectorAll('[data-ptdel]').forEach(b => b.addEventListener('click', () => {
+      const [qi, pi] = b.dataset.ptdel.split(':').map(Number);
+      edit.questions[qi].marking_points.splice(pi, 1); redraw();
+    }));
+    host.querySelectorAll('[data-ptmove]').forEach(b => b.addEventListener('click', () => {
+      const [qi, pi] = b.dataset.ptmove.split(':').map(Number);
+      const d = Number(b.dataset.dir), arr = edit.questions[qi].marking_points;
+      if (pi + d < 0 || pi + d >= arr.length) return;
+      [arr[pi], arr[pi + d]] = [arr[pi + d], arr[pi]]; redraw();
+    }));
+    host.querySelectorAll('[data-qdel]').forEach(b => b.addEventListener('click', () => {
+      if (!confirm('Delete this question and its marking points?')) return;
+      edit.questions.splice(Number(b.dataset.qdel), 1);
+      edit.questions.forEach((q, i) => q.id = i + 1);
+      if (autoTotal) syncTotal();
+      redraw();
+    }));
+    host.querySelectorAll('[data-qmove]').forEach(b => b.addEventListener('click', () => {
+      const qi = Number(b.dataset.qmove), d = Number(b.dataset.dir);
+      if (qi + d < 0 || qi + d >= edit.questions.length) return;
+      [edit.questions[qi], edit.questions[qi + d]] = [edit.questions[qi + d], edit.questions[qi]];
+      edit.questions.forEach((q, i) => q.id = i + 1);
+      redraw();
+    }));
+    host.querySelector('#oe-qadd').addEventListener('click', () => {
+      (edit.questions = edit.questions || []).push({ id: edit.questions.length + 1, prompt: '', marks: 5, marking_points: [''] });
+      if (autoTotal) syncTotal();
+      redraw();
+    });
+    host.querySelector('#oe-cancel').addEventListener('click', () => { edit = null; host.innerHTML = ''; onSaved?.(); });
+    host.querySelector('#oe-json').addEventListener('click', () => {
+      const blob = new Blob([JSON.stringify(edit, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = (edit.id || 'osce') + '.json'; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    });
+    host.querySelector('#oe-save').addEventListener('click', async e => {
+      const msg = host.querySelector('#oe-msg');
+      // drop empty marking points and empty questions before anything is stored
+      edit.questions = (edit.questions || []).filter(q => (q.prompt || '').trim());
+      edit.questions.forEach((q, i) => { q.id = i + 1; q.marking_points = (q.marking_points || []).map(x => x.trim()).filter(Boolean); });
+      const errs = validateOsce(edit);
+      if (errs.length) { msg.innerHTML = `<span class="bad">${errs.map(ctx.esc).join('<br>')}</span>`; return; }
+      e.target.disabled = true; msg.textContent = 'Saving…';
+      try {
+        await ctx.Backend.publishOsceStation(edit);
+        if (typeof OSCE !== 'undefined') OSCE.bustStations();
+        msg.innerHTML = '<span class="good">✓ Saved — live in the OSCE tab.</span>';
+        setTimeout(() => { edit = null; host.innerHTML = ''; onSaved?.(); }, 900);
+      } catch (err) { msg.innerHTML = `<span class="bad">${ctx.esc(err.message || err)}</span>`; e.target.disabled = false; }
+    });
+  }
+
+  /** Follow the questions, and keep the pass mark with them. */
+  function syncTotal() {
+    edit.total_marks = editorSums().marks;
+    edit.pass_mark = Math.round(edit.total_marks * ((Number(edit.pass_mark_percent) || 70) / 100));
+  }
+
+  function refreshSums(host) {
+    const sum = editorSums();
+    const declared = Number(edit.total_marks) || 0;
+    const el = host.querySelector('.oe-sums'); if (!el) return;
+    el.classList.toggle('is-bad', !!(declared && sum.marks !== declared));
+    el.innerHTML = `<span><strong>${sum.qs}</strong> questions</span>
+      <span><strong>${sum.marks}</strong> marks in the questions</span>
+      <span><strong>${sum.pts}</strong> marking points</span>
+      ${declared && sum.marks !== declared
+        ? `<span class="bad">total_marks says ${declared}</span>
+           <button class="link-btn" id="oe-fixtotal">set it to ${sum.marks}</button>` : ''}`;
+    el.querySelector('#oe-fixtotal')?.addEventListener('click', () => {
+      syncTotal(); autoTotal = true;
+      const t = host.querySelector('[data-f="total_marks"]'); if (t) t.value = edit.total_marks;
+      const pm = host.querySelector('[data-f="pass_mark"]'); if (pm) pm.value = edit.pass_mark;
+      refreshSums(host);
+    });
   }
 
   /* ================================================================
@@ -2626,6 +2861,21 @@ const DevConsole = (() => {
     await paintTopUps(view);
   }
 
+  /* A slip may be a photo, a screenshot or the bank's own PDF. Images render
+     inline; a PDF gets an embedded viewer (with a link out, because iOS will
+     not render a PDF in an object tag); anything else at least downloads. */
+  function slipView(src, id) {
+    const kind = String(src || '').slice(5, 40);
+    const dl = `<a class="btn btn-ghost btn-sm" href="${src}" download="slip-${ctx.esc(String(id))}${/pdf/i.test(kind) ? '.pdf' : /png/i.test(kind) ? '.png' : '.jpg'}" target="_blank" rel="noopener">⬇ Download / open in a new tab</a>`;
+    if (/^data:image/.test(src)) return `<img src="${src}" alt="payment slip">${dl}`;
+    if (/^data:application\/pdf/.test(src)) {
+      return `<object data="${src}" type="application/pdf" class="st-pdf">
+          <p class="muted">This browser will not display the PDF inline.</p>
+        </object>${dl}`;
+    }
+    return `<p class="muted">A ${ctx.esc(kind.split(';')[0] || 'file')} was uploaded.</p>${dl}`;
+  }
+
   async function paintTopUps(view) {
     const host = view.querySelector('#st-tops'); if (!host) return;
     let list = [];
@@ -2653,7 +2903,7 @@ const DevConsole = (() => {
             : `<span class="muted tiny">${ctx.esc(t.status)}${t.note ? ' — ' + ctx.esc(t.note) : ''}</span>`}
         </div>
         ${t.slip ? `<details class="dev-collapse"><summary><span>View the slip</span><span class="dc-caret">▸</span></summary>
-          <div class="st-slip">${/^data:image/.test(t.slip) ? `<img src="${t.slip}" alt="payment slip">` : '<p class="muted">PDF slip</p>'}</div></details>` : ''}
+          <div class="st-slip">${slipView(t.slip, t.id)}</div></details>` : ''}
       </div>`).join('')}`;
     host.querySelectorAll('[data-approve]').forEach(b => b.addEventListener('click', async () => {
       b.disabled = true;

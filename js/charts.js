@@ -182,5 +182,68 @@ const Charts = (() => {
     ));
   }
 
-  return { scoreTrend, sectionBars, ring };
+
+  /** el() sets attributes only; this one also carries a text child. */
+  function txt(tag, attrs, text) { const n = el(tag, attrs); n.textContent = String(text); return n; }
+
+  /* ---------------- OSCE progress ----------------
+     Two pictures, because they answer different questions. The histogram
+     answers "where do my station scores sit, and how many clear the pass
+     mark"; the trend answers "am I getting better". Both are drawn as plain
+     SVG so they print and theme like everything else. */
+  function histogram(container, values, opts = {}) {
+    if (!container) return;
+    const bins = opts.bins || [[0,39],[40,49],[50,59],[60,69],[70,79],[80,89],[90,100]];
+    const counts = bins.map(([lo, hi]) => values.filter(v => v >= lo && v <= hi).length);
+    const max = Math.max(1, ...counts);
+    const W = 520, H = 180, PAD = 28, bw = (W - PAD * 2) / bins.length;
+    const pass = opts.passMark == null ? 70 : opts.passMark;
+    const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'ch-svg ch-hist', role: 'img',
+      'aria-label': `${values.length} station scores by band` });
+    bins.forEach(([lo, hi], i) => {
+      const h = (counts[i] / max) * (H - PAD * 2);
+      const x = PAD + i * bw + 4, y = H - PAD - h;
+      svg.appendChild(el('rect', { x, y, width: bw - 8, height: Math.max(h, counts[i] ? 3 : 0), rx: 4,
+        class: 'ch-bar ' + (lo >= pass ? 'is-pass' : lo >= pass - 20 ? 'is-near' : 'is-fail') }));
+      if (counts[i]) svg.appendChild(txt('text', { x: x + (bw - 8) / 2, y: y - 5, class: 'ch-n', 'text-anchor': 'middle' }, String(counts[i])));
+      svg.appendChild(txt('text', { x: x + (bw - 8) / 2, y: H - PAD + 14, class: 'ch-ax', 'text-anchor': 'middle' },
+        lo === 0 ? '<40' : hi === 100 ? '90+' : `${lo}s`));
+    });
+    // the pass mark, where it actually falls
+    const pi = bins.findIndex(([lo]) => lo >= pass);
+    if (pi >= 0) {
+      const px = PAD + pi * bw;
+      svg.appendChild(el('line', { x1: px, y1: PAD - 6, x2: px, y2: H - PAD, class: 'ch-pass' }));
+      svg.appendChild(txt('text', { x: px + 4, y: PAD - 10, class: 'ch-ax is-pass' }, `pass ${pass}%`));
+    }
+    container.innerHTML = ''; container.appendChild(svg);
+  }
+
+  /** Station-by-station line with the pass mark drawn across it. */
+  function osceTrend(container, points, passPct = 70) {
+    if (!container) return;
+    const W = 520, H = 180, PAD = 30;
+    const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'ch-svg', role: 'img',
+      'aria-label': `${points.length} OSCE attempts over time` });
+    const y = p => H - PAD - (p / 100) * (H - PAD * 2);
+    const x = i => points.length < 2 ? W / 2 : PAD + (i / (points.length - 1)) * (W - PAD * 2);
+    [0, 50, 100].forEach(v => {
+      svg.appendChild(el('line', { x1: PAD, y1: y(v), x2: W - PAD, y2: y(v), class: 'ch-grid' }));
+      svg.appendChild(txt('text', { x: 6, y: y(v) + 4, class: 'ch-ax' }, v + '%'));
+    });
+    svg.appendChild(el('line', { x1: PAD, y1: y(passPct), x2: W - PAD, y2: y(passPct), class: 'ch-pass' }));
+    svg.appendChild(txt('text', { x: W - PAD - 2, y: y(passPct) - 6, class: 'ch-ax is-pass', 'text-anchor': 'end' }, `pass ${passPct}%`));
+    if (points.length > 1) {
+      svg.appendChild(el('polyline', { class: 'ch-line',
+        points: points.map((p, i) => `${x(i)},${y(p.percent)}`).join(' ') }));
+    }
+    points.forEach((p, i) => {
+      const c = el('circle', { cx: x(i), cy: y(p.percent), r: 5, class: 'ch-dot ' + (p.pass ? 'is-pass' : 'is-fail') });
+      c.appendChild(txt('title', {}, `${p.station} — ${p.percent}% (${p.total}/${p.max})`));
+      svg.appendChild(c);
+    });
+    container.innerHTML = ''; container.appendChild(svg);
+  }
+
+  return { scoreTrend, sectionBars, ring, histogram, osceTrend };
 })();

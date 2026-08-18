@@ -62,6 +62,85 @@ const OSCE = (() => {
   const fmt = s => { s = Math.max(0, Math.round(s)); const m = Math.floor(s / 60);
     return `${String(m).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; };
 
+  /* ---------------- the examiner's voice ----------------
+     The browser's own speech synthesiser: free, offline, on every platform
+     that matters. Hearing the question read out is most of what makes this
+     feel like the real thing rather than a form. */
+  const VOICE_KEY = 'aureum.osce.voice';
+  const voiceOn = () => { try { return localStorage.getItem(VOICE_KEY) !== '0'; } catch { return true; } };
+  const setVoiceOn = v => { try { localStorage.setItem(VOICE_KEY, v ? '1' : '0'); } catch {} };
+  const canSpeak = () => typeof speechSynthesis !== 'undefined';
+
+  function speak(text, opts = {}) {
+    if (!canSpeak() || !voiceOn() || !text) return;
+    try {
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(String(text));
+      u.rate = opts.rate || 0.96; u.pitch = opts.pitch || 1; u.lang = 'en-GB';
+      // prefer a British voice so it sounds like the examiner, not a satnav
+      const v = (speechSynthesis.getVoices() || []).find(x => /en-GB/i.test(x.lang) && !/google/i.test(x.name))
+        || (speechSynthesis.getVoices() || []).find(x => /en-GB/i.test(x.lang));
+      if (v) u.voice = v;
+      speechSynthesis.speak(u);
+    } catch {}
+  }
+  const hush = () => { try { speechSynthesis?.cancel(); } catch {} };
+
+  /* What a real examiner says when you dry up. Chosen by how much of the
+     scheme the answer has actually touched — no model call, no cost, and it
+     lands the moment you stop talking, which is what makes it feel live. */
+  const PROBES = {
+    thin:  ['Is there anything else you would add?', 'Anything further?', 'Can you expand on that?'],
+    half:  ['Is there anything else?', 'What else would you consider?', 'Anything you have missed?'],
+    wrong: ['Are you sure about that?', 'Would you like to reconsider any of that?'],
+    good:  ['Thank you. Let us move on.', 'Good. Next question.']
+  };
+  /** Rough, local, free: how much of the scheme this answer has touched. */
+  function coverage(q, text) {
+    const said = String(text || '').toLowerCase();
+    if (!said.trim()) return 0;
+    const pts = q.marking_points || [];
+    if (!pts.length) return 1;
+    let hit = 0;
+    pts.forEach(p => {
+      // the distinctive words of a marking point — short and common ones tell us nothing
+      const words = String(p).toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
+        .filter(w => w.length > 4 && !['which','their','there','about','after','before','would','should','using','within','other','these','those'].includes(w));
+      if (!words.length) return;
+      const found = words.filter(w => said.includes(w.slice(0, Math.max(5, w.length - 2)))).length;
+      if (found / words.length >= 0.34) hit++;
+    });
+    return hit / pts.length;
+  }
+  function probeFor(q, text) {
+    const c = coverage(q, text);
+    const bag = c === 0 ? PROBES.thin : c < 0.35 ? PROBES.thin : c < 0.7 ? PROBES.half : PROBES.good;
+    return { text: bag[Math.floor(Math.random() * bag.length)], coverage: c, push: c < 0.7 };
+  }
+
+  /* ---------------- which model marks it ---------------- */
+
+  const MODEL_KEY = 'aureum.osce.model';
+  function modelChoices() {
+    const ai = cfg().ai || {};
+    const price = m => { try { const r = Billing.rateFor(m); return { in: r.in || 0, out: r.out || 0 }; } catch { return { in: 0, out: 0 }; } };
+    const out = [];
+    (ai.geminiModels || [{ id: ai.geminiModel, label: 'Gemini Flash-Lite' }]).forEach(m =>
+      out.push({ key: 'gemini|' + m.id, provider: 'gemini', model: m.id, label: m.label, rate: price(m.id), audio: true }));
+    (ai.gptModels || (ai.gptModel ? [{ id: ai.gptModel, label: 'GPT' }] : [])).forEach(m =>
+      out.push({ key: 'gpt|' + m.id, provider: 'gpt', model: m.id, label: m.label, rate: price(m.id), audio: false }));
+    [{ id: ai.claudeModel || 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
+     { id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' }].forEach(m =>
+      out.push({ key: 'claude|' + m.id, provider: 'claude', model: m.id, label: m.label, rate: price(m.id), audio: false }));
+    return out;
+  }
+  function chosenModel() {
+    const all = modelChoices();
+    let k = null; try { k = localStorage.getItem(MODEL_KEY); } catch {}
+    return all.find(m => m.key === k) || all[0] || { provider: 'gemini', model: cfg().ai?.geminiModel, label: 'Gemini', rate: { in: 0, out: 0 }, audio: true };
+  }
+  const setModel = k => { try { localStorage.setItem(MODEL_KEY, k); } catch {} };
+
   /* ================= the bank (#/osce) ================= */
 
   async function renderBank(view, user) {
@@ -223,7 +302,7 @@ const OSCE = (() => {
       <div class="card os-simset" data-animate>
         <h3 class="card-title">How many stations?</h3>
         <div class="os-count" id="os-count">
-          ${[3, 4, 6, 8, 9, 12].map(n => `<button class="os-count-b ${n === 9 ? 'active' : ''}" data-n="${n}">
+          ${[1, 2, 3, 4, 6, 8, 9, 12].map(n => `<button class="os-count-b ${n === 9 ? 'active' : ''}" data-n="${n}">
             <strong>${n}</strong><span>${hours(n * 15)}</span></button>`).join('')}
         </div>
         <p class="muted tiny" id="os-count-note"></p>
@@ -455,11 +534,15 @@ const OSCE = (() => {
           <div class="os-answer">
             <div class="os-answer-head">
               <span class="os-rec ${live?.ok?.() ? '' : 'is-off'}" id="os-rec"><i></i> ${live?.ok?.() ? 'recording' : 'not recording'}</span>
+              ${canSpeak() ? `<button class="os-voice ${voiceOn() ? '' : 'is-off'}" id="os-voice"
+                title="${voiceOn() ? 'The examiner reads each question aloud' : 'The examiner is silent'}">🔊</button>
+                <button class="os-voice" id="os-repeat" title="Read the question again">↻</button>` : ''}
               <span class="muted tiny">Speak your answer. What the browser hears appears below — you can correct it later.</span>
             </div>
             <div class="os-transcript" id="os-tx" contenteditable="true" spellcheck="false"
               data-ph="Your spoken answer appears here…">${esc(prev)}</div>
           </div>
+          <div class="os-probe" id="os-probe" hidden></div>
           <div class="os-qfoot">
             <button class="btn btn-ghost" id="os-back" ${i === 0 ? 'disabled' : ''}>← Previous</button>
             <span class="muted tiny" id="os-hint">Take the marks in order — say the headline first, then the detail.</span>
@@ -470,7 +553,41 @@ const OSCE = (() => {
       live?.attach(text => { if (text) { tx.textContent = (tx.textContent + ' ' + text).trim(); } });
       const store = () => { ans[q.id] = { id: q.id, transcript: tx.innerText.trim() }; persist(); };
       tx.addEventListener('input', store);
-      stage.querySelector('#os-next').addEventListener('click', () => { store(); i + 1 >= qs.length ? finish(false) : show(i + 1); });
+
+      // the examiner reads the question, exactly as one would in the room
+      speak((q.reveal_before ? q.reveal_before + '. ' : '') + q.prompt);
+      stage.querySelector('#os-voice')?.addEventListener('click', e => {
+        setVoiceOn(!voiceOn());
+        e.currentTarget.classList.toggle('is-off', !voiceOn());
+        e.currentTarget.title = voiceOn() ? 'The examiner reads each question aloud' : 'The examiner is silent';
+        voiceOn() ? speak(q.prompt) : hush();
+      });
+      stage.querySelector('#os-repeat')?.addEventListener('click', () => speak(q.prompt));
+
+      /* One probe per question, the way a real examiner presses you once when
+         the answer is thin. Which probe depends on how much of the scheme the
+         answer has touched — worked out locally, so it is instant and free. */
+      let probed = false;
+      const probeHost = stage.querySelector('#os-probe');
+      const nextBtn = stage.querySelector('#os-next');
+      const advance = () => { store(); i + 1 >= qs.length ? finish(false) : show(i + 1); };
+      nextBtn.addEventListener('click', () => {
+        store();
+        const p = probeFor(q, tx.innerText);
+        if (!probed && p.push) {
+          probed = true;
+          probeHost.hidden = false;
+          probeHost.innerHTML = `<span class="os-probe-who">EXAMINER</span>
+            <p>${esc(p.text)}</p>
+            <button class="btn btn-ghost btn-sm" id="os-probe-done">Nothing more — next question →</button>`;
+          probeHost.querySelector('#os-probe-done').addEventListener('click', advance);
+          nextBtn.textContent = i === qs.length - 1 ? 'Finish the station →' : 'Next question →';
+          speak(p.text, { rate: 0.98 });
+          tx.focus();
+          return;
+        }
+        advance();
+      });
       stage.querySelector('#os-back').addEventListener('click', () => { store(); show(Math.max(0, i - 1)); });
     }
 
@@ -478,8 +595,9 @@ const OSCE = (() => {
       if (tid) clearInterval(tid); tid = null; running = false;
       pauseBtn.hidden = true;
       qi = qs.length; s.phase = 'done'; persist();
+      hush();
       const rec = live ? await live.stop() : null;
-      s._audio = rec ? rec.url : null;
+      lastRec = rec;
       debrief(timedOut, rec);
     }
 
@@ -514,14 +632,16 @@ const OSCE = (() => {
 
         <div class="card os-markbox" data-animate>
           <h3 class="card-title">✨ Mark it against the scheme</h3>
-          <p class="muted">Your answers are marked point by point against the station's own marking scheme, and you get
-            an examiner's verdict, the marks you missed and what to do about them. This is the only step that uses AI —
-            about <strong>${estTokens(st, said)}</strong> tokens, roughly <strong>${estCost(st, said)}</strong>.</p>
+          <p class="muted">Every scheme point is marked covered, partial or missed, and you get an examiner's verdict,
+            the marks you missed and what to do about them. This is the only step that uses AI, and what it costs is
+            shown before you press the button.</p>
+          <div class="os-src" id="os-src"></div>
           <div class="os-mark-acts">
             <div class="os-prov" id="os-prov"></div>
-            <button class="btn btn-gold btn-lg" id="os-mark" ${spoken ? '' : 'disabled'}>Mark this station</button>
+            <button class="btn btn-gold btn-lg" id="os-mark" ${spoken || rec?.blob ? '' : 'disabled'}>Mark this station</button>
           </div>
-          ${spoken ? '' : '<p class="muted tiny">Nothing was captured, so there is nothing to mark. Type your answers above if you want it marked anyway.</p>'}
+          <p class="os-est" id="os-est"></p>
+          ${spoken || rec?.blob ? '' : '<p class="muted tiny">Nothing was captured, so there is nothing to mark. Type your answers above if you want it marked anyway.</p>'}
           <div id="os-mark-out"></div>
         </div>
 
@@ -534,8 +654,7 @@ const OSCE = (() => {
       stage.querySelectorAll('[data-eq]').forEach(el => el.addEventListener('input', () => {
         ans[el.dataset.eq] = { id: el.dataset.eq, transcript: el.innerText.trim() }; persist();
       }));
-      renderProviderPicker(stage.querySelector('#os-prov'));
-      stage.querySelector('#os-mark')?.addEventListener('click', e => mark(e.target, st, ans, s));
+      wireMarkControls(stage, st, ans, said, rec, s);
       stage.querySelector('#os-nextst')?.addEventListener('click', async () => {
         s.at += 1; s.qi = 0; s.elapsed = 0; s.phase = 'brief';
         await saveSession(s); stopLive(); renderRun(view, sid, user);
@@ -559,7 +678,9 @@ const OSCE = (() => {
       mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/aac']
         .find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
       try {
-        rec = new MediaRecorder(media, mime ? { mimeType: mime } : undefined);
+        // 24 kbps opus is plainly intelligible speech and keeps a 15-minute
+        // station near 2.5 MB — small enough to send for marking
+        rec = new MediaRecorder(media, Object.assign(mime ? { mimeType: mime } : {}, { audioBitsPerSecond: 24000 }));
         rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
         rec.start(1000);
         started = Date.now();
@@ -594,7 +715,8 @@ const OSCE = (() => {
       const type = mime || 'audio/webm';
       const blob = new Blob(chunks, { type });
       const secs = Math.round((Date.now() - started) / 1000);
-      return { url: URL.createObjectURL(blob), ext: /mp4|aac/.test(type) ? 'm4a' : 'webm',
+      return { url: URL.createObjectURL(blob), blob, mime: type, ext: /mp4|aac/.test(type) ? 'm4a' : 'webm',
+        bytes: blob.size, secs,
         mins: `${fmt(secs)} of audio · ${(blob.size / 1024 / 1024).toFixed(1)} MB` };
     }
     return { ok: () => !!rec, start, attach, pause, resume, stop, kill: () => { try { sr && (sr._stopped = true, sr.stop()); } catch {} try { rec?.state !== 'inactive' && rec.stop(); } catch {} try { media?.getTracks().forEach(t => t.stop()); } catch {} } };
@@ -603,70 +725,122 @@ const OSCE = (() => {
 
   /* ---------------- AI marking ---------------- */
 
-  // ~1.3 tokens a word both ways, plus the scheme and the instructions.
-  function estTokens(st, said) {
-    const words = said.reduce((n, x) => n + x.t.split(/\s+/).filter(Boolean).length, 0);
-    const scheme = qsOf(st).reduce((n, q) => n + (q.prompt + ' ' + (q.marking_points || []).join(' ')).split(/\s+/).length, 0);
-    const input = Math.round((words + scheme) * 1.3) + 500;
-    const output = 900 + qsOf(st).length * 120;
-    return `${(input + output).toLocaleString('en-US')}`;
+  let lastRec = null;              // the recording from the station just finished
+  /* What the CANDIDATE asked for, which is not always what is possible: a
+     text-only model forces the transcript route, but choosing a listening
+     model again must put the recording back — the preference was never
+     theirs to lose. */
+  let srcWanted = 'audio';
+
+  /* ---------------- what a marking will cost, before you press ----------------
+     Audio is tokenised at ~32 tokens a second, so the size of the bill is
+     knowable in advance and is shown in dollars AND rupees. Nobody should
+     spend money on a button whose price they cannot see. */
+  /** The route actually available, given what was recorded and what the model can do. */
+  const effectiveSource = (rec, choice) =>
+    (srcWanted === 'audio' && rec?.blob && choice.audio) ? 'audio' : 'text';
+
+  function estimate(st, said, rec, choice) {
+    const schemeWords = qsOf(st).reduce((n, q) =>
+      n + (q.prompt + ' ' + (q.marking_points || []).join(' ')).split(/\s+/).length, 0);
+    const spokenWords = said.reduce((n, x) => n + x.t.split(/\s+/).filter(Boolean).length, 0);
+    const useAudio = effectiveSource(rec, choice) === 'audio';
+    const inTok = useAudio
+      ? Math.round((rec.secs || 900) * 32) + Math.round(schemeWords * 1.3) + 400
+      : Math.round((spokenWords + schemeWords) * 1.3) + 500;
+    const outTok = 900 + qsOf(st).length * (useAudio ? 220 : 120);   // transcripts cost output too
+    const usd = (inTok / 1e6) * (choice.rate.in || 0) + (outTok / 1e6) * (choice.rate.out || 0);
+    const rate = (typeof Wallet !== 'undefined') ? Wallet.rate() : 340;
+    return { inTok, outTok, total: inTok + outTok, usd, lkr: usd * rate, rate, useAudio };
   }
-  function estCost(st, said) {
-    try {
-      const words = said.reduce((n, x) => n + x.t.split(/\s+/).filter(Boolean).length, 0);
-      const scheme = qsOf(st).reduce((n, q) => n + (q.prompt + ' ' + (q.marking_points || []).join(' ')).split(/\s+/).length, 0);
-      const inTok = Math.round((words + scheme) * 1.3) + 500;
-      const outTok = 900 + qsOf(st).length * 120;
-      const model = provider() === 'claude' ? cfg().ai.claudeModel : provider() === 'gpt' ? cfg().ai.gptModel : cfg().ai.geminiModel;
-      const r = (typeof Billing !== 'undefined') ? Billing.rateFor(model) : { in: 0, out: 0 };
-      const usd = (inTok / 1e6) * (r.in || 0) + (outTok / 1e6) * (r.out || 0);
-      const lkr = usd * (typeof Wallet !== 'undefined' ? Wallet.rate() : 340);
-      return usd < 0.005 ? `LKR ${lkr.toFixed(2)}` : `$${usd.toFixed(3)} · LKR ${lkr.toFixed(2)}`;
-    } catch { return 'a fraction of a cent'; }
+  const money = e => `$${e.usd < 0.01 ? e.usd.toFixed(4) : e.usd.toFixed(3)} · LKR ${e.lkr.toFixed(2)}`;
+
+  function wireMarkControls(stage, st, ans, said, rec, session) {
+    const srcHost = stage.querySelector('#os-src');
+    const provHost = stage.querySelector('#os-prov');
+    const estHost = stage.querySelector('#os-est');
+    const hasAudio = !!rec?.blob;
+    if (!hasAudio) srcWanted = 'text';
+
+    const paint = () => {
+      const choice = chosenModel();
+      const src = effectiveSource(rec, choice);
+      srcHost.innerHTML = `
+        <div class="os-src-opts">
+          <button class="os-src-b ${src === 'audio' ? 'active' : ''} ${hasAudio && choice.audio ? '' : 'is-off'}"
+            data-src="audio" ${hasAudio && choice.audio ? '' : 'disabled'}>
+            <span class="os-src-t">🎧 Mark from the recording</span>
+            <span class="os-src-d">${hasAudio
+              ? (choice.audio ? 'The model listens to you and transcribes it itself — the accurate way. It hears hesitancy and self-correction, which a typed transcript throws away.'
+                              : `${esc(choice.label)} cannot listen to audio. Choose a Gemini model to mark from the recording.`)
+              : 'No recording was captured for this station.'}</span>
+          </button>
+          <button class="os-src-b ${src === 'text' ? 'active' : ''}" data-src="text">
+            <span class="os-src-t">📝 Mark from the transcript</span>
+            <span class="os-src-d">Marks the text above as it stands. Cheaper, but only as good as what the browser heard.</span>
+          </button>
+        </div>`;
+      provHost.innerHTML = `<label class="os-prov-l">Marked by
+        <select class="sel" id="os-model-sel">${modelChoices().map(m =>
+          `<option value="${esc(m.key)}" ${m.key === choice.key ? 'selected' : ''}>${esc(m.label)}${m.audio ? '' : ' (text only)'}</option>`).join('')}</select></label>`;
+      const e = estimate(st, said, rec, choice);
+      estHost.innerHTML = `<span class="os-est-k">Before you press:</span>
+        about <strong>${e.total.toLocaleString('en-US')}</strong> tokens
+        (${e.inTok.toLocaleString('en-US')} in + ${e.outTok.toLocaleString('en-US')} out) on
+        <strong>${esc(choice.label)}</strong> — <strong>${money(e)}</strong>
+        <span class="muted tiny">at LKR ${e.rate}/USD${e.useAudio ? ` · ${fmt(rec.secs || 0)} of audio` : ''}</span>`;
+      srcHost.querySelectorAll('[data-src]').forEach(b => b.addEventListener('click', () => {
+        if (b.disabled) return; srcWanted = b.dataset.src; paint();
+      }));
+      provHost.querySelector('#os-model-sel').addEventListener('change', ev => { setModel(ev.target.value); paint(); });
+    };
+    paint();
+    stage.querySelector('#os-mark')?.addEventListener('click', e => mark(e.target, st, ans, rec, session));
   }
 
-  let _prov = null;
-  const provider = () => _prov || (typeof AI !== 'undefined' && AI.provider?.()) || 'gemini';
-  function renderProviderPicker(host) {
-    if (!host) return;
-    const opts = [['gemini', 'Gemini'], ['claude', 'Claude'], ['gpt', 'GPT']];
-    host.innerHTML = `<label class="os-prov-l">Marked by
-      <select class="sel" id="os-prov-sel">${opts.map(([v, l]) =>
-        `<option value="${v}" ${provider() === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`;
-    host.querySelector('#os-prov-sel').addEventListener('change', e => { _prov = e.target.value; });
-  }
-
-  async function mark(btn, st, ans, session) {
+  async function mark(btn, st, ans, rec, session) {
     const out = document.querySelector('#os-mark-out');
+    const choice = chosenModel();
+    const useAudio = effectiveSource(rec, choice) === 'audio';
     btn.disabled = true;
     out.innerHTML = `<div class="ai-loading"><span></span><span></span><span></span></div>
-      <p class="muted tiny">Marking ${qsOf(st).length} answers against ${qsOf(st).reduce((n, q) => n + (q.marking_points || []).length, 0)} marking points…</p>`;
+      <p class="muted tiny">${useAudio ? 'Listening to the recording and marking' : 'Marking'} ${qsOf(st).length} answers against
+        ${qsOf(st).reduce((n, q) => n + (q.marking_points || []).length, 0)} marking points…</p>`;
     try {
       if (typeof Wallet !== 'undefined' && !(await Wallet.canSpend())) throw new Error(Wallet.blockedMessage());
       const token = await Backend.getAccessToken();
       if (!token) throw new Error('Sign in to have a station marked.');
-      const p = provider();
-      const model = p === 'claude' ? cfg().ai.claudeModel : p === 'gpt' ? cfg().ai.gptModel : cfg().ai.geminiModel;
+      const body = {
+        action: 'osce', provider: choice.provider, model: choice.model, dailyLimit: cfg().ai.dailyLimit,
+        station: { topic: st.topic, scenario: st.scenario, total_marks: marksOf(st), pass_mark: passOf(st),
+          questions: qsOf(st).map(q => ({ id: q.id, prompt: q.prompt, marks: q.marks, marking_points: q.marking_points || [] })) },
+        answers: qsOf(st).map(q => ({ id: q.id, transcript: (ans[q.id]?.transcript || '') }))
+      };
+      if (useAudio) body.audio = { mime: rec.mime || 'audio/webm', data: await toBase64(rec.blob) };
       const res = await fetch(cfg().ai.apiBase, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-        body: JSON.stringify({
-          action: 'osce', provider: p, model, dailyLimit: cfg().ai.dailyLimit,
-          station: { topic: st.topic, scenario: st.scenario, total_marks: marksOf(st), pass_mark: passOf(st),
-            questions: qsOf(st).map(q => ({ id: q.id, prompt: q.prompt, marks: q.marks, marking_points: q.marking_points || [] })) },
-          answers: qsOf(st).map(q => ({ id: q.id, transcript: (ans[q.id]?.transcript || '') }))
-        })
+        body: JSON.stringify(body)
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `Marking failed (HTTP ${res.status}).`);
       const result = parseResult(data.text, st);
+      // when the model listened, IT produced the transcripts — keep them
+      const answers = qsOf(st).map(q => {
+        const fromModel = (result.questions || []).find(x => String(x.id) === String(q.id))?.transcript;
+        return { id: q.id, transcript: (data.heard && fromModel != null) ? fromModel : (ans[q.id]?.transcript || '') };
+      });
+      const rate = (typeof Wallet !== 'undefined') ? Wallet.rate() : 340;
+      const usd = ((data.usage?.in || 0) / 1e6) * (choice.rate.in || 0) + ((data.usage?.out || 0) / 1e6) * (choice.rate.out || 0);
       const attempt = {
         id: 'oa-' + Date.now().toString(36),
         station_id: st.id, station: { topic: st.topic, scenario: st.scenario, total_marks: marksOf(st), pass_mark: passOf(st) },
-        questions: qsOf(st), answers: qsOf(st).map(q => ({ id: q.id, transcript: ans[q.id]?.transcript || '' })),
-        result, created: Date.now(), model: data.model || model, provider: p
+        questions: qsOf(st), answers, result, created: Date.now(),
+        model: data.model || choice.model, modelLabel: choice.label, provider: choice.provider,
+        heard: !!data.heard, elapsed: session?.elapsed || null,
+        cost: { inTok: data.usage?.in || 0, outTok: data.usage?.out || 0, usd, lkr: usd * rate, rate }
       };
       try { await Backend.saveOsceAttempt(attempt); } catch {}
-      try { if (typeof Wallet !== 'undefined') await Wallet.charge(data.usage, model, 'osce'); } catch {}
+      try { if (typeof Wallet !== 'undefined') Wallet.bust(); } catch {}
       out.innerHTML = '';
       location.hash = '#/osce/result/' + attempt.id;
     } catch (e) {
@@ -674,6 +848,13 @@ const OSCE = (() => {
       btn.disabled = false;
     }
   }
+
+  const toBase64 = blob => new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(String(fr.result).split(',')[1]);
+    fr.onerror = () => rej(new Error('Could not read the recording.'));
+    fr.readAsDataURL(blob);
+  });
 
   function parseResult(text, st) {
     let raw = String(text || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
@@ -707,7 +888,8 @@ const OSCE = (() => {
         <a class="link muted dev-back" href="#/osce">← OSCE stations</a>
         <header class="os-res-head es-band-head-${tone}" data-animate>
           <div>
-            <p class="kicker">OSCE STATION RESULT · ${esc(new Date(a.created || Date.now()).toLocaleDateString('en-GB', { dateStyle: 'medium' }))}</p>
+            <p class="kicker">OSCE STATION RESULT · ${esc(new Date(a.created || Date.now()).toLocaleDateString('en-GB', { dateStyle: 'medium' }))}${
+              a.heard ? ' · MARKED FROM THE RECORDING' : ''}</p>
             <h1 class="page-title">${esc(a.station?.topic || '')}</h1>
             <p class="muted">${esc(a.station?.scenario || '')}</p>
           </div>
@@ -776,6 +958,19 @@ const OSCE = (() => {
         ${(r.keyLearning || []).length ? `<div class="card es-klp" data-animate>
           <h3 class="card-title">🔑 Key learning points</h3>
           <ol class="es-klp-list">${r.keyLearning.map((k, i) => `<li class="${i === 0 ? 'top' : ''}">${esc(k)}</li>`).join('')}</ol></div>` : ''}
+
+        ${a.cost ? `<div class="card os-cost" data-animate>
+          <h3 class="card-title">🧾 What this marking cost</h3>
+          <div class="os-cost-grid">
+            <div><strong>${(a.cost.inTok || 0).toLocaleString('en-US')}</strong><span>tokens in</span></div>
+            <div><strong>${(a.cost.outTok || 0).toLocaleString('en-US')}</strong><span>tokens out</span></div>
+            <div><strong>$${(a.cost.usd || 0).toFixed(4)}</strong><span>US dollars</span></div>
+            <div class="is-lkr"><strong>LKR ${(a.cost.lkr || 0).toFixed(2)}</strong><span>rupees</span></div>
+          </div>
+          <p class="muted tiny">${esc(a.modelLabel || a.model || '')}${a.heard ? ' · marked from your recording' : ' · marked from the transcript'}
+            · converted at LKR ${a.cost.rate || 340}/USD. This is on your Billing &amp; balance page under
+            <strong>OSCE marking</strong>.</p>
+        </div>` : ''}
 
         <div class="es-report-foot">
           <button class="btn btn-gold" id="os-print">🖨 Print / Save as PDF</button>
@@ -907,6 +1102,18 @@ ${(r.keyLearning || []).length ? `<section class="blk"><h2>Key learning points</
     return out.sort((a, b) => (b.started || 0) - (a.started || 0));
   }
 
-  return { renderBank, renderStation, renderSim, renderRun, renderResult,
+  /** Attempts shaped for the dashboard: newest last, with the bits charts need. */
+  async function progress() {
+    let list = [];
+    try { list = (await Backend.listOsceAttempts()) || []; } catch { return []; }
+    return list
+      .filter(a => a.result && a.result.percent != null)
+      .map(a => ({ id: a.id, station: a.station?.topic || a.station_id, percent: a.result.percent,
+        total: a.result.total, max: a.result.max, pass: !!a.result.pass, created: a.created || 0,
+        passMark: a.station?.pass_mark ?? null }))
+      .sort((x, y) => x.created - y.created);
+  }
+
+  return { renderBank, renderStation, renderSim, renderRun, renderResult, progress,
     stations, bustStations, openSessions, dropSession, marksOf, passOf, qsOf };
 })();

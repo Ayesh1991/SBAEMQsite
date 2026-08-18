@@ -186,6 +186,23 @@ export async function onRequest(context) {
     // points and what the candidate actually said are sent — never the whole
     // station file twice.
     if (action === 'osce') {
+      /* With the recording attached, the model LISTENS: it transcribes and
+         marks in one pass. That is both more accurate than a browser
+         recogniser (it has the marking scheme in front of it while it
+         listens, so it knows "mifepristone" is a word that might be said)
+         and cheaper than paying a transcription API first — audio is
+         tokenised at ~32 tokens a second, so a 15-minute station is about
+         29,000 input tokens. Without audio it marks the typed transcript,
+         exactly as before. */
+      if (body.audio && body.audio.data) {
+        if (String(body.audio.data).length > 26_000_000) {
+          return json({ error: 'That recording is too long to send. Mark from the transcript instead.' }, 413);
+        }
+        const rr = await callGeminiAudio(buildOsceAudioPrompt(body), body.audio,
+          modernGemini(model) || 'gemini-3.1-flash-lite', env, 9000);
+        await logTokens(token, env, 'gemini', rr, 'osce');
+        return json({ text: rr.text, model: rr.model, heard: true, usage: { in: rr.in, out: rr.out } });
+      }
       const r = await run(buildOsceMarkPrompt(body), 'osce', 6000);
       return json({ text: r.text, model: r.model, usage: { in: r.in, out: r.out } });
     }
@@ -342,6 +359,73 @@ function buildOsceMarkPrompt(body) {
     'awarded must be between 0 and max, and total must equal the sum of awarded.'
   ].join('\n');
   return { system, user };
+}
+
+/* Marking straight from the tape: transcribe AND mark in one call. */
+function buildOsceAudioPrompt(body) {
+  const st = body.station || {};
+  const qs = (st.questions || []).map(q => [
+    `Q${q.id} (${q.marks} marks): ${q.prompt}`,
+    'Marking points:',
+    ...(q.marking_points || []).map((p, i) => `  ${i + 1}. ${p}`)
+  ].join('\n')).join('\n\n');
+
+  const system = PERSONA + ' You are marking a SPOKEN OSCE station from the candidate\'s own recording. ' +
+    'The audio is one continuous take covering every question in order; the candidate moved to the next question ' +
+    'when they had finished the previous one. First work out what they said for each question, then mark the ' +
+    'CLINICAL CONTENT against the scheme. Ignore filler, false starts and self-correction — mark the final ' +
+    'position they settled on. Award a point if the meaning is clearly there, whatever words they used.';
+
+  const user = [
+    `STATION: ${st.topic || ''} — total ${st.total_marks || 50} marks, pass mark ${st.pass_mark || ''}.`,
+    `SCENARIO: ${st.scenario || ''}`,
+    '',
+    qs,
+    '',
+    'Listen to the recording, then return ONLY valid JSON, no prose and no code fence, exactly this shape:',
+    '{"questions":[{"id":1,"awarded":0,"max":5,"transcript":"<what they actually said for this question>",' +
+      '"points":[{"point":"<the marking point verbatim>","status":"covered|partial|missed",' +
+      '"note":"<one short clause: what they said, or what was missing>"}],' +
+      '"comment":"<one sentence on this answer>"}],' +
+      '"total":0,"max":50,"percent":0,"pass":false,' +
+      '"examinerComment":"<3-4 sentences: the overall verdict on this performance>",' +
+      '"strengths":["<what was genuinely good>"],' +
+      '"improvements":[{"action":"<what to do differently>","marks":0}],' +
+      '"keyLearning":["<the facts to carry away>"],' +
+      '"structure":{"coverage":"<did they answer what was asked>",' +
+      '"fluency":"<pace, hesitancy, filler, clarity — you can HEAR this, so be specific>",' +
+      '"safety":"<were the safety-critical points made>"}}',
+    'Every marking point of every question must appear exactly once in that question\'s points array.',
+    'If nothing was said for a question, set its transcript to "" and mark every point missed.',
+    'awarded must be between 0 and max, and total must equal the sum of awarded.'
+  ].join('\n');
+  return { system, user };
+}
+
+/** One audio track + the scheme. Gemini only — it takes audio inline and is by far the cheapest at it. */
+async function callGeminiAudio(prompt, audio, model, env, maxTokens) {
+  if (!env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not configured on the server.');
+  const key = String(env.GEMINI_API_KEY).trim();
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
+  const res = await fetch(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: prompt.system }] },
+      contents: [{ role: 'user', parts: [
+        { inlineData: { mimeType: audio.mime || 'audio/webm', data: audio.data } },
+        { text: prompt.user }
+      ] }],
+      generationConfig: { maxOutputTokens: maxTokens || 9000, temperature: 0.2, responseMimeType: 'application/json' }
+    })
+  });
+  if (!res.ok) {
+    let detail = ''; try { detail = (await res.json())?.error?.message || ''; } catch {}
+    throw new Error(`Could not mark the recording (HTTP ${res.status})${detail ? ': ' + detail : ''}`);
+  }
+  const data = await res.json();
+  const text = (data?.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
+  const u = data?.usageMetadata || {};
+  return { text, model, in: u.promptTokenCount | 0, out: u.candidatesTokenCount | 0 };
 }
 
 /* ---------------- payment slip ---------------- */
