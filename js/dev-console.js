@@ -41,6 +41,8 @@ const DevConsole = (() => {
     if (section === 'ai') return renderAiSection(view);
     if (section === 'tearoom') return renderTeaSection(view);
     if (section === 'essays') return renderEssaysSection(view);
+    if (section === 'osce') return renderOsceSection(view);
+    if (section === 'settings') return renderSettingsSection(view);
     if (section === 'cpd') return renderCpdSection(view);
     return renderHub(view);
   }
@@ -106,6 +108,18 @@ const DevConsole = (() => {
             <p>Scan Drive for structured-essay mock papers (SAQ/SEQ), validate and publish to the Essay section.</p>
             <span class="dev-hub-count" id="hub-essays">…</span>
           </a>
+          <a class="dev-hub-card" href="#/dev/osce" style="--hub-accent:linear-gradient(135deg,#5eead4,#3987e5)">
+            <span class="dev-hub-ico">🎙</span>
+            <h3>OSCE stations</h3>
+            <p>Import spoken OSCE stations (scenario, questions, marking scheme) and publish them to the OSCE tab.</p>
+            <span class="dev-hub-count" id="hub-osce">…</span>
+          </a>
+          <a class="dev-hub-card" href="#/dev/settings" style="--hub-accent:linear-gradient(135deg,#f4c95d,#34d399)">
+            <span class="dev-hub-ico">⚙</span>
+            <h3>Rates &amp; settings</h3>
+            <p>The dollar rate, the prepaid wallet, and the top-up requests waiting for your approval.</p>
+            <span class="dev-hub-count" id="hub-wallet">…</span>
+          </a>
           <a class="dev-hub-card" href="#/dev/cpd" style="--hub-accent:linear-gradient(135deg,#5eead4,#818cf8)">
             <span class="dev-hub-ico">📖</span>
             <h3>CPD importer</h3>
@@ -134,7 +148,12 @@ const DevConsole = (() => {
     try { essayN = ((await ctx.Backend.getEssayPapers()) || []).length + ' papers'; } catch { essayN = 'run schema.sql'; }
     const put = (id, v) => { const el = view.querySelector(id); if (el) el.textContent = v; };
     put('#hub-papers', paperN); put('#hub-decks', deckN); put('#hub-users', userN); put('#hub-bp', bpN);
+    let osceN = '—', walN = '—';
+    try { osceN = ((await ctx.Backend.getOsceStations()) || []).length + ' stations'; } catch { osceN = 'run schema.sql'; }
+    try { const t = (await ctx.Backend.listAllTopUps()) || []; const p = t.filter(x => x.status === 'pending').length;
+      walN = p ? p + ' awaiting approval' : t.length + ' top-ups'; } catch { walN = 'run schema.sql'; }
     put('#hub-flags', flagN); put('#hub-ai', aiN); put('#hub-essays', essayN);
+    put('#hub-osce', osceN); put('#hub-wallet', walN);
     put('#hub-cpd', cpdN);
   }
 
@@ -2388,6 +2407,265 @@ const DevConsole = (() => {
     try { await ctx.Backend.publishEssayPaper(d); if (typeof Essay !== 'undefined') Essay.bustPapers();
       out.innerHTML = `<p class="good">✓ Published “${ctx.esc(d.paperLabel || d.id)}”.</p>`; await refreshEssayPublished(document.getElementById('view'));
     } catch (e) { out.innerHTML = `<p class="bad">${ctx.esc(e.message || e)}</p>`; }
+  }
+
+
+  /* ================================================================
+     OSCE IMPORTER — publish spoken stations (ogr-osce-v1)
+     ================================================================ */
+
+  function validateOsce(d) {
+    const e = [];
+    if (!d || typeof d !== 'object') return ['File is not a JSON object.'];
+    if (!d.topic) e.push('Missing "topic".');
+    if (!d.scenario) e.push('Missing "scenario".');
+    if (!Array.isArray(d.questions) || !d.questions.length) e.push('Missing "questions" array.');
+    let marks = 0;
+    (d.questions || []).forEach((q, i) => {
+      if (!q.prompt) e.push(`Question ${i + 1}: missing "prompt".`);
+      if (!Array.isArray(q.marking_points) || !q.marking_points.length) e.push(`Question ${i + 1}: no "marking_points".`);
+      if (!(Number(q.marks) > 0)) e.push(`Question ${i + 1}: "marks" must be a positive number.`);
+      marks += Number(q.marks) || 0;
+    });
+    if (d.total_marks && marks && Math.abs(marks - d.total_marks) > 0.01)
+      e.push(`The question marks add up to ${marks}, but "total_marks" says ${d.total_marks}.`);
+    return e;
+  }
+  const osceId = d => 'osce-' + slug(d.topic || d.source_file || 'station');
+
+  async function renderOsceSection(view) {
+    const { esc } = ctx;
+    view.innerHTML = `
+      <section class="page">
+        ${backLink}
+        <header data-animate>
+          <p class="kicker">DEVELOPER · OSCE IMPORTER</p>
+          <h1 class="page-title">OSCE stations</h1>
+          <p class="muted">Spoken stations in <code>ogr-osce-v1</code> JSON — a scenario, questions, marks and the
+            marking points behind each. Published stations appear in the <strong>OSCE</strong> tab and in the exam
+            simulator. Source folder: <code>${esc(ctx.cfg.drive.essayFolderId || '(set drive.essayFolderId)')}</code>.</p>
+        </header>
+        <div class="dev-toolbar" data-animate>
+          <button class="btn btn-gold" id="os-scan">Scan Drive for OSCE stations</button>
+          <span class="dev-status" id="os-status"></span>
+        </div>
+        <div id="os-list" data-animate></div>
+        <div class="card" data-animate>
+          <details class="dev-collapse">
+            <summary><span class="card-title">Published stations (<span id="os-pub-count">…</span>)</span><span class="dc-caret">▸</span></summary>
+            <div id="os-published"></div>
+          </details>
+        </div>
+        <div class="card" data-animate>
+          <details class="dev-collapse">
+            <summary><span class="card-title">Paste a station manually</span><span class="dc-caret">▸</span></summary>
+            <textarea id="os-paste" class="dev-textarea" placeholder='{ "topic": "HELLP Syndrome", "scenario": "…", "questions": [ … ] }'></textarea>
+            <button class="btn btn-primary" id="os-paste-btn" style="margin-top:12px">Validate &amp; publish</button>
+            <div id="os-paste-result"></div>
+          </details>
+        </div>
+      </section>`;
+    view.querySelector('#os-scan').addEventListener('click', scanOsce);
+    view.querySelector('#os-paste-btn').addEventListener('click', pasteOsce);
+    await refreshOscePublished(view);
+  }
+
+  async function refreshOscePublished(view) {
+    const list = (await ctx.Backend.getOsceStations().catch(() => [])) || [];
+    const host = view.querySelector('#os-published'); if (!host) return;
+    const cnt = view.querySelector('#os-pub-count'); if (cnt) cnt.textContent = list.length;
+    host.innerHTML = list.length ? `<div class="table-scroll"><table class="table">
+      <thead><tr><th>Station</th><th>Questions</th><th>Marks</th><th>Pass</th><th></th></tr></thead>
+      <tbody>${list.map(v => `<tr><td>${ctx.esc(v.topic || v.id)}</td>
+        <td class="muted">${(v.questions || []).length}</td>
+        <td class="muted">${v.total_marks || ''}</td>
+        <td class="muted">${v.pass_mark || ''} (${v.pass_mark_percent || 70}%)</td>
+        <td><button class="link-btn" data-unpub-osce="${ctx.esc(v.id)}">unpublish</button></td></tr>`).join('')}</tbody>
+    </table></div>` : `<p class="muted">No OSCE stations published yet.</p>`;
+    host.querySelectorAll('[data-unpub-osce]').forEach(b => b.addEventListener('click', async () => {
+      if (!confirm('Unpublish this station?')) return;
+      await ctx.Backend.unpublishOsceStation(b.dataset.unpubOsce);
+      if (typeof OSCE !== 'undefined') OSCE.bustStations();
+      await refreshOscePublished(view);
+    }));
+  }
+
+  async function scanOsce() {
+    const status = document.getElementById('os-status'), list = document.getElementById('os-list');
+    status.textContent = 'Scanning…'; list.innerHTML = '';
+    let files = [];
+    try {
+      const base = ctx.cfg.drive.apiBase, fid = ctx.cfg.drive.essayFolderId;
+      const res = await fetch(`${base}?action=list&folderId=${encodeURIComponent(fid)}`, { cache: 'no-cache' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      files = data.files || [];
+    } catch (e) { status.innerHTML = `<span class="bad">${ctx.esc(e.message || e)}</span>`; return; }
+
+    const published = (await ctx.Backend.getOsceStations().catch(() => [])) || [];
+    const have = new Set(published.map(p => p.id));
+    const staged = [];
+    for (const f of files) {
+      let doc = f.paper || f.deck || null;
+      if (!doc && f.id) { try { const r = await fetch(`${ctx.cfg.drive.apiBase}?action=file&id=${encodeURIComponent(f.id)}`); doc = await r.json(); } catch { doc = null; } }
+      if (doc && Array.isArray(doc.questions) && doc.scenario && validateOsce(doc).length === 0) {
+        doc.id = osceId(doc);
+        if (!have.has(doc.id)) staged.push(doc);
+      }
+    }
+    status.innerHTML = `${files.length} file${files.length !== 1 ? 's' : ''} · <strong>${staged.length} new station${staged.length !== 1 ? 's' : ''}</strong>`;
+    if (!staged.length) { list.innerHTML = `<p class="muted">No new OSCE stations found in that folder.</p>`; return; }
+    list.innerHTML = staged.map((d, i) => `
+      <div class="dev-row card">
+        <div class="dev-row-head">
+          <div><p class="dev-file">🎙 ${ctx.esc(d.topic)}</p>
+            <p class="muted tiny">${d.questions.length} questions · ${d.total_marks || ''} marks · ${d.station_time_min || 15} min</p></div>
+          <button class="btn btn-gold btn-sm" data-os-approve="${i}">Publish</button>
+        </div><p class="dev-row-msg" data-os-msg="${i}"></p>
+      </div>`).join('');
+    staged.forEach((d, i) => document.querySelector(`[data-os-approve="${i}"]`).addEventListener('click', async e => {
+      const msg = document.querySelector(`[data-os-msg="${i}"]`);
+      e.target.disabled = true; msg.textContent = 'Publishing…'; msg.className = 'dev-row-msg muted';
+      try { await ctx.Backend.publishOsceStation(d); if (typeof OSCE !== 'undefined') OSCE.bustStations();
+        msg.textContent = '✓ Published to the OSCE tab.'; msg.className = 'dev-row-msg good';
+        await refreshOscePublished(document.getElementById('view'));
+      } catch (err) { msg.textContent = err.message || String(err); msg.className = 'dev-row-msg bad'; e.target.disabled = false; }
+    }));
+  }
+
+  async function pasteOsce() {
+    const ta = document.getElementById('os-paste'), out = document.getElementById('os-paste-result');
+    let d; try { d = JSON.parse(ta.value); } catch (e) { out.innerHTML = `<p class="bad">Invalid JSON: ${ctx.esc(e.message)}</p>`; return; }
+    const errs = validateOsce(d); if (errs.length) { out.innerHTML = `<p class="bad">${errs.map(ctx.esc).join('<br>')}</p>`; return; }
+    d.id = osceId(d);
+    try { await ctx.Backend.publishOsceStation(d); if (typeof OSCE !== 'undefined') OSCE.bustStations();
+      out.innerHTML = `<p class="good">✓ Published “${ctx.esc(d.topic)}”.</p>`;
+      await refreshOscePublished(document.getElementById('view'));
+    } catch (e) { out.innerHTML = `<p class="bad">${ctx.esc(e.message || e)}</p>`; }
+  }
+
+  /* ================================================================
+     RATES & SETTINGS — the dollar rate and the prepaid top-ups
+     ================================================================ */
+
+  async function renderSettingsSection(view) {
+    const { esc } = ctx;
+    const cfgw = (await ctx.Backend.getWalletConfig().catch(() => ({}))) || {};
+    const rate = Number(cfgw.usdRate) > 0 ? Number(cfgw.usdRate) : 340;
+    view.innerHTML = `
+      <section class="page">
+        ${backLink}
+        <header data-animate>
+          <p class="kicker">DEVELOPER · RATES &amp; SETTINGS</p>
+          <h1 class="page-title">Rates &amp; settings</h1>
+          <p class="muted">Everything the prepaid system needs from you: what a dollar costs in rupees, what a top-up
+            typically is, and which payments to credit.</p>
+        </header>
+
+        <div class="card" data-animate>
+          <h3 class="card-title">💱 Exchange rate</h3>
+          <p class="muted">Every AI call is priced by the providers in US dollars. This is the rate used to turn that
+            into rupees on a user's balance. Change it whenever the real rate moves — it applies to the whole balance
+            calculation immediately, for everyone.</p>
+          <div class="dev-inline">
+            <label class="wl-f"><span>Sri Lankan rupees per US dollar</span>
+              <input type="number" id="st-rate" value="${rate}" min="1" step="0.5"></label>
+            <label class="wl-f"><span>Suggested top-up amounts (LKR, comma separated)</span>
+              <input type="text" id="st-packs" value="${esc((cfgw.packs || [300, 500, 1000, 2000]).join(', '))}"></label>
+          </div>
+          <label class="pref-toggle" style="margin-top:12px">
+            <span><strong>Enforce the prepaid balance</strong><br><span class="muted tiny">When on, a user whose balance
+              reaches zero cannot use the AI features until they top up. You are never gated.</span></span>
+            <label class="dev-flag"><input type="checkbox" id="st-enforce" ${cfgw.enforce ? 'checked' : ''}><span></span></label>
+          </label>
+          <button class="btn btn-gold" id="st-save" style="margin-top:14px">Save</button>
+          <span class="dev-status" id="st-msg"></span>
+          <p class="muted tiny" style="margin-top:10px">At LKR ${rate}/USD, a typical OSCE marking (~4,500 tokens) costs
+            about <strong id="st-eg">—</strong>, and reading a payment slip about <strong id="st-eg2">—</strong>.</p>
+        </div>
+
+        <div class="card" data-animate>
+          <div class="es-inbox-head">
+            <h3 class="card-title">🧾 Top-up requests</h3>
+            <button class="btn btn-ghost btn-sm" id="st-refresh">↻ Refresh</button>
+          </div>
+          <p class="muted">Each one is a payment slip a user uploaded. Check the amount and the reference against your
+            bank statement, then approve — the balance is credited the moment you do.</p>
+          <div id="st-tops"><p class="muted">Loading…</p></div>
+        </div>
+      </section>`;
+
+    const egs = () => {
+      try {
+        const r = (typeof Billing !== 'undefined') ? Billing.rateFor(ctx.cfg.ai.geminiModel) : { in: 0, out: 0 };
+        const rt = Number(view.querySelector('#st-rate').value) || rate;
+        const osce = ((3500 / 1e6) * (r.in || 0) + (1500 / 1e6) * (r.out || 0)) * rt;
+        const slip = ((900 / 1e6) * (r.in || 0) + (120 / 1e6) * (r.out || 0)) * rt;
+        view.querySelector('#st-eg').textContent = 'LKR ' + osce.toFixed(2);
+        view.querySelector('#st-eg2').textContent = 'LKR ' + slip.toFixed(2);
+      } catch {}
+    };
+    try { if (typeof Billing !== 'undefined') await Billing.loadRates(); } catch {}
+    egs();
+    view.querySelector('#st-rate').addEventListener('input', egs);
+
+    view.querySelector('#st-save').addEventListener('click', async () => {
+      const msg = view.querySelector('#st-msg');
+      const packs = view.querySelector('#st-packs').value.split(',').map(x => Number(x.trim())).filter(x => x > 0);
+      const next = Object.assign({}, cfgw, {
+        usdRate: Number(view.querySelector('#st-rate').value) || 340,
+        packs: packs.length ? packs : [300, 500, 1000, 2000],
+        enforce: view.querySelector('#st-enforce').checked
+      });
+      msg.textContent = 'Saving…';
+      try { await ctx.Backend.saveWalletConfig(next); if (typeof Wallet !== 'undefined') { Wallet.bustRate(); Wallet.bust(); }
+        msg.innerHTML = '<span class="good">✓ Saved.</span>'; }
+      catch (e) { msg.innerHTML = `<span class="bad">${ctx.esc(e.message || e)}</span>`; }
+    });
+    view.querySelector('#st-refresh').addEventListener('click', () => paintTopUps(view));
+    await paintTopUps(view);
+  }
+
+  async function paintTopUps(view) {
+    const host = view.querySelector('#st-tops'); if (!host) return;
+    let list = [];
+    try { list = (await ctx.Backend.listAllTopUps()) || []; }
+    catch (e) { host.innerHTML = `<p class="bad">${ctx.esc(e.message || e)}</p>`; return; }
+    if (!list.length) { host.innerHTML = `<p class="muted">No top-ups yet.</p>`; return; }
+    const pending = list.filter(t => t.status === 'pending');
+    host.innerHTML = `
+      ${pending.length ? '' : '<p class="muted">Nothing is waiting for approval.</p>'}
+      ${list.map(t => `
+      <div class="dev-row card st-top ${t.status}">
+        <div class="dev-row-head">
+          <div>
+            <p class="dev-file">${t.status === 'approved' ? '✓' : t.status === 'declined' ? '✗' : '⏳'}
+              LKR ${Number(t.amount_lkr).toLocaleString('en-LK', { minimumFractionDigits: 2 })}
+              <span class="dev-kind">${ctx.esc(t.reference || 'no reference')}</span></p>
+            <p class="muted tiny">${ctx.esc(new Date(t.created_at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }))}
+              ${t.extracted?.txnId ? ' · txn ' + ctx.esc(t.extracted.txnId) : ''}
+              ${t.extracted?.bank ? ' · ' + ctx.esc(t.extracted.bank) : ''}
+              ${t.extracted?.confidence != null ? ' · read confidence ' + Math.round(t.extracted.confidence * 100) + '%' : ''}</p>
+          </div>
+          ${t.status === 'pending' ? `<div class="dev-inline">
+            <button class="btn btn-gold btn-sm" data-approve="${t.id}">Approve</button>
+            <button class="btn btn-ghost btn-sm" data-decline="${t.id}">Decline</button></div>`
+            : `<span class="muted tiny">${ctx.esc(t.status)}${t.note ? ' — ' + ctx.esc(t.note) : ''}</span>`}
+        </div>
+        ${t.slip ? `<details class="dev-collapse"><summary><span>View the slip</span><span class="dc-caret">▸</span></summary>
+          <div class="st-slip">${/^data:image/.test(t.slip) ? `<img src="${t.slip}" alt="payment slip">` : '<p class="muted">PDF slip</p>'}</div></details>` : ''}
+      </div>`).join('')}`;
+    host.querySelectorAll('[data-approve]').forEach(b => b.addEventListener('click', async () => {
+      b.disabled = true;
+      try { await ctx.Backend.setTopUpStatus(b.dataset.approve, 'approved', ''); if (typeof Wallet !== 'undefined') Wallet.bust(); await paintTopUps(view); }
+      catch (e) { alert(e.message || e); b.disabled = false; }
+    }));
+    host.querySelectorAll('[data-decline]').forEach(b => b.addEventListener('click', async () => {
+      const note = prompt('Why is it declined? (shown to the user)') || 'Could not be matched to a payment.';
+      b.disabled = true;
+      try { await ctx.Backend.setTopUpStatus(b.dataset.decline, 'declined', note); await paintTopUps(view); }
+      catch (e) { alert(e.message || e); b.disabled = false; }
+    }));
   }
 
   /* ================================================================

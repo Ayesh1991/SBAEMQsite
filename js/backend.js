@@ -123,6 +123,28 @@ const Backend = (() => {
     /* The list is a CATALOGUE: light metadata only. `content` — every question
        of every paper — is fetched per paper, or in one go by the few features
        that genuinely need the whole bank. Mirrors the cloud impl exactly. */
+
+    /* ---- OSCE stations + attempts ---- */
+    async function getOsceStations() { return read('oscestations', []); }
+    async function publishOsceStation(meta) { const l = read('oscestations', []); const i = l.findIndex(x => x.id === meta.id); if (i >= 0) l[i] = meta; else l.push(meta); write('oscestations', l); return meta; }
+    async function unpublishOsceStation(id) { write('oscestations', read('oscestations', []).filter(x => x.id !== id)); }
+    async function listOsceAttempts() { const e = sessionEmail(); if (!e) return []; return Object.values(read('osceattempts:' + e, {})); }
+    async function getOsceAttempt(id) { const e = sessionEmail(); if (!e) return null; return read('osceattempts:' + e, {})[id] || null; }
+    async function saveOsceAttempt(a) { const e = sessionEmail(); if (!e) return a; const m = read('osceattempts:' + e, {}); m[a.id] = a; write('osceattempts:' + e, m); return a; }
+    async function deleteOsceAttempt(id) { const e = sessionEmail(); if (!e) return; const m = read('osceattempts:' + e, {}); delete m[id]; write('osceattempts:' + e, m); }
+
+    /* ---- prepaid wallet ---- */
+    async function getWalletConfig() { return read('walletcfg', { usdRate: 340, minTopUp: 300, packs: [300, 500, 1000, 2000] }); }
+    async function saveWalletConfig(c) { write('walletcfg', c); return c; }
+    async function listMyTopUps() { const e = sessionEmail(); if (!e) return []; return read('topups:' + e, []); }
+    async function createTopUp(t) { const e = sessionEmail(); if (!e) throw new Error('Sign in first.');
+      const l = read('topups:' + e, []); const row = Object.assign({ id: 't-' + Date.now().toString(36), created_at: new Date().toISOString(), user_email: e }, t);
+      l.push(row); write('topups:' + e, l); const all = read('topupsall', []); all.push(row); write('topupsall', all); return row; }
+    async function listAllTopUps() { return read('topupsall', []); }
+    async function setTopUpStatus(id, status, note) {
+      const all = read('topupsall', []); const r = all.find(x => x.id === id); if (r) { r.status = status; r.note = note || ''; write('topupsall', all); }
+      if (r?.user_email) { const l = read('topups:' + r.user_email, []); const m = l.find(x => x.id === id); if (m) { m.status = status; m.note = note || ''; write('topups:' + r.user_email, l); } }
+      return r; }
     async function getPublishedPapers() { return read('published', []).map(({ content, ...card }) => card); }
     async function getPaperContent(id) { const p = read('published', []).find(x => x.id === id); return p ? (p.content || null) : null; }
     async function getPaperContents() { return read('published', []).map(p => ({ id: p.id, content: p.content || null })); }
@@ -499,6 +521,9 @@ const Backend = (() => {
       getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
+      getOsceStations, publishOsceStation, unpublishOsceStation, listOsceAttempts, getOsceAttempt,
+      saveOsceAttempt, deleteOsceAttempt, getWalletConfig, saveWalletConfig, listMyTopUps, createTopUp,
+      listAllTopUps, setTopUpStatus,
       getPublishedPapers, getPaperContent, getPaperContents, publishPaper, unpublishPaper,
       getExamDate, setExamDate, saveSession, loadSession, clearSession, listSessions,
       getNote, saveNote, getNotesForPaper, listAllNotes, getCustomCurriculum, saveCustomCurriculum,
@@ -662,6 +687,64 @@ const Backend = (() => {
         if (!data || data.length < PAGE) break;
       }
       return out;
+    }
+
+
+    /* ---- OSCE stations + attempts ---- */
+    async function getOsceStations() {
+      return (await catalogue('the OSCE stations', () => sb.from('osce_stations').select('id,meta').order('id'))).map(r => r.meta);
+    }
+    async function publishOsceStation(meta) { await ensureClient(); await sb.from('osce_stations').upsert({ id: meta.id, meta }); return meta; }
+    async function unpublishOsceStation(id) { await ensureClient(); await sb.from('osce_stations').delete().eq('id', id); }
+    async function listOsceAttempts() {
+      await ensureClient(); const id = await uid(); if (!id) return [];
+      const { data, error } = await sb.from('osce_attempts').select('id,station_id,payload,created_at').eq('user_id', id).order('created_at', { ascending: false });
+      if (error) throw new Error('Could not read your OSCE attempts: ' + (error.message || error.code));
+      return (data || []).map(r => Object.assign({}, r.payload, { id: r.id, station_id: r.station_id, created: new Date(r.created_at).getTime() }));
+    }
+    async function getOsceAttempt(aid) {
+      await ensureClient(); const id = await uid(); if (!id) return null;
+      const { data } = await sb.from('osce_attempts').select('id,station_id,payload,created_at').eq('id', aid).eq('user_id', id).single();
+      return data ? Object.assign({}, data.payload, { id: data.id, station_id: data.station_id, created: new Date(data.created_at).getTime() }) : null;
+    }
+    async function saveOsceAttempt(a) {
+      await ensureClient(); const id = await uid(); if (!id) throw new Error('Sign in first.');
+      const { error } = await sb.from('osce_attempts').upsert({ id: a.id, user_id: id, station_id: a.station_id, payload: a });
+      if (error) throw new Error(error.message || 'Could not save the attempt.');
+      return a;
+    }
+    async function deleteOsceAttempt(aid) { await ensureClient(); const id = await uid(); if (!id) return; await sb.from('osce_attempts').delete().eq('id', aid).eq('user_id', id); }
+
+    /* ---- prepaid wallet ---- */
+    async function getWalletConfig() {
+      await ensureClient();
+      const { data } = await sb.from('app_config').select('data').eq('id', 'wallet').single();
+      return data?.data || { usdRate: 340, minTopUp: 300, packs: [300, 500, 1000, 2000] };
+    }
+    async function saveWalletConfig(c) { await ensureClient(); await sb.from('app_config').upsert({ id: 'wallet', data: c }); return c; }
+    async function listMyTopUps() {
+      await ensureClient(); const id = await uid(); if (!id) return [];
+      const { data } = await sb.from('credit_topups').select('id,amount_lkr,reference,status,note,created_at').eq('user_id', id).order('created_at', { ascending: false });
+      return data || [];
+    }
+    async function createTopUp(t) {
+      await ensureClient(); const id = await uid(); if (!id) throw new Error('Sign in first.');
+      const row = { user_id: id, amount_lkr: t.amount_lkr, reference: t.reference || '', status: 'pending',
+        slip: t.slip || null, extracted: t.extracted || null };
+      const { data, error } = await sb.from('credit_topups').insert(row).select('id').single();
+      if (error) throw new Error(error.message || 'Could not send the top-up.');
+      return Object.assign(row, { id: data?.id });
+    }
+    async function listAllTopUps() {
+      await ensureClient();
+      const { data, error } = await sb.from('credit_topups').select('*').order('created_at', { ascending: false });
+      if (error) throw new Error('Could not read the top-ups: ' + (error.message || error.code));
+      return data || [];
+    }
+    async function setTopUpStatus(id, status, note) {
+      await ensureClient();
+      const { error } = await sb.from('credit_topups').update({ status, note: note || '' }).eq('id', id);
+      if (error) throw new Error(error.message || 'Could not update that top-up.');
     }
 
     /* ---------- the catalogue vs the content ----------
@@ -1391,6 +1474,9 @@ const Backend = (() => {
       getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
+      getOsceStations, publishOsceStation, unpublishOsceStation, listOsceAttempts, getOsceAttempt,
+      saveOsceAttempt, deleteOsceAttempt, getWalletConfig, saveWalletConfig, listMyTopUps, createTopUp,
+      listAllTopUps, setTopUpStatus,
       getPublishedPapers, getPaperContent, getPaperContents, publishPaper, unpublishPaper,
       getExamDate, setExamDate, saveSession, loadSession, clearSession, listSessions,
       getNote, saveNote, getNotesForPaper, listAllNotes, getCustomCurriculum, saveCustomCurriculum,

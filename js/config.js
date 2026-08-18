@@ -61,6 +61,17 @@ window.AUREUM_CONFIG = {
        followUpLimit  max follow-up chat messages per question per user
        geminiModel    the free Flash model everyone uses
        claudeModel    developer-only model (needs ANTHROPIC_API_KEY) */
+  /* Prepaid balance in Sri Lankan rupees. `enforce` is the switch: with it
+     off nothing changes for anyone, with it on a user whose balance reaches
+     zero loses the AI features until they top up. The live values (rate,
+     suggested amounts, enforce) come from the developer's Rates & settings
+     panel; these are only the fallbacks. */
+  wallet: {
+    enforce: false,
+    usdRate: 340,                // LKR per USD
+    packs: [300, 500, 1000, 2000]
+  },
+
   ai: {
     enabled: true,
     apiBase: '/api/explain',

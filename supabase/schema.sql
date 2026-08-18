@@ -955,3 +955,64 @@ alter table public.cpd_progress enable row level security;
 drop policy if exists "own cpd progress all" on public.cpd_progress;
 create policy "own cpd progress all" on public.cpd_progress for all
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+/* ============================================================
+   v56 — OSCE stations, OSCE attempts, and the prepaid wallet
+   Re-run this file after upgrading; every statement is idempotent.
+   ============================================================ */
+
+/* ---- OSCE stations: published by the developer, read by everyone ---- */
+create table if not exists public.osce_stations (
+  id   text primary key,
+  meta jsonb not null,
+  created_at timestamptz not null default now()
+);
+alter table public.osce_stations enable row level security;
+drop policy if exists "osce stations read"  on public.osce_stations;
+drop policy if exists "osce stations write" on public.osce_stations;
+create policy "osce stations read" on public.osce_stations for select using (true);
+create policy "osce stations write" on public.osce_stations for all
+  using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
+  with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+
+/* ---- one candidate's attempt at one station ---- */
+create table if not exists public.osce_attempts (
+  id         text primary key,
+  user_id    uuid not null references auth.users(id) on delete cascade,
+  station_id text not null,
+  payload    jsonb not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists osce_attempts_user_idx on public.osce_attempts (user_id, created_at desc);
+alter table public.osce_attempts enable row level security;
+drop policy if exists "osce attempts own" on public.osce_attempts;
+create policy "osce attempts own" on public.osce_attempts for all
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+/* ---- prepaid top-ups ----
+   A row is created by the payer and approved by the site owner. The payer may
+   INSERT and READ their own rows but must never be able to UPDATE one — that
+   is what stops "pending" being edited into "approved". Only the owner can
+   change a status, which is why the balance can be trusted. */
+create table if not exists public.credit_topups (
+  id         bigserial primary key,
+  user_id    uuid not null references auth.users(id) on delete cascade,
+  amount_lkr numeric(12,2) not null check (amount_lkr > 0),
+  reference  text default '',
+  status     text not null default 'pending' check (status in ('pending','approved','declined')),
+  note       text default '',
+  slip       text,              -- a small data: URL of the slip, for the approver
+  extracted  jsonb,             -- what the reader pulled off it
+  created_at timestamptz not null default now()
+);
+create index if not exists credit_topups_user_idx on public.credit_topups (user_id, created_at desc);
+alter table public.credit_topups enable row level security;
+drop policy if exists "topups own read"   on public.credit_topups;
+drop policy if exists "topups own insert" on public.credit_topups;
+drop policy if exists "topups dev all"    on public.credit_topups;
+create policy "topups own read"   on public.credit_topups for select using (auth.uid() = user_id);
+create policy "topups own insert" on public.credit_topups for insert
+  with check (auth.uid() = user_id and status = 'pending');
+create policy "topups dev all"    on public.credit_topups for all
+  using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
+  with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
