@@ -4056,3 +4056,6 @@ body.eco-open .ap-dock { z-index: 2390; }
   .os-cost-grid > div { flex-basis: calc(50% - 5px); }
   .oe-sums { margin-left: 0; }
 }
+
+/* v58 — the stored recording */
+.os-audio .os-rec-box { margin-top: 6px; }

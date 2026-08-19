@@ -1016,3 +1016,36 @@ create policy "topups own insert" on public.credit_topups for insert
 create policy "topups dev all"    on public.credit_topups for all
   using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
   with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+
+/* ============================================================
+   v58 — OSCE recordings, kept for 24 hours
+   ============================================================ */
+
+/* A private bucket. Every object lives under the owner's uid, and the policy
+   below is what enforces it — one candidate can never reach another's tape. */
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('osce-audio', 'osce-audio', false, 26214400,
+        array['audio/webm','audio/mp4','audio/aac','audio/ogg','audio/mpeg'])
+on conflict (id) do update set
+  public = false,
+  file_size_limit = excluded.file_size_limit,
+  allowed_mime_types = excluded.allowed_mime_types;
+
+drop policy if exists "osce audio own" on storage.objects;
+create policy "osce audio own" on storage.objects for all
+  to authenticated
+  using      (bucket_id = 'osce-audio' and (storage.foldername(name))[1] = auth.uid()::text)
+  with check (bucket_id = 'osce-audio' and (storage.foldername(name))[1] = auth.uid()::text);
+
+/* The app sweeps a user's own recordings older than a day whenever they open
+   the OSCE tab, which is enough on its own. If pg_cron is enabled on your
+   project, uncomment this to sweep server-side as well — then a recording is
+   removed on time even for someone who never comes back.
+
+     create extension if not exists pg_cron;
+     select cron.schedule('osce-audio-sweep', '17 3 * * *', $$
+       delete from storage.objects
+        where bucket_id = 'osce-audio'
+          and created_at < now() - interval '24 hours';
+     $$);
+*/

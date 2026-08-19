@@ -319,6 +319,42 @@ async function logTokens(token, env, provider, r, feature) {
 
 /* ---------------- OSCE marking ---------------- */
 
+/* The calibration every OSCE marking shares. Without it a model marks like a
+   generous colleague: it recognises the topic, sees a related sentence, and
+   awards the point. A PGIM Part II examiner does not — the marks live in the
+   specifics, and a category named without its content is worth half at best.
+   The arithmetic is forced rather than left to judgement: each marking point
+   is worth an equal share of its question, covered takes the whole share,
+   partial takes half, missed takes none. That makes the score reproducible
+   and stops "sounded good" becoming full marks. */
+const OSCE_CALIBRATION = [
+  'YOU ARE A PGIM MD PART II EXAMINER. Mark to that standard, not to encourage.',
+  '',
+  'HOW TO DECIDE EACH POINT:',
+  '  covered — the specific content of the point was actually said: the drug NAMED, the figure GIVEN,',
+  '            the test NAMED, the reason STATED. Different words for the same thing are fine.',
+  '  partial — the right territory without the substance: the category named but not its content',
+  '            ("investigations" without saying which), the drug named without dose/route/timing where the',
+  '            point carries it, half a multi-part point, or a correct statement given with no justification',
+  '            when the point asks for one.',
+  '  missed  — not said, or said wrongly. Saying something adjacent is NOT saying the point.',
+  '',
+  'HOW THE MARKS FOLLOW:',
+  '  Each marking point is worth an EQUAL share of that question\'s marks (marks ÷ number of points).',
+  '  covered earns the whole share, partial earns HALF the share, missed earns nothing.',
+  '  Add the shares, then round to the nearest 0.5. Never award a question full marks unless every',
+  '  point is covered. Never award a point full credit for a partial answer.',
+  '',
+  'FURTHER EXAMINER RULES:',
+  '  A safety-critical omission (a missed drug contraindication, a missed escalation, a missed consent step)',
+  '  caps that question at half its marks however much else was said — say so in the comment when you apply it.',
+  '  Anything factually wrong or unsafe scores zero for that point and is named in the comment.',
+  '  Padding, repetition and confident vagueness earn nothing. Length is not an answer.',
+  '  Do not invent credit for points the candidate did not make, and do not withhold credit for correct',
+  '  content merely because it was said in unexpected order or plain language.'
+].join('\n');
+
+
 function buildOsceMarkPrompt(body) {
   const st = body.station || {};
   const answers = body.answers || [];
@@ -332,11 +368,10 @@ function buildOsceMarkPrompt(body) {
     ].join('\n');
   }).join('\n\n');
 
-  const system = PERSONA + ' You are marking a spoken OSCE station. The candidate SPOKE their answer, so ' +
-    'the transcript is informal, may contain false starts, filler and speech-to-text errors. Mark the CLINICAL ' +
-    'CONTENT, never the phrasing: if the meaning is clearly there, award it. A near-miss word that is obviously ' +
-    'the intended term (e.g. "magnesium" for MgSO4) counts as covered. Be a fair but rigorous examiner — do not ' +
-    'award marks for points that were not made.';
+  const system = PERSONA + ' You are marking a spoken OSCE station from a transcript. The candidate SPOKE, so ' +
+    'the text is informal and may contain false starts, filler and speech-to-text errors. Mark the CLINICAL ' +
+    'CONTENT, never the phrasing; a near-miss word that is obviously the intended term ("magnesium" for MgSO4) ' +
+    'counts as said.\n\n' + OSCE_CALIBRATION;
 
   const user = [
     `STATION: ${st.topic || ''} — total ${st.total_marks || 50} marks, pass mark ${st.pass_mark || ''}.`,
@@ -345,9 +380,9 @@ function buildOsceMarkPrompt(body) {
     qs,
     '',
     'Return ONLY valid JSON, no prose and no code fence, exactly this shape:',
-    '{"questions":[{"id":1,"awarded":0,"max":5,"points":[{"point":"<the marking point verbatim>",' +
-      '"status":"covered|partial|missed","note":"<one short clause: what they said, or what was missing>"}],' +
-      '"comment":"<one sentence on this answer>"}],' +
+    '{"questions":[{"id":1,"awarded":0,"max":5,"share":0,"points":[{"point":"<the marking point verbatim>",' +
+      '"status":"covered|partial|missed","credit":0,"note":"<one short clause: what they said, or what was missing>"}],' +
+      '"comment":"<one sentence: the verdict, and name any cap you applied>"}],' +
       '"total":0,"max":50,"percent":0,"pass":false,' +
       '"examinerComment":"<3-4 sentences: the overall verdict on this performance>",' +
       '"strengths":["<what was genuinely good>"],' +
@@ -356,7 +391,9 @@ function buildOsceMarkPrompt(body) {
       '"structure":{"coverage":"<did they answer what was asked>","fluency":"<pace, hesitancy, clarity>",' +
       '"safety":"<were the safety-critical points made>"}}',
     'Every marking point of every question must appear exactly once in its question\'s points array.',
-    'awarded must be between 0 and max, and total must equal the sum of awarded.'
+    '"share" is marks divided by the number of marking points for that question.',
+    '"credit" is the marks that point earned: the full share if covered, half the share if partial, 0 if missed.',
+    'awarded must equal the sum of that question\'s credits, rounded to the nearest 0.5, and total the sum of awarded.'
   ].join('\n');
   return { system, user };
 }
@@ -371,10 +408,10 @@ function buildOsceAudioPrompt(body) {
   ].join('\n')).join('\n\n');
 
   const system = PERSONA + ' You are marking a SPOKEN OSCE station from the candidate\'s own recording. ' +
-    'The audio is one continuous take covering every question in order; the candidate moved to the next question ' +
-    'when they had finished the previous one. First work out what they said for each question, then mark the ' +
-    'CLINICAL CONTENT against the scheme. Ignore filler, false starts and self-correction — mark the final ' +
-    'position they settled on. Award a point if the meaning is clearly there, whatever words they used.';
+    'The audio is one continuous take covering every question in order; the candidate moved on when they had ' +
+    'finished the previous one. First work out what they said for each question, then mark the CLINICAL CONTENT ' +
+    'against the scheme. Ignore filler, false starts and self-correction — mark the position they settled on.\n\n' +
+    OSCE_CALIBRATION;
 
   const user = [
     `STATION: ${st.topic || ''} — total ${st.total_marks || 50} marks, pass mark ${st.pass_mark || ''}.`,
@@ -383,10 +420,10 @@ function buildOsceAudioPrompt(body) {
     qs,
     '',
     'Listen to the recording, then return ONLY valid JSON, no prose and no code fence, exactly this shape:',
-    '{"questions":[{"id":1,"awarded":0,"max":5,"transcript":"<what they actually said for this question>",' +
-      '"points":[{"point":"<the marking point verbatim>","status":"covered|partial|missed",' +
+    '{"questions":[{"id":1,"awarded":0,"max":5,"share":0,"transcript":"<what they actually said for this question>",' +
+      '"points":[{"point":"<the marking point verbatim>","status":"covered|partial|missed","credit":0,' +
       '"note":"<one short clause: what they said, or what was missing>"}],' +
-      '"comment":"<one sentence on this answer>"}],' +
+      '"comment":"<one sentence: the verdict, and name any cap you applied>"}],' +
       '"total":0,"max":50,"percent":0,"pass":false,' +
       '"examinerComment":"<3-4 sentences: the overall verdict on this performance>",' +
       '"strengths":["<what was genuinely good>"],' +
@@ -397,7 +434,9 @@ function buildOsceAudioPrompt(body) {
       '"safety":"<were the safety-critical points made>"}}',
     'Every marking point of every question must appear exactly once in that question\'s points array.',
     'If nothing was said for a question, set its transcript to "" and mark every point missed.',
-    'awarded must be between 0 and max, and total must equal the sum of awarded.'
+    '"share" is marks divided by the number of marking points for that question.',
+    '"credit" is the marks that point earned: the full share if covered, half the share if partial, 0 if missed.',
+    'awarded must equal the sum of that question\'s credits, rounded to the nearest 0.5, and total the sum of awarded.'
   ].join('\n');
   return { system, user };
 }
