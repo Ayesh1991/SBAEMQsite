@@ -530,5 +530,8 @@ const AI = (() => {
     return '<p>' + h + '</p>';
   }
 
-  return { attach, renderSavedItem, kindIcon, kindLabel, featureOn, preferredProvider, allowedProviders, webMode, setWebMode };
+  return { attach, renderSavedItem, kindIcon, kindLabel, featureOn, preferredProvider, allowedProviders, webMode, setWebMode,
+    // shared with the OSCE debrief, which has its own panel but the same
+    // markdown, the same search-opening rules and the same transport
+    renderMarkdown, openSearch, call };
 })();

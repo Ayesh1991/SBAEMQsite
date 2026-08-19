@@ -68,7 +68,8 @@ const Backend = (() => {
     });
   }
   const OSCE_CARD_KEYS = ['id', 'topic', 'scenario', 'station_time_min', 'reading_time_min',
-    'total_marks', 'pass_mark', 'pass_mark_percent', 'q_count', 'points_count'];
+    'total_marks', 'pass_mark', 'pass_mark_percent', 'q_count', 'points_count', 'collection',
+    'edited_by', 'edited_at'];
   const osceCard = m => { const o = {}; OSCE_CARD_KEYS.forEach(k => { if (m[k] != null) o[k] = m[k]; }); return o; };
   /** An attempt row for a LIST: the score, never the answers. */
   const osceAttemptCard = a => ({
@@ -155,10 +156,20 @@ const Backend = (() => {
     async function getOsceStation(id) { return read('oscestations', []).find(x => x.id === id) || null; }
     async function publishOsceStation(meta) {
       const rec = withOsceCounts(meta);
+      const e = sessionEmail(); if (e) { rec.edited_by = e; rec.edited_at = Date.now(); }
       const l = read('oscestations', []); const i = l.findIndex(x => x.id === rec.id); if (i >= 0) l[i] = rec; else l.push(rec);
       write('oscestations', l); return rec;
     }
     async function unpublishOsceStation(id) { write('oscestations', read('oscestations', []).filter(x => x.id !== id)); }
+    /** Move stations into a bin. `ids` null/empty = every station. */
+    async function moveOsceStations(ids, collection) {
+      const want = ids && ids.length ? new Set(ids) : null;
+      const l = read('oscestations', []); let n = 0;
+      l.forEach(s => { if (!want || want.has(s.id)) { s.collection = collection; n++; } });
+      write('oscestations', l); return n;
+    }
+    async function getOsceCollections() { return read('oscecollections', null); }
+    async function saveOsceCollections(list) { write('oscecollections', list); return list; }
     async function listOsceAttempts() { const e = sessionEmail(); if (!e) return []; return Object.values(read('osceattempts:' + e, {})).map(osceAttemptCard); }
     async function getOsceAttempt(id) { const e = sessionEmail(); if (!e) return null; return read('osceattempts:' + e, {})[id] || null; }
     async function saveOsceAttempt(a) { const e = sessionEmail(); if (!e) return a; const m = read('osceattempts:' + e, {}); m[a.id] = a; write('osceattempts:' + e, m); return a; }
@@ -189,9 +200,21 @@ const Backend = (() => {
       const l = read('topups:' + e, []); const row = Object.assign({ id: 't-' + Date.now().toString(36), created_at: new Date().toISOString(), user_email: e }, t);
       l.push(row); write('topups:' + e, l); const all = read('topupsall', []); all.push(row); write('topupsall', all); return row; }
     async function listAllTopUps() { return read('topupsall', []); }
-    async function setTopUpStatus(id, status, note) {
-      const all = read('topupsall', []); const r = all.find(x => x.id === id); if (r) { r.status = status; r.note = note || ''; write('topupsall', all); }
-      if (r?.user_email) { const l = read('topups:' + r.user_email, []); const m = l.find(x => x.id === id); if (m) { m.status = status; m.note = note || ''; write('topups:' + r.user_email, l); } }
+    /** Developer credit for someone else — no slip, approved on the spot. */
+    async function createTopUpFor(userId, t) {
+      const all = users();
+      const u = Object.values(all).find(x => x.id === userId || x.email === userId);
+      const email = u ? u.email : userId;
+      const row = Object.assign({ id: 't-' + Date.now().toString(36), created_at: new Date().toISOString(),
+        user_email: email, user_id: u?.id || userId, status: 'approved', manual: true }, t);
+      const l = read('topups:' + email, []); l.push(row); write('topups:' + email, l);
+      const list = read('topupsall', []); list.push(row); write('topupsall', list);
+      return row;
+    }
+    async function setTopUpStatus(id, status, note, extracted) {
+      const stamp = r => { r.status = status; r.note = note || ''; if (extracted) r.extracted = extracted; };
+      const all = read('topupsall', []); const r = all.find(x => x.id === id); if (r) { stamp(r); write('topupsall', all); }
+      if (r?.user_email) { const l = read('topups:' + r.user_email, []); const m = l.find(x => x.id === id); if (m) { stamp(m); write('topups:' + r.user_email, l); } }
       return r; }
     async function getPublishedPapers() { return read('published', []).map(({ content, ...card }) => card); }
     async function getPaperContent(id) { const p = read('published', []).find(x => x.id === id); return p ? (p.content || null) : null; }
@@ -569,9 +592,10 @@ const Backend = (() => {
       getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
-      getOsceStations, getOsceStation, getOsceSearchIndex, publishOsceStation, unpublishOsceStation, listOsceAttempts, getOsceAttempt,
+      getOsceStations, getOsceStation, getOsceSearchIndex, publishOsceStation, unpublishOsceStation,
+      moveOsceStations, getOsceCollections, saveOsceCollections, listOsceAttempts, getOsceAttempt,
       saveOsceAttempt, deleteOsceAttempt, uploadOsceAudio, getOsceAudioUrl, sweepOsceAudio,
-      getWalletConfig, saveWalletConfig, listMyTopUps, createTopUp,
+      getWalletConfig, saveWalletConfig, listMyTopUps, createTopUp, createTopUpFor,
       listAllTopUps, setTopUpStatus,
       getPublishedPapers, getPaperContent, getPaperContents, publishPaper, unpublishPaper,
       getExamDate, setExamDate, saveSession, loadSession, clearSession, listSessions,
@@ -745,7 +769,8 @@ const Backend = (() => {
     const OSCE_CARD_SELECT = 'id,topic:meta->>topic,scenario:meta->>scenario,' +
       'station_time_min:meta->station_time_min,reading_time_min:meta->reading_time_min,' +
       'total_marks:meta->total_marks,pass_mark:meta->pass_mark,pass_mark_percent:meta->pass_mark_percent,' +
-      'q_count:meta->q_count,points_count:meta->points_count';
+      'q_count:meta->q_count,points_count:meta->points_count,collection:meta->>collection,' +
+      'edited_by:meta->>edited_by,edited_at:meta->edited_at';
     let osceCardsOk = true;
     async function getOsceStations() {
       if (osceCardsOk) {
@@ -774,10 +799,63 @@ const Backend = (() => {
       return data?.meta || null;
     }
     async function publishOsceStation(meta) {
+      await ensureClient();
+      // stations are editable by any signed-in candidate now, so every save
+      // carries its author — a wrong edit has to be attributable
       const rec = withOsceCounts(meta);
-      await ensureClient(); await sb.from('osce_stations').upsert({ id: rec.id, meta: rec }); return rec;
+      try {
+        const { data } = await sb.auth.getUser();
+        if (data?.user) { rec.edited_by = data.user.email || data.user.id; rec.edited_at = Date.now(); }
+      } catch { /* the save matters more than the signature */ }
+      const { error } = await sb.from('osce_stations').upsert({ id: rec.id, meta: rec });
+      if (error) throw new Error(error.message || 'Could not save that station.');
+      return rec;
     }
     async function unpublishOsceStation(id) { await ensureClient(); await sb.from('osce_stations').delete().eq('id', id); }
+    /* Move stations between bins. `ids` null/empty means every station.
+
+       Filing 197 stations is a one-key change inside each `meta`, so doing it
+       by downloading every station, editing it and writing it back would move
+       roughly 8 MB in each direction to set one string. The RPC in schema.sql
+       does it with jsonb_set inside Postgres — nothing leaves the database.
+       Where that function is not installed yet the read-modify-write path
+       still works, so this is never blocked on a migration. */
+    async function moveOsceStations(ids, collection) {
+      await ensureClient();
+      const list = (ids && ids.length) ? ids : null;
+      const { data, error } = await sb.rpc('osce_set_collection', { ids: list, coll: collection });
+      if (!error) return Number(data) || 0;
+      if (!/function|does not exist|PGRST202|schema cache/i.test(String(error.message || error.code))) {
+        throw new Error('Could not move those stations: ' + (error.message || error.code));
+      }
+      // fallback: fetch, edit, write back, in pages so nothing times out.
+      // catalogue() calls make() once per page, so this builds a fresh query
+      // each time — a query builder cannot be re-ranged after it has run.
+      const make = () => {
+        const q = sb.from('osce_stations').select('id,meta').order('id');
+        return list ? q.in('id', list) : q;
+      };
+      const rows = await catalogue('the OSCE stations', make);
+      let n = 0;
+      for (let i = 0; i < rows.length; i += 50) {
+        const batch = rows.slice(i, i + 50)
+          .map(r => ({ id: r.id, meta: Object.assign({}, r.meta, { collection }) }));
+        const { error: e2 } = await sb.from('osce_stations').upsert(batch);
+        if (e2) throw new Error('Could not move those stations: ' + (e2.message || e2.code));
+        n += batch.length;
+      }
+      return n;
+    }
+    async function getOsceCollections() {
+      await ensureClient();
+      const { data } = await sb.from('app_config').select('data').eq('id', 'osce').single();
+      return data?.data?.collections || null;
+    }
+    async function saveOsceCollections(list) {
+      await ensureClient();
+      await sb.from('app_config').upsert({ id: 'osce', data: { collections: list } });
+      return list;
+    }
     /* A list of attempts needs the score, not the answers. Selecting whole
        payloads shipped every question, every marking point and every
        transcript of every past station just to draw a row. */
@@ -864,9 +942,23 @@ const Backend = (() => {
       if (error) throw new Error('Could not read the top-ups: ' + (error.message || error.code));
       return data || [];
     }
-    async function setTopUpStatus(id, status, note) {
+    /* Credit somebody else, for a payment verified outside the app — no slip
+       was uploaded, or the slip was unreadable. It lands approved, marked
+       `manual`, with the developer's note recording how it was verified. */
+    async function createTopUpFor(userId, t) {
       await ensureClient();
-      const { error } = await sb.from('credit_topups').update({ status, note: note || '' }).eq('id', id);
+      const row = { user_id: userId, amount_lkr: t.amount_lkr, reference: t.reference || '',
+        status: 'approved', note: t.note || '', slip: null,
+        extracted: Object.assign({ manual: true }, t.extracted || null) };
+      const { data, error } = await sb.from('credit_topups').insert(row).select('id').single();
+      if (error) throw new Error(error.message || 'Could not add that credit.');
+      return Object.assign(row, { id: data?.id });
+    }
+    async function setTopUpStatus(id, status, note, extracted) {
+      await ensureClient();
+      const patch = { status, note: note || '' };
+      if (extracted) patch.extracted = extracted;      // confirming stamps the row, it does not re-approve it
+      const { error } = await sb.from('credit_topups').update(patch).eq('id', id);
       if (error) throw new Error(error.message || 'Could not update that top-up.');
     }
 
@@ -1597,9 +1689,10 @@ const Backend = (() => {
       getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
-      getOsceStations, getOsceStation, getOsceSearchIndex, publishOsceStation, unpublishOsceStation, listOsceAttempts, getOsceAttempt,
+      getOsceStations, getOsceStation, getOsceSearchIndex, publishOsceStation, unpublishOsceStation,
+      moveOsceStations, getOsceCollections, saveOsceCollections, listOsceAttempts, getOsceAttempt,
       saveOsceAttempt, deleteOsceAttempt, uploadOsceAudio, getOsceAudioUrl, sweepOsceAudio,
-      getWalletConfig, saveWalletConfig, listMyTopUps, createTopUp,
+      getWalletConfig, saveWalletConfig, listMyTopUps, createTopUp, createTopUpFor,
       listAllTopUps, setTopUpStatus,
       getPublishedPapers, getPaperContent, getPaperContents, publishPaper, unpublishPaper,
       getExamDate, setExamDate, saveSession, loadSession, clearSession, listSessions,

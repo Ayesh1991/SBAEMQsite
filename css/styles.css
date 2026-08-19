@@ -3962,12 +3962,7 @@ body.eco-open .ap-dock { z-index: 2390; }
   width: 28px; height: 28px; border-radius: 8px; font-size: .82rem; line-height: 1; transition: .14s ease; }
 .os-voice:hover { border-color: var(--teal); background: color-mix(in srgb, var(--teal) 12%, transparent); }
 .os-voice.is-off { color: var(--ink-3); opacity: .6; }
-.os-probe { margin-top: 14px; padding: 13px 16px; border-radius: 13px;
-  background: color-mix(in srgb, var(--gold) 11%, transparent); border-left: 3px solid var(--gold);
-  animation: osProbeIn .28s ease; }
-@keyframes osProbeIn { from { opacity: 0; transform: translateY(-4px) } to { opacity: 1; transform: none } }
-.os-probe-who { display: block; font-size: .58rem; letter-spacing: .16em; font-weight: 800; color: var(--gold); margin-bottom: 5px; }
-.os-probe p { margin: 0 0 10px; font-size: .96rem; font-weight: 550; }
+/* the examiner's probe prompts were removed in v59 — see the note in osce.js */
 
 .os-src-opts { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 10px; margin: 14px 0; }
 .os-src-b { text-align: left; padding: 13px 15px; border-radius: 14px; border: 1px solid var(--hairline);
@@ -4059,3 +4054,111 @@ body.eco-open .ap-dock { z-index: 2390; }
 
 /* v58 — the stored recording */
 .os-audio .os-rec-box { margin-top: 6px; }
+
+/* ============================================================
+   v59 — collections, the scheme dialog, the editor tab,
+         Explore-with-AI on a report, and the print picker
+   ============================================================ */
+
+/* ---- collection filter chips above the station grid ---- */
+.os-bins { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 18px; }
+.os-bin { display: inline-flex; align-items: center; gap: 7px; padding: 7px 14px; border-radius: 999px;
+  border: 1px solid var(--hairline); background: var(--surface-2); color: var(--ink-2);
+  font: inherit; font-size: .78rem; font-weight: 600; cursor: pointer; transition: .16s ease; }
+.os-bin:hover { border-color: var(--teal); color: var(--ink); }
+.os-bin.active { border-color: var(--gold); color: var(--ink);
+  background: color-mix(in srgb, var(--gold) 12%, var(--surface-2)); }
+.os-bin i { font-style: normal; font-size: .66rem; font-weight: 700; padding: 1px 7px; border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 10%, transparent); color: var(--ink-3); }
+.os-bin.active i { background: color-mix(in srgb, var(--gold) 26%, transparent); color: var(--ink); }
+.os-card-coll { font-size: .58rem; letter-spacing: .08em; text-transform: uppercase; font-weight: 700;
+  padding: 3px 8px; border-radius: 999px; color: var(--ink-3);
+  border: 1px solid var(--hairline); background: var(--surface-2); }
+
+/* ---- a dialog: the marking scheme, and the print picker ---- */
+.os-modal { position: fixed; inset: 0; z-index: 220; display: flex; align-items: center; justify-content: center;
+  padding: 4vh 16px; }
+.os-modal-back { position: absolute; inset: 0; background: rgba(6, 9, 16, .68); backdrop-filter: blur(3px); }
+.os-modal-box { position: relative; width: min(860px, 100%); max-height: 92vh; display: flex; flex-direction: column;
+  background: var(--surface); border: 1px solid var(--hairline); border-radius: 20px; overflow: hidden;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, .45); animation: osModalIn .22s ease; }
+@keyframes osModalIn { from { opacity: 0; transform: translateY(10px) scale(.99) } to { opacity: 1; transform: none } }
+.os-modal-head { display: flex; align-items: flex-start; gap: 14px; padding: 20px 22px 14px;
+  border-bottom: 1px solid var(--hairline); }
+.os-modal-head > div { flex: 1; min-width: 0; }
+.os-modal-head h3 { margin: 2px 0 4px; font-family: var(--font-display); font-size: 1.28rem; line-height: 1.25; }
+.os-modal-x { background: none; border: 1px solid var(--hairline); color: var(--ink-3); cursor: pointer;
+  width: 30px; height: 30px; border-radius: 9px; font-size: .82rem; line-height: 1; flex: 0 0 auto; }
+.os-modal-x:hover { border-color: var(--gold); color: var(--ink); }
+.os-modal-body { padding: 18px 22px; overflow-y: auto; min-height: 0; }
+.os-modal-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 14px 22px;
+  border-top: 1px solid var(--hairline); background: var(--surface-2); }
+.os-modal-foot > :last-child { margin-left: auto; }
+
+.os-sch-q { padding: 14px 0; border-bottom: 1px solid var(--hairline); }
+.os-sch-q:last-child { border-bottom: 0; }
+.os-sch-h { display: flex; align-items: baseline; gap: 10px; }
+.os-sch-h p { flex: 1; margin: 0; font-weight: 600; font-size: .95rem; }
+.os-sch-n { font-size: .64rem; letter-spacing: .1em; font-weight: 800; color: var(--gold); }
+.os-sch-m { font-size: .72rem; color: var(--ink-3); white-space: nowrap; }
+.os-sch-rev { margin: 7px 0 0; font-size: .8rem; color: var(--ink-2);
+  padding: 8px 11px; border-radius: 9px; background: var(--surface-2); }
+.os-sch-pts { margin: 9px 0 0; padding-left: 20px; }
+.os-sch-pts li { font-size: .84rem; line-height: 1.6; color: var(--ink-2); margin-bottom: 3px; }
+
+.os-print-presets { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.os-print-list { display: grid; gap: 2px; }
+.os-print-row { display: flex; align-items: flex-start; gap: 11px; padding: 9px 11px; border-radius: 10px;
+  cursor: pointer; font-size: .86rem; line-height: 1.5; }
+.os-print-row:hover { background: var(--surface-2); }
+.os-print-row input { margin-top: 3px; flex: 0 0 auto; accent-color: var(--gold); }
+
+/* ---- the station editor tab ---- */
+.os-edit-list { display: grid; gap: 7px; margin-bottom: 22px; }
+.os-edit-row { display: flex; align-items: center; gap: 14px; width: 100%; text-align: left;
+  padding: 12px 16px; border-radius: 13px; border: 1px solid var(--hairline); background: var(--surface-2);
+  color: var(--ink); font: inherit; cursor: pointer; transition: .14s ease; }
+.os-edit-row:hover { border-color: var(--gold); transform: translateX(2px); }
+.os-edit-t { flex: 1 1 auto; min-width: 0; font-weight: 600; font-size: .92rem; }
+.os-edit-m, .os-edit-c { font-size: .72rem; color: var(--ink-3); white-space: nowrap; }
+.os-edit-c { padding: 2px 9px; border-radius: 999px; border: 1px solid var(--hairline); }
+.os-edit-go { font-size: .76rem; font-weight: 700; color: var(--teal); white-space: nowrap; }
+@media (max-width: 640px) {
+  .os-edit-row { flex-wrap: wrap; gap: 6px 10px; }
+  .os-edit-t { flex: 1 1 100%; }
+}
+
+/* ---- collections, in the developer console ---- */
+.os-coll-rows { display: grid; gap: 6px; }
+.os-coll-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 11px;
+  background: var(--surface-2); border: 1px solid var(--hairline); }
+.os-coll-name { flex: 0 1 240px; min-width: 0; padding: 6px 10px; border-radius: 8px;
+  border: 1px solid var(--hairline); background: var(--surface); color: var(--ink); font: inherit; font-size: .86rem; }
+.os-coll-row > .muted { flex: 1 1 auto; }
+
+/* ---- Explore with AI, on a station report ---- */
+.os-explore .os-ex-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 14px 0 10px; }
+.os-explore .ai-messages { max-height: 460px; }
+.os-explore .ai-web-out { margin: 10px 0; }
+
+/* ---- the account and instant top-ups ---- */
+.wl-acct { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; margin: 0 0 14px;
+  padding: 13px 16px; border-radius: 13px; background: var(--surface-2); border: 1px solid var(--gold); }
+.wl-acct-k { font-size: .6rem; letter-spacing: .14em; text-transform: uppercase; color: var(--gold); font-weight: 800; }
+.wl-acct-n { font-family: var(--font-display); font-size: 1.35rem; letter-spacing: .06em; }
+.wl-acct-x { font-size: .78rem; color: var(--ink-3); }
+.wl-check { margin: 12px 0; padding: 12px 15px; border-radius: 13px;
+  background: var(--surface-2); border: 1px solid var(--hairline); }
+.wl-check.is-ready { border-color: var(--teal); }
+.wl-check-h { margin: 0 0 8px; font-size: .84rem; font-weight: 650; }
+.wl-check-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.wl-check-list li { display: flex; gap: 9px; font-size: .8rem; color: var(--ink-3); }
+.wl-check-list li.ok { color: var(--ink-2); }
+.wl-check-list li.ok span { color: var(--teal); font-weight: 800; }
+.wl-instant { margin: 0 0 10px; font-family: var(--font-display); font-size: 1.2rem; color: var(--teal); }
+.wl-slip-done { border-color: var(--teal); }
+.st-match { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 6px; }
+.st-match i { font-style: normal; font-size: .66rem; color: var(--ink-3); }
+.st-match i.ok { color: var(--teal); }
+.st-top.is-provisional { border-color: var(--gold); }
+.dev-kind.st-prov { color: var(--gold); border-color: var(--gold); }

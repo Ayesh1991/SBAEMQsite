@@ -71,7 +71,34 @@ window.AUREUM_CONFIG = {
   wallet: {
     enforce: false,
     usdRate: 340,                // LKR per USD
-    packs: [300, 500, 1000, 2000]
+    packs: [300, 500, 1000, 2000],
+    /* The account users pay into. A slip that names THIS account, an amount,
+       a date and the payer's own user number is credited immediately and
+       flagged for the developer to confirm against the bank later. Banks
+       print the number with and without its leading zeros, so both forms
+       match — the comparison is on digits only, ignoring leading zeros. */
+    beneficiary: {
+      account: '0087612781',
+      bank: '',                  // optional, only used in the on-screen instructions
+      name: ''
+    },
+    instantActivation: true,     // credit a fully-matching slip without waiting
+    instantHours: 24             // how long that provisional credit stands unconfirmed
+  },
+
+  /* OSCE collections — the bins a station belongs to. The developer can add
+     more from the OSCE importer; these ship with every deployment. Stations
+     published before collections existed have no `collection` and are shown
+     as unfiled until they are moved. */
+  osce: {
+    collections: [
+      { id: 'common',    label: 'Common bank' },
+      { id: 'pera',      label: 'Pera OSCE' },
+      { id: 'galle',     label: 'Galle OSCE' },
+      { id: 'slcog',     label: 'SLCOG OSCE' },
+      { id: 'examiners', label: "Examiners' OSCE" }
+    ],
+    defaultCollection: 'common'
   },
 
   ai: {
@@ -89,19 +116,39 @@ window.AUREUM_CONFIG = {
     // Gemini model picker — shown to the developer AND to any user granted
     // the `gemini_advanced` flag in Users & access. The server re-checks the
     // flag, so the picker is a convenience, not the security boundary.
+    /* `audio` says whether the model can be sent the OSCE recording itself
+       rather than a typed transcript. It is a property of the model, not a
+       preference:
+         • Gemini takes compressed audio (webm/opus) inline — the cheapest
+           and most accurate route, and the reason it is the default.
+         • GPT accepts audio, but only as uncompressed WAV or MP3, so the
+           browser re-encodes the recording first (see OSCE.toWav). That is
+           heavier to upload; `audioFormat` is what triggers it.
+         • Claude's Messages API takes text, images and PDFs — not audio. It
+           is not a flag we can turn on, so those entries stay false and the
+           OSCE tab says why instead of just greying the option out.
+       If a provider adds audio to a model, set the flag here — nothing in the
+       code hard-codes which provider can listen. */
     geminiModels: [
-      { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash-Lite' },
-      { id: 'gemini-3.5-flash',      label: 'Gemini 3.5 Flash' },
-      { id: 'gemini-3.1-pro',        label: 'Gemini 3.1 Pro' }
+      { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash-Lite', audio: true },
+      { id: 'gemini-3.5-flash',      label: 'Gemini 3.5 Flash',      audio: true },
+      { id: 'gemini-3.1-pro',        label: 'Gemini 3.1 Pro',        audio: true }
     ],
     claudeModel: 'claude-haiku-4-5-20251001',
+    claudeModels: [
+      { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5',  audio: false },
+      { id: 'claude-sonnet-4-5',         label: 'Claude Sonnet 4.5', audio: false }
+    ],
     // OpenAI GPT — granted per user with the `gpt` flag in Users & access.
     // NOTE: confirm this id against OpenAI's model list before going live; the
     // server also accepts an OPENAI_DEFAULT_MODEL env override so the exact
     // string can be corrected without a redeploy of the client.
     gptModel: 'gpt-5.6-luna',
     gptModels: [
-      { id: 'gpt-5.6-luna', label: 'GPT 5.6 Luna' }
+      // audioFormat: 'wav' — OpenAI takes an input_audio part, but only wav or
+      // mp3, so the recording is decoded and re-encoded in the browser before
+      // it is sent. Clear this if the id you use is a text-only variant.
+      { id: 'gpt-5.6-luna', label: 'GPT 5.6 Luna', audio: true, audioFormat: 'wav' }
     ],
     // USD per 1,000,000 tokens — the invoice engine (js/billing.js) matches
     // each metered model id against these by longest prefix. Update here when

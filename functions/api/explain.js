@@ -65,6 +65,10 @@ export async function onRequest(context) {
   // GPT model id is env-overridable so the exact OpenAI string can be
   // corrected server-side without redeploying the client.
   const defaultGpt = env.OPENAI_DEFAULT_MODEL || 'gpt-5.6-luna';
+  /* The OSCE tab lets a candidate pick a named GPT model, so honour a
+     requested id when it plainly IS one — anything else falls back to the
+     server's own default rather than being passed to OpenAI unchecked. */
+  const askedGpt = (typeof model === 'string' && /^gpt-[\w.\-]{1,40}$/i.test(model)) ? model : defaultGpt;
   // Google retired the 1.x/2.x lines and gemini-3-flash for new keys — any
   // stored/requested retired id silently becomes the current default so a
   // stale saved config can never resurrect a dead (or mis-priced) model.
@@ -108,7 +112,7 @@ export async function onRequest(context) {
     const r = provider === 'claude'
       ? await callClaude(p.system, p.user, model, env, maxTok)
       : provider === 'gpt'
-        ? await callOpenAI(p.system, p.user, defaultGpt, env, maxTok)
+        ? await callOpenAI(p.system, p.user, askedGpt, env, maxTok)
         : await callGemini(p.system, p.user, effectiveModel, env, geminiRestricted, maxTok);
     await logTokens(token, env, provider, r, feature);   // true billing meter (dev included)
     return r;
@@ -195,8 +199,25 @@ export async function onRequest(context) {
          29,000 input tokens. Without audio it marks the typed transcript,
          exactly as before. */
       if (body.audio && body.audio.data) {
-        if (String(body.audio.data).length > 26_000_000) {
+        if (String(body.audio.data).length > 34_000_000) {
           return json({ error: 'That recording is too long to send. Mark from the transcript instead.' }, 413);
+        }
+        /* Which provider listens is the CLIENT's choice, checked here against
+           what each one actually accepts:
+             gemini — compressed audio inline, the cheap and accurate route.
+             gpt    — an input_audio part, but only wav or mp3, so the browser
+                      has already re-encoded it; body.audio.mime says which.
+             claude — the Messages API takes text, images and PDFs, not audio.
+                      There is nothing to enable, so it never reaches here. */
+        if (provider === 'gpt') {
+          const fmt = /mp3|mpeg/i.test(body.audio.mime || '') ? 'mp3' : 'wav';
+          const rr = await callOpenAIAudio(buildOsceAudioPrompt(body), body.audio, fmt,
+            askedGpt, env, 9000);
+          await logTokens(token, env, 'gpt', rr, 'osce');
+          return json({ text: rr.text, model: rr.model, heard: true, usage: { in: rr.in, out: rr.out } });
+        }
+        if (provider === 'claude') {
+          return json({ error: 'Claude cannot be sent audio — it reads text, images and PDFs only. Mark from the transcript, or choose Gemini or GPT to have the recording listened to.' }, 400);
         }
         const rr = await callGeminiAudio(buildOsceAudioPrompt(body), body.audio,
           modernGemini(model) || 'gemini-3.1-flash-lite', env, 9000);
@@ -204,6 +225,12 @@ export async function onRequest(context) {
         return json({ text: rr.text, model: rr.model, heard: true, usage: { in: rr.in, out: rr.out } });
       }
       const r = await run(buildOsceMarkPrompt(body), 'osce', 6000);
+      return json({ text: r.text, model: r.model, usage: { in: r.in, out: r.out } });
+    }
+
+    // ---- OSCE: talk to a model about the report it just produced ----
+    if (action === 'oscechat') {
+      const r = await run(buildOsceChatPrompt(body), 'osce_chat', 2200);
       return json({ text: r.text, model: r.model, usage: { in: r.in, out: r.out } });
     }
 
@@ -218,7 +245,19 @@ export async function onRequest(context) {
       if (String(img.data).length > 8_000_000) return json({ error: 'That image is too large — please send a screenshot under 5 MB.' }, 413);
       const rr = await callGeminiVision(SLIP_SYSTEM, SLIP_USER, img, 'gemini-3.1-flash-lite', env, 400);
       await logTokens(token, env, 'gemini', rr, 'topup_ocr');
-      return json({ text: rr.text, model: rr.model, usage: { in: rr.in, out: rr.out } });
+      /* Instant activation is decided HERE, never in the browser.
+         The balance is derived from approved top-ups, so a client that could
+         mark its own row approved could mint money — which is why the RLS
+         policy lets a user insert nothing but `pending`. The credit therefore
+         has to be written by something the user does not control: this
+         function, with the service key, against fields it read itself off the
+         image. If the service key is not configured the slip simply goes to
+         the approval queue as before, so this can fail closed but never
+         open. */
+      const credit = await maybeCreditSlip(rr.text, user, env);
+      return json({ text: rr.text, model: rr.model, usage: { in: rr.in, out: rr.out },
+        match: credit.match, credited: credit.credited, topUpId: credit.id,
+        reason: credit.reason, confirmBy: credit.confirmBy, beneficiary: credit.beneficiary });
     }
     const prompt = action === 'chat' ? buildChatPrompt(question, messages) : buildExplainPrompt(question);
     const r = await run(prompt, 'tutor');
@@ -441,6 +480,30 @@ function buildOsceAudioPrompt(body) {
   return { system, user };
 }
 
+/* A candidate talking to the model about the report it just wrote. The whole
+   station is NOT resent — only the marking the conversation is about, which
+   keeps a five-message exchange cheaper than the marking itself was. */
+function buildOsceChatPrompt(body) {
+  const st = body.station || {};
+  const r = body.result || {};
+  const weak = (r.questions || []).map((q, i) =>
+    `Q${i + 1} (${q.awarded}/${q.max}): ${String(q.prompt || '').slice(0, 200)}\n` +
+    `  missed/partial: ${(q.points || []).filter(p => !/cover/i.test(p.status || ''))
+      .map(p => p.point).slice(0, 8).join('; ') || '(none)'}`).join('\n');
+  const convo = (body.messages || []).slice(-10)
+    .map(m => `${m.role === 'user' ? 'Candidate' : 'Examiner'}: ${String(m.content).slice(0, 1500)}`).join('\n');
+  return {
+    system: PERSONA + ' You are debriefing a candidate on an OSCE station you have just marked. ' +
+      'Answer what they ask, at Part II depth, and stay honest about what they missed — do not soften a mark to be kind.',
+    user: `Station: ${st.topic || ''}\nScenario: ${String(st.scenario || '').slice(0, 600)}\n` +
+      `Result: ${r.total}/${r.max} (${r.percent}%), pass mark ${st.pass_mark ?? '—'} — ${r.pass ? 'passed' : 'below the pass mark'}.\n` +
+      `Examiner's verdict: ${String(r.examinerComment || '').slice(0, 700)}\n\n` +
+      `Where the marks went:\n${weak.slice(0, 6000)}\n\n` +
+      `Conversation so far:\n${convo}\n\n` +
+      `Answer the candidate's latest message. Be concrete and cite the guideline by name where one applies. Under 250 words unless they ask for more.`
+  };
+}
+
 /** One audio track + the scheme. Gemini only — it takes audio inline and is by far the cheapest at it. */
 async function callGeminiAudio(prompt, audio, model, env, maxTokens) {
   if (!env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not configured on the server.');
@@ -467,17 +530,157 @@ async function callGeminiAudio(prompt, audio, model, env, maxTokens) {
   return { text, model, in: u.promptTokenCount | 0, out: u.candidatesTokenCount | 0 };
 }
 
+/** One audio track + the scheme, on OpenAI.
+    OpenAI takes audio as an `input_audio` content part, but only as wav or
+    mp3 — it will not read the webm/opus a browser records. The client has
+    therefore already decoded and re-encoded the tape (see OSCE.toWav); all
+    this has to do is name the format it was given. */
+async function callOpenAIAudio(prompt, audio, format, model, env, maxTokens) {
+  if (!env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not configured on the server.');
+  const cap = Math.max(2048, maxTokens || 9000);
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + env.OPENAI_API_KEY },
+    body: JSON.stringify({
+      model, max_completion_tokens: cap,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: prompt.system },
+        { role: 'user', content: [
+          { type: 'input_audio', input_audio: { data: audio.data, format: format === 'mp3' ? 'mp3' : 'wav' } },
+          { type: 'text', text: prompt.user }
+        ] }
+      ]
+    })
+  });
+  if (!res.ok) {
+    let detail = ''; try { detail = (await res.json())?.error?.message || ''; } catch {}
+    // the commonest cause by far is a text-only model id, so say so
+    throw new Error(`Could not mark the recording on GPT (HTTP ${res.status})${detail ? ': ' + detail : ''}. `
+      + 'If this model does not accept audio, clear its "audio" flag in config.js and mark from the transcript.');
+  }
+  const data = await res.json();
+  const partsOf = c => {
+    const v = c?.message?.content;
+    if (typeof v === 'string') return v;
+    if (Array.isArray(v)) return v.map(x => (typeof x === 'string' ? x : (x?.text || ''))).join('');
+    return '';
+  };
+  const text = (data.choices || []).map(partsOf).join('') || '';
+  if (!text) throw new Error('GPT listened to the recording but returned no marks. Try again, or mark from the transcript.');
+  return { text, model: data.model || model, in: data.usage?.prompt_tokens || 0, out: data.usage?.completion_tokens || 0 };
+}
+
 /* ---------------- payment slip ---------------- */
 
 const SLIP_SYSTEM = 'You read bank payment receipts and return data. Return only JSON.';
+/* The slip is never told which account it OUGHT to name — it is asked to
+   report every account number printed on it, and the app does the matching.
+   Handing the model the expected number invites it to agree that it saw one,
+   which is precisely the thing that must not be guessable when a matching
+   slip credits a balance on the spot. */
 const SLIP_USER = [
   'Read this bank payment slip / receipt / screenshot and return ONLY this JSON, no prose, no code fence:',
   '{"amount":<number>,"currency":"<LKR|USD|...>","reference":"<the reference or remark the payer typed, often a short number like 00001>",',
   '"payee":"<who was paid / the biller or account>","date":"<YYYY-MM-DD or empty>","bank":"<bank name or empty>",',
   '"txnId":"<the bank\'s own transaction/reference number>","status":"<e.g. Successfully Completed, or empty>",',
+  '"accountTo":"<the destination / beneficiary / credited account number, digits exactly as printed>",',
+  '"accountFrom":"<the paying / debited account number if shown, digits exactly as printed>",',
+  '"accounts":["<every account number printed anywhere on the slip, digits exactly as printed>"],',
   '"confidence":<0-1, how sure you are this is a genuine completed payment slip>}',
-  'If a field is not visible use "" (or 0 for amount). Do not guess an amount that is not printed.'
+  'Copy account numbers digit for digit, including any leading zeros, and never invent or complete one that is masked.',
+  'If a field is not visible use "" (or 0 for amount, [] for accounts). Do not guess an amount that is not printed.'
 ].join('\n');
+
+/* ---------------- instant activation of a matching slip ----------------
+
+   Four things have to be true before a payment credits itself: it names the
+   beneficiary account, it has an amount, it has a date, and its reference is
+   the payer's own user number. All four are read off the image by this
+   function, so none of them can be supplied by the caller.
+
+   The account is compared as digits with leading zeros stripped, because the
+   same account is printed as 0087612781 by one bank and 87612781 by another.
+   Nothing else is normalised — a different number is a different account.
+
+   The credit is real but PROVISIONAL: it spends immediately and carries the
+   deadline by which the developer confirms it against the bank statement.  */
+
+const onlyDigits = s => String(s == null ? '' : s).replace(/\D/g, '');
+const acctKey = s => onlyDigits(s).replace(/^0+/, '');
+/** The same user number the client shows the payer, derived the same way. */
+function userNumberOf(user) {
+  return (onlyDigits(user?.id).slice(-5) || '00001').padStart(5, '0');
+}
+
+async function walletSettings(env) {
+  try {
+    const res = await sb(`/rest/v1/app_config?id=eq.wallet&select=data`, env,
+      { headers: { Authorization: `Bearer ${env.SUPABASE_ANON_KEY}` } });
+    const rows = await res.json();
+    return rows?.[0]?.data || {};
+  } catch { return {}; }
+}
+
+async function maybeCreditSlip(text, user, env) {
+  const off = { credited: false, match: null };
+  let f = null;
+  const raw = String(text || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+  try { f = JSON.parse(raw); } catch {
+    const a = raw.indexOf('{'), b = raw.lastIndexOf('}');
+    if (a >= 0 && b > a) { try { f = JSON.parse(raw.slice(a, b + 1)); } catch {} }
+  }
+  if (!f) return off;
+
+  const w = await walletSettings(env);
+  const account = String(env.BENEFICIARY_ACCOUNT || w.beneficiary?.account || '').trim();
+  const hours = Number(w.instantHours) > 0 ? Number(w.instantHours) : 24;
+  const myNo = userNumberOf(user);
+  const onSlip = [f.accountTo, f.accountFrom, f.payee, ...(Array.isArray(f.accounts) ? f.accounts : [])];
+  const want = acctKey(account);
+  const match = {
+    account: !!want && onSlip.some(v => acctKey(v) && acctKey(v) === want),
+    amount: Number(f.amount) > 0,
+    date: !!String(f.date || '').trim(),
+    reference: onlyDigits(f.reference) === onlyDigits(myNo) && !!onlyDigits(myNo)
+  };
+  const out = { credited: false, match, beneficiary: account || null };
+
+  if (!account) return Object.assign(out, { reason: 'no-account' });
+  if (w.instantActivation === false) return Object.assign(out, { reason: 'off' });
+  if (!Object.values(match).every(Boolean)) return Object.assign(out, { reason: 'incomplete' });
+  if (!env.SUPABASE_SERVICE_KEY) return Object.assign(out, { reason: 'not-configured' });
+
+  const svc = { Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`, apikey: env.SUPABASE_SERVICE_KEY };
+  // the same slip twice is the same payment once — match on the bank's own
+  // transaction number, falling back to amount + date when it printed none
+  try {
+    const txn = String(f.txnId || '').trim();
+    const q = txn
+      ? `extracted->>txnId=eq.${encodeURIComponent(txn)}`
+      : `amount_lkr=eq.${Number(f.amount)}&extracted->>date=eq.${encodeURIComponent(String(f.date))}`;
+    const dup = await sb(`/rest/v1/credit_topups?user_id=eq.${user.id}&${q}&select=id&limit=1`, env, { headers: svc });
+    const rows = await dup.json();
+    if (Array.isArray(rows) && rows.length) return Object.assign(out, { reason: 'duplicate' });
+  } catch { /* a failed duplicate check must not block a genuine payment */ }
+
+  const confirmBy = Date.now() + hours * 3600e3;
+  try {
+    const res = await sb('/rest/v1/credit_topups', env, {
+      method: 'POST',
+      headers: Object.assign({ Prefer: 'return=representation' }, svc),
+      body: JSON.stringify({
+        user_id: user.id, amount_lkr: Number(f.amount), reference: String(f.reference || myNo),
+        status: 'approved',
+        note: `Auto-credited: slip named the account, ${Number(f.amount)} on ${f.date}, reference ${f.reference}. Awaiting confirmation against the bank.`,
+        extracted: Object.assign({}, f, { matched: match, beneficiary: account, provisional: true, confirmBy })
+      })
+    });
+    if (!res.ok) return Object.assign(out, { reason: 'insert-failed' });
+    const rows = await res.json();
+    return Object.assign(out, { credited: true, id: rows?.[0]?.id, confirmBy });
+  } catch { return Object.assign(out, { reason: 'insert-failed' }); }
+}
 
 /** One image + a short instruction. Used only for payment slips. */
 async function callGeminiVision(system, user, image, model, env, maxTokens) {
