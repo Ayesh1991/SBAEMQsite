@@ -79,8 +79,8 @@ window.AUREUM_CONFIG = {
        match — the comparison is on digits only, ignoring leading zeros. */
     beneficiary: {
       account: '0087612781',
-      bank: '',                  // optional, only used in the on-screen instructions
-      name: ''
+      name: 'TMTGS Thennakoon',
+      bank: 'BOC — Kandy'
     },
     instantActivation: true,     // credit a fully-matching slip without waiting
     instantHours: 24             // how long that provisional credit stands unconfirmed

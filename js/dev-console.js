@@ -3193,6 +3193,7 @@ const DevConsole = (() => {
               LKR ${Number(t.amount_lkr).toLocaleString('en-LK', { minimumFractionDigits: 2 })}
               <span class="dev-kind">${ctx.esc(t.reference || 'no reference')}</span>
               ${t.extracted?.manual ? '<span class="dev-kind">added by hand</span>' : ''}
+              ${t.extracted?.amountTyped ? '<span class="dev-kind st-prov">amount typed, not read from the slip</span>' : ''}
               ${provisional(t) ? '<span class="dev-kind st-prov">awaiting your confirmation</span>' : ''}</p>
             <p class="muted tiny">${ctx.esc(new Date(t.created_at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }))}
               ${t.extracted?.date ? ' · paid ' + ctx.esc(t.extracted.date) : ''}
