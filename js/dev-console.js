@@ -2444,6 +2444,25 @@ const DevConsole = (() => {
   }
   const osceId = d => 'osce-' + slug(d.topic || d.source_file || 'station');
 
+  /* ---- collections: the bins a station is filed into ----
+     The list lives in app_config so it can be changed without a deploy;
+     config.js only supplies the ones a fresh deployment starts with. */
+  let _osceColls = null;
+  async function osceCollections(force) {
+    if (_osceColls && !force) return _osceColls;
+    let saved = null;
+    try { saved = await ctx.Backend.getOsceCollections(); } catch {}
+    _osceColls = (saved && saved.length) ? saved : (ctx.cfg.osce?.collections || []).slice();
+    return _osceColls;
+  }
+  async function saveOsceCollections(list) {
+    await ctx.Backend.saveOsceCollections(list);
+    _osceColls = list;
+    if (typeof OSCE !== 'undefined') { OSCE.bustCollections?.(); OSCE.bustStations(); }
+    return list;
+  }
+  const collSlug = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 32);
+
   async function renderOsceSection(view) {
     const { esc } = ctx;
     view.innerHTML = `
@@ -2456,8 +2475,36 @@ const DevConsole = (() => {
             marking points behind each. Published stations appear in the <strong>OSCE</strong> tab and in the exam
             simulator. Source folder: <code>${esc(ctx.cfg.drive.osceFolderId || '(set drive.osceFolderId)')}</code>.</p>
         </header>
+        <div class="card" data-animate>
+          <h3 class="card-title">🗂 Collections</h3>
+          <p class="muted">The bins a station can be filed into. They appear as filters at the top of the station bank,
+            in the editor, and when a station is imported. Renaming one keeps everything filed in it; removing one
+            leaves its stations unfiled rather than deleting them.</p>
+          <div id="os-colls"></div>
+          <div class="dev-inline" style="margin-top:12px">
+            <label class="wl-f"><span>Add a collection</span>
+              <input type="text" id="os-coll-new" placeholder="e.g. Kandy OSCE" maxlength="40"></label>
+            <button class="btn btn-ghost" id="os-coll-add" style="align-self:end">＋ Add</button>
+          </div>
+          <span class="dev-status" id="os-coll-msg"></span>
+
+          <details class="dev-collapse" style="margin-top:16px">
+            <summary><span class="card-title">Move stations in bulk</span><span class="dc-caret">▸</span></summary>
+            <p class="muted">Use this once to file the stations that were published before collections existed — pick
+              <em>Unfiled</em> as the source and <em>Common bank</em> as the destination.</p>
+            <div class="dev-inline">
+              <label class="wl-f"><span>Move from</span><select class="sel" id="os-move-from"></select></label>
+              <label class="wl-f"><span>Into</span><select class="sel" id="os-move-to"></select></label>
+              <button class="btn btn-gold" id="os-move-go" style="align-self:end">Move them</button>
+            </div>
+            <span class="dev-status" id="os-move-msg"></span>
+          </details>
+        </div>
+
         <div class="dev-toolbar" data-animate>
           <button class="btn btn-gold" id="os-scan">Scan Drive for OSCE stations</button>
+          <label class="wl-f" style="max-width:220px"><span>Import into</span>
+            <select class="sel" id="os-import-coll"></select></label>
           <span class="dev-status" id="os-status"></span>
         </div>
         <div id="os-list" data-animate></div>
@@ -2479,17 +2526,116 @@ const DevConsole = (() => {
       </section>`;
     view.querySelector('#os-scan').addEventListener('click', scanOsce);
     view.querySelector('#os-paste-btn').addEventListener('click', pasteOsce);
+    await wireOsceCollections(view);
     await refreshOscePublished(view);
+  }
+
+  async function wireOsceCollections(view) {
+    const { esc } = ctx;
+    const host = view.querySelector('#os-colls');
+    const msg = view.querySelector('#os-coll-msg');
+    const counts = {};
+    try {
+      ((await ctx.Backend.getOsceStations()) || []).forEach(s => {
+        const c = s.collection || ''; counts[c] = (counts[c] || 0) + 1;
+      });
+    } catch {}
+
+    const paint = async () => {
+      const list = await osceCollections();
+      host.innerHTML = `<div class="os-coll-rows">${list.map((c, i) => `
+        <div class="os-coll-row" data-ci="${i}">
+          <input type="text" class="os-coll-name" value="${esc(c.label)}" data-ci="${i}" maxlength="40">
+          <span class="muted tiny">${counts[c.id] || 0} station${(counts[c.id] || 0) === 1 ? '' : 's'} · <code>${esc(c.id)}</code></span>
+          <button class="link-btn" data-cmove="${i}" data-dir="-1" ${i === 0 ? 'disabled' : ''}>↑</button>
+          <button class="link-btn" data-cmove="${i}" data-dir="1" ${i === list.length - 1 ? 'disabled' : ''}>↓</button>
+          <button class="link-btn qr-danger" data-cdel="${i}">✕</button>
+        </div>`).join('')}</div>
+        ${counts[''] ? `<p class="muted tiny">${counts['']} station${counts[''] === 1 ? '' : 's'} not filed into any collection yet.</p>` : ''}`;
+
+      const opts = (withAll, withUnfiled) =>
+        (withAll ? `<option value="*">Every station</option>` : '') +
+        (withUnfiled ? `<option value="">Unfiled (${counts[''] || 0})</option>` : '') +
+        list.map(c => `<option value="${esc(c.id)}">${esc(c.label)}${counts[c.id] ? ` (${counts[c.id]})` : ''}</option>`).join('');
+      const from = view.querySelector('#os-move-from'), to = view.querySelector('#os-move-to');
+      const imp = view.querySelector('#os-import-coll');
+      if (from) from.innerHTML = opts(true, true);
+      if (to) to.innerHTML = opts(false, true);
+      if (imp) {
+        const def = ctx.cfg.osce?.defaultCollection || '';
+        imp.innerHTML = `<option value="">Unfiled</option>` + list.map(c =>
+          `<option value="${esc(c.id)}" ${c.id === def ? 'selected' : ''}>${esc(c.label)}</option>`).join('');
+      }
+
+      host.querySelectorAll('.os-coll-name').forEach(el => el.addEventListener('change', async () => {
+        const l = await osceCollections(); l[Number(el.dataset.ci)].label = el.value.trim() || l[Number(el.dataset.ci)].id;
+        await saveOsceCollections(l); msg.innerHTML = '<span class="good">✓ Saved.</span>'; paint();
+      }));
+      host.querySelectorAll('[data-cmove]').forEach(b => b.addEventListener('click', async () => {
+        const i = Number(b.dataset.cmove), d = Number(b.dataset.dir);
+        const l = await osceCollections();
+        if (i + d < 0 || i + d >= l.length) return;
+        [l[i], l[i + d]] = [l[i + d], l[i]];
+        await saveOsceCollections(l); paint();
+      }));
+      host.querySelectorAll('[data-cdel]').forEach(b => b.addEventListener('click', async () => {
+        const l = await osceCollections(); const c = l[Number(b.dataset.cdel)];
+        const n = counts[c.id] || 0;
+        if (!confirm(`Remove the "${c.label}" collection?` + (n ? `\n\nIts ${n} station${n === 1 ? '' : 's'} stay in the bank — they simply become unfiled.` : ''))) return;
+        l.splice(Number(b.dataset.cdel), 1);
+        await saveOsceCollections(l); msg.innerHTML = '<span class="good">✓ Removed.</span>'; paint();
+      }));
+    };
+    await paint();
+
+    view.querySelector('#os-coll-add').addEventListener('click', async () => {
+      const input = view.querySelector('#os-coll-new');
+      const label = input.value.trim();
+      if (!label) return;
+      const id = collSlug(label);
+      const l = await osceCollections();
+      if (!id) { msg.innerHTML = '<span class="bad">Give it a name with some letters in it.</span>'; return; }
+      if (l.some(c => c.id === id)) { msg.innerHTML = '<span class="bad">There is already a collection with that name.</span>'; return; }
+      l.push({ id, label });
+      await saveOsceCollections(l);
+      input.value = '';
+      msg.innerHTML = `<span class="good">✓ Added “${ctx.esc(label)}”.</span>`;
+      await paint();
+    });
+
+    view.querySelector('#os-move-go').addEventListener('click', async e => {
+      const from = view.querySelector('#os-move-from').value;
+      const to = view.querySelector('#os-move-to').value;
+      const mm = view.querySelector('#os-move-msg');
+      const list = (await ctx.Backend.getOsceStations().catch(() => [])) || [];
+      const ids = from === '*' ? null : list.filter(s => (s.collection || '') === from).map(s => s.id);
+      const n = from === '*' ? list.length : ids.length;
+      if (!n) { mm.innerHTML = '<span class="bad">Nothing is in that collection.</span>'; return; }
+      const l = await osceCollections();
+      const toName = to ? (l.find(c => c.id === to)?.label || to) : 'Unfiled';
+      if (!confirm(`Move ${n} station${n === 1 ? '' : 's'} into “${toName}”?`)) return;
+      e.target.disabled = true; mm.textContent = `Moving ${n}…`;
+      try {
+        const moved = await ctx.Backend.moveOsceStations(ids, to);
+        if (typeof OSCE !== 'undefined') OSCE.bustStations();
+        mm.innerHTML = `<span class="good">✓ ${moved || n} station${(moved || n) === 1 ? '' : 's'} now in “${ctx.esc(toName)}”.</span>`;
+        await wireOsceCollections(view);
+      } catch (err) { mm.innerHTML = `<span class="bad">${ctx.esc(err.message || err)}</span>`; }
+      e.target.disabled = false;
+    });
   }
 
   async function refreshOscePublished(view) {
     const list = (await ctx.Backend.getOsceStations().catch(() => [])) || [];
     const host = view.querySelector('#os-published'); if (!host) return;
     const cnt = view.querySelector('#os-pub-count'); if (cnt) cnt.textContent = list.length;
+    const colls = await osceCollections();
+    const cname = id => id ? (colls.find(c => c.id === id)?.label || id) : '—';
     host.innerHTML = list.length ? `<div class="table-scroll"><table class="table">
-      <thead><tr><th>Station</th><th>Questions</th><th>Marks</th><th>Pass</th><th></th></tr></thead>
+      <thead><tr><th>Station</th><th>Collection</th><th>Questions</th><th>Marks</th><th>Pass</th><th></th></tr></thead>
       <tbody>${list.map(v => `<tr><td>${ctx.esc(v.topic || v.id)}</td>
-        <td class="muted">${(v.questions || []).length}</td>
+        <td class="muted">${ctx.esc(cname(v.collection || ''))}</td>
+        <td class="muted">${v.q_count != null ? v.q_count : (v.questions || []).length}</td>
         <td class="muted">${v.total_marks || ''}</td>
         <td class="muted">${v.pass_mark || ''} (${v.pass_mark_percent || 70}%)</td>
         <td><button class="link-btn" data-edit-osce="${ctx.esc(v.id)}">edit</button>
@@ -2504,7 +2650,7 @@ const DevConsole = (() => {
       let st = null;
       try { st = await ctx.Backend.getOsceStation(b.dataset.editOsce); } catch {}
       if (!st) { eh.innerHTML = '<p class="bad">Could not load that station.</p>'; return; }
-      osceEditor(eh, st, () => refreshOscePublished(view));
+      osceEditor(eh, st, await osceCollections(), () => refreshOscePublished(view));
     }));
     host.querySelectorAll('[data-unpub-osce]').forEach(b => b.addEventListener('click', async () => {
       if (!confirm('Unpublish this station?')) return;
@@ -2550,7 +2696,12 @@ const DevConsole = (() => {
     staged.forEach((d, i) => document.querySelector(`[data-os-approve="${i}"]`).addEventListener('click', async e => {
       const msg = document.querySelector(`[data-os-msg="${i}"]`);
       e.target.disabled = true; msg.textContent = 'Publishing…'; msg.className = 'dev-row-msg muted';
-      try { await ctx.Backend.publishOsceStation(d); if (typeof OSCE !== 'undefined') OSCE.bustStations();
+      try {
+        // whatever the "Import into" picker says at the moment Publish is
+        // pressed — so a scan can be filed row by row into different bins
+        d.collection = document.getElementById('os-import-coll')?.value || '';
+        await ctx.Backend.publishOsceStation(d);
+        if (typeof OSCE !== 'undefined') { OSCE.bustStations(); OSCE.bustCollections?.(); }
         msg.textContent = '✓ Published to the OSCE tab.'; msg.className = 'dev-row-msg good';
         await refreshOscePublished(document.getElementById('view'));
       } catch (err) { msg.textContent = err.message || String(err); msg.className = 'dev-row-msg bad'; e.target.disabled = false; }
@@ -2562,6 +2713,7 @@ const DevConsole = (() => {
     let d; try { d = JSON.parse(ta.value); } catch (e) { out.innerHTML = `<p class="bad">Invalid JSON: ${ctx.esc(e.message)}</p>`; return; }
     const errs = validateOsce(d); if (errs.length) { out.innerHTML = `<p class="bad">${errs.map(ctx.esc).join('<br>')}</p>`; return; }
     d.id = osceId(d);
+    if (d.collection == null) d.collection = document.getElementById('os-import-coll')?.value || '';
     try { await ctx.Backend.publishOsceStation(d); if (typeof OSCE !== 'undefined') OSCE.bustStations();
       out.innerHTML = `<p class="good">✓ Published “${ctx.esc(d.topic)}”.</p>`;
       await refreshOscePublished(document.getElementById('view'));
@@ -2580,10 +2732,14 @@ const DevConsole = (() => {
      ================================================================ */
 
   let edit = null;                  // the station being edited, as a working copy
+  let editColls = [];               // the bins it can be filed into
 
   let autoTotal = true;             // does total_marks track the questions?
-  function osceEditor(host, station, onSaved) {
+  function osceEditor(host, station, colls, onSaved) {
+    // called as (host, station, onSaved) from the older call sites
+    if (typeof colls === 'function') { onSaved = colls; colls = null; }
     edit = JSON.parse(JSON.stringify(station));
+    editColls = colls || (ctx.cfg.osce?.collections || []);
     autoTotal = !edit.total_marks || Number(edit.total_marks) === editorSums().marks;
     paintEditor(host, onSaved);
   }
@@ -2623,7 +2779,14 @@ const DevConsole = (() => {
           <label class="wl-f"><span>Total marks</span><input type="number" data-f="total_marks" value="${edit.total_marks || sum.marks}" min="1"></label>
           <label class="wl-f"><span>Pass mark (%)</span><input type="number" data-f="pass_mark_percent" value="${edit.pass_mark_percent || 70}" min="1" max="100"></label>
           <label class="wl-f"><span>Pass mark (marks)</span><input type="number" data-f="pass_mark" value="${edit.pass_mark || Math.round((edit.total_marks || sum.marks) * ((edit.pass_mark_percent || 70) / 100))}" min="0"></label>
+          <label class="wl-f"><span>Collection</span>
+            <select class="sel" data-f="collection">
+              <option value="">Unfiled</option>
+              ${editColls.map(c => `<option value="${esc(c.id)}" ${c.id === (edit.collection || '') ? 'selected' : ''}>${esc(c.label)}</option>`).join('')}
+            </select></label>
         </div>
+        ${edit.edited_by ? `<p class="muted tiny">Last edited by <strong>${esc(edit.edited_by)}</strong>${
+          edit.edited_at ? ' on ' + esc(new Date(edit.edited_at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })) : ''}.</p>` : ''}
         <label class="wl-f"><span>Scenario — what the candidate reads before the clock starts</span>
           <textarea class="dev-textarea oe-scenario" data-f="scenario" rows="4">${esc(edit.scenario || '')}</textarea></label>
 
@@ -2792,6 +2955,9 @@ const DevConsole = (() => {
     const { esc } = ctx;
     const cfgw = (await ctx.Backend.getWalletConfig().catch(() => ({}))) || {};
     const rate = Number(cfgw.usdRate) > 0 ? Number(cfgw.usdRate) : 340;
+    const wcfg = ctx.cfg.wallet || {};
+    const ben = Object.assign({ account: '', name: '', bank: '' }, wcfg.beneficiary || {}, cfgw.beneficiary || {});
+    const instantOn = (cfgw.instantActivation != null ? cfgw.instantActivation : wcfg.instantActivation) !== false;
     view.innerHTML = `
       <section class="page">
         ${backLink}
@@ -2822,6 +2988,55 @@ const DevConsole = (() => {
           <span class="dev-status" id="st-msg"></span>
           <p class="muted tiny" style="margin-top:10px">At LKR ${rate}/USD, a typical OSCE marking (~4,500 tokens) costs
             about <strong id="st-eg">—</strong>, and reading a payment slip about <strong id="st-eg2">—</strong>.</p>
+        </div>
+
+        <div class="card" data-animate>
+          <h3 class="card-title">🏦 Your account &amp; instant top-ups</h3>
+          <p class="muted">This is the account users are told to pay into, and the number a slip has to name before it
+            credits itself. Banks print the same account with and without its leading zeros —
+            <code>${esc(ben.account || '0087612781')}</code> and <code>${esc(String(ben.account || '0087612781').replace(/^0+/, ''))}</code> —
+            and both are accepted.</p>
+          <div class="dev-inline">
+            <label class="wl-f"><span>Account number</span>
+              <input type="text" id="st-acct" value="${esc(ben.account || '')}" placeholder="0087612781" inputmode="numeric"></label>
+            <label class="wl-f"><span>Account name (optional)</span>
+              <input type="text" id="st-acct-name" value="${esc(ben.name || '')}"></label>
+            <label class="wl-f"><span>Bank (optional)</span>
+              <input type="text" id="st-acct-bank" value="${esc(ben.bank || '')}" placeholder="Bank of Ceylon"></label>
+          </div>
+          <label class="pref-toggle" style="margin-top:12px">
+            <span><strong>Credit a matching slip immediately</strong><br><span class="muted tiny">A slip showing this
+              account, an amount, a transfer date and the user's own reference number is credited on upload and marked
+              <em>awaiting confirmation</em>. You confirm it against your bank statement when you have time; until then
+              it appears at the top of the list below.</span></span>
+            <label class="dev-flag"><input type="checkbox" id="st-instant" ${instantOn ? 'checked' : ''}><span></span></label>
+          </label>
+          <label class="wl-f" style="max-width:280px;margin-top:10px"><span>Hours you have to confirm it</span>
+            <input type="number" id="st-instant-h" value="${Number(cfgw.instantHours) || 24}" min="1" max="168"></label>
+          <p class="wl-warn" style="margin-top:12px">The match is made on the server, from the image itself — a browser
+            cannot claim a slip matched when it did not. It needs <code>SUPABASE_SERVICE_KEY</code> set in Cloudflare →
+            Settings → Variables and secrets. Without it every slip simply waits for approval, which is the old
+            behaviour, so nothing breaks while it is missing.</p>
+          <button class="btn btn-gold" id="st-acct-save" style="margin-top:6px">Save the account</button>
+          <span class="dev-status" id="st-acct-msg"></span>
+        </div>
+
+        <div class="card" data-animate>
+          <details class="dev-collapse" id="st-manual-wrap">
+            <summary><span class="card-title">➕ Add credit by hand</span><span class="dc-caret">▸</span></summary>
+            <p class="muted">For a payment you have verified some other way — the slip was unreadable, the user never
+              got one, or you took the money in person. It is credited straight away and recorded as a manual entry
+              with your note, so the balance always says where it came from.</p>
+            <div class="dev-inline">
+              <label class="wl-f"><span>User</span><select class="sel" id="st-man-user"><option>Loading…</option></select></label>
+              <label class="wl-f"><span>Amount (LKR)</span><input type="number" id="st-man-amt" min="1" step="0.01" placeholder="500"></label>
+            </div>
+            <label class="wl-f"><span>How you verified it — kept with the entry</span>
+              <input type="text" id="st-man-note" placeholder="e.g. BOC statement 19 Aug, txn 674858322438559"></label>
+            <button class="btn btn-gold" id="st-man-add" style="margin-top:12px">Add the credit</button>
+            <span class="dev-status" id="st-man-msg"></span>
+            <div id="st-man-recent"></div>
+          </details>
         </div>
 
         <div class="card" data-animate>
@@ -2862,8 +3077,76 @@ const DevConsole = (() => {
         msg.innerHTML = '<span class="good">✓ Saved.</span>'; }
       catch (e) { msg.innerHTML = `<span class="bad">${ctx.esc(e.message || e)}</span>`; }
     });
+    view.querySelector('#st-acct-save').addEventListener('click', async () => {
+      const msg = view.querySelector('#st-acct-msg');
+      const account = view.querySelector('#st-acct').value.replace(/[^\d]/g, '');
+      if (account && account.length < 6) {
+        msg.innerHTML = '<span class="bad">That does not look like an account number.</span>'; return;
+      }
+      const next = Object.assign({}, cfgw, {
+        beneficiary: { account, name: view.querySelector('#st-acct-name').value.trim(),
+                       bank: view.querySelector('#st-acct-bank').value.trim() },
+        instantActivation: view.querySelector('#st-instant').checked,
+        instantHours: Number(view.querySelector('#st-instant-h').value) || 24
+      });
+      msg.textContent = 'Saving…';
+      try {
+        await ctx.Backend.saveWalletConfig(next);
+        if (typeof Wallet !== 'undefined') { Wallet.bustRate(); Wallet.bust(); }
+        Object.assign(cfgw, next);
+        msg.innerHTML = '<span class="good">✓ Saved — users see this account immediately.</span>';
+      } catch (e) { msg.innerHTML = `<span class="bad">${ctx.esc(e.message || e)}</span>`; }
+    });
+
+    await wireManualCredit(view);
     view.querySelector('#st-refresh').addEventListener('click', () => paintTopUps(view));
     await paintTopUps(view);
+  }
+
+  /* Crediting somebody by hand. The list of users is only loaded when the
+     section is actually opened — it is a rare action and there is no reason
+     to read every profile on the way past. */
+  async function wireManualCredit(view) {
+    const wrap = view.querySelector('#st-manual-wrap');
+    const sel = view.querySelector('#st-man-user');
+    const msg = view.querySelector('#st-man-msg');
+    let loaded = false;
+    const load = async () => {
+      if (loaded) return; loaded = true;
+      try {
+        const users = (await ctx.Backend.listAllUsers()) || [];
+        sel.innerHTML = `<option value="">Choose a user…</option>` + users
+          .slice().sort((a, b) => String(a.name || a.email).localeCompare(String(b.name || b.email)))
+          .map(u => `<option value="${ctx.esc(u.id)}">${ctx.esc(u.name || u.email || u.id)}${u.name && u.email ? ` — ${ctx.esc(u.email)}` : ''}</option>`).join('');
+      } catch (e) {
+        loaded = false;
+        sel.innerHTML = `<option value="">Could not load the users</option>`;
+        msg.innerHTML = `<span class="bad">${ctx.esc(e.message || e)}</span>`;
+      }
+    };
+    wrap.addEventListener('toggle', () => { if (wrap.open) load(); });
+    if (wrap.open) await load();
+
+    view.querySelector('#st-man-add').addEventListener('click', async e => {
+      const userId = sel.value;
+      const amount = Number(view.querySelector('#st-man-amt').value);
+      const note = view.querySelector('#st-man-note').value.trim();
+      if (!userId) { msg.innerHTML = '<span class="bad">Choose which user this is for.</span>'; return; }
+      if (!(amount > 0)) { msg.innerHTML = '<span class="bad">Enter the amount to credit.</span>'; return; }
+      if (!note) { msg.innerHTML = '<span class="bad">Say how you verified it — the entry is meaningless without it.</span>'; return; }
+      const who = sel.options[sel.selectedIndex].textContent;
+      if (!confirm(`Credit LKR ${amount.toLocaleString('en-LK')} to ${who}?\n\nThis is live money — it is spendable immediately.`)) return;
+      e.target.disabled = true; msg.textContent = 'Adding…';
+      try {
+        await ctx.Backend.createTopUpFor(userId, { amount_lkr: amount, reference: 'manual', note });
+        if (typeof Wallet !== 'undefined') Wallet.bust();
+        msg.innerHTML = `<span class="good">✓ LKR ${amount.toLocaleString('en-LK')} credited to ${ctx.esc(who)}.</span>`;
+        view.querySelector('#st-man-amt').value = '';
+        view.querySelector('#st-man-note').value = '';
+        await paintTopUps(view);
+      } catch (err) { msg.innerHTML = `<span class="bad">${ctx.esc(err.message || err)}</span>`; }
+      e.target.disabled = false;
+    });
   }
 
   /* A slip may be a photo, a screenshot or the bank's own PDF. Images render
@@ -2888,28 +3171,57 @@ const DevConsole = (() => {
     catch (e) { host.innerHTML = `<p class="bad">${ctx.esc(e.message || e)}</p>`; return; }
     if (!list.length) { host.innerHTML = `<p class="muted">No top-ups yet.</p>`; return; }
     const pending = list.filter(t => t.status === 'pending');
+    /* A slip that credited itself is approved already, but nobody has looked
+       at a bank statement yet. Those come first and stay visibly unfinished
+       until they are confirmed — an auto-credit that is never checked is the
+       whole risk of instant activation. */
+    const provisional = t => t.status === 'approved' && t.extracted?.provisional && !t.extracted?.confirmed;
+    const order = list.slice().sort((a, b) => (provisional(b) ? 1 : 0) - (provisional(a) ? 1 : 0));
+    const nProv = list.filter(provisional).length;
+    const matchRow = m => !m ? '' : `<span class="st-match">${
+      [['account', 'account'], ['amount', 'amount'], ['date', 'date'], ['reference', 'reference']]
+        .map(([k, label]) => `<i class="${m[k] ? 'ok' : 'no'}">${m[k] ? '✓' : '○'} ${label}</i>`).join('')}</span>`;
     host.innerHTML = `
+      ${nProv ? `<p class="wl-warn">⚡ <strong>${nProv}</strong> auto-credited top-up${nProv > 1 ? 's' : ''} still to be
+        checked against your bank statement. The money is already spendable — confirm or reverse each one.</p>` : ''}
       ${pending.length ? '' : '<p class="muted">Nothing is waiting for approval.</p>'}
-      ${list.map(t => `
-      <div class="dev-row card st-top ${t.status}">
+      ${order.map(t => `
+      <div class="dev-row card st-top ${t.status}${provisional(t) ? ' is-provisional' : ''}">
         <div class="dev-row-head">
           <div>
-            <p class="dev-file">${t.status === 'approved' ? '✓' : t.status === 'declined' ? '✗' : '⏳'}
+            <p class="dev-file">${provisional(t) ? '⚡' : t.status === 'approved' ? '✓' : t.status === 'declined' ? '✗' : '⏳'}
               LKR ${Number(t.amount_lkr).toLocaleString('en-LK', { minimumFractionDigits: 2 })}
-              <span class="dev-kind">${ctx.esc(t.reference || 'no reference')}</span></p>
+              <span class="dev-kind">${ctx.esc(t.reference || 'no reference')}</span>
+              ${t.extracted?.manual ? '<span class="dev-kind">added by hand</span>' : ''}
+              ${provisional(t) ? '<span class="dev-kind st-prov">awaiting your confirmation</span>' : ''}</p>
             <p class="muted tiny">${ctx.esc(new Date(t.created_at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }))}
+              ${t.extracted?.date ? ' · paid ' + ctx.esc(t.extracted.date) : ''}
               ${t.extracted?.txnId ? ' · txn ' + ctx.esc(t.extracted.txnId) : ''}
               ${t.extracted?.bank ? ' · ' + ctx.esc(t.extracted.bank) : ''}
               ${t.extracted?.confidence != null ? ' · read confidence ' + Math.round(t.extracted.confidence * 100) + '%' : ''}</p>
+            ${matchRow(t.extracted?.matched)}
           </div>
           ${t.status === 'pending' ? `<div class="dev-inline">
             <button class="btn btn-gold btn-sm" data-approve="${t.id}">Approve</button>
             <button class="btn btn-ghost btn-sm" data-decline="${t.id}">Decline</button></div>`
+            : provisional(t) ? `<div class="dev-inline">
+            <button class="btn btn-gold btn-sm" data-confirm="${t.id}">✓ Confirmed at the bank</button>
+            <button class="btn btn-ghost btn-sm qr-danger" data-decline="${t.id}">Reverse it</button></div>`
             : `<span class="muted tiny">${ctx.esc(t.status)}${t.note ? ' — ' + ctx.esc(t.note) : ''}</span>`}
         </div>
         ${t.slip ? `<details class="dev-collapse"><summary><span>View the slip</span><span class="dc-caret">▸</span></summary>
           <div class="st-slip">${slipView(t.slip, t.id)}</div></details>` : ''}
       </div>`).join('')}`;
+    host.querySelectorAll('[data-confirm]').forEach(b => b.addEventListener('click', async () => {
+      b.disabled = true;
+      const row = list.find(x => String(x.id) === String(b.dataset.confirm));
+      try {
+        await ctx.Backend.setTopUpStatus(b.dataset.confirm, 'approved',
+          'Confirmed against the bank statement ' + new Date().toLocaleDateString('en-GB'),
+          Object.assign({}, row?.extracted, { confirmed: true, confirmedAt: Date.now() }));
+        await paintTopUps(view);
+      } catch (e) { alert(e.message || e); b.disabled = false; }
+    }));
     host.querySelectorAll('[data-approve]').forEach(b => b.addEventListener('click', async () => {
       b.disabled = true;
       try { await ctx.Backend.setTopUpStatus(b.dataset.approve, 'approved', ''); if (typeof Wallet !== 'undefined') Wallet.bust(); await paintTopUps(view); }
@@ -3173,5 +3485,18 @@ const DevConsole = (() => {
     };
   }
 
-  return { render };
+  /* The station editor is used from two places now: this console, and the
+     Station editor tab in the OSCE section, which candidates can reach. That
+     second caller has never gone through render(), so `ctx` is empty — fill
+     it in from the globals rather than requiring the console to have been
+     opened first. */
+  function openOsceEditor(host, station, colls, onSaved) {
+    if (!ctx) ctx = { cfg: window.AUREUM_CONFIG || {}, Data: typeof Data !== 'undefined' ? Data : null,
+      Backend, esc: s => String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])),
+      FX: typeof FX !== 'undefined' ? FX : { viewIn() {} } };
+    return osceEditor(host, station, colls, onSaved);
+  }
+
+  return { render, osceEditor: openOsceEditor, validateOsce };
 })();

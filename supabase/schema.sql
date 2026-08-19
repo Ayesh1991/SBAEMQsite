@@ -1049,3 +1049,73 @@ create policy "osce audio own" on storage.objects for all
           and created_at < now() - interval '24 hours';
      $$);
 */
+
+
+/* ============================================================
+   v59 — OSCE collections
+   ------------------------------------------------------------
+   A station's bin ("Common bank", "Pera OSCE", …) is one string
+   inside its `meta`, so filing a station needs no new column and
+   no migration of the rows themselves.
+
+   Filing the whole bank at once is the exception: doing it from
+   the browser would mean downloading every station, changing one
+   key and writing it all back — megabytes each way to set a
+   string. This function does it inside Postgres instead, so the
+   "move everything to the Common bank" button costs one call and
+   no egress. Pass ids => null to move every station.
+
+   The app falls back to read-modify-write if this function is not
+   installed, so running it is an optimisation, not a requirement.
+   ============================================================ */
+
+create or replace function public.osce_set_collection(ids text[], coll text)
+returns integer
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare n integer;
+begin
+  update osce_stations
+     set meta = jsonb_set(meta, '{collection}', to_jsonb(coll), true)
+   where ids is null or id = any(ids);
+  get diagnostics n = row_count;
+  return n;
+end;
+$$;
+
+revoke all on function public.osce_set_collection(text[], text) from public;
+grant execute on function public.osce_set_collection(text[], text) to authenticated;
+
+
+/* ============================================================
+   v59 — the OSCE editor moves into the OSCE tab
+   ------------------------------------------------------------
+   Stations were developer-write-only. The editor is now a tab any
+   signed-in candidate can open, so the policy has to let them
+   save — but "anyone may edit" and "anyone may delete the bank"
+   are very different risks, so they are separated here:
+
+     • insert / update — any signed-in user. Improving a marking
+       scheme is the point of opening it up.
+     • delete          — the developer alone. A curated bank of
+       200 stations must not be removable by one wrong click.
+
+   Every save stamps edited_by / edited_at into the station's meta,
+   so a bad edit is attributable and can be put back by hand.
+   ============================================================ */
+
+drop policy if exists "osce stations write"  on public.osce_stations;
+drop policy if exists "osce stations edit"   on public.osce_stations;
+drop policy if exists "osce stations add"    on public.osce_stations;
+drop policy if exists "osce stations remove" on public.osce_stations;
+
+create policy "osce stations add" on public.osce_stations for insert
+  to authenticated with check (true);
+
+create policy "osce stations edit" on public.osce_stations for update
+  to authenticated using (true) with check (true);
+
+create policy "osce stations remove" on public.osce_stations for delete
+  to authenticated using (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
