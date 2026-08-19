@@ -28,6 +28,18 @@
  */
 
 const DEV_EMAIL_FALLBACK = 'ayeshmantha@gmail.com';
+/* The account users pay into. This has to be known SERVER-SIDE, because the
+   server is what decides whether a slip names the right account — and it
+   cannot read config.js, which lives in the browser.
+
+   Without this fallback the two sides disagreed: the top-up page happily told
+   people to pay into the account it found in config.js, while the server,
+   finding nothing stored in app_config, reported "the site owner has not set
+   the account number yet" and sent every slip to the approval queue. Keeping
+   the same default here means instant activation works out of the box; the
+   developer's Rates & settings entry and BENEFICIARY_ACCOUNT both still
+   override it. Not a secret — it is the number printed on every slip. */
+const BENEFICIARY_FALLBACK = '0087612781';
 
 export async function onRequest(context) {
   const { request, env } = context;
@@ -633,13 +645,18 @@ async function maybeCreditSlip(text, user, env) {
   if (!f) return off;
 
   const w = await walletSettings(env);
-  const account = String(env.BENEFICIARY_ACCOUNT || w.beneficiary?.account || '').trim();
+  const account = String(env.BENEFICIARY_ACCOUNT || w.beneficiary?.account || BENEFICIARY_FALLBACK).trim();
   const hours = Number(w.instantHours) > 0 ? Number(w.instantHours) : 24;
   const myNo = userNumberOf(user);
-  const onSlip = [f.accountTo, f.accountFrom, f.payee, ...(Array.isArray(f.accounts) ? f.accounts : [])];
+  /* Look for the account on the RECEIVING side. `accounts` is the safety net
+     for a slip the reader labelled loosely, but a slip whose SENDER is this
+     account is money going the other way, so that disqualifies it however it
+     was labelled. */
+  const onSlip = [f.accountTo, f.payee, ...(Array.isArray(f.accounts) ? f.accounts : [])];
   const want = acctKey(account);
+  const fromKey = acctKey(f.accountFrom);
   const match = {
-    account: !!want && onSlip.some(v => acctKey(v) && acctKey(v) === want),
+    account: !!want && fromKey !== want && onSlip.some(v => acctKey(v) && acctKey(v) === want),
     amount: Number(f.amount) > 0,
     date: !!String(f.date || '').trim(),
     reference: onlyDigits(f.reference) === onlyDigits(myNo) && !!onlyDigits(myNo)

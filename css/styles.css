@@ -4162,3 +4162,28 @@ body.eco-open .ap-dock { z-index: 2390; }
 .st-match i.ok { color: var(--teal); }
 .st-top.is-provisional { border-color: var(--gold); }
 .dev-kind.st-prov { color: var(--gold); border-color: var(--gold); }
+
+/* ---- v59.1: billing details, the statement, and a fixed slip amount ---- */
+.wl-acct { align-items: center; }
+.wl-bd { margin: 0; }
+.wl-bd-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px;
+  padding: 11px 0; border-bottom: 1px solid var(--hairline); }
+.wl-bd-row:last-child { border-bottom: 0; }
+.wl-bd dt { flex: 0 0 130px; font-size: .72rem; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
+.wl-bd dd { flex: 1 1 200px; margin: 0; display: flex; align-items: baseline; gap: 12px; }
+.wl-bd-v { font-family: var(--font-display); font-size: 1.1rem; letter-spacing: .03em; }
+
+.wl-pb-modal .os-modal-box { width: min(940px, 100%); }
+.table.wl-pb td { vertical-align: top; }
+.table.wl-pb .num { text-align: right; white-space: nowrap; }
+.table.wl-pb .nowrap { white-space: nowrap; }
+.wl-pb-d { display: block; font-size: .72rem; color: var(--ink-3); margin-top: 2px; }
+.wl-pb-day { display: block; font-size: .6rem; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
+.wl-pb-tag { display: inline-block; margin-top: 4px; font-size: .64rem; letter-spacing: .04em;
+  padding: 1px 8px; border-radius: 999px; border: 1px solid var(--hairline); color: var(--ink-3); }
+.wl-pb-tag.gold { color: var(--gold); border-color: var(--gold); }
+.table.wl-pb tr.pending { opacity: .62; }
+
+.wl-fixed { display: flex; flex-direction: column; gap: 3px; margin-bottom: 12px; }
+.wl-fixed > span:first-child { font-size: .72rem; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
+.wl-amt-n { font-family: var(--font-display); font-size: 1.45rem; color: var(--gold); }
