@@ -4304,3 +4304,10 @@ body.eco-open .ap-dock { z-index: 2390; }
 .os-rec-warn p { margin: 0 0 7px; }
 .os-rec-warn p:last-of-type { margin-bottom: 10px; }
 .os-rec-warn strong { color: var(--ink); }
+
+/* ---- v66: Groq — spoken examiner and Whisper transcripts ---- */
+.os-asr { margin: 0 0 14px; padding: 11px 14px; border-radius: 11px;
+  background: var(--surface-2); border: 1px solid var(--hairline); }
+.os-asr p { margin: 6px 0 0; }
+.os-asr-ok { margin: 0 !important; font-size: .8rem; line-height: 1.55; color: var(--teal); }
+.os-rec.is-live-voice i { box-shadow: 0 0 0 3px color-mix(in srgb, var(--teal) 22%, transparent); }

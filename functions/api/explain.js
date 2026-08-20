@@ -240,6 +240,43 @@ export async function onRequest(context) {
       return json({ text: r.text, model: r.model, usage: { in: r.in, out: r.out } });
     }
 
+    /* ---- Groq: transcription and the examiner's voice ----
+       Neither of these marks anything or reasons about a case. Whisper turns
+       a recording into words — which is the only way an iPad gets a
+       transcript at all, since Safari has never shipped a recogniser — and
+       the TTS route reads the question aloud in a real voice.
+
+       Both are gated on the `groq` flag (the developer always has it), and
+       both are allowed to fail: the client keeps the browser's own
+       recogniser and synthesiser as the fallback, so a rate limit costs
+       quality, never the station. */
+    if (action === 'transcribe' || action === 'tts') {
+      if (!isDev) {
+        const flags = await getUserFlags(token, user.id, env);
+        if (!flags.groq) return json({ error: 'Not enabled for your account.', fallback: true }, 403);
+      }
+      if (!env.GROQ_API_KEY) return json({ error: 'GROQ_API_KEY is not configured.', fallback: true }, 503);
+
+      if (action === 'transcribe') {
+        const a = body.audio || {};
+        if (!a.data) return json({ error: 'No audio was sent.', fallback: true }, 400);
+        if (String(a.data).length > 34_000_000) return json({ error: 'That recording is too long to transcribe.', fallback: true }, 413);
+        const r = await callGroqWhisper(a, body.prompt || '', env);
+        if (r.limited) return json({ error: r.error, fallback: true, rateLimited: true }, 429);
+        if (r.error) return json({ error: r.error, fallback: true }, 502);
+        await logTokens(token, env, 'groq', { model: r.model, in: 0, out: 0 }, 'transcribe');
+        return json({ text: r.text, model: r.model, secs: r.secs });
+      }
+
+      const said = String(body.text || '').slice(0, 1200);
+      if (!said.trim()) return json({ error: 'Nothing to say.', fallback: true }, 400);
+      const r = await callGroqSpeech(said, body.voice || '', env);
+      if (r.limited) return json({ error: r.error, fallback: true, rateLimited: true }, 429);
+      if (r.error) return json({ error: r.error, fallback: true }, 502);
+      await logTokens(token, env, 'groq', { model: r.model, in: 0, out: 0 }, 'examiner_voice');
+      return json({ audio: r.audio, mime: r.mime, model: r.model });
+    }
+
     // ---- OSCE: talk to a model about the report it just produced ----
     if (action === 'oscechat') {
       const r = await run(buildOsceChatPrompt(body), 'osce_chat', 2200);
@@ -602,6 +639,79 @@ async function callOpenAIAudio(prompt, audio, format, model, env, maxTokens) {
   const text = (data.choices || []).map(partsOf).join('') || '';
   if (!text) throw new Error('GPT listened to the recording but returned no marks. Try again, or mark from the transcript.');
   return { text, model: data.model || model, in: data.usage?.prompt_tokens || 0, out: data.usage?.completion_tokens || 0 };
+}
+
+/* ---------------- Groq ----------------
+
+   A free tier, so everything here is written to FAIL SOFT. Every path
+   returns { error, limited } rather than throwing, and the caller turns that
+   into a `fallback: true` response the browser knows how to absorb. A rate
+   limit must cost a nicer voice or a better transcript — never a station.
+
+   Model ids are env-overridable because a free tier retires and renames
+   models without notice, and a redeploy of the client should not be the way
+   to follow that. */
+const GROQ = 'https://api.groq.com/openai/v1';
+
+/** base64 → Blob, so the audio can go up as multipart the way Whisper wants. */
+function b64Blob(data, mime) {
+  const bin = atob(String(data));
+  const buf = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+  return new Blob([buf], { type: mime || 'audio/webm' });
+}
+
+/** The recording, as words. The one thing that gives an iPad a transcript. */
+async function callGroqWhisper(audio, hint, env) {
+  const model = env.GROQ_WHISPER_MODEL || 'whisper-large-v3-turbo';
+  const ext = /mp4|m4a|aac/i.test(audio.mime || '') ? 'm4a' : /wav/i.test(audio.mime || '') ? 'wav' : 'webm';
+  const form = new FormData();
+  form.append('file', b64Blob(audio.data, audio.mime), `station.${ext}`);
+  form.append('model', model);
+  form.append('response_format', 'json');
+  form.append('language', 'en');
+  /* The scheme's own vocabulary as a hint. Whisper uses it to bias spelling,
+     which is precisely where a generic recogniser fails: "mifepristone",
+     "MgSO4", "Swansea criteria" are the words that decide marks. */
+  if (hint) form.append('prompt', String(hint).slice(0, 800));
+  let res;
+  try {
+    res = await fetch(`${GROQ}/audio/transcriptions`, {
+      method: 'POST', headers: { Authorization: 'Bearer ' + env.GROQ_API_KEY }, body: form
+    });
+  } catch (e) { return { error: 'Could not reach the transcription service.' }; }
+  if (res.status === 429) {
+    return { limited: true, error: 'The free transcription quota is used up for now. The browser\'s own transcript is being used instead.' };
+  }
+  if (!res.ok) {
+    let detail = ''; try { detail = (await res.json())?.error?.message || ''; } catch {}
+    return { error: `Transcription failed (HTTP ${res.status})${detail ? ': ' + detail : ''}` };
+  }
+  const data = await res.json().catch(() => ({}));
+  return { text: String(data.text || '').trim(), model, secs: data.duration || 0 };
+}
+
+/** The examiner, read aloud. Returned as base64 so it can be mixed into the tape. */
+async function callGroqSpeech(text, voice, env) {
+  const model = env.GROQ_TTS_MODEL || 'playai-tts';
+  let res;
+  try {
+    res = await fetch(`${GROQ}/audio/speech`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + env.GROQ_API_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, voice: voice || env.GROQ_TTS_VOICE || 'Fritz-PlayAI',
+        input: text, response_format: 'wav' })
+    });
+  } catch { return { error: 'Could not reach the voice service.' }; }
+  if (res.status === 429) return { limited: true, error: 'The free voice quota is used up for now.' };
+  if (!res.ok) {
+    let detail = ''; try { detail = (await res.json())?.error?.message || ''; } catch {}
+    return { error: `The voice service refused (HTTP ${res.status})${detail ? ': ' + detail : ''}` };
+  }
+  const buf = new Uint8Array(await res.arrayBuffer());
+  let bin = '';
+  for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+  return { audio: btoa(bin), mime: 'audio/wav', model };
 }
 
 /* ---------------- payment slip ---------------- */

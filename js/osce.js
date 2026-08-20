@@ -214,6 +214,50 @@ const OSCE = (() => {
       'beside the address bar and set Microphone to Allow, then reload and tap the button below.'];
   }
 
+  /* ---------------- Groq: a real voice, and real transcription ----------------
+
+     Two mechanical jobs on a free tier — reading the question aloud, and
+     turning the recording into words. Neither marks anything.
+
+     Everything here is written so that losing it costs QUALITY and nothing
+     else. One flag turns the whole layer off for the rest of the session the
+     moment the quota is hit, and the browser's own synthesiser and recogniser
+     carry on exactly as they did before. A station must never depend on a
+     free tier being awake. */
+  let groqOff = false;                       // set once a 429 comes back
+  const groqCfg = () => cfg().ai?.groq || {};
+  const groqOn = k => !groqOff && groqCfg().enabled !== false && groqCfg()[k] !== false;
+
+  async function groqCall(body) {
+    const token = await Backend.getAccessToken();
+    if (!token) return null;
+    const res = await fetch(cfg().ai.apiBase, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify(body)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) return data;
+    // a quota exhausted, or no grant, stands down for the whole visit rather
+    // than being retried question after question
+    if (res.status === 429 || res.status === 403 || res.status === 503) groqOff = true;
+    return null;
+  }
+
+  /** The examiner's line as playable audio, or null to fall back to the browser. */
+  async function groqVoice(text) {
+    if (!groqOn('voice') || !text) return null;
+    const d = await groqCall({ action: 'tts', text, voice: groqCfg().voiceName || '' });
+    return d?.audio ? { data: d.audio, mime: d.mime || 'audio/wav' } : null;
+  }
+
+  /** The whole station, transcribed. `hint` biases the spelling of drug names. */
+  async function groqTranscribe(blob, hint) {
+    if (!groqOn('whisper') || !blob) return null;
+    const d = await groqCall({ action: 'transcribe', prompt: hint,
+      audio: { mime: blob.type || 'audio/webm', data: await toBase64(blob) } });
+    return d?.text ? { text: d.text, model: d.model } : null;
+  }
+
   const BOTH_KEY = 'aureum.osce.bothvoices';
   const examinerOnTape = () => { try { return localStorage.getItem(BOTH_KEY) !== '0'; } catch { return true; } };
   const setExaminerOnTape = v => { try { localStorage.setItem(BOTH_KEY, v ? '1' : '0'); } catch {} };
@@ -902,6 +946,19 @@ const OSCE = (() => {
     function resume() { stage.classList.remove('is-paused'); stage.querySelector('.os-paused')?.remove(); live?.resume(); startClock(); }
     function persist() { s.qi = qi; s.elapsed = elapsed; s.phase = qi >= qs.length ? 'done' : 'station'; saveSession(s); }
 
+    /* The examiner's lines, fetched while the candidate reads the scenario.
+       Prefetching is what makes a real voice usable: asking for the audio at
+       the moment the question appears would put a network round trip in the
+       middle of a timed station.
+
+       Declared HERE, above the phase dispatch, because brief() starts the
+       prefetch — and a `const` declared further down would still be in its
+       temporal dead zone at that point. The rejection was being swallowed by
+       the .catch() on the call, so it looked like the feature simply never
+       ran. */
+    const voices = new Map();
+    let voicesReady = false;
+
     /* ---- the three phases ----
        A debrief re-entered (a circuit stepping back, a re-render) used to be
        called with no recording and would announce that none had been made.
@@ -938,6 +995,8 @@ const OSCE = (() => {
         </div>`;
       stage.querySelector('#os-both')?.addEventListener('change', e => setExaminerOnTape(e.target.checked));
       stage.querySelector('#os-pre-go').addEventListener('click', e => preflight(stage, e.target));
+      // fetched in the background while the scenario is being read
+      prefetchVoices().catch(() => {});
       stage.querySelector('#os-go').addEventListener('click', async () => {
         await startCapture();
         startClock();
@@ -945,10 +1004,32 @@ const OSCE = (() => {
       });
     }
 
+    async function prefetchVoices() {
+      if (voicesReady || !groqOn('voice')) return;
+      voicesReady = true;
+      for (const q of qs) {
+        const line = (q.reveal_before ? q.reveal_before + '. ' : '') + q.prompt;
+        const clip = await groqVoice(line);
+        if (!clip) break;                       // quota gone; the browser voice takes over
+        voices.set(q.id, clip);
+      }
+    }
+
     async function startCapture() {
-      live = makeCapture(stage.querySelector('#os-mic'));
+      live = makeCapture(stage.querySelector('#os-mic'), voices.size > 0);
       live.watchState(() => paintRecState(stage));
       await live.start();
+    }
+
+    /** Say the examiner's line: the real voice onto the tape, or the browser's. */
+    async function examinerSays(q, text) {
+      const clip = voices.get(q?.id);
+      if (clip && live?.speakClip) {
+        hush();
+        const ok = await live.speakClip(clip);
+        if (ok) return;
+      }
+      speak(text);
     }
 
     /* Whatever the recorder is ACTUALLY doing, on screen, all the time.
@@ -1029,14 +1110,14 @@ const OSCE = (() => {
       tx.addEventListener('input', store);
 
       // the examiner reads the question, exactly as one would in the room
-      speak((q.reveal_before ? q.reveal_before + '. ' : '') + q.prompt);
+      examinerSays(q, (q.reveal_before ? q.reveal_before + '. ' : '') + q.prompt);
       stage.querySelector('#os-voice')?.addEventListener('click', e => {
         setVoiceOn(!voiceOn());
         e.currentTarget.classList.toggle('is-off', !voiceOn());
         e.currentTarget.title = voiceOn() ? 'The examiner reads each question aloud' : 'The examiner is silent';
         voiceOn() ? speak(q.prompt) : hush();
       });
-      stage.querySelector('#os-repeat')?.addEventListener('click', () => speak(q.prompt));
+      stage.querySelector('#os-repeat')?.addEventListener('click', () => examinerSays(q, q.prompt));
 
       /* Next means next. The examiner does not press you, does not ask
          whether there is anything further, and does not tell you the answer
@@ -1060,6 +1141,67 @@ const OSCE = (() => {
       debrief(timedOut, rec);
     }
 
+    /* Whisper, on the way into the debrief.
+
+       Run when the browser captured little or nothing — which on an iPad is
+       ALWAYS, since Safari has no recogniser — and the transcript is the only
+       thing standing between the candidate and a marked station.
+
+       The scheme's own words go up as a spelling hint, because the terms that
+       decide marks are exactly the ones a generic recogniser mangles:
+       "mifepristone" came back as "metro trick" on a real attempt.
+
+       It splits the returned text back across the questions by looking for
+       where each answer began. When that is not possible the whole transcript
+       is put on the first unanswered question rather than thrown away —
+       marked text in the wrong place is still worth more than none. */
+    async function transcribeIfWorthIt(stage, rec) {
+      if (!rec?.blob) return;
+      const already = qs.reduce((n, q) => n + ((ans[q.id]?.transcript || '').trim().length), 0);
+      if (already > 400) return;                       // the browser did its job
+      const host = stage.querySelector('#os-asr');
+      if (!host) return;
+      /* Nothing was captured AND transcription is unavailable — say so.
+         Silence here would leave a blank debrief with no explanation of why
+         it is blank, which is the state this whole feature exists to end. */
+      if (!groqOn('whisper')) {
+        host.hidden = false;
+        host.innerHTML = `<p class="muted tiny">${groqOff
+          ? 'The free transcription quota is used up for now, and this browser captured little or nothing.'
+          : 'This browser captured little or nothing, and transcription is not enabled for your account.'}
+          Type your answers below, or choose <strong>Mark from the recording</strong> — that route transcribes as it marks.</p>`;
+        return;
+      }
+      host.hidden = false;
+      host.innerHTML = `<div class="ai-loading sm"><span></span><span></span><span></span></div>
+        <p class="muted tiny">Transcribing the recording — this browser did not, so it is being done properly.</p>`;
+      const hint = qs.flatMap(q => (q.marking_points || [])).join(' ').slice(0, 700);
+      let out = null;
+      try { out = await groqTranscribe(rec.blob, hint); } catch {}
+      if (!out?.text) {
+        host.innerHTML = `<p class="muted tiny">${groqOff
+          ? 'The free transcription quota is used up for now — type your answers below, or mark from the recording, which transcribes as it marks.'
+          : 'The recording could not be transcribed. Type your answers below, or mark from the recording.'}</p>`;
+        return;
+      }
+      /* One transcript, several questions. Anything better than a single
+         blob needs to know where the candidate moved on, and nothing on the
+         tape says that — so it goes in whole, on the first question, and the
+         marker (which has every question in front of it) sorts out which part
+         answers what. */
+      const first = qs.find(q => !(ans[q.id]?.transcript || '').trim()) || qs[0];
+      ans[first.id] = { id: first.id, transcript: out.text };
+      persist();
+      const box = stage.querySelector(`[data-eq="${CSS.escape(String(first.id))}"]`);
+      if (box) { box.innerText = out.text; box.closest('.os-said')?.classList.remove('is-empty'); }
+      host.innerHTML = `<p class="os-asr-ok">✓ Transcribed from your recording (${esc(out.model || 'Whisper')}), free of charge.
+        It is all on Q${qs.indexOf(first) + 1} — split it across the questions if you like, or leave it: the marker has
+        every question in front of it.</p>`;
+      // the estimate and the mark button were drawn against an empty transcript
+      wireMarkControls(stage, st, ans, qs.map(q => ({ q, t: (ans[q.id]?.transcript || '').trim() })), rec, s);
+      const btn = stage.querySelector('#os-mark'); if (btn) btn.disabled = false;
+    }
+
     function debrief(timedOut, rec) {
       paintClock();
       const said = qs.map(q => ({ q, t: (ans[q.id]?.transcript || '').trim() }));
@@ -1081,6 +1223,7 @@ const OSCE = (() => {
 
         <div class="card" data-animate>
           <h3 class="card-title">What you said</h3>
+          <div id="os-asr" class="os-asr" hidden></div>
           ${said.map(({ q, t }, i) => `
             <div class="os-said ${t ? '' : 'is-empty'}">
               <p class="os-said-q"><strong>Q${i + 1}</strong> ${esc(q.prompt)} <span class="muted tiny">(${q.marks})</span></p>
@@ -1113,6 +1256,7 @@ const OSCE = (() => {
       stage.querySelectorAll('[data-eq]').forEach(el => el.addEventListener('input', () => {
         ans[el.dataset.eq] = { id: el.dataset.eq, transcript: el.innerText.trim() }; persist();
       }));
+      transcribeIfWorthIt(stage, rec);
       wireMarkControls(stage, st, ans, said, rec, s);
       stage.querySelector('#os-nextst')?.addEventListener('click', async () => {
         s.at += 1; s.qi = 0; s.elapsed = 0; s.phase = 'brief';
@@ -1192,7 +1336,7 @@ const OSCE = (() => {
 
   /* ---------------- microphone + recogniser ---------------- */
 
-  function makeCapture(host) {
+  function makeCapture(host, wantMix) {
     let media = null, rec = null, chunks = [], sr = null, onText = null, mime = '', started = 0;
     let onState = null, watch = null, failed = '';
     const say = (msg, cls) => { if (host) host.innerHTML = `<p class="os-mic-msg ${cls || ''}">${msg}</p>`; };
@@ -1250,6 +1394,44 @@ const OSCE = (() => {
       catch { return false; }
     }
 
+    /* ---- the mixing desk ----
+       When the examiner has a real voice, the tape is built rather than
+       overheard: the microphone and the examiner's audio are summed in Web
+       Audio and the recorder is pointed at the SUM. That puts both voices on
+       the recording by construction — through headphones, on any device, with
+       echo cancellation left on where it belongs. Without Groq the recorder
+       goes straight at the microphone as it always did. */
+    let acx = null, mixDest = null, micNode = null;
+    function mixer() {
+      if (mixDest) return mixDest;
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx || !media) return null;
+      try {
+        acx = acx || new Ctx();
+        mixDest = acx.createMediaStreamDestination();
+        micNode = acx.createMediaStreamSource(media);
+        micNode.connect(mixDest);
+        return mixDest;
+      } catch { mixDest = null; return null; }
+    }
+    /** Play a clip out loud AND onto the tape. Resolves when it has finished. */
+    async function speakClip(clip) {
+      const dest = mixer();
+      if (!dest || !acx) return false;
+      try {
+        if (acx.state === 'suspended') await acx.resume();
+        const buf = await acx.decodeAudioData(b64ToBuf(clip.data));
+        const src = acx.createBufferSource();
+        src.buffer = buf;
+        src.connect(dest);              // onto the recording
+        src.connect(acx.destination);   // and out of the speaker
+        await new Promise(res => { src.onended = res; src.start(); });
+        return true;
+      } catch { return false; }
+    }
+    /** What the recorder should listen to: the mix if there is one, else the mic. */
+    const recordFrom = () => (mixDest ? mixDest.stream : media);
+
     async function start() {
       try {
         media = await openMic();
@@ -1275,7 +1457,10 @@ const OSCE = (() => {
       try {
         // 24 kbps opus is plainly intelligible speech and keeps a 15-minute
         // station near 2.5 MB — small enough to send for marking
-        rec = new MediaRecorder(media, Object.assign(mime ? { mimeType: mime } : {}, { audioBitsPerSecond: 24000 }));
+        // with a real examiner voice the mix is built first, so the tape
+        // carries both sides; without it this is the bare microphone
+        if (wantMix) mixer();
+        rec = new MediaRecorder(recordFrom(), Object.assign(mime ? { mimeType: mime } : {}, { audioBitsPerSecond: 24000 }));
         rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
         rec.onerror = () => { failed = 'The recording stopped unexpectedly.'; ping(); revive(); };
         rec.start(1000);
@@ -1334,7 +1519,7 @@ const OSCE = (() => {
       reviving = true;
       try {
         try { rec?.state !== 'inactive' && rec.stop(); } catch {}
-        rec = new MediaRecorder(media, Object.assign(mime ? { mimeType: mime } : {}, { audioBitsPerSecond: 24000 }));
+        rec = new MediaRecorder(recordFrom(), Object.assign(mime ? { mimeType: mime } : {}, { audioBitsPerSecond: 24000 }));
         rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
         rec.onerror = () => { ping(); };
         rec.start(1000);
@@ -1372,10 +1557,12 @@ const OSCE = (() => {
         mins: `${fmt(secs)} of audio · ${(blob.size / 1024 / 1024).toFixed(1)} MB` };
     }
     return { ok: () => !!rec, start, attach, pause, resume, stop, state, watchState, retry, bothVoices,
+      speakClip, mixed: () => !!mixDest,
       kill: () => { clearInterval(watch); watch = null;
         try { sr && (sr._stopped = true, sr.stop()); } catch {}
         try { rec?.state !== 'inactive' && rec.stop(); } catch {}
-        try { media?.getTracks().forEach(t => t.stop()); } catch {} } };
+        try { media?.getTracks().forEach(t => t.stop()); } catch {}
+        try { acx?.close(); } catch {} } };
   }
   function stopLive() { try { live?.kill(); } catch {} live = null; }
 
@@ -1536,6 +1723,13 @@ const OSCE = (() => {
       out.innerHTML = `<p class="ai-error">${esc(e.message || e)}</p>`;
       btn.disabled = false;
     }
+  }
+
+  function b64ToBuf(b64) {
+    const bin = atob(String(b64));
+    const buf = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+    return buf.buffer;
   }
 
   const toBase64 = blob => new Promise((res, rej) => {
