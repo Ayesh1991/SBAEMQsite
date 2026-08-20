@@ -225,21 +225,36 @@ const OSCE = (() => {
      carry on exactly as they did before. A station must never depend on a
      free tier being awake. */
   let groqOff = false;                       // set once a 429 comes back
+  /* WHY it is not being used, kept and shown. A decommissioned model failed
+     silently for a day — the 400 was in Groq's own log and nowhere on screen —
+     so the reason now travels with the fallback instead of disappearing. */
+  const groqSay = { source: 'browser', why: '', model: '' };
+  function groqReport() { return Object.assign({}, groqSay, { off: groqOff }); }
+  /* Once the developer has pinned a working model, the layer should come back
+     without anyone having to reload the page. */
+  function resetGroq() { groqOff = false; groqSay.source = 'browser'; groqSay.why = ''; groqSay.model = ''; }
+
   const groqCfg = () => cfg().ai?.groq || {};
   const groqOn = k => !groqOff && groqCfg().enabled !== false && groqCfg()[k] !== false;
 
   async function groqCall(body) {
     const token = await Backend.getAccessToken();
-    if (!token) return null;
-    const res = await fetch(cfg().ai.apiBase, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-      body: JSON.stringify(body)
-    });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok) return data;
-    // a quota exhausted, or no grant, stands down for the whole visit rather
-    // than being retried question after question
-    if (res.status === 429 || res.status === 403 || res.status === 503) groqOff = true;
+    if (!token) { groqSay.why = 'not signed in'; return null; }
+    let res, data = {};
+    try {
+      res = await fetch(cfg().ai.apiBase, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+        body: JSON.stringify(body)
+      });
+      data = await res.json().catch(() => ({}));
+    } catch (e) { groqSay.why = 'the network refused'; return null; }
+    if (res.ok) { groqSay.why = ''; return data; }
+    groqSay.why = data.error || `HTTP ${res.status}`;
+    groqSay.model = data.model || '';
+    /* A quota exhausted, a missing grant, a missing key or a retired model
+       all stand the layer down for the visit rather than being retried
+       question after question. */
+    if ([429, 403, 503].includes(res.status) || /decommission|not_found|no .* model/i.test(groqSay.why)) groqOff = true;
     return null;
   }
 
@@ -247,6 +262,7 @@ const OSCE = (() => {
   async function groqVoice(text) {
     if (!groqOn('voice') || !text) return null;
     const d = await groqCall({ action: 'tts', text, voice: groqCfg().voiceName || '' });
+    if (d?.audio) { groqSay.source = 'groq'; groqSay.model = d.model || ''; }
     return d?.audio ? { data: d.audio, mime: d.mime || 'audio/wav' } : null;
   }
 
@@ -979,6 +995,7 @@ const OSCE = (() => {
             : `The examiner allows about ${st.reading_time_min || 1} minute to read. The ${minsOf(st)}-minute clock and the
                recording both start when you press the button — question 1 appears at the same moment.`}</p>
           <div class="os-mic" id="os-mic"></div>
+          <p class="os-voiceline" id="os-voiceline"></p>
           <div class="os-preflight" id="os-pre">
             <button class="btn btn-ghost btn-sm" id="os-pre-go">🎙 Test the microphone first</button>
             <span class="muted tiny">Worth ten seconds — a blocked microphone is much easier to fix now than four
@@ -995,13 +1012,31 @@ const OSCE = (() => {
         </div>`;
       stage.querySelector('#os-both')?.addEventListener('change', e => setExaminerOnTape(e.target.checked));
       stage.querySelector('#os-pre-go').addEventListener('click', e => preflight(stage, e.target));
-      // fetched in the background while the scenario is being read
-      prefetchVoices().catch(() => {});
+      // fetched in the background while the scenario is being read, then the
+      // brief says plainly which voice the candidate is going to hear
+      prefetchVoices().then(() => paintVoiceLine(stage)).catch(() => paintVoiceLine(stage));
       stage.querySelector('#os-go').addEventListener('click', async () => {
         await startCapture();
         startClock();
         show(qi);
       });
+    }
+
+    /** Which voice the candidate is about to hear, and why. */
+    function paintVoiceLine(stage) {
+      const el = stage.querySelector('#os-voiceline');
+      if (!el) return;
+      const r = groqReport();
+      if (voices.size) {
+        el.className = 'os-voiceline is-groq';
+        el.innerHTML = `🎙 <strong>A real examiner voice</strong> is ready${r.model ? ` (${esc(r.model)})` : ''} —
+          and it is mixed straight into the recording, so the tape carries both sides even through headphones.`;
+        return;
+      }
+      if (!groqCfg().voice || groqCfg().enabled === false) { el.hidden = true; return; }
+      el.className = 'os-voiceline';
+      el.innerHTML = `🔈 The <strong>browser's own voice</strong> will read the questions${
+        r.why ? ` — the real voice is unavailable: <em>${esc(r.why)}</em>` : ''}.`;
     }
 
     async function prefetchVoices() {
@@ -1253,9 +1288,15 @@ const OSCE = (() => {
             : `<a class="btn btn-ghost" href="#/osce">Back to the stations</a>`}
         </div>`;
 
-      stage.querySelectorAll('[data-eq]').forEach(el => el.addEventListener('input', () => {
-        ans[el.dataset.eq] = { id: el.dataset.eq, transcript: el.innerText.trim() }; persist();
-      }));
+      stage.querySelectorAll('[data-eq]').forEach(el => {
+        el.addEventListener('input', () => {
+          ans[el.dataset.eq] = { id: el.dataset.eq, transcript: el.innerText.trim() }; persist();
+        });
+        // dictate a correction rather than typing it on a tablet keyboard
+        const q = qs.find(x => String(x.id) === el.dataset.eq);
+        const mic = micButton(el, { hint: (q?.marking_points || []).join(' ').slice(0, 400), maxSecs: 120 });
+        if (mic) el.parentNode.insertBefore(mic, el.nextSibling);
+      });
       transcribeIfWorthIt(stage, rec);
       wireMarkControls(stage, st, ans, said, rec, s);
       stage.querySelector('#os-nextst')?.addEventListener('click', async () => {
@@ -1847,7 +1888,12 @@ const OSCE = (() => {
         </header>
 
         ${r.examinerComment ? `<div class="card es-examiner" data-animate>
-          <h3 class="card-title">👨‍⚖️ Examiner's verdict</h3><p>${esc(r.examinerComment)}</p></div>` : ''}
+          <div class="es-inbox-head">
+            <h3 class="card-title">👨‍⚖️ Examiner's verdict</h3>
+            <button class="btn btn-ghost btn-sm" id="os-hear">▶ Hear it</button>
+          </div>
+          <p>${esc(r.examinerComment)}</p>
+          <p class="dev-row-msg" id="os-hear-msg"></p></div>` : ''}
 
         ${r.structure ? `<div class="card" data-animate>
           <h3 class="card-title">How you performed</h3>
@@ -1981,6 +2027,7 @@ const OSCE = (() => {
       }
     })();
 
+    wireHearVerdict(view, a);
     wireExplore(view, a);
     view.querySelector('#os-print').addEventListener('click', () => printPicker(a));
     view.querySelector('#os-del').addEventListener('click', async () => {
@@ -1995,6 +2042,46 @@ const OSCE = (() => {
      are about this attempt rather than the topic. Only the questions that
      lost marks are sent, which keeps a whole conversation cheaper than the
      marking that produced it. */
+
+  /* ---------------- the debrief, read aloud ----------------
+     A real debrief is spoken, not handed over on paper. This reads the
+     verdict and the first things to fix in the examiner's own voice, so it
+     can be listened to on the way somewhere rather than read on a screen.
+     Groq where it is available, the browser where it is not. */
+  function wireHearVerdict(view, a) {
+    const btn = view.querySelector('#os-hear');
+    if (!btn) return;
+    const msg = view.querySelector('#os-hear-msg');
+    let playing = null;
+    btn.addEventListener('click', async () => {
+      if (playing) { try { playing.pause(); } catch {} playing = null; hush(); btn.textContent = '▶ Hear it'; return; }
+      const r = a.result || {};
+      const lines = [r.examinerComment];
+      (r.improvements || []).slice(0, 3).forEach((x, i) =>
+        lines.push(`${i === 0 ? 'To improve. ' : ''}${typeof x === 'string' ? x : x.action}`));
+      const text = lines.filter(Boolean).join(' ');
+      btn.disabled = true; btn.textContent = 'Fetching…';
+      const clip = await groqVoice(text);
+      btn.disabled = false;
+      if (clip) {
+        const au = new Audio(`data:${clip.mime};base64,${clip.data}`);
+        playing = au;
+        btn.textContent = '⏹ Stop';
+        au.onended = () => { playing = null; btn.textContent = '▶ Hear it'; };
+        au.play().catch(() => { playing = null; btn.textContent = '▶ Hear it'; });
+        if (msg) msg.textContent = '';
+        return;
+      }
+      // no Groq: the browser reads it, and says so rather than pretending
+      const rep = groqReport();
+      if (msg) msg.innerHTML = `<span class="muted tiny">Read by the browser's voice${
+        rep.why ? ` — the real voice is unavailable: ${esc(rep.why)}` : ''}.</span>`;
+      speak(text, { rate: 1 });
+      btn.textContent = '⏹ Stop';
+      playing = { pause() {} };
+      setTimeout(() => { if (playing) { playing = null; btn.textContent = '▶ Hear it'; } }, Math.min(90000, text.length * 70));
+    });
+  }
 
   function wireExplore(view, a) {
     const msgs = view.querySelector('#os-ex-msgs');
@@ -2332,7 +2419,75 @@ ${has('learning') && (r.keyLearning || []).length ? `<section class="blk"><h2>Ke
       .sort((x, y) => x.created - y.created);
   }
 
+  /* ---------------- speak instead of type, anywhere ----------------
+     Whisper is not OSCE-specific. On an iPad, where there is no dictation in
+     the browser at all, a microphone button is the difference between a note
+     somebody makes and one they do not.
+
+     Attach it beside any textarea, input or contenteditable: press to record,
+     press again to stop, and the transcript is appended. Silent about itself
+     when Groq is unavailable — the button simply does not appear, because a
+     dead button is worse than no button. */
+  function micButton(target, opts = {}) {
+    if (!target || !groqOn('whisper')) return null;
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return null;
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'voice-mic ' + (opts.className || '');
+    btn.title = 'Dictate instead of typing';
+    btn.innerHTML = '🎙';
+    let media = null, rec = null, chunks = [], busy = false;
+
+    const setText = t => {
+      const cur = ('value' in target && target.tagName !== 'DIV') ? target.value : target.innerText;
+      const joined = (cur.trim() ? cur.trim() + ' ' : '') + t;
+      if ('value' in target && target.tagName !== 'DIV') { target.value = joined; }
+      else { target.innerText = joined; }
+      target.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+
+    const stop = async () => {
+      btn.classList.remove('is-rec');
+      btn.innerHTML = '⏳';
+      busy = true;
+      await new Promise(res => { if (!rec) return res(); rec.onstop = res; try { rec.stop(); } catch { res(); } });
+      try { media?.getTracks().forEach(t => t.stop()); } catch {}
+      const blob = chunks.length ? new Blob(chunks, { type: rec?.mimeType || 'audio/webm' }) : null;
+      chunks = []; rec = null; media = null;
+      let out = null;
+      if (blob) { try { out = await groqTranscribe(blob, opts.hint || ''); } catch {} }
+      busy = false;
+      btn.innerHTML = '🎙';
+      if (out?.text) setText(out.text);
+      else {
+        btn.title = groqReport().why || 'That could not be transcribed';
+        btn.classList.add('is-bad');
+        setTimeout(() => btn.classList.remove('is-bad'), 2500);
+      }
+    };
+
+    btn.addEventListener('click', async () => {
+      if (busy) return;
+      if (rec) return stop();
+      try { media = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+      catch { btn.classList.add('is-bad'); btn.title = 'The microphone is blocked for this site';
+        setTimeout(() => btn.classList.remove('is-bad'), 2500); return; }
+      const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']
+        .find(t => MediaRecorder.isTypeSupported(t)) || '';
+      rec = new MediaRecorder(media, Object.assign(mime ? { mimeType: mime } : {}, { audioBitsPerSecond: 24000 }));
+      rec.ondataavailable = e => { if (e.data?.size) chunks.push(e.data); };
+      rec.start(1000);
+      btn.classList.add('is-rec');
+      btn.innerHTML = '⏹';
+      // a note is a note, not a station — stop it before it becomes a file
+      setTimeout(() => { if (rec) stop(); }, (opts.maxSecs || 120) * 1000);
+    });
+    return btn;
+  }
+
   return { renderBank, renderStation, renderSim, renderRun, renderResult, renderMine, renderEdit, progress,
+    micButton, groqReport, resetGroq, voiceAvailable: () => groqOn('whisper'),
     stations, bustStations, collections, bustCollections, openSessions, dropSession,
     marksOf, passOf, qsOf, toWav, wavRateFor, modelChoices, noAudioReason };
 })();

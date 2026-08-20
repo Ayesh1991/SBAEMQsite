@@ -1978,6 +1978,18 @@ const DevConsole = (() => {
           </div>
         </div>
         <div class="card" data-animate>
+          <h3 class="card-title">⚡ Groq — the free tier</h3>
+          <p class="muted">Transcription and the examiner's voice. This asks your account what it can actually run,
+            then speaks a sentence and reads it back — so “is Groq working” is answered by a round trip rather than a
+            guess. A free tier retires models without notice, which is exactly how this went quiet before.</p>
+          <div class="dev-toolbar">
+            <button class="btn btn-gold" id="groq-check">🔎 Check Groq now</button>
+            <span class="dev-status" id="groq-status"></span>
+          </div>
+          <div id="groq-out"></div>
+        </div>
+
+        <div class="card" data-animate>
           <h3 class="card-title">🏷 Question tagger</h3>
           <p class="muted" id="tag-status">Checking bank…</p>
           <div class="dev-toolbar">
@@ -2040,6 +2052,7 @@ const DevConsole = (() => {
       priceDraft = JSON.parse(JSON.stringify(defaultPricing()));
       paintPricing(view);
     });
+    view.querySelector('#groq-check').addEventListener('click', e => groqCheck(view, e.target));
     view.querySelector('#price-save').addEventListener('click', async e => {
       const status = view.querySelector('#price-status');
       e.target.disabled = true; status.textContent = 'Saving…'; status.className = 'dev-status';
@@ -3082,6 +3095,91 @@ const DevConsole = (() => {
       refreshSums(host);
     });
   }
+
+  /* ================================================================
+     GROQ — a round trip, not a guess
+
+     Speaks a sentence, then reads that same audio back. If both halves
+     work, transcription and the examiner's voice work. If either fails,
+     the raw error is printed — which is what was missing when a retired
+     model returned 400 into a log nobody was watching.
+     ================================================================ */
+
+  async function groqCheck(view, btn) {
+    const { esc } = ctx;
+    const out = view.querySelector('#groq-out');
+    const status = view.querySelector('#groq-status');
+    btn.disabled = true; status.textContent = 'Asking Groq…';
+    out.innerHTML = '';
+    let d = null;
+    try {
+      const token = await ctx.Backend.getAccessToken();
+      const res = await fetch(ctx.cfg.ai.apiBase, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+        body: JSON.stringify({ action: 'groqcheck' })
+      });
+      d = await res.json();
+    } catch (e) { d = { error: e.message || String(e) }; }
+    btn.disabled = false; status.textContent = '';
+
+    if (!d || (d.error && !d.models)) {
+      out.innerHTML = `<p class="bad">${esc(d?.error || 'No answer from the server.')}</p>`;
+      return;
+    }
+    const row = (k, ok, txt) => `<tr class="${ok ? '' : 'bad'}"><th>${esc(k)}</th><td>${ok ? '✓' : '✗'} ${txt}</td></tr>`;
+    const audio = d.tts?.ok
+      ? `<div class="groq-play">
+           <audio controls src="data:${esc(d.tts.mime || 'audio/wav')};base64,${d.tts.audio}"></audio>
+           <span class="muted tiny">Play it. If that is a real voice and not your browser's, the voice path is live.</span>
+         </div>` : '';
+
+    out.innerHTML = `
+      <table class="st-fx-pdf groq-table"><tbody>
+        ${row('API key', d.key, d.key ? 'set in Cloudflare' : 'GROQ_API_KEY is missing — add it and redeploy')}
+        ${row('Models offered', (d.models || []).length > 0, `${(d.models || []).length} on this account`)}
+        ${row('Speech model', !!d.tts?.ok, d.tts?.ok ? `<code>${esc(d.tts.model)}</code> — ${d.tts.bytes.toLocaleString('en-US')} bytes of audio`
+          : `<code>${esc(d.tts?.model || d.chosen?.tts || 'none found')}</code> — ${esc(d.tts?.error || 'not attempted')}`)}
+        ${row('Transcription', !!d.asr?.ok, d.asr?.ok ? `<code>${esc(d.asr.model)}</code> heard: “${esc(d.asr.text)}”`
+          : `<code>${esc(d.asr?.model || d.chosen?.asr || 'none found')}</code> — ${esc(d.asr?.error || 'not attempted (needs the voice first)')}`)}
+      </tbody></table>
+      ${audio}
+      ${(d.models || []).length ? `<details class="dev-collapse" style="margin-top:12px">
+        <summary><span>Everything this account can run (${d.models.length})</span><span class="dc-caret">▸</span></summary>
+        <div class="dev-inline" style="margin-top:10px">
+          <label class="wl-f"><span>Speech model</span>
+            <select class="sel" id="groq-tts">${modelOpts(d.models, /tts/i, d.saved?.ttsModel || d.chosen?.tts)}</select></label>
+          <label class="wl-f"><span>Transcription model</span>
+            <select class="sel" id="groq-asr">${modelOpts(d.models, /whisper/i, d.saved?.whisperModel || d.chosen?.asr)}</select></label>
+          <label class="wl-f"><span>Voice name (optional)</span>
+            <input type="text" id="groq-voice" value="${esc(d.saved?.voiceName || '')}" placeholder="leave empty for the default"></label>
+          <button class="btn btn-gold" id="groq-save" style="align-self:end">Save</button>
+        </div>
+        <p class="muted tiny">Pinning a model here overrides discovery. Leave them alone and AUREUM picks for itself
+          each time, which is what survives the next decommissioning.</p>
+        <p class="groq-all muted tiny">${d.models.map(m => esc(m)).join(' · ')}</p>
+      </details>` : ''}`;
+
+    out.querySelector('#groq-save')?.addEventListener('click', async e => {
+      e.target.disabled = true;
+      try {
+        await ctx.Backend.saveGroqConfig({
+          ttsModel: out.querySelector('#groq-tts').value || '',
+          whisperModel: out.querySelector('#groq-asr').value || '',
+          voiceName: out.querySelector('#groq-voice').value.trim()
+        });
+        // the voice layer stood itself down when the dead model failed; a
+        // working one should not need a page reload to come back
+        if (typeof OSCE !== 'undefined') OSCE.resetGroq?.();
+        status.innerHTML = '<span class="good">✓ Saved — used from the next call.</span>';
+      } catch (err) { status.innerHTML = `<span class="bad">${esc(err.message || err)}</span>`; }
+      e.target.disabled = false;
+    });
+  }
+
+  const modelOpts = (ids, re, chosen) =>
+    `<option value="">Let AUREUM choose</option>` +
+    ids.filter(i => re.test(i)).map(i =>
+      `<option value="${ctx.esc(i)}" ${i === chosen ? 'selected' : ''}>${ctx.esc(i)}</option>`).join('');
 
   /* ================================================================
      RATES & SETTINGS — the dollar rate and the prepaid top-ups
