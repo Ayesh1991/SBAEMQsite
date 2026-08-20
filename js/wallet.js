@@ -166,7 +166,8 @@ const Wallet = (() => {
        not reach it. See maybeCreditSlip in functions/api/explain.js. */
     return { fields: d, usage: data.usage || {}, preview: img.dataUrl,
       verdict: { credited: !!data.credited, match: data.match || null, reason: data.reason || '',
-        confirmBy: data.confirmBy || 0, beneficiary: data.beneficiary || '', id: data.topUpId } };
+        confirmBy: data.confirmBy || 0, beneficiary: data.beneficiary || '', id: data.topUpId,
+        flags: data.flags || [], risk: data.risk || '' } };
   }
 
   /* A slip only has to be legible, so it is shrunk hard before it is sent:
@@ -467,7 +468,11 @@ const Wallet = (() => {
     const why = { off: 'Instant top-up is switched off at the moment.',
       'no-account': 'The site owner has not set the account number yet.',
       'not-configured': 'Instant top-up is not finished being set up on the server.',
-      duplicate: 'This payment has already been credited once.' }[v.reason];
+      duplicate: 'This slip has already been used — the same transfer cannot be credited twice.',
+      'day-limit': 'You have reached the limit for top-ups credited without a check today. This one still goes through once the site owner approves it.',
+      screened: '' }[v.reason];
+    // when the screening stopped it, the reasons ARE the explanation
+    const blockers = (v.flags || []).filter(x => x.level === 'block');
 
     const warn = [];
     if (cur !== 'LKR') warn.push(`The slip says <strong>${esc(cur)}</strong>, not rupees — check the amount before submitting.`);
@@ -497,11 +502,14 @@ const Wallet = (() => {
                ['Transaction', f.txnId], ['Status', f.status]]
               .filter(x => x[1]).map(([k, val]) => `<span><b>${k}</b> ${esc(val)}</span>`).join('')}
           </div>
-          ${rows.length || why ? `<div class="wl-check">
+          ${rows.length || why || blockers.length ? `<div class="wl-check">
             <p class="wl-check-h">This one needs the owner's approval</p>
             ${rows.length ? `<ul class="wl-check-list">${rows.map(([label, ok]) =>
               `<li class="${ok ? 'ok' : 'no'}"><span>${ok ? '✓' : '○'}</span>${esc(label)}</li>`).join('')}</ul>` : ''}
+            ${blockers.length ? `<ul class="wl-check-list wl-blockers">${blockers.map(b =>
+              `<li class="no"><span>!</span>${esc(b.text)}</li>`).join('')}</ul>` : ''}
             <p class="muted tiny">${why ? esc(why)
+              : blockers.length ? 'Nothing is lost — the site owner checks it against the bank statement and credits it by hand.'
               : `A slip showing all four is topped up the moment you upload it. Correcting a field here does not change that —
                  the check is made on the image itself, not on what is typed.`}</p>
           </div>` : ''}
@@ -523,6 +531,9 @@ const Wallet = (() => {
           amount_lkr: amount, reference: reference || myRef,
           slip: preview.length < 700000 ? preview : null,   // keep small slips for the approver to see
           extracted: Object.assign({}, f, m ? { matched: m, beneficiary: v.beneficiary } : null,
+            // the screening the server already did travels with the row, so
+            // the approver sees why this one did not credit itself
+            { risk: v.risk || '', flags: v.flags || [], autoReason: v.reason || '' },
             // an amount the reader could not find, and the payer typed, is the
             // one number on the row that nothing has checked — say so
             amt ? null : { amountTyped: amount }),

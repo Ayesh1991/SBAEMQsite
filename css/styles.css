@@ -4187,3 +4187,23 @@ body.eco-open .ap-dock { z-index: 2390; }
 .wl-fixed { display: flex; flex-direction: column; gap: 3px; margin-bottom: 12px; }
 .wl-fixed > span:first-child { font-size: .72rem; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
 .wl-amt-n { font-family: var(--font-display); font-size: 1.45rem; color: var(--gold); }
+
+/* ---- v61: slip screening, shown to the approver ---- */
+.wl-blockers { margin-top: 8px; }
+.wl-blockers li.no span { color: var(--gold); font-weight: 800; }
+.st-forensics { margin-top: 10px; padding: 11px 13px; border-radius: 11px;
+  background: var(--surface-2); border: 1px solid var(--hairline); }
+.st-fx-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-bottom: 8px; }
+.st-risk { font-size: .66rem; letter-spacing: .04em; font-weight: 700; padding: 2px 9px; border-radius: 999px;
+  border: 1px solid var(--hairline); }
+.st-risk.is-low { color: var(--teal); border-color: var(--teal); }
+.st-risk.is-medium { color: var(--gold); border-color: var(--gold); }
+.st-risk.is-high { color: var(--bad, #e05263); border-color: var(--bad, #e05263); }
+.st-fx-flags { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 3px; }
+.st-fx-flags li { font-size: .76rem; color: var(--ink-2); padding-left: 14px; position: relative; }
+.st-fx-flags li::before { content: '·'; position: absolute; left: 3px; }
+.st-fx-flags li.no { color: var(--bad, #e05263); }
+.st-fx-pdf { border-collapse: collapse; font-size: .74rem; margin-bottom: 6px; }
+.st-fx-pdf th { text-align: left; padding: 2px 14px 2px 0; color: var(--ink-3); font-weight: 500; white-space: nowrap; }
+.st-fx-pdf td { padding: 2px 0; word-break: break-all; }
+.st-fx-pdf tr.bad th, .st-fx-pdf tr.bad td { color: var(--bad, #e05263); }

@@ -255,7 +255,7 @@ export async function onRequest(context) {
       const img = body.image || {};
       if (!img.data) return json({ error: 'No image was sent.' }, 400);
       if (String(img.data).length > 8_000_000) return json({ error: 'That image is too large — please send a screenshot under 5 MB.' }, 413);
-      const rr = await callGeminiVision(SLIP_SYSTEM, SLIP_USER, img, 'gemini-3.1-flash-lite', env, 400);
+      const rr = await callGeminiVision(SLIP_SYSTEM, SLIP_USER, img, 'gemini-3.1-flash-lite', env, 700);
       await logTokens(token, env, 'gemini', rr, 'topup_ocr');
       /* Instant activation is decided HERE, never in the browser.
          The balance is derived from approved top-ups, so a client that could
@@ -266,10 +266,11 @@ export async function onRequest(context) {
          image. If the service key is not configured the slip simply goes to
          the approval queue as before, so this can fail closed but never
          open. */
-      const credit = await maybeCreditSlip(rr.text, user, env);
+      const credit = await maybeCreditSlip(rr.text, user, env, img);
       return json({ text: rr.text, model: rr.model, usage: { in: rr.in, out: rr.out },
         match: credit.match, credited: credit.credited, topUpId: credit.id,
-        reason: credit.reason, confirmBy: credit.confirmBy, beneficiary: credit.beneficiary });
+        reason: credit.reason, confirmBy: credit.confirmBy, beneficiary: credit.beneficiary,
+        flags: credit.flags, risk: credit.risk });
     }
     const prompt = action === 'chat' ? buildChatPrompt(question, messages) : buildExplainPrompt(question);
     const r = await run(prompt, 'tutor');
@@ -599,9 +600,16 @@ const SLIP_USER = [
   '"accountTo":"<the destination / beneficiary / credited account number, digits exactly as printed>",',
   '"accountFrom":"<the paying / debited account number if shown, digits exactly as printed>",',
   '"accounts":["<every account number printed anywhere on the slip, digits exactly as printed>"],',
+  '"time":"<the time of the transaction as printed, or empty>",',
+  '"docType":"<bank_pdf|bank_app_screenshot|photo_of_screen|photo_of_paper|other>",',
+  '"tamper":["<each visible sign that this document has been edited: a figure in a different font, weight or size ',
+  'from its neighbours; digits not sitting on the same baseline; a patch of different background or sharpness ',
+  'around a number; misaligned columns; a smudged or doubled character; a logo that looks pasted; spacing that ',
+  'breaks the pattern of the rest of the page. List only what you can actually SEE — an empty list is the right ',
+  'answer for a clean document>"],',
   '"confidence":<0-1, how sure you are this is a genuine completed payment slip>}',
   'Copy account numbers digit for digit, including any leading zeros, and never invent or complete one that is masked.',
-  'If a field is not visible use "" (or 0 for amount, [] for accounts). Do not guess an amount that is not printed.'
+  'If a field is not visible use "" (or 0 for amount, [] for accounts and tamper). Do not guess an amount that is not printed.'
 ].join('\n');
 
 /* ---------------- instant activation of a matching slip ----------------
@@ -625,6 +633,124 @@ function userNumberOf(user) {
   return (onlyDigits(user?.id).slice(-5) || '00001').padStart(5, '0');
 }
 
+/* ---------------- is this slip genuine? ----------------
+
+   Be clear about what this can and cannot do. NOTHING in an image proves a
+   payment happened. A determined forger with an hour and a PDF editor will
+   produce something that passes every check below, and the only real
+   verification is the bank statement — which is exactly why an auto-credit
+   is provisional and lands in the developer's queue to be confirmed.
+
+   What these checks do is raise the cost of forgery from "change a number in
+   a PDF" to something that takes real effort, and cap the damage when one
+   gets through. They are ordered by how much they are worth:
+
+     1. AMOUNT CEILING. The single most valuable control. A forgery that
+        succeeds is worth at most one small top-up, and anything larger
+        waits for a human. No cleverness required.
+     2. PDF STRUCTURE. A bank's PDF is written once by a server library and
+        never touched again. Editing one almost always leaves a second
+        %%EOF (an incremental save), a ModDate later than the CreationDate,
+        or the name of the editing tool in /Producer. This catches the
+        casual forger reliably and costs nothing.
+     3. THE SLIP'S OWN CLAIMS. It must say the transfer succeeded, be in
+        rupees, be recent, and carry a transaction id — that last one is
+        also what makes it reconcilable and de-duplicable.
+     4. VISIBLE TAMPERING. The reader is asked what looks edited. A useful
+        signal, not evidence; a clean answer means nothing on its own.
+     5. RATE LIMITS. Even if all of the above is beaten, only so much can be
+        auto-credited in a day.                                            */
+
+const PDF_EDITORS = /acrobat|illustrator|photoshop|indesign|gimp|inkscape|canva|ilovepdf|smallpdf|pdfescape|sejda|foxit|nitro|pdf-?xchange|libreoffice|microsoft word|quartz|preview|skia|wkhtmltopdf|chromium|puppeteer/i;
+
+/** What a PDF says about how it was made. Metadata is ASCII, so latin1 is enough. */
+function analysePdf(b64) {
+  let raw = '';
+  try { raw = atob(String(b64 || '').slice(0, 6_000_000)); } catch { return { isPdf: false }; }
+  if (!raw.startsWith('%PDF')) return { isPdf: false };
+  /* A PDF string may contain escaped parentheses — the real BOC slip's
+     producer is "iText® Core 8.0.5 \(AGPL version\) ©2000-2024 Apryse Group
+     NV" — so stopping at the first ")" truncates it mid-name and would make
+     a producer allowlist match the wrong thing. */
+  const grab = key => {
+    const m = raw.match(new RegExp('\\/' + key + '\\s*\\(((?:\\\\.|[^)\\\\]){0,300})\\)'));
+    return m ? m[1].replace(/\\([()\\])/g, '$1') : '';
+  };
+  const created = grab('CreationDate'), modified = grab('ModDate');
+  const producer = grab('Producer'), creator = grab('Creator');
+  // an incremental save appends a second body and trailer to the original
+  const eofCount = (raw.match(/%%EOF/g) || []).length;
+  return {
+    isPdf: true, producer, creator, created, modified, eofCount,
+    // same format ("D:YYYYMMDDHHmmss…"), so a string compare is a date compare
+    resaved: !!(created && modified && modified > created),
+    editorHit: PDF_EDITORS.test(producer + ' ' + creator)
+  };
+}
+
+async function sha256Hex(s) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(s)));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** A date the slip printed, as a timestamp, or null. Accepts D-M-Y and Y-M-D. */
+function slipDate(s) {
+  const t = String(s || '').trim();
+  if (!t) return null;
+  let m = t.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return Date.UTC(+m[1], +m[2] - 1, +m[3]);
+  m = t.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})/);
+  if (m) return Date.UTC(+m[3], +m[2] - 1, +m[1]);
+  const d = Date.parse(t);
+  return Number.isNaN(d) ? null : d;
+}
+
+/** Everything that argues against crediting this on sight. */
+function screenSlip(f, pdf, cfg) {
+  const flags = [];
+  const add = (level, text) => flags.push({ level, text });
+
+  const status = String(f.status || '');
+  if (!status) add('block', 'The slip does not say the transfer completed.');
+  else if (!/success|complete|paid|approved|accepted|done/i.test(status))
+    add('block', `The slip's status reads "${status}", not a completed transfer.`);
+
+  const cur = String(f.currency || '').toUpperCase();
+  if (cur && cur !== 'LKR') add('block', `The slip is in ${cur}, not rupees.`);
+
+  const txn = String(f.txnId || '').trim();
+  if (txn.length < 6) add('block', 'The slip carries no transaction number, so it cannot be reconciled or checked for duplicates.');
+
+  const when = slipDate(f.date);
+  const maxAge = Number(cfg.maxAgeDays) > 0 ? Number(cfg.maxAgeDays) : 7;
+  if (when == null) add('block', 'No transfer date could be read.');
+  else if (when > Date.now() + 36e5 * 30) add('block', 'The transfer date is in the future.');
+  else if (Date.now() - when > maxAge * 864e5) add('block', `The transfer is more than ${maxAge} days old.`);
+
+  const amount = Number(f.amount) || 0;
+  const ceiling = Number(cfg.autoMax) > 0 ? Number(cfg.autoMax) : 5000;
+  if (amount > ceiling) add('block', `Amounts over LKR ${ceiling.toLocaleString('en-LK')} are always checked by the site owner.`);
+
+  if (Number(f.confidence ?? 1) < 0.5) add('block', 'This does not read like a completed payment slip.');
+
+  (Array.isArray(f.tamper) ? f.tamper : []).slice(0, 6)
+    .forEach(t => add('block', 'Looks edited: ' + String(t).slice(0, 160)));
+
+  if (pdf.isPdf) {
+    if (pdf.editorHit) add('block', `The PDF was written by ${pdf.producer || pdf.creator} — a bank's own slip is not produced by an editing tool.`);
+    if (pdf.eofCount > 1) add('block', 'The PDF has been saved more than once — banks generate a slip and never touch it again.');
+    if (pdf.resaved) add('block', 'The PDF was modified after it was created.');
+    const want = String(cfg.pdfProducer || '').trim();
+    if (want && !pdf.producer.toLowerCase().includes(want.toLowerCase()))
+      add('block', `The PDF was not produced by ${want}, which is what this bank's slips are made with.`);
+  } else if (String(f.docType || '') === 'photo_of_paper') {
+    add('warn', 'A photograph of a printout — harder to check than the bank\'s own PDF.');
+  }
+
+  return { flags, blocked: flags.some(x => x.level === 'block'),
+    risk: flags.some(x => x.level === 'block') ? 'high' : flags.length ? 'medium' : 'low' };
+}
+
 async function walletSettings(env) {
   try {
     const res = await sb(`/rest/v1/app_config?id=eq.wallet&select=data`, env,
@@ -634,7 +760,7 @@ async function walletSettings(env) {
   } catch { return {}; }
 }
 
-async function maybeCreditSlip(text, user, env) {
+async function maybeCreditSlip(text, user, env, image) {
   const off = { credited: false, match: null };
   let f = null;
   const raw = String(text || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
@@ -661,7 +787,20 @@ async function maybeCreditSlip(text, user, env) {
     date: !!String(f.date || '').trim(),
     reference: onlyDigits(f.reference) === onlyDigits(myNo) && !!onlyDigits(myNo)
   };
-  const out = { credited: false, match, beneficiary: account || null };
+  /* What the slip is made of, and what it claims — worked out here so that
+     the answer is the same whether or not the credit goes through, and so
+     that the developer sees it on every row in the queue. */
+  const pdf = analysePdf(image?.data);
+  const screen = screenSlip(f, pdf, w);
+  const slipHash = image?.data ? await sha256Hex(image.data) : '';
+  const forensics = {
+    hash: slipHash, risk: screen.risk, flags: screen.flags,
+    docType: f.docType || '', tamper: f.tamper || [],
+    pdf: pdf.isPdf ? { producer: pdf.producer, creator: pdf.creator, eofCount: pdf.eofCount,
+      created: pdf.created, modified: pdf.modified, resaved: pdf.resaved, editorHit: pdf.editorHit } : null
+  };
+  const out = { credited: false, match, beneficiary: account || null,
+    risk: screen.risk, flags: screen.flags };
 
   if (!account) return Object.assign(out, { reason: 'no-account' });
   if (w.instantActivation === false) return Object.assign(out, { reason: 'off' });
@@ -669,28 +808,71 @@ async function maybeCreditSlip(text, user, env) {
   if (!env.SUPABASE_SERVICE_KEY) return Object.assign(out, { reason: 'not-configured' });
 
   const svc = { Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`, apikey: env.SUPABASE_SERVICE_KEY };
-  // the same slip twice is the same payment once — match on the bank's own
-  // transaction number, falling back to amount + date when it printed none
+  const already = async q => {
+    const r = await sb(`/rest/v1/credit_topups?${q}&select=id&limit=1`, env, { headers: svc });
+    const rows = await r.json();
+    return Array.isArray(rows) && rows.length > 0;
+  };
+
+  /* The same payment must not be credited twice — and the checks are ACROSS
+     ALL USERS, not just this one. Scoped to a single account, a slip that had
+     already been used could simply be re-uploaded from a second account.
+     Three independent keys, because a forger only has to defeat one:
+       • the bank's transaction number,
+       • the file itself, byte for byte,
+       • the reference, amount and date together. */
   try {
     const txn = String(f.txnId || '').trim();
-    const q = txn
-      ? `extracted->>txnId=eq.${encodeURIComponent(txn)}`
-      : `amount_lkr=eq.${Number(f.amount)}&extracted->>date=eq.${encodeURIComponent(String(f.date))}`;
-    const dup = await sb(`/rest/v1/credit_topups?user_id=eq.${user.id}&${q}&select=id&limit=1`, env, { headers: svc });
-    const rows = await dup.json();
-    if (Array.isArray(rows) && rows.length) return Object.assign(out, { reason: 'duplicate' });
+    const keys = [];
+    if (txn) keys.push(`extracted->>txnId=eq.${encodeURIComponent(txn)}`);
+    if (slipHash) keys.push(`extracted->>hash=eq.${slipHash}`);
+    keys.push(`user_id=eq.${user.id}&amount_lkr=eq.${Number(f.amount)}` +
+      `&extracted->>date=eq.${encodeURIComponent(String(f.date || ''))}` +
+      `&reference=eq.${encodeURIComponent(String(f.reference || ''))}`);
+    for (const k of keys) if (await already(k)) return Object.assign(out, { reason: 'duplicate', duplicate: true });
   } catch { /* a failed duplicate check must not block a genuine payment */ }
 
+  // reported after the duplicate check, because "you have already used this
+  // slip" is the more useful answer when both are true
+  if (screen.blocked) return Object.assign(out, { reason: 'screened' });
+
+  /* A ceiling on how much can be credited without a human in one day, so a
+     forgery that beats everything above is still worth very little. */
+  try {
+    const since = new Date(Date.now() - 864e5).toISOString();
+    const r = await sb(`/rest/v1/credit_topups?user_id=eq.${user.id}&created_at=gte.${since}` +
+      `&extracted->>provisional=eq.true&select=amount_lkr`, env, { headers: svc });
+    const rows = await r.json();
+    if (Array.isArray(rows)) {
+      const maxADay = Number(w.autoPerDay) > 0 ? Number(w.autoPerDay) : 3;
+      const capADay = Number(w.autoDayMax) > 0 ? Number(w.autoDayMax) : 10000;
+      const sum = rows.reduce((n, x) => n + (Number(x.amount_lkr) || 0), 0);
+      if (rows.length >= maxADay || sum + Number(f.amount) > capADay) {
+        return Object.assign(out, { reason: 'day-limit' });
+      }
+    }
+  } catch { /* likewise */ }
+
   const confirmBy = Date.now() + hours * 3600e3;
+  /* Keep the slip on the row. The developer has to be able to LOOK at what
+     was auto-credited — an unverifiable auto-credit is worse than no
+     auto-credit — so the image travels with it, under the same size limit
+     the manual path uses. */
+  let slip = null;
+  if (image?.data) {
+    const url = `data:${image.mime || 'image/jpeg'};base64,${image.data}`;
+    if (url.length < 900_000) slip = url;
+    else forensics.slipTooLarge = true;
+  }
   try {
     const res = await sb('/rest/v1/credit_topups', env, {
       method: 'POST',
       headers: Object.assign({ Prefer: 'return=representation' }, svc),
       body: JSON.stringify({
         user_id: user.id, amount_lkr: Number(f.amount), reference: String(f.reference || myNo),
-        status: 'approved',
+        status: 'approved', slip,
         note: `Auto-credited: slip named the account, ${Number(f.amount)} on ${f.date}, reference ${f.reference}. Awaiting confirmation against the bank.`,
-        extracted: Object.assign({}, f, { matched: match, beneficiary: account, provisional: true, confirmBy })
+        extracted: Object.assign({}, f, forensics, { matched: match, beneficiary: account, provisional: true, confirmBy })
       })
     });
     if (!res.ok) return Object.assign(out, { reason: 'insert-failed' });

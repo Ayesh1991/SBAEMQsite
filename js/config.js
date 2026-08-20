@@ -83,7 +83,16 @@ window.AUREUM_CONFIG = {
       bank: 'BOC — Kandy'
     },
     instantActivation: true,     // credit a fully-matching slip without waiting
-    instantHours: 24             // how long that provisional credit stands unconfirmed
+    instantHours: 24,            // how long that provisional credit stands unconfirmed
+    /* Limits on what may be credited without a person looking. The amount
+       ceiling is the one that matters: no forged slip can ever be worth more
+       than this, whatever else it gets past. The rest are set from the
+       developer's Rates & settings panel; these are the fallbacks. */
+    autoMax: 5000,               // LKR — larger slips always wait for approval
+    autoDayMax: 10000,           // LKR a user may auto-credit in 24 hours
+    autoPerDay: 3,               // auto-credits a user may take in 24 hours
+    maxAgeDays: 7,               // a slip older than this is not credited on sight
+    pdfProducer: ''              // e.g. 'iText' — pin the library the bank generates with
   },
 
   /* OSCE collections — the bins a station belongs to. The developer can add
