@@ -173,6 +173,47 @@ const OSCE = (() => {
 
      The marking prompt is told the examiner may be audible, so nothing said
      in the examiner's voice can be credited to the candidate. */
+  /* ---------------- which browser is refusing, and how to fix it ----------------
+
+     iPad Chrome gets the microphone and iPad Safari does not, on the same
+     device. Both are WebKit underneath, so this is not an engine limit — it
+     is that Chrome asks once at the app level while Safari stores a decision
+     PER SITE, and a single "Don't Allow" is remembered forever with no
+     further prompt: every call rejects instantly with NotAllowedError.
+
+     Clearing it is not one route. The aA menu shows a Microphone row only
+     once the site has asked and only on some versions, so the global setting
+     and the nuclear option (delete the site's stored data) both have to be
+     offered or somebody is left stuck on a screen telling them to tap
+     something that is not there. */
+  const iOS = () => /iP(hone|ad|od)/.test(navigator.platform || '')
+    || (/Mac/.test(navigator.platform || '') && navigator.maxTouchPoints > 1);
+  const iosSafari = () => iOS() && !/CriOS|FxiOS|EdgiOS|OPiOS/i.test(navigator.userAgent);
+  const homeScreenApp = () => !!navigator.standalone
+    || (window.matchMedia?.('(display-mode: standalone)').matches && iOS());
+
+  function micHelp() {
+    if (homeScreenApp()) {
+      return ['This is the Home Screen version of AUREUM, and iOS gives web apps launched from the Home Screen ' +
+        'no microphone at all on some versions.',
+        'Open aureum in Safari itself (or Chrome) and sit the station there.'];
+    }
+    if (iosSafari()) {
+      return ['Safari remembers a “Don’t Allow” for a site and never asks again, so this has to be cleared by hand. ' +
+        'Try these in order — the first that offers a Microphone row is the one your iOS version uses:',
+        '1. Tap <strong>aA</strong> at the left of the address bar → <strong>Website Settings</strong> → ' +
+          '<strong>Microphone</strong> → <strong>Allow</strong>.',
+        '2. If there is no Microphone row there: <strong>Settings</strong> app → <strong>Apps</strong> → ' +
+          '<strong>Safari</strong> (on iOS 17 and earlier, just <strong>Settings → Safari</strong>) → ' +
+          '<strong>Microphone</strong> → set it to <strong>Ask</strong> or <strong>Allow</strong>.',
+        '3. Still stuck: <strong>Settings → Safari → Advanced → Website Data</strong>, find this site and swipe to ' +
+          'delete it. That clears the stored refusal — you will have to sign in again.',
+        'Then reload the page and tap the button below.'];
+    }
+    return ['Your browser is blocking the microphone for this site. Open the padlock or the site-settings menu ' +
+      'beside the address bar and set Microphone to Allow, then reload and tap the button below.'];
+  }
+
   const BOTH_KEY = 'aureum.osce.bothvoices';
   const examinerOnTape = () => { try { return localStorage.getItem(BOTH_KEY) !== '0'; } catch { return true; } };
   const setExaminerOnTape = v => { try { localStorage.setItem(BOTH_KEY, v ? '1' : '0'); } catch {} };
@@ -881,6 +922,11 @@ const OSCE = (() => {
             : `The examiner allows about ${st.reading_time_min || 1} minute to read. The ${minsOf(st)}-minute clock and the
                recording both start when you press the button — question 1 appears at the same moment.`}</p>
           <div class="os-mic" id="os-mic"></div>
+          <div class="os-preflight" id="os-pre">
+            <button class="btn btn-ghost btn-sm" id="os-pre-go">🎙 Test the microphone first</button>
+            <span class="muted tiny">Worth ten seconds — a blocked microphone is much easier to fix now than four
+              questions into a fifteen-minute station.</span>
+          </div>
           ${canSpeak() ? `<label class="os-both">
             <input type="checkbox" id="os-both" ${examinerOnTape() ? 'checked' : ''}>
             <span><strong>Record the examiner's voice too</strong><br>
@@ -891,6 +937,7 @@ const OSCE = (() => {
           <button class="btn btn-gold btn-lg" id="os-go">${resuming ? '▶ Resume the station' : "▶ I've read it — start"}</button>
         </div>`;
       stage.querySelector('#os-both')?.addEventListener('change', e => setExaminerOnTape(e.target.checked));
+      stage.querySelector('#os-pre-go').addEventListener('click', e => preflight(stage, e.target));
       stage.querySelector('#os-go').addEventListener('click', async () => {
         await startCapture();
         startClock();
@@ -929,9 +976,12 @@ const OSCE = (() => {
       if (!warn) return;
       const msg = s.failed || (!s.recording && !s.paused ? 'The recording has stopped. Putting it back…' : '');
       warn.hidden = !msg;
-      warn.innerHTML = msg
-        ? `⚠ ${esc(msg)}${s.failed ? ` <button class="btn btn-ghost btn-sm" id="os-mic-retry">🎙 Turn the microphone back on</button>` : ''}`
-        : '';
+      warn.innerHTML = !msg ? ''
+        : msg === 'BLOCKED'
+          ? `<p class="os-mic-h">⚠ This browser is blocking the microphone for AUREUM</p>
+             ${micHelp().map(p => `<p>${p}</p>`).join('')}
+             <button class="btn btn-ghost btn-sm" id="os-mic-retry">🎙 Turn the microphone back on</button>`
+          : `⚠ ${esc(msg)}${s.failed ? ` <button class="btn btn-ghost btn-sm" id="os-mic-retry">🎙 Turn the microphone back on</button>` : ''}`;
       warn.querySelector('#os-mic-retry')?.addEventListener('click', async e => {
         // this tap is the user gesture iOS requires; nothing else will do
         e.target.disabled = true; e.target.textContent = 'Asking…';
@@ -1071,6 +1121,75 @@ const OSCE = (() => {
     }
   }
 
+  /* ---------------- the pre-flight ----------------
+     Opens the microphone, watches the level for a moment and lets go. Run
+     before the clock starts, so a blocked microphone costs ten seconds rather
+     than a station — and so the fix, which on Safari means leaving the page
+     for the Settings app, can be done without losing an attempt. */
+
+  async function preflight(stage, btn) {
+    const host = stage.querySelector('#os-pre');
+    btn.disabled = true; btn.textContent = 'Testing…';
+    let media = null;
+    try {
+      media = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      const name = String(e && e.name || e);
+      host.innerHTML = /NotAllowed|SecurityError/i.test(name)
+        ? `<div class="os-rec-warn"><p class="os-mic-h">⚠ This browser is blocking the microphone for AUREUM</p>
+             ${micHelp().map(p => `<p>${p}</p>`).join('')}
+             <button class="btn btn-ghost btn-sm" id="os-pre-again">🎙 Test again</button>
+             <p class="muted tiny">You can still sit the station — type your answers instead of speaking, and mark
+               from the transcript.</p></div>`
+        : `<div class="os-rec-warn">⚠ The microphone could not be opened (${esc(name)}).
+             <button class="btn btn-ghost btn-sm" id="os-pre-again">🎙 Test again</button></div>`;
+      host.querySelector('#os-pre-again').addEventListener('click', ev => preflight(stage, ev.target));
+      return;
+    }
+
+    /* Show that sound is actually arriving. A microphone that opens but hears
+       nothing — muted hardware, the wrong input — looks identical to a
+       working one until the debrief. */
+    let peak = 0;
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      const ac = new Ctx();
+      const src = ac.createMediaStreamSource(media);
+      const an = ac.createAnalyser(); an.fftSize = 512;
+      src.connect(an);
+      const buf = new Uint8Array(an.frequencyBinCount);
+      host.innerHTML = `<div class="os-pre-live">
+        <span class="os-pre-k">Say something…</span>
+        <span class="os-pre-bar"><i id="os-pre-i"></i></span>
+      </div>`;
+      const bar = host.querySelector('#os-pre-i');
+      const t0 = Date.now();
+      await new Promise(res => {
+        const tick = () => {
+          an.getByteTimeDomainData(buf);
+          let m = 0;
+          for (let i = 0; i < buf.length; i++) m = Math.max(m, Math.abs(buf[i] - 128));
+          peak = Math.max(peak, m);
+          if (bar) bar.style.width = Math.min(100, (m / 60) * 100) + '%';
+          if (Date.now() - t0 > 4000) return res();
+          requestAnimationFrame(tick);
+        };
+        tick();
+      });
+      try { await ac.close(); } catch {}
+    } catch { peak = -1; }
+    try { media.getTracks().forEach(t => t.stop()); } catch {}
+
+    host.innerHTML = peak > 6
+      ? `<p class="os-pre-ok">✓ The microphone is working — it heard you. Start when you are ready.</p>`
+      : peak < 0
+        ? `<p class="os-pre-ok">✓ The microphone opened. Start when you are ready.</p>`
+        : `<div class="os-rec-warn">⚠ The microphone opened but heard almost nothing. Check it is not muted, and that
+             the right input is selected, then test again.
+             <button class="btn btn-ghost btn-sm" id="os-pre-again">🎙 Test again</button></div>`;
+    host.querySelector('#os-pre-again')?.addEventListener('click', ev => preflight(stage, ev.target));
+  }
+
   /* ---------------- microphone + recogniser ---------------- */
 
   function makeCapture(host) {
@@ -1141,7 +1260,7 @@ const OSCE = (() => {
            always the per-site setting behind the aA menu. */
         const name = String(e && e.name || e);
         failed = /NotAllowed|SecurityError/i.test(name)
-          ? 'Safari is blocking the microphone for this site. On an iPad: tap “aA” in the address bar → Website Settings → Microphone → Allow, then tap “Turn the microphone back on”.'
+          ? 'BLOCKED'                                   // the panel spells out the fix for this browser
           : /NotFound|Devices/i.test(name)
             ? 'No microphone was found on this device. You can still type your answers.'
             : /NotReadable|Aborted/i.test(name)
