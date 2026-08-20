@@ -1119,3 +1119,55 @@ create policy "osce stations edit" on public.osce_stations for update
 
 create policy "osce stations remove" on public.osce_stations for delete
   to authenticated using (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+
+
+/* ============================================================
+   v62 — images on OSCE questions
+   ------------------------------------------------------------
+   A station question can carry a CTG, a partogram, a scan or a
+   photograph. The FILES do not live in the station's JSON — a
+   base64 CTG inside `meta` would be downloaded by every read of
+   the bank, which is the exact cost the card projection was
+   built to avoid. The question stores a path; the bytes live
+   here.
+
+   The bucket is public-read on purpose. These are teaching
+   images shown to every candidate sitting the station, and a
+   public object means the runner, the scheme dialog, the editor
+   and the printed sheet can all just use the URL — no signing
+   round-trip in the middle of a timed station, and nothing that
+   expires while somebody is looking at it. Paths carry a random
+   id, and Supabase does not allow listing a public bucket
+   without credentials, so an object is only reachable by someone
+   who has been given its exact URL.
+
+   If you would rather they were private: set `public` to false
+   below and swap getPublicUrl for createSignedUrl in
+   js/backend.js (uploadOsceImage / osceImageUrl).
+
+   Writes follow the station-editing rule set in v59 — any
+   signed-in candidate may add one, only the developer may
+   delete.
+   ============================================================ */
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('osce-images', 'osce-images', true, 8388608,
+        array['image/jpeg','image/png','image/webp','image/gif'])
+on conflict (id) do update set
+  public = true,
+  file_size_limit = excluded.file_size_limit,
+  allowed_mime_types = excluded.allowed_mime_types;
+
+drop policy if exists "osce images read"   on storage.objects;
+drop policy if exists "osce images add"    on storage.objects;
+drop policy if exists "osce images remove" on storage.objects;
+
+create policy "osce images read" on storage.objects for select
+  using (bucket_id = 'osce-images');
+
+create policy "osce images add" on storage.objects for insert
+  to authenticated with check (bucket_id = 'osce-images');
+
+create policy "osce images remove" on storage.objects for delete
+  to authenticated
+  using (bucket_id = 'osce-images' and auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');

@@ -62,13 +62,15 @@ const Backend = (() => {
     return Object.assign({}, meta, {
       q_count: qs.length,
       points_count: qs.reduce((n, q) => n + (q.marking_points || []).length, 0),
+      // the FILES live in storage; this is only so the bank can show a badge
+      image_count: qs.reduce((n, q) => n + (q.images || []).length, 0),
       // one lowercased blob so the bank can be searched without the structure
       search: [meta.topic, meta.scenario, ...qs.map(q => q.prompt), ...qs.flatMap(q => q.marking_points || [])]
         .join(' ').toLowerCase().slice(0, 4000)
     });
   }
   const OSCE_CARD_KEYS = ['id', 'topic', 'scenario', 'station_time_min', 'reading_time_min',
-    'total_marks', 'pass_mark', 'pass_mark_percent', 'q_count', 'points_count', 'collection',
+    'total_marks', 'pass_mark', 'pass_mark_percent', 'q_count', 'points_count', 'image_count', 'collection',
     'edited_by', 'edited_at'];
   const osceCard = m => { const o = {}; OSCE_CARD_KEYS.forEach(k => { if (m[k] != null) o[k] = m[k]; }); return o; };
   /** An attempt row for a LIST: the score, never the answers. */
@@ -174,6 +176,21 @@ const Backend = (() => {
     async function getOsceAttempt(id) { const e = sessionEmail(); if (!e) return null; return read('osceattempts:' + e, {})[id] || null; }
     async function saveOsceAttempt(a) { const e = sessionEmail(); if (!e) return a; const m = read('osceattempts:' + e, {}); m[a.id] = a; write('osceattempts:' + e, m); return a; }
     async function deleteOsceAttempt(id) { const e = sessionEmail(); if (!e) return; const m = read('osceattempts:' + e, {}); delete m[id]; write('osceattempts:' + e, m); }
+
+    /* Local mode has no object store, so an image is kept as a data URL. That
+       is fine for one device; the cloud path puts the bytes in storage and
+       keeps only a path on the question. */
+    async function uploadOsceImage(stationId, file) {
+      const url = await new Promise((res, rej) => {
+        const fr = new FileReader();
+        fr.onload = () => res(String(fr.result));
+        fr.onerror = () => rej(new Error('Could not read that image.'));
+        fr.readAsDataURL(file);
+      });
+      return { path: url, url };
+    }
+    function osceImageUrl(path) { return path || ''; }
+    async function deleteOsceImage() { /* nothing to delete: the data URL went with the question */ }
 
     async function uploadOsceAudio(attemptId, blob) {
       const e = sessionEmail(); if (!e) return null;
@@ -595,6 +612,7 @@ const Backend = (() => {
       getOsceStations, getOsceStation, getOsceSearchIndex, publishOsceStation, unpublishOsceStation,
       moveOsceStations, getOsceCollections, saveOsceCollections, listOsceAttempts, getOsceAttempt,
       saveOsceAttempt, deleteOsceAttempt, uploadOsceAudio, getOsceAudioUrl, sweepOsceAudio,
+      uploadOsceImage, osceImageUrl, deleteOsceImage,
       getWalletConfig, saveWalletConfig, listMyTopUps, createTopUp, createTopUpFor,
       listAllTopUps, setTopUpStatus,
       getPublishedPapers, getPaperContent, getPaperContents, publishPaper, unpublishPaper,
@@ -769,7 +787,8 @@ const Backend = (() => {
     const OSCE_CARD_SELECT = 'id,topic:meta->>topic,scenario:meta->>scenario,' +
       'station_time_min:meta->station_time_min,reading_time_min:meta->reading_time_min,' +
       'total_marks:meta->total_marks,pass_mark:meta->pass_mark,pass_mark_percent:meta->pass_mark_percent,' +
-      'q_count:meta->q_count,points_count:meta->points_count,collection:meta->>collection,' +
+      'q_count:meta->q_count,points_count:meta->points_count,image_count:meta->image_count,' +
+      'collection:meta->>collection,' +
       'edited_by:meta->>edited_by,edited_at:meta->edited_at';
     let osceCardsOk = true;
     async function getOsceStations() {
@@ -881,6 +900,33 @@ const Backend = (() => {
       return a;
     }
     async function deleteOsceAttempt(aid) { await ensureClient(); const id = await uid(); if (!id) return; await sb.from('osce_attempts').delete().eq('id', aid).eq('user_id', id); }
+
+    /* ---- images on a station's questions ----
+       The bytes go to storage and the question keeps only the path, so a
+       station with six CTGs still costs the same to LIST as one with none.
+       See the bucket note in supabase/schema.sql for why it is public. */
+    const IMAGE_BUCKET = 'osce-images';
+    const rid = () => (crypto.randomUUID?.() || String(Date.now()) + Math.random().toString(36).slice(2)).replace(/-/g, '');
+    async function uploadOsceImage(stationId, file) {
+      await ensureClient();
+      const ext = /png/i.test(file.type) ? 'png' : /webp/i.test(file.type) ? 'webp' : /gif/i.test(file.type) ? 'gif' : 'jpg';
+      const path = `${String(stationId || 'unfiled').replace(/[^a-z0-9-]/gi, '')}/${rid()}.${ext}`;
+      const { error } = await sb.storage.from(IMAGE_BUCKET).upload(path, file, {
+        cacheControl: '31536000', upsert: false, contentType: file.type || 'image/jpeg' });
+      if (error) throw new Error('Could not upload that image: ' + (error.message || ''));
+      const { data } = sb.storage.from(IMAGE_BUCKET).getPublicUrl(path);
+      return { path, url: data?.publicUrl || '' };
+    }
+    function osceImageUrl(path) {
+      if (!path) return '';
+      if (/^(https?:|data:)/i.test(path)) return path;   // a URL that came in with the JSON
+      try { return sb.storage.from(IMAGE_BUCKET).getPublicUrl(path).data?.publicUrl || ''; } catch { return ''; }
+    }
+    async function deleteOsceImage(path) {
+      await ensureClient();
+      if (!path || /^(https?:|data:)/i.test(path)) return;
+      await sb.storage.from(IMAGE_BUCKET).remove([path]);
+    }
 
     /* ---- the OSCE recording, kept for 24 hours ----
        Small enough to store (24 kbps opus), useful enough to keep — hearing
@@ -1692,6 +1738,7 @@ const Backend = (() => {
       getOsceStations, getOsceStation, getOsceSearchIndex, publishOsceStation, unpublishOsceStation,
       moveOsceStations, getOsceCollections, saveOsceCollections, listOsceAttempts, getOsceAttempt,
       saveOsceAttempt, deleteOsceAttempt, uploadOsceAudio, getOsceAudioUrl, sweepOsceAudio,
+      uploadOsceImage, osceImageUrl, deleteOsceImage,
       getWalletConfig, saveWalletConfig, listMyTopUps, createTopUp, createTopUpFor,
       listAllTopUps, setTopUpStatus,
       getPublishedPapers, getPaperContent, getPaperContents, publishPaper, unpublishPaper,

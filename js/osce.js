@@ -85,6 +85,61 @@ const OSCE = (() => {
   function bustCollections() { _colls = null; if (typeof Cache !== 'undefined') Cache.bust(COLL_KEY); }
   const collLabel = (list, id) => (list.find(c => c.id === id) || (id ? { label: id } : UNFILED)).label;
 
+  /* ---------------- images on a question ----------------
+     A CTG, a partogram, a scan. The FILES live in storage — the question
+     carries a path and a URL, never the bytes, so a station full of pictures
+     costs the bank list exactly nothing. Older stations imported from JSON
+     may carry a bare URL instead, which works the same way.
+
+     They are shown at a readable size and open full-screen on a click,
+     because half of what a CTG station tests is whether you can actually
+     read the trace. */
+  const imagesOf = q => (q.images || []).map(im => ({
+    url: im.url || (typeof Backend !== 'undefined' && Backend.osceImageUrl ? Backend.osceImageUrl(im.path) : im.path) || '',
+    caption: im.caption || ''
+  })).filter(im => im.url);
+
+  function imageStrip(q, cls) {
+    const ims = imagesOf(q);
+    if (!ims.length) return '';
+    return `<div class="os-imgs ${cls || ''} ${ims.length > 1 ? 'is-many' : ''}">
+      ${ims.map(im => `
+        <figure class="os-img">
+          <button class="os-img-b" data-zoom="${esc(im.url)}" data-cap="${esc(im.caption)}"
+            aria-label="${esc(im.caption || 'Enlarge the image')}">
+            <img src="${esc(im.url)}" alt="${esc(im.caption || 'Image shown with this question')}" loading="lazy">
+            <span class="os-img-zoom">⤢</span>
+          </button>
+          ${im.caption ? `<figcaption>${esc(im.caption)}</figcaption>` : ''}
+        </figure>`).join('')}
+    </div>`;
+  }
+
+  /** Full-screen, pannable when zoomed. One delegated listener per host. */
+  function wireLightbox(host) {
+    if (!host || host.dataset.lb === '1') return;
+    host.dataset.lb = '1';
+    host.addEventListener('click', e => {
+      const b = e.target.closest('[data-zoom]'); if (!b) return;
+      e.preventDefault();
+      document.querySelector('.os-lightbox')?.remove();
+      const box = document.createElement('div');
+      box.className = 'os-lightbox';
+      box.innerHTML = `
+        <button class="os-lb-x" aria-label="Close">✕</button>
+        <div class="os-lb-stage"><img src="${esc(b.dataset.zoom)}" alt="${esc(b.dataset.cap || '')}"></div>
+        ${b.dataset.cap ? `<p class="os-lb-cap">${esc(b.dataset.cap)}</p>` : ''}
+        <p class="os-lb-hint">Click the image to zoom · Esc to close</p>`;
+      document.body.appendChild(box);
+      const img = box.querySelector('img');
+      img.addEventListener('click', ev => { ev.stopPropagation(); img.classList.toggle('is-big'); });
+      const shut = () => { box.remove(); document.removeEventListener('keydown', onKey); };
+      const onKey = ev => { if (ev.key === 'Escape') shut(); };
+      document.addEventListener('keydown', onKey);
+      box.addEventListener('click', ev => { if (ev.target === box || ev.target.closest('.os-lb-x')) shut(); });
+    });
+  }
+
   const qsOf = st => st.questions || [];
   const qCount = st => st.q_count != null ? st.q_count : qsOf(st).length;
   const ptCount = st => st.points_count != null ? st.points_count : qsOf(st).reduce((n, q) => n + (q.marking_points || []).length, 0);
@@ -295,6 +350,7 @@ const OSCE = (() => {
          href="#/osce/station/${encodeURIComponent(st.id)}">
         <div class="os-card-top">
           <span class="os-card-time">${minsOf(st)} min</span>
+          ${st.image_count ? `<span class="os-card-img" title="${st.image_count} image${st.image_count === 1 ? '' : 's'} — a CTG, a partogram or a scan">🖼 ${st.image_count}</span>` : ''}
           ${cl ? `<span class="os-card-coll">${esc(cl)}</span>` : ''}
           ${best != null ? `<span class="os-card-best ${best >= (st.pass_mark_percent || 70) ? 'good' : 'bad'}">best ${best}%</span>` : ''}
         </div>
@@ -392,6 +448,7 @@ const OSCE = (() => {
               <div class="os-sch-h"><span class="os-sch-n">Q${i + 1}</span>
                 <p>${esc(q.prompt || '')}</p><span class="os-sch-m">${q.marks} marks</span></div>
               ${q.reveal_before ? `<p class="os-sch-rev"><b>Revealed first:</b> ${esc(q.reveal_before)}</p>` : ''}
+              ${imageStrip(q, 'is-small')}
               <ul class="os-sch-pts">${(q.marking_points || []).map(p => `<li>${esc(p)}</li>`).join('')}</ul>
             </div>`).join('')}
         </div>
@@ -403,8 +460,9 @@ const OSCE = (() => {
         </div>
       </div>`;
     document.body.appendChild(wrap);
+    wireLightbox(wrap);
     const shut = () => { wrap.remove(); document.removeEventListener('keydown', onKey); };
-    const onKey = e => { if (e.key === 'Escape') shut(); };
+    const onKey = e => { if (e.key === 'Escape' && !document.querySelector('.os-lightbox')) shut(); };
     wrap.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', shut));
     wrap.querySelector('.os-modal-foot a').addEventListener('click', shut);
     document.addEventListener('keydown', onKey);
@@ -714,15 +772,26 @@ const OSCE = (() => {
 
     /* ---- clock ---- */
     function paintClock() {
+      const clock = view.querySelector('#os-clock');
+      if (!clock) return;                       // the page has moved on
       const left = Math.max(0, total - elapsed);
       timeEl.textContent = fmt(left);
       const pct = Math.min(100, (elapsed / total) * 100);
       ringEl.style.width = pct + '%';
-      view.querySelector('#os-clock').classList.toggle('is-low', left <= 120 && left > 0);
-      view.querySelector('#os-clock').classList.toggle('is-out', left <= 0);
+      clock.classList.toggle('is-low', left <= 120 && left > 0);
+      clock.classList.toggle('is-out', left <= 0);
       progEl.style.width = (qs.length ? ((qi) / qs.length) * 100 : 0) + '%';
     }
     function tick() {
+      /* Navigating away mid-station replaces the page under us, but the
+         interval survives — it then ticks forever against a DOM that is gone,
+         throwing on every second and holding the microphone open. Notice the
+         page has moved on and stop properly. */
+      if (!view.querySelector('#os-clock')) {
+        clearInterval(tid); tid = null; running = false;
+        persist(); stopLive();
+        return;
+      }
       elapsed += 1; paintClock();
       if (elapsed % 5 === 0) persist();
       if (elapsed >= total) { finish(true); }
@@ -788,6 +857,7 @@ const OSCE = (() => {
             <span class="os-qmarks">${q.marks} marks</span>
           </div>
           ${q.reveal_before ? `<div class="os-reveal"><span>NEW INFORMATION</span><p>${esc(q.reveal_before)}</p></div>` : ''}
+          ${imageStrip(q)}
           <p class="os-prompt">${esc(q.prompt)}</p>
           <div class="os-answer">
             <div class="os-answer-head">
@@ -806,6 +876,7 @@ const OSCE = (() => {
             <button class="btn btn-gold" id="os-next">${i === qs.length - 1 ? 'Finish the station →' : 'Next question →'}</button>
           </div>
         </div>`;
+      wireLightbox(stage);
       const tx = stage.querySelector('#os-tx');
       live?.attach(text => { if (text) { tx.textContent = (tx.textContent + ' ' + text).trim(); } });
       const store = () => { ans[q.id] = { id: q.id, transcript: tx.innerText.trim() }; persist(); };
@@ -1058,7 +1129,14 @@ const OSCE = (() => {
       const body = {
         action: 'osce', provider: choice.provider, model: choice.model, dailyLimit: cfg().ai.dailyLimit,
         station: { topic: st.topic, scenario: st.scenario, total_marks: marksOf(st), pass_mark: passOf(st),
-          questions: qsOf(st).map(q => ({ id: q.id, prompt: q.prompt, marks: q.marks, marking_points: q.marking_points || [] })) },
+          // the CAPTION goes, never the image: the marking points are text and
+          // the model does not need to read the trace to know whether the
+          // candidate described it — but it does need to know one was on screen
+          questions: qsOf(st).map(q => ({ id: q.id, prompt: q.prompt, marks: q.marks,
+            marking_points: q.marking_points || [],
+            shown: (q.images || []).length
+              ? (q.images.map(im => im.caption).filter(Boolean).join('; ') || 'an image')
+              : '' })) },
         answers: qsOf(st).map(q => ({ id: q.id, transcript: (ans[q.id]?.transcript || '') }))
       };
       if (useAudio) {
@@ -1610,6 +1688,10 @@ p{margin:0 0 .6em} ul,ol{margin:0 0 .6em;padding-left:1.3em}
 .said{border-left:2px solid #ddd;padding-left:9px;margin-top:6px;font-size:.9em;color:#555}
 .foot{margin-top:18px;padding-top:6px;border-top:1px solid #ddd;display:flex;justify-content:space-between;font-size:7.5pt;color:#888}
 .blank li{color:#333}
+.qimgs{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 8px}
+.qimgs figure{margin:0;flex:1 1 240px;max-width:100%;break-inside:avoid}
+.qimgs img{width:100%;height:auto;border:1px solid #ddd;border-radius:3px}
+.qimgs figcaption{font-size:8pt;color:#666;margin-top:2px}
 </style></head><body><div class="sheet">
 <header class="cover">
   <p class="brand">AUREUM · Pathway to MD</p>
@@ -1644,8 +1726,13 @@ ${has('scheme') || has('marks') || has('said') ? `<section class="blk">
           has('marks') ? mark(p.status) : '☐'}</span>
         <span>${esc(p.point)}${has('marks') && p.note ? `<span class="note">${esc(p.note)}</span>` : ''}</span></li>`).join('')}</ul>`
       : '';
+    // the picture is part of the question — a CTG station without its trace
+    // is not the station
+    const ims = has('scheme') ? imagesOf(q) : [];
     return `<div class="q">
       <div class="qh"><b>Q${i + 1}. ${esc(q.prompt || '')}</b><i>${has('marks') ? `${qr.awarded}/${qr.max}` : `${qr.max ?? q.marks ?? ''}`}</i></div>
+      ${ims.length ? `<div class="qimgs">${ims.map(im =>
+        `<figure><img src="${esc(im.url)}" alt="">${im.caption ? `<figcaption>${esc(im.caption)}</figcaption>` : ''}</figure>`).join('')}</div>` : ''}
       ${pts}
       ${has('marks') && qr.comment ? `<p style="margin-top:6px">${esc(qr.comment)}</p>` : ''}
       ${has('said') ? `<div class="said"><strong>You said:</strong> ${esc(ansById[String(qr.id)] || '(nothing captured)')}</div>` : ''}

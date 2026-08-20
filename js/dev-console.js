@@ -2809,6 +2809,28 @@ const DevConsole = (() => {
                 <textarea class="dev-textarea oe-prompt" data-qf="prompt" data-qi="${qi}" rows="2">${esc(q.prompt || '')}</textarea></label>
               <label class="wl-f"><span>Information revealed before this question (optional — results, a new finding)</span>
                 <textarea class="dev-textarea oe-reveal" data-qf="reveal_before" data-qi="${qi}" rows="2">${esc(q.reveal_before || '')}</textarea></label>
+              <div class="oe-imgs" data-imgs="${qi}">
+                <span class="oe-pts-k">Images shown with this question — a CTG, a partogram, a scan</span>
+                <div class="oe-img-strip">
+                  ${(q.images || []).map((im, ii) => `
+                    <figure class="oe-img" data-im="${qi}:${ii}">
+                      <img src="${esc(im.url || im.path || '')}" alt="${esc(im.caption || 'Image ' + (ii + 1))}" loading="lazy">
+                      <input type="text" class="oe-img-cap" data-cap="${qi}:${ii}" value="${esc(im.caption || '')}"
+                        placeholder="Caption (optional) — e.g. CTG on admission" maxlength="120">
+                      <div class="oe-img-acts">
+                        <button class="link-btn" data-immove="${qi}:${ii}" data-dir="-1" ${ii === 0 ? 'disabled' : ''} title="Move left">←</button>
+                        <button class="link-btn" data-immove="${qi}:${ii}" data-dir="1" ${ii === (q.images.length - 1) ? 'disabled' : ''} title="Move right">→</button>
+                        <button class="link-btn qr-danger" data-imdel="${qi}:${ii}" title="Remove this image">✕</button>
+                      </div>
+                    </figure>`).join('')}
+                  <label class="oe-img-add">
+                    <input type="file" accept="image/*" data-imadd="${qi}" hidden multiple>
+                    <span>＋</span><em>Add an image</em>
+                  </label>
+                </div>
+                <p class="dev-row-msg" data-immsg="${qi}"></p>
+              </div>
+
               <span class="oe-pts-k">Marking points — one mark-worthy idea per line</span>
               <div class="oe-pts">
                 ${(q.marking_points || []).map((pt, pi) => `
@@ -2865,6 +2887,62 @@ const DevConsole = (() => {
     }));
 
     const redraw = () => paintEditor(host, onSaved);
+
+    /* ---- images on a question ----
+       Uploaded the moment they are chosen, so the file is in storage before
+       the station is saved and a half-finished edit cannot leave a question
+       pointing at nothing. The question keeps the path and the URL only. */
+    host.querySelectorAll('[data-imadd]').forEach(inp => inp.addEventListener('change', async e => {
+      const qi = Number(inp.dataset.imadd);
+      const q = edit.questions[qi]; if (!q) return;
+      const files = [...(e.target.files || [])]; e.target.value = '';
+      if (!files.length) return;
+      const msg = host.querySelector(`[data-immsg="${qi}"]`);
+      msg.className = 'dev-row-msg muted';
+      let done = 0;
+      for (const f of files) {
+        msg.textContent = `Uploading ${done + 1} of ${files.length}…`;
+        try {
+          const small = await shrinkImage(f);
+          const up = await ctx.Backend.uploadOsceImage(edit.id, small);
+          (q.images = q.images || []).push({ path: up.path, url: up.url, caption: '' });
+          done++;
+        } catch (err) {
+          msg.className = 'dev-row-msg bad';
+          msg.textContent = err.message || String(err);
+          break;
+        }
+      }
+      const failed = msg.className.includes('bad') ? msg.textContent : '';
+      redraw();
+      // the redraw replaces the element the message was written into, so it
+      // has to be put back on the fresh one
+      const after = host.querySelector(`[data-immsg="${qi}"]`);
+      if (after) {
+        after.className = 'dev-row-msg ' + (failed ? 'bad' : 'good');
+        after.textContent = failed || (done ? `✓ ${done} image${done === 1 ? '' : 's'} added.` : '');
+      }
+    }));
+    host.querySelectorAll('[data-cap]').forEach(el => el.addEventListener('input', () => {
+      const [qi, ii] = el.dataset.cap.split(':').map(Number);
+      edit.questions[qi].images[ii].caption = el.value;
+    }));
+    host.querySelectorAll('[data-immove]').forEach(b => b.addEventListener('click', () => {
+      const [qi, ii] = b.dataset.immove.split(':').map(Number);
+      const d = Number(b.dataset.dir), arr = edit.questions[qi].images;
+      if (ii + d < 0 || ii + d >= arr.length) return;
+      [arr[ii], arr[ii + d]] = [arr[ii + d], arr[ii]]; redraw();
+    }));
+    host.querySelectorAll('[data-imdel]').forEach(b => b.addEventListener('click', async () => {
+      const [qi, ii] = b.dataset.imdel.split(':').map(Number);
+      if (!confirm('Remove this image from the question?')) return;
+      const [gone] = edit.questions[qi].images.splice(ii, 1);
+      redraw();
+      // the file itself only goes once the removal is saved-worthy; a failure
+      // here leaves an orphan in storage, which is cheaper than a broken station
+      try { await ctx.Backend.deleteOsceImage(gone?.path); } catch {}
+    }));
+
     host.querySelectorAll('[data-ptadd]').forEach(b => b.addEventListener('click', () => {
       const q = edit.questions[Number(b.dataset.ptadd)];
       (q.marking_points = q.marking_points || []).push(''); redraw();
@@ -2919,6 +2997,37 @@ const DevConsole = (() => {
         msg.innerHTML = '<span class="good">✓ Saved — live in the OSCE tab.</span>';
         setTimeout(() => { edit = null; host.innerHTML = ''; onSaved?.(); }, 900);
       } catch (err) { msg.innerHTML = `<span class="bad">${ctx.esc(err.message || err)}</span>`; e.target.disabled = false; }
+    });
+  }
+
+  /* A phone photograph of a CTG is four thousand pixels wide and several
+     megabytes; nothing on screen needs more than about 1600. Line work — a
+     partogram, a CTG trace — is where JPEG artefacts actually cost you
+     legibility, so a PNG that is already a sensible size is passed through
+     untouched rather than re-encoded. */
+  function shrinkImage(file, max = 1600) {
+    const keepAsIs = /png/i.test(file.type) && file.size < 2 * 1024 * 1024;
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => {
+        const im = new Image();
+        im.onload = () => {
+          if (keepAsIs && Math.max(im.width, im.height) <= max) return resolve(file);
+          const scale = Math.min(1, max / Math.max(im.width, im.height));
+          const c = document.createElement('canvas');
+          c.width = Math.round(im.width * scale); c.height = Math.round(im.height * scale);
+          const g = c.getContext('2d');
+          g.imageSmoothingQuality = 'high';
+          g.drawImage(im, 0, 0, c.width, c.height);
+          const type = /png/i.test(file.type) ? 'image/png' : 'image/jpeg';
+          c.toBlob(b => b ? resolve(new File([b], file.name.replace(/\.\w+$/, '') + (type === 'image/png' ? '.png' : '.jpg'), { type }))
+                          : reject(new Error('Could not process that image.')), type, 0.86);
+        };
+        im.onerror = () => reject(new Error('That file is not an image the browser can open.'));
+        im.src = String(fr.result);
+      };
+      fr.onerror = () => reject(new Error('Could not read that file.'));
+      fr.readAsDataURL(file);
     });
   }
 

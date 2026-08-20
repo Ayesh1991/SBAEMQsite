@@ -414,6 +414,9 @@ function buildOsceMarkPrompt(body) {
     const said = (answers.find(a => String(a.id) === String(q.id)) || {}).transcript || '';
     return [
       `Q${q.id} (${q.marks} marks): ${q.prompt}`,
+      // the candidate had this in front of them; a question about a trace they
+      // could see is not marked as though they were describing it from memory
+      ...(q.shown ? [`SHOWN ON SCREEN: ${q.shown}`] : []),
       'Marking points:',
       ...(q.marking_points || []).map((p, i) => `  ${i + 1}. ${p}`),
       'CANDIDATE SAID: ' + (said.trim() ? said.trim() : '(nothing was said)')
@@ -455,6 +458,7 @@ function buildOsceAudioPrompt(body) {
   const st = body.station || {};
   const qs = (st.questions || []).map(q => [
     `Q${q.id} (${q.marks} marks): ${q.prompt}`,
+    ...(q.shown ? [`SHOWN ON SCREEN: ${q.shown}`] : []),
     'Marking points:',
     ...(q.marking_points || []).map((p, i) => `  ${i + 1}. ${p}`)
   ].join('\n')).join('\n\n');
