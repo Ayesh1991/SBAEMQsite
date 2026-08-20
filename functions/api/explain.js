@@ -260,6 +260,8 @@ export async function onRequest(context) {
       const out = { key: !!env.GROQ_API_KEY, models: [], tts: null, asr: null, saved: await groqSettings(env) };
       if (!out.key) return json(Object.assign(out, { error: 'GROQ_API_KEY is not set in Cloudflare.' }));
       out.models = await groqModels(env, true);
+      // grouped by what each id looks like, so the picker offers the right ones
+      out.kinds = { tts: out.models.filter(isGroqTts), asr: out.models.filter(i => GROQ_ASR.test(i)) };
       out.chosen = { tts: await pickGroqModel('tts', env, out.saved), asr: await pickGroqModel('asr', env, out.saved) };
       // one real sentence, spoken and then read back — end to end, both ways
       const spoken = await callGroqSpeech('This is the AUREUM examiner. If you can hear this, the voice is live.',
@@ -702,6 +704,18 @@ async function groqModels(env, force) {
   return groqModelCache.ids;
 }
 
+/* Recognising a speech model by its id, which is the only clue the models
+   endpoint reliably gives. Matching on "tts" alone was too literal: this
+   account's text-to-speech model is ORPHEUS, whose id says nothing of the
+   sort, so discovery found none and reported that the account had no voice
+   at all when it plainly did. Families are named, and anything that is
+   obviously speech-to-TEXT is excluded first. */
+const GROQ_ASR = /whisper|distil-whisper|transcrib/i;
+const GROQ_TTS = /tts|orpheus|playai|canary|sonic|bark|xtts|speecht5|vits|voice|speech/i;
+// a voice that is not English is the wrong voice for a PGIM examiner
+const NOT_EN = /arabic|saudi|spanish|french|german|hindi|chinese|japanese|korean|italian|portug|turkish|russian|dutch|polish/i;
+const isGroqTts = id => GROQ_TTS.test(id) && !GROQ_ASR.test(id);
+
 /** The best available id for a job, discovered rather than assumed. */
 async function pickGroqModel(kind, env, saved) {
   const explicit = kind === 'tts' ? (saved?.ttsModel || env.GROQ_TTS_MODEL)
@@ -709,13 +723,14 @@ async function pickGroqModel(kind, env, saved) {
   if (explicit) return explicit;
   const ids = await groqModels(env);
   if (kind === 'tts') {
-    return ids.find(i => /tts/i.test(i) && /en|english/i.test(i))
-        || ids.find(i => /tts/i.test(i))
-        || '';
+    const voices = ids.filter(isGroqTts);
+    return voices.find(i => /english|[-_]en$|[-_]en[-_]/i.test(i))
+        || voices.find(i => !NOT_EN.test(i))
+        || voices[0] || '';
   }
   // turbo first: same accuracy for this job, several times faster and cheaper
   return ids.find(i => /whisper.*turbo/i.test(i))
-      || ids.find(i => /whisper/i.test(i))
+      || ids.find(i => GROQ_ASR.test(i))
       || '';
 }
 
@@ -776,21 +791,39 @@ async function callGroqWhisper(audio, hint, env, saved) {
 async function callGroqSpeech(text, voice, env, saved) {
   const model = await pickGroqModel('tts', env, saved);
   if (!model) return { error: 'No speech model is available on this Groq account. Open Developer → AI systems → Check Groq to see what it offers, and whether the model needs its terms accepted first.' };
-  let res;
-  try {
-    res = await fetch(`${GROQ}/audio/speech`, {
-      method: 'POST',
-      headers: { Authorization: 'Bearer ' + env.GROQ_API_KEY, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, voice: voice || saved?.voiceName || env.GROQ_TTS_VOICE || undefined,
-        input: text, response_format: 'wav' })
-    });
-  } catch { return { error: 'Could not reach the voice service.', model }; }
-  if (res.status === 429) return { limited: true, error: 'The free voice quota is used up for now.', model };
-  if (!res.ok) {
-    let code = '', detail = '';
+  const wanted = voice || saved?.voiceName || env.GROQ_TTS_VOICE || '';
+  /* Different speech families want different things: some require a named
+     voice, some reject response_format, some reject an unknown voice
+     outright. Rather than encode one vendor's rules, the call is retried
+     without whichever parameter the error complains about — so a model that
+     appears on the account works without anyone having to look up its
+     signature first. */
+  const attempts = [
+    { model, input: text, response_format: 'wav', ...(wanted ? { voice: wanted } : {}) },
+    { model, input: text, ...(wanted ? { voice: wanted } : {}) },
+    { model, input: text, response_format: 'wav' }
+  ];
+  let res = null, code = '', detail = '';
+  for (const body of attempts) {
+    try {
+      res = await fetch(`${GROQ}/audio/speech`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + env.GROQ_API_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+    } catch { return { error: 'Could not reach the voice service.', model }; }
+    if (res.ok) break;
+    if (res.status === 429) return { limited: true, error: 'The free voice quota is used up for now.', model };
+    code = ''; detail = '';
     try { const e = (await res.json())?.error || {}; code = e.code || ''; detail = e.message || ''; } catch {}
-    if (/decommission|not_found|does not exist/i.test(code + ' ' + detail)) groqModelCache = { at: 0, ids: [] };
-    return { error: `The voice service refused (HTTP ${res.status}${code ? ' ' + code : ''})${detail ? ': ' + detail : ''}`,
+    if (/decommission|not_found|does not exist/i.test(code + ' ' + detail)) { groqModelCache = { at: 0, ids: [] }; break; }
+    // only worth another attempt when a PARAMETER is what it objected to
+    if (!/response_format|voice|unsupported|invalid|required/i.test(code + ' ' + detail)) break;
+  }
+  if (!res || !res.ok) {
+    const hint = /voice/i.test(code + ' ' + detail)
+      ? ' — this model needs a named voice: put one in Developer → AI systems → Check Groq.' : '';
+    return { error: `The voice service refused (HTTP ${res?.status || 0}${code ? ' ' + code : ''})${detail ? ': ' + detail : ''}${hint}`,
       model, code };
   }
   const buf = new Uint8Array(await res.arrayBuffer());

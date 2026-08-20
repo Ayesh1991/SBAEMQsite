@@ -3147,11 +3147,11 @@ const DevConsole = (() => {
         <summary><span>Everything this account can run (${d.models.length})</span><span class="dc-caret">▸</span></summary>
         <div class="dev-inline" style="margin-top:10px">
           <label class="wl-f"><span>Speech model</span>
-            <select class="sel" id="groq-tts">${modelOpts(d.models, /tts/i, d.saved?.ttsModel || d.chosen?.tts)}</select></label>
+            <select class="sel" id="groq-tts">${modelOpts(d.kinds?.tts?.length ? d.kinds.tts : d.models, d.saved?.ttsModel || d.chosen?.tts)}</select></label>
           <label class="wl-f"><span>Transcription model</span>
-            <select class="sel" id="groq-asr">${modelOpts(d.models, /whisper/i, d.saved?.whisperModel || d.chosen?.asr)}</select></label>
-          <label class="wl-f"><span>Voice name (optional)</span>
-            <input type="text" id="groq-voice" value="${esc(d.saved?.voiceName || '')}" placeholder="leave empty for the default"></label>
+            <select class="sel" id="groq-asr">${modelOpts(d.kinds?.asr?.length ? d.kinds.asr : d.models, d.saved?.whisperModel || d.chosen?.asr)}</select></label>
+          <label class="wl-f"><span>Voice name</span>
+            <input type="text" id="groq-voice" value="${esc(d.saved?.voiceName || '')}" placeholder="only if the model demands one"></label>
           <button class="btn btn-gold" id="groq-save" style="align-self:end">Save</button>
         </div>
         <p class="muted tiny">Pinning a model here overrides discovery. Leave them alone and AUREUM picks for itself
@@ -3176,9 +3176,12 @@ const DevConsole = (() => {
     });
   }
 
-  const modelOpts = (ids, re, chosen) =>
+  /* Every id the server grouped under this kind — and the whole list as a
+     fallback, because a family it does not recognise yet must still be
+     pickable by hand rather than being invisible. */
+  const modelOpts = (ids, chosen) =>
     `<option value="">Let AUREUM choose</option>` +
-    ids.filter(i => re.test(i)).map(i =>
+    (ids || []).map(i =>
       `<option value="${ctx.esc(i)}" ${i === chosen ? 'selected' : ''}>${ctx.esc(i)}</option>`).join('');
 
   /* ================================================================
