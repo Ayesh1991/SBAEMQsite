@@ -426,7 +426,15 @@ function buildOsceMarkPrompt(body) {
   const system = PERSONA + ' You are marking a spoken OSCE station from a transcript. The candidate SPOKE, so ' +
     'the text is informal and may contain false starts, filler and speech-to-text errors. Mark the CLINICAL ' +
     'CONTENT, never the phrasing; a near-miss word that is obviously the intended term ("magnesium" for MgSO4) ' +
-    'counts as said.\n\n' + OSCE_CALIBRATION;
+    'counts as said.\n\n' +
+    /* The questions are read aloud, and some browsers transcribe the speaker
+       as well as the candidate — so the question can appear verbatim at the
+       head of its own answer. Crediting that would award marks for having
+       been read the question. */
+    'THE QUESTION MAY APPEAR INSIDE ITS OWN ANSWER. The examiner reads each question aloud and some devices ' +
+    'transcribe that too, so a transcript may open with the question repeated word for word. Recognise it — the ' +
+    'wording is given to you — and ignore it. Credit only what the candidate contributed beyond the question ' +
+    'itself.\n\n' + OSCE_CALIBRATION;
 
   const user = [
     `STATION: ${st.topic || ''} — total ${st.total_marks || 50} marks, pass mark ${st.pass_mark || ''}.`,
