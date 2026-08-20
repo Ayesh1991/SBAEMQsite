@@ -981,6 +981,15 @@
         if (!cur.includes(b.dataset.tag)) cur.push(b.dataset.tag);
         input.value = cur.join(', ');
       }));
+      /* Speak the note instead of typing it. On an iPad there is no browser
+         dictation at all, so this is the difference between a note that gets
+         written and one that does not. Absent when transcription is not
+         available — a dead button is worse than no button. */
+      const body = g('#nc-body');
+      const mic = (typeof OSCE !== 'undefined' && OSCE.micButton)
+        ? OSCE.micButton(body, { className: 'nc-mic', maxSecs: 180 }) : null;
+      if (mic && body) body.parentNode.insertBefore(mic, body.nextSibling);
+
       g('#nc-save')?.addEventListener('click', async () => {
         const note = {
           id: editing?.id, title: g('#nc-title').value.trim(), body: g('#nc-body').value.trim(),

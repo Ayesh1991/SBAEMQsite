@@ -4311,3 +4311,31 @@ body.eco-open .ap-dock { z-index: 2390; }
 .os-asr p { margin: 6px 0 0; }
 .os-asr-ok { margin: 0 !important; font-size: .8rem; line-height: 1.55; color: var(--teal); }
 .os-rec.is-live-voice i { box-shadow: 0 0 0 3px color-mix(in srgb, var(--teal) 22%, transparent); }
+
+/* ---- v67: which voice, and speaking instead of typing ---- */
+.os-voiceline { max-width: 560px; margin: 0 auto 12px; padding: 10px 14px; border-radius: 11px;
+  font-size: .8rem; line-height: 1.55; text-align: left; color: var(--ink-3);
+  background: var(--surface-2); border: 1px solid var(--hairline); }
+.os-voiceline.is-groq { color: var(--ink-2); border-color: var(--teal);
+  background: color-mix(in srgb, var(--teal) 9%, transparent); }
+.os-voiceline strong { color: var(--ink); }
+.os-voiceline em { color: var(--gold); font-style: normal; }
+
+.voice-mic { display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; margin-top: 8px; border-radius: 10px; cursor: pointer;
+  border: 1px solid var(--hairline); background: var(--surface-2); color: var(--ink-2);
+  font-size: .9rem; line-height: 1; transition: .16s ease; }
+.voice-mic:hover { border-color: var(--teal); color: var(--ink); }
+.voice-mic.is-rec { border-color: var(--bad, #e05263); color: var(--bad, #e05263);
+  background: color-mix(in srgb, var(--bad, #e05263) 14%, transparent);
+  animation: micPulse 1.1s ease-in-out infinite; }
+.voice-mic.is-bad { border-color: var(--gold); color: var(--gold); }
+@keyframes micPulse { 0%, 100% { opacity: 1 } 50% { opacity: .55 } }
+.nc-mic { align-self: flex-start; }
+
+.groq-table { width: 100%; margin-top: 12px; }
+.groq-table th { width: 150px; }
+.groq-table tr.bad th, .groq-table tr.bad td { color: var(--bad, #e05263); }
+.groq-play { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 12px; }
+.groq-play audio { max-width: 320px; }
+.groq-all { word-break: break-word; line-height: 1.8; margin-top: 8px; }

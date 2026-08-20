@@ -250,6 +250,32 @@ export async function onRequest(context) {
        both are allowed to fail: the client keeps the browser's own
        recogniser and synthesiser as the fallback, so a rate limit costs
        quality, never the station. */
+    /* ---- Groq: what does this account actually have? ----
+       Built because a decommissioned model failed silently for a day: the
+       400 was sitting in Groq's own log and nowhere in the app. This asks
+       the account what it can run, tries a real call, and reports the raw
+       answer — so "is Groq working" stops being a guess. */
+    if (action === 'groqcheck') {
+      if (!isDev) return json({ error: 'Developer only.' }, 403);
+      const out = { key: !!env.GROQ_API_KEY, models: [], tts: null, asr: null, saved: await groqSettings(env) };
+      if (!out.key) return json(Object.assign(out, { error: 'GROQ_API_KEY is not set in Cloudflare.' }));
+      out.models = await groqModels(env, true);
+      out.chosen = { tts: await pickGroqModel('tts', env, out.saved), asr: await pickGroqModel('asr', env, out.saved) };
+      // one real sentence, spoken and then read back — end to end, both ways
+      const spoken = await callGroqSpeech('This is the AUREUM examiner. If you can hear this, the voice is live.',
+        body.voice || '', env, out.saved);
+      out.tts = spoken.error
+        ? { ok: false, model: spoken.model, error: spoken.error, code: spoken.code }
+        : { ok: true, model: spoken.model, bytes: Math.round((spoken.audio || '').length * 0.75), audio: spoken.audio, mime: spoken.mime };
+      if (out.tts.ok) {
+        const heard = await callGroqWhisper({ data: spoken.audio, mime: 'audio/wav' }, '', env, out.saved);
+        out.asr = heard.error
+          ? { ok: false, model: heard.model, error: heard.error, code: heard.code }
+          : { ok: true, model: heard.model, text: heard.text };
+      }
+      return json(out);
+    }
+
     if (action === 'transcribe' || action === 'tts') {
       if (!isDev) {
         const flags = await getUserFlags(token, user.id, env);
@@ -261,18 +287,20 @@ export async function onRequest(context) {
         const a = body.audio || {};
         if (!a.data) return json({ error: 'No audio was sent.', fallback: true }, 400);
         if (String(a.data).length > 34_000_000) return json({ error: 'That recording is too long to transcribe.', fallback: true }, 413);
-        const r = await callGroqWhisper(a, body.prompt || '', env);
+        const gs = await groqSettings(env);
+        const r = await callGroqWhisper(a, body.prompt || '', env, gs);
         if (r.limited) return json({ error: r.error, fallback: true, rateLimited: true }, 429);
-        if (r.error) return json({ error: r.error, fallback: true }, 502);
+        if (r.error) return json({ error: r.error, fallback: true, model: r.model, code: r.code }, 502);
         await logTokens(token, env, 'groq', { model: r.model, in: 0, out: 0 }, 'transcribe');
         return json({ text: r.text, model: r.model, secs: r.secs });
       }
 
       const said = String(body.text || '').slice(0, 1200);
       if (!said.trim()) return json({ error: 'Nothing to say.', fallback: true }, 400);
-      const r = await callGroqSpeech(said, body.voice || '', env);
+      const gs2 = await groqSettings(env);
+      const r = await callGroqSpeech(said, body.voice || '', env, gs2);
       if (r.limited) return json({ error: r.error, fallback: true, rateLimited: true }, 429);
-      if (r.error) return json({ error: r.error, fallback: true }, 502);
+      if (r.error) return json({ error: r.error, fallback: true, model: r.model, code: r.code }, 502);
       await logTokens(token, env, 'groq', { model: r.model, in: 0, out: 0 }, 'examiner_voice');
       return json({ audio: r.audio, mime: r.mime, model: r.model });
     }
@@ -653,6 +681,54 @@ async function callOpenAIAudio(prompt, audio, format, model, env, maxTokens) {
    to follow that. */
 const GROQ = 'https://api.groq.com/openai/v1';
 
+/* A free tier retires models without warning — `playai-tts` came back
+   `model_decommissioned` with a 400 — so nothing here hard-codes a guess and
+   hopes. The account is ASKED what it can run, and a model is chosen from
+   what actually came back. The list is cached per isolate, so this costs one
+   extra request occasionally rather than one per call.
+
+   Order of preference: what the developer picked in Rates & settings, then
+   the env override, then whatever discovery finds. */
+let groqModelCache = { at: 0, ids: [] };
+async function groqModels(env, force) {
+  if (!force && groqModelCache.ids.length && Date.now() - groqModelCache.at < 30 * 60e3) return groqModelCache.ids;
+  try {
+    const res = await fetch(`${GROQ}/models`, { headers: { Authorization: 'Bearer ' + env.GROQ_API_KEY } });
+    if (!res.ok) return groqModelCache.ids;
+    const data = await res.json();
+    const ids = (data?.data || []).map(m => m.id).filter(Boolean);
+    if (ids.length) groqModelCache = { at: Date.now(), ids };
+  } catch { /* keep whatever was cached */ }
+  return groqModelCache.ids;
+}
+
+/** The best available id for a job, discovered rather than assumed. */
+async function pickGroqModel(kind, env, saved) {
+  const explicit = kind === 'tts' ? (saved?.ttsModel || env.GROQ_TTS_MODEL)
+                                  : (saved?.whisperModel || env.GROQ_WHISPER_MODEL);
+  if (explicit) return explicit;
+  const ids = await groqModels(env);
+  if (kind === 'tts') {
+    return ids.find(i => /tts/i.test(i) && /en|english/i.test(i))
+        || ids.find(i => /tts/i.test(i))
+        || '';
+  }
+  // turbo first: same accuracy for this job, several times faster and cheaper
+  return ids.find(i => /whisper.*turbo/i.test(i))
+      || ids.find(i => /whisper/i.test(i))
+      || '';
+}
+
+/** Groq's own settings, developer-editable, alongside the wallet's. */
+async function groqSettings(env) {
+  try {
+    const res = await sb(`/rest/v1/app_config?id=eq.groq&select=data`, env,
+      { headers: { Authorization: `Bearer ${env.SUPABASE_ANON_KEY}` } });
+    const rows = await res.json();
+    return rows?.[0]?.data || {};
+  } catch { return {}; }
+}
+
 /** base64 → Blob, so the audio can go up as multipart the way Whisper wants. */
 function b64Blob(data, mime) {
   const bin = atob(String(data));
@@ -662,8 +738,9 @@ function b64Blob(data, mime) {
 }
 
 /** The recording, as words. The one thing that gives an iPad a transcript. */
-async function callGroqWhisper(audio, hint, env) {
-  const model = env.GROQ_WHISPER_MODEL || 'whisper-large-v3-turbo';
+async function callGroqWhisper(audio, hint, env, saved) {
+  const model = await pickGroqModel('asr', env, saved);
+  if (!model) return { error: 'No transcription model is available on this Groq account. Open Developer → AI systems → Check Groq to see what it offers.' };
   const ext = /mp4|m4a|aac/i.test(audio.mime || '') ? 'm4a' : /wav/i.test(audio.mime || '') ? 'wav' : 'webm';
   const form = new FormData();
   form.append('file', b64Blob(audio.data, audio.mime), `station.${ext}`);
@@ -684,29 +761,37 @@ async function callGroqWhisper(audio, hint, env) {
     return { limited: true, error: 'The free transcription quota is used up for now. The browser\'s own transcript is being used instead.' };
   }
   if (!res.ok) {
-    let detail = ''; try { detail = (await res.json())?.error?.message || ''; } catch {}
-    return { error: `Transcription failed (HTTP ${res.status})${detail ? ': ' + detail : ''}` };
+    let code = '', detail = '';
+    try { const e = (await res.json())?.error || {}; code = e.code || ''; detail = e.message || ''; } catch {}
+    // a retired model must not be tried again for the rest of this isolate
+    if (/decommission|not_found|does not exist/i.test(code + ' ' + detail)) groqModelCache = { at: 0, ids: [] };
+    return { error: `Transcription failed (HTTP ${res.status}${code ? ' ' + code : ''})${detail ? ': ' + detail : ''}`,
+      model, code };
   }
   const data = await res.json().catch(() => ({}));
   return { text: String(data.text || '').trim(), model, secs: data.duration || 0 };
 }
 
 /** The examiner, read aloud. Returned as base64 so it can be mixed into the tape. */
-async function callGroqSpeech(text, voice, env) {
-  const model = env.GROQ_TTS_MODEL || 'playai-tts';
+async function callGroqSpeech(text, voice, env, saved) {
+  const model = await pickGroqModel('tts', env, saved);
+  if (!model) return { error: 'No speech model is available on this Groq account. Open Developer → AI systems → Check Groq to see what it offers, and whether the model needs its terms accepted first.' };
   let res;
   try {
     res = await fetch(`${GROQ}/audio/speech`, {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + env.GROQ_API_KEY, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, voice: voice || env.GROQ_TTS_VOICE || 'Fritz-PlayAI',
+      body: JSON.stringify({ model, voice: voice || saved?.voiceName || env.GROQ_TTS_VOICE || undefined,
         input: text, response_format: 'wav' })
     });
-  } catch { return { error: 'Could not reach the voice service.' }; }
-  if (res.status === 429) return { limited: true, error: 'The free voice quota is used up for now.' };
+  } catch { return { error: 'Could not reach the voice service.', model }; }
+  if (res.status === 429) return { limited: true, error: 'The free voice quota is used up for now.', model };
   if (!res.ok) {
-    let detail = ''; try { detail = (await res.json())?.error?.message || ''; } catch {}
-    return { error: `The voice service refused (HTTP ${res.status})${detail ? ': ' + detail : ''}` };
+    let code = '', detail = '';
+    try { const e = (await res.json())?.error || {}; code = e.code || ''; detail = e.message || ''; } catch {}
+    if (/decommission|not_found|does not exist/i.test(code + ' ' + detail)) groqModelCache = { at: 0, ids: [] };
+    return { error: `The voice service refused (HTTP ${res.status}${code ? ' ' + code : ''})${detail ? ': ' + detail : ''}`,
+      model, code };
   }
   const buf = new Uint8Array(await res.arrayBuffer());
   let bin = '';

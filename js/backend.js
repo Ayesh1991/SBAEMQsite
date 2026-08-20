@@ -170,6 +170,8 @@ const Backend = (() => {
       l.forEach(s => { if (!want || want.has(s.id)) { s.collection = collection; n++; } });
       write('oscestations', l); return n;
     }
+    async function getGroqConfig() { return read('groqcfg', {}); }
+    async function saveGroqConfig(c) { write('groqcfg', c); return c; }
     async function getOsceCollections() { return read('oscecollections', null); }
     async function saveOsceCollections(list) { write('oscecollections', list); return list; }
     async function listOsceAttempts() { const e = sessionEmail(); if (!e) return []; return Object.values(read('osceattempts:' + e, {})).map(osceAttemptCard); }
@@ -610,7 +612,8 @@ const Backend = (() => {
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
       getOsceStations, getOsceStation, getOsceSearchIndex, publishOsceStation, unpublishOsceStation,
-      moveOsceStations, getOsceCollections, saveOsceCollections, listOsceAttempts, getOsceAttempt,
+      moveOsceStations, getOsceCollections, saveOsceCollections, getGroqConfig, saveGroqConfig,
+      listOsceAttempts, getOsceAttempt,
       saveOsceAttempt, deleteOsceAttempt, uploadOsceAudio, getOsceAudioUrl, sweepOsceAudio,
       uploadOsceImage, osceImageUrl, deleteOsceImage,
       getWalletConfig, saveWalletConfig, listMyTopUps, createTopUp, createTopUpFor,
@@ -864,6 +867,18 @@ const Backend = (() => {
         n += batch.length;
       }
       return n;
+    }
+    /* Which Groq models to use. Stored rather than compiled in, because a
+       free tier retires models and following that should not need a deploy. */
+    async function getGroqConfig() {
+      await ensureClient();
+      const { data } = await sb.from('app_config').select('data').eq('id', 'groq').single();
+      return data?.data || {};
+    }
+    async function saveGroqConfig(c) {
+      await ensureClient();
+      await sb.from('app_config').upsert({ id: 'groq', data: c });
+      return c;
     }
     async function getOsceCollections() {
       await ensureClient();
@@ -1736,7 +1751,8 @@ const Backend = (() => {
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
       getOsceStations, getOsceStation, getOsceSearchIndex, publishOsceStation, unpublishOsceStation,
-      moveOsceStations, getOsceCollections, saveOsceCollections, listOsceAttempts, getOsceAttempt,
+      moveOsceStations, getOsceCollections, saveOsceCollections, getGroqConfig, saveGroqConfig,
+      listOsceAttempts, getOsceAttempt,
       saveOsceAttempt, deleteOsceAttempt, uploadOsceAudio, getOsceAudioUrl, sweepOsceAudio,
       uploadOsceImage, osceImageUrl, deleteOsceImage,
       getWalletConfig, saveWalletConfig, listMyTopUps, createTopUp, createTopUpFor,
