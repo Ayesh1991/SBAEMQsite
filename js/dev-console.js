@@ -1414,7 +1414,10 @@ const DevConsole = (() => {
     { id: 'simulator',       label: 'Simulator' },
     { id: 'flashcards',      label: 'Flashcards' },
     // OpenAI GPT — off until you approve it here, per user
-    { id: 'gpt',             label: 'GPT' }
+    { id: 'gpt',             label: 'GPT' },
+    // Groq's free tier: transcription and the examiner's voice. Mechanical
+    // work only — never marking — and it always falls back to the browser.
+    { id: 'groq',            label: 'Groq voice' }
   ];
 
   // named from config so the grant row tracks whatever GPT model is configured
@@ -1505,7 +1508,7 @@ const DevConsole = (() => {
                 </div>
                 <div class="dev-up-block">
                   <h4>AI grants</h4>
-                  ${[['gemini', 'Gemini (master AI switch)'], ['gemini_advanced', 'Gemini+ model picker'], ['gpt', gptGrantLabel()], ['ai_flashcards', 'AI flashcards']].map(([f, lbl]) => `
+                  ${[['gemini', 'Gemini (master AI switch)'], ['gemini_advanced', 'Gemini+ model picker'], ['gpt', gptGrantLabel()], ['ai_flashcards', 'AI flashcards'], ['groq', 'Groq — spoken examiner &amp; Whisper transcripts (free tier)']].map(([f, lbl]) => `
                     <label class="dev-up-flag"><label class="dev-flag"><input type="checkbox" data-uflag="${f}" data-uid="${ctx.esc(u.id)}" ${u.featureFlags?.[f] ? 'checked' : ''}><span></span></label> ${lbl}</label>`).join('')}
                 </div>
                 <div class="dev-up-block">
@@ -1919,6 +1922,19 @@ const DevConsole = (() => {
         'Audio is ~32 tokens a second, so a whole station is about 29k input tokens — pennies on Flash-Lite. ' +
         'The station itself reads its questions aloud and probes thin answers with no model call at all.',
       defaults: { enabled: true, provider: 'gemini', model: 'gemini-3.1-flash-lite', split: 'per-user' } },
+    { id: 'whisper_asr', name: '🗣 Whisper transcription', status: 'live', billing: 'free',
+      desc: 'Turns the station recording into words on Groq\'s free tier. This is the only way an iPad gets a ' +
+        'transcript at all — Safari has never shipped a recogniser — and it is far more accurate than the ones ' +
+        'that have, because the scheme\'s own vocabulary is passed as a spelling hint. Costs nothing, marks ' +
+        'nothing: the transcript still goes to the marker you chose. Falls back to the browser when the free ' +
+        'quota runs out.',
+      defaults: { enabled: true, provider: 'groq', model: 'whisper-large-v3-turbo', split: 'per-user' } },
+    { id: 'examiner_voice', name: '🎙 Spoken examiner', status: 'live', billing: 'free',
+      desc: 'Reads each question aloud in a real voice instead of the browser\'s synthesiser, and mixes that ' +
+        'audio straight into the recording — so the tape carries both voices even through headphones, which the ' +
+        'speaker-bleed trick cannot manage. Prefetched while the candidate reads the scenario, so nothing waits ' +
+        'mid-station. Falls back to the browser voice.',
+      defaults: { enabled: true, provider: 'groq', model: 'playai-tts', split: 'per-user' } },
     { id: 'topup_reader', name: '🧾 Payment slip reader', status: 'live', billing: 'per-user',
       desc: 'Reads an uploaded bank slip and pulls out the amount, the payer\'s reference and the transaction ' +
         'number so a top-up can be approved in one click. Deliberately the cheapest call in the app: the image is ' +

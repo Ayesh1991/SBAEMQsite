@@ -164,6 +164,18 @@ window.AUREUM_CONFIG = {
        WAV or MP3 only), add it here with audio: true and audioFormat: 'wav' —
        the browser re-encoding and the server path are both already written
        and will start working the moment the flag is set. */
+    /* Groq — a free tier used for the mechanical jobs only: turning a
+       recording into words, and reading a question aloud. Never marking,
+       never clinical reasoning. Off for everyone except the developer until
+       granted per user in Users & access, and every use falls back to the
+       browser's own recogniser and synthesiser when the quota runs out.
+       The API key is a Cloudflare secret (GROQ_API_KEY), never here. */
+    groq: {
+      enabled: true,
+      whisper: true,             // transcribe the station recording
+      voice: true,               // read the questions aloud in a real voice
+      voiceName: 'Fritz-PlayAI'  // GROQ_TTS_VOICE overrides this server-side
+    },
     gptModels: [
       { id: 'gpt-5.6-luna', label: 'GPT 5.6 Luna', audio: false,
         why: 'This GPT model takes text and images only — it rejects an audio attachment outright.' }
@@ -186,6 +198,13 @@ window.AUREUM_CONFIG = {
       'claude-sonnet-4-5':     { in: 3.00, out: 15.00, label: 'Claude Sonnet 4.5' },
       'claude':                { in: 1.00, out: 5.00,  label: 'Claude (other)' },
       'gpt-5.6-luna':          { in: 0.20, out: 1.20,  label: 'GPT 5.6 Luna' },
+      /* Groq's free tier costs nothing, so these price at zero — the calls
+         still appear in the usage breakdown, which is the point: you can see
+         how much work is being done for free, and what the bill would become
+         if the free tier ever went away. */
+      'whisper':               { in: 0,    out: 0,     label: 'Whisper transcription (Groq, free)' },
+      'playai-tts':            { in: 0,    out: 0,     label: 'Examiner voice (Groq, free)' },
+      'llama':                 { in: 0,    out: 0,     label: 'Llama (Groq, free)' },
       'gpt':                   { in: 0.20, out: 1.20,  label: 'GPT (other)' }
     }
   }
