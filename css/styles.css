@@ -4207,3 +4207,59 @@ body.eco-open .ap-dock { z-index: 2390; }
 .st-fx-pdf th { text-align: left; padding: 2px 14px 2px 0; color: var(--ink-3); font-weight: 500; white-space: nowrap; }
 .st-fx-pdf td { padding: 2px 0; word-break: break-all; }
 .st-fx-pdf tr.bad th, .st-fx-pdf tr.bad td { color: var(--bad, #e05263); }
+
+/* ============================================================
+   v62 — images on OSCE questions (CTG, partogram, scans)
+   ============================================================ */
+
+/* ---- shown with the question, in the runner and the scheme ---- */
+.os-imgs { display: flex; flex-wrap: wrap; gap: 12px; margin: 0 0 16px; }
+.os-img { margin: 0; flex: 1 1 100%; min-width: 0; }
+.os-imgs.is-many .os-img { flex: 1 1 min(100%, 340px); }
+.os-imgs.is-small .os-img { flex: 1 1 min(100%, 220px); }
+.os-img-b { display: block; position: relative; width: 100%; padding: 0; cursor: zoom-in;
+  border: 1px solid var(--hairline); border-radius: 12px; overflow: hidden; background: #fff;
+  transition: border-color .16s ease; }
+.os-img-b:hover { border-color: var(--gold); }
+.os-img-b img { display: block; width: 100%; height: auto; max-height: 52vh; object-fit: contain; background: #fff; }
+.os-imgs.is-small .os-img-b img { max-height: 180px; }
+.os-img-zoom { position: absolute; right: 8px; bottom: 8px; width: 28px; height: 28px; border-radius: 8px;
+  display: grid; place-items: center; font-size: .8rem; color: #fff; background: rgba(10, 14, 22, .62); }
+.os-img figcaption { font-size: .74rem; color: var(--ink-3); margin-top: 5px; line-height: 1.5; }
+
+/* ---- full screen ---- */
+.os-lightbox { position: fixed; inset: 0; z-index: 260; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 10px; padding: 3vh 3vw;
+  background: rgba(4, 7, 12, .93); animation: osModalIn .18s ease; }
+.os-lb-stage { flex: 1 1 auto; min-height: 0; width: 100%; display: grid; place-items: center; overflow: auto; }
+.os-lb-stage img { max-width: 100%; max-height: 100%; object-fit: contain; cursor: zoom-in;
+  background: #fff; border-radius: 8px; }
+.os-lb-stage img.is-big { max-width: none; max-height: none; width: auto; height: auto; cursor: zoom-out; }
+.os-lb-x { position: absolute; top: 16px; right: 18px; width: 38px; height: 38px; border-radius: 11px;
+  background: rgba(255, 255, 255, .1); border: 1px solid rgba(255, 255, 255, .2); color: #fff;
+  font-size: 1rem; cursor: pointer; }
+.os-lb-x:hover { background: rgba(255, 255, 255, .2); }
+.os-lb-cap { margin: 0; color: #fff; font-size: .9rem; text-align: center; }
+.os-lb-hint { margin: 0; color: rgba(255, 255, 255, .5); font-size: .72rem; }
+
+.os-card-img { font-size: .58rem; letter-spacing: .06em; font-weight: 700; padding: 3px 8px;
+  border-radius: 999px; color: var(--teal); border: 1px solid var(--teal);
+  background: color-mix(in srgb, var(--teal) 10%, transparent); }
+
+/* ---- the editor's image strip ---- */
+.oe-imgs { margin: 12px 0 4px; }
+.oe-img-strip { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; align-items: flex-start; }
+.oe-img { margin: 0; width: 190px; padding: 8px; border-radius: 11px;
+  background: var(--surface-2); border: 1px solid var(--hairline); }
+.oe-img img { display: block; width: 100%; height: 110px; object-fit: contain;
+  background: #fff; border-radius: 7px; }
+.oe-img-cap { width: 100%; margin-top: 6px; padding: 5px 8px; font: inherit; font-size: .74rem;
+  border-radius: 7px; border: 1px solid var(--hairline); background: var(--surface); color: var(--ink); }
+.oe-img-acts { display: flex; gap: 8px; margin-top: 5px; justify-content: flex-end; }
+.oe-img-add { width: 190px; height: 158px; display: flex; flex-direction: column; gap: 4px;
+  align-items: center; justify-content: center; cursor: pointer; border-radius: 11px;
+  border: 1px dashed var(--hairline); background: var(--surface-2); color: var(--ink-3);
+  transition: .16s ease; }
+.oe-img-add:hover { border-color: var(--gold); color: var(--ink); }
+.oe-img-add span { font-size: 1.5rem; line-height: 1; }
+.oe-img-add em { font-style: normal; font-size: .76rem; }
