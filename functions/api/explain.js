@@ -467,6 +467,14 @@ function buildOsceAudioPrompt(body) {
     'The audio is one continuous take covering every question in order; the candidate moved on when they had ' +
     'finished the previous one. First work out what they said for each question, then mark the CLINICAL CONTENT ' +
     'against the scheme. Ignore filler, false starts and self-correction — mark the position they settled on.\n\n' +
+    /* The recording may carry BOTH voices: the questions are read aloud by a
+       synthetic examiner voice through the device speaker and the microphone
+       hears them. Those words are the question, not the answer, and crediting
+       them would hand the candidate marks for being read the scheme. */
+    'TWO VOICES MAY BE AUDIBLE. The examiner\'s questions are read aloud by a synthetic voice and the microphone ' +
+    'may have picked them up. Anything spoken in that voice is the QUESTION being asked — its wording appears ' +
+    'below, so you can recognise it. Credit ONLY what the candidate says in their own voice. If a marking point is ' +
+    'audible solely in the examiner\'s voice, it was not said by the candidate and earns nothing.\n\n' +
     OSCE_CALIBRATION;
 
   const user = [

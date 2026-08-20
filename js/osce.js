@@ -161,6 +161,21 @@ const OSCE = (() => {
   const VOICE_KEY = 'aureum.osce.voice';
   const voiceOn = () => { try { return localStorage.getItem(VOICE_KEY) !== '0'; } catch { return true; } };
   const setVoiceOn = v => { try { localStorage.setItem(VOICE_KEY, v ? '1' : '0'); } catch {} };
+
+  /* Should the tape carry the examiner as well as the candidate?
+
+     The browser's speech synthesiser gives no audio stream that could be
+     mixed into the recording — there is no API for it — so the only way to
+     get both voices onto one tape is to let the microphone hear the device
+     speaker, which means turning echo cancellation OFF. It works on a phone
+     or an iPad speaker; with headphones on there is nothing for the mic to
+     hear and only the candidate is recorded.
+
+     The marking prompt is told the examiner may be audible, so nothing said
+     in the examiner's voice can be credited to the candidate. */
+  const BOTH_KEY = 'aureum.osce.bothvoices';
+  const examinerOnTape = () => { try { return localStorage.getItem(BOTH_KEY) !== '0'; } catch { return true; } };
+  const setExaminerOnTape = v => { try { localStorage.setItem(BOTH_KEY, v ? '1' : '0'); } catch {} };
   const canSpeak = () => typeof speechSynthesis !== 'undefined';
 
   function speak(text, opts = {}) {
@@ -223,7 +238,15 @@ const OSCE = (() => {
   function chosenModel() {
     const all = modelChoices();
     let k = null; try { k = localStorage.getItem(MODEL_KEY); } catch {}
-    return all.find(m => m.key === k) || all[0] || { provider: 'gemini', model: cfg().ai?.geminiModel, label: 'Gemini', rate: { in: 0, out: 0 }, audio: true };
+    /* The list is ordered cheapest-first so the price informs the choice, but
+       the DEFAULT is the cheapest model that can actually listen to the
+       recording. Defaulting to the cheapest of all would quietly disable the
+       accurate route to save a rupee, which is the wrong trade on a station
+       that took fifteen minutes to sit. */
+    return all.find(m => m.key === k)
+      || all.find(m => m.audio)
+      || all[0]
+      || { provider: 'gemini', model: cfg().ai?.geminiModel, label: 'Gemini', rate: { in: 0, out: 0 }, audio: true };
   }
   const setModel = k => { try { localStorage.setItem(MODEL_KEY, k); } catch {} };
 
@@ -304,6 +327,9 @@ const OSCE = (() => {
     const clear = body.querySelector('#os-search-x');
     const grid = body.querySelector('#os-grid');
     const none = body.querySelector('#os-none');
+    // opening a station and coming back should land you where you were, not
+    // back at the top of two hundred stations
+    input.value = bankView.q || '';
     /* The cards carry the topic and the scenario, which is enough for most
        searches. The deep index — every prompt and every marking point — is
        fetched on the FIRST keystroke and never on a visit that does not
@@ -320,10 +346,13 @@ const OSCE = (() => {
         (idx || []).forEach(r => { if (r.search) hay[r.id] = (hay[r.id] + ' ' + r.search).toLowerCase(); });
       } catch { /* topic + scenario search still works */ }
     }
-    let bin = '*';
+    // a remembered bin that no longer holds anything falls back to All
+    let bin = bins.some(b => b.id === bankView.bin) ? bankView.bin : '*';
+    body.querySelectorAll('.os-bin').forEach(x => x.classList.toggle('active', x.dataset.bin === bin));
     const run = () => {
       const terms = input.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
       clear.hidden = !terms.length;
+      bankView.q = input.value; bankView.bin = bin;
       let shown = 0;
       grid.querySelectorAll('.os-card').forEach(c => {
         const ok = (bin === '*' || (c.dataset.coll || '') === bin) && terms.every(t => hay[c.dataset.st].includes(t));
@@ -331,15 +360,32 @@ const OSCE = (() => {
       });
       none.hidden = shown > 0;
       none.textContent = terms.length ? 'No station mentions that.' : 'Nothing filed here yet.';
+      restoreScroll();
     };
-    input.addEventListener('input', async () => { await loadDeep(); run(); });
-    clear.addEventListener('click', () => { input.value = ''; run(); input.focus(); });
+    input.addEventListener('input', async () => { bankView.top = 0; await loadDeep(); run(); });
+    clear.addEventListener('click', () => { input.value = ''; bankView.top = 0; run(); input.focus(); });
     body.querySelector('#os-bins')?.addEventListener('click', e => {
       const b = e.target.closest('[data-bin]'); if (!b) return;
-      bin = b.dataset.bin;
+      bin = b.dataset.bin; bankView.top = 0;
       body.querySelectorAll('.os-bin').forEach(x => x.classList.toggle('active', x === b));
       run();
     });
+    // the deep index is only needed when a search is actually in force, so a
+    // restored one pays for it and a fresh visit still does not
+    if (bankView.q.trim()) { await loadDeep(); }
+    run();
+    grid.addEventListener('click', () => { bankView.top = window.scrollY; }, true);
+  }
+
+  /* Where the candidate was in the bank, kept for the length of the visit.
+     Deliberately in memory rather than storage: coming back from a station
+     should feel like going back, but a new session should start clean. */
+  const bankView = { q: '', bin: '*', top: 0 };
+  let scrollTimer = null;
+  function restoreScroll() {
+    if (!bankView.top) return;
+    clearTimeout(scrollTimer);
+    scrollTimer = setTimeout(() => { window.scrollTo({ top: bankView.top, behavior: 'instant' }); bankView.top = 0; }, 40);
   }
 
   function card(st, best, colls) {
@@ -815,8 +861,11 @@ const OSCE = (() => {
     function resume() { stage.classList.remove('is-paused'); stage.querySelector('.os-paused')?.remove(); live?.resume(); startClock(); }
     function persist() { s.qi = qi; s.elapsed = elapsed; s.phase = qi >= qs.length ? 'done' : 'station'; saveSession(s); }
 
-    /* ---- the three phases ---- */
-    if (s.phase === 'done' || qi >= qs.length) { debrief(); }
+    /* ---- the three phases ----
+       A debrief re-entered (a circuit stepping back, a re-render) used to be
+       called with no recording and would announce that none had been made.
+       The tape from the station just finished is still in hand. */
+    if (s.phase === 'done' || qi >= qs.length) { debrief(false, lastRec?.station === st.id ? lastRec.rec : null); }
     else if (s.phase === 'station' && elapsed > 0) { brief(true); }
     else { brief(false); }
 
@@ -832,8 +881,16 @@ const OSCE = (() => {
             : `The examiner allows about ${st.reading_time_min || 1} minute to read. The ${minsOf(st)}-minute clock and the
                recording both start when you press the button — question 1 appears at the same moment.`}</p>
           <div class="os-mic" id="os-mic"></div>
+          ${canSpeak() ? `<label class="os-both">
+            <input type="checkbox" id="os-both" ${examinerOnTape() ? 'checked' : ''}>
+            <span><strong>Record the examiner's voice too</strong><br>
+              <span class="muted tiny">The questions are read aloud through the speaker and the microphone picks them
+                up, so the tape sounds like the real room. Turn it off, or wear headphones, and only your own voice is
+                recorded. Nothing said in the examiner's voice can earn you marks either way.</span></span>
+          </label>` : ''}
           <button class="btn btn-gold btn-lg" id="os-go">${resuming ? '▶ Resume the station' : "▶ I've read it — start"}</button>
         </div>`;
+      stage.querySelector('#os-both')?.addEventListener('change', e => setExaminerOnTape(e.target.checked));
       stage.querySelector('#os-go').addEventListener('click', async () => {
         await startCapture();
         startClock();
@@ -843,7 +900,33 @@ const OSCE = (() => {
 
     async function startCapture() {
       live = makeCapture(stage.querySelector('#os-mic'));
+      live.watchState(() => paintRecState(stage));
       await live.start();
+    }
+
+    /* Whatever the recorder is ACTUALLY doing, on screen, all the time.
+       The old code decided this once when the question was drawn and wrote
+       the answer into a panel that the first question then destroyed — so a
+       refused microphone looked exactly like a working one for fifteen
+       minutes. */
+    function paintRecState(host) {
+      const chip = host.querySelector('#os-rec');
+      const warn = host.querySelector('#os-rec-warn');
+      const note = host.querySelector('#os-rec-note');
+      if (!chip) return;
+      const s = live?.state?.() || { recording: false, failed: 'No recording was started.' };
+      chip.classList.toggle('is-off', !s.recording);
+      chip.classList.toggle('is-paused', !!s.paused);
+      chip.innerHTML = `<i></i> ${s.paused ? 'paused' : s.recording ? 'recording' : 'not recording'}`;
+      if (note) {
+        note.textContent = s.transcribing
+          ? 'Speak your answer. What the browser hears appears below — you can correct it later.'
+          : 'Speak your answer. This browser does not transcribe as you go, so the recording is the record — type anything you want the marker to be sure of.';
+      }
+      if (!warn) return;
+      const msg = s.failed || (!s.recording && !s.paused ? 'The recording has stopped. Trying to restart it…' : '');
+      warn.hidden = !msg;
+      warn.innerHTML = msg ? `⚠ ${esc(msg)}` : '';
     }
 
     function show(i) {
@@ -861,15 +944,16 @@ const OSCE = (() => {
           <p class="os-prompt">${esc(q.prompt)}</p>
           <div class="os-answer">
             <div class="os-answer-head">
-              <span class="os-rec ${live?.ok?.() ? '' : 'is-off'}" id="os-rec"><i></i> ${live?.ok?.() ? 'recording' : 'not recording'}</span>
+              <span class="os-rec" id="os-rec"><i></i> …</span>
               ${canSpeak() ? `<button class="os-voice ${voiceOn() ? '' : 'is-off'}" id="os-voice"
                 title="${voiceOn() ? 'The examiner reads each question aloud' : 'The examiner is silent'}">🔊</button>
                 <button class="os-voice" id="os-repeat" title="Read the question again">↻</button>` : ''}
-              <span class="muted tiny">Speak your answer. What the browser hears appears below — you can correct it later.</span>
+              <span class="muted tiny" id="os-rec-note">Speak your answer.</span>
             </div>
             <div class="os-transcript" id="os-tx" contenteditable="true" spellcheck="false"
               data-ph="Your spoken answer appears here…">${esc(prev)}</div>
           </div>
+          <div class="os-rec-warn" id="os-rec-warn" hidden></div>
           <div class="os-qfoot">
             <button class="btn btn-ghost" id="os-back" ${i === 0 ? 'disabled' : ''}>← Previous</button>
             <span class="muted tiny" id="os-hint">Take the marks in order — say the headline first, then the detail.</span>
@@ -877,6 +961,7 @@ const OSCE = (() => {
           </div>
         </div>`;
       wireLightbox(stage);
+      paintRecState(stage);
       const tx = stage.querySelector('#os-tx');
       live?.attach(text => { if (text) { tx.textContent = (tx.textContent + ' ' + text).trim(); } });
       const store = () => { ans[q.id] = { id: q.id, transcript: tx.innerText.trim() }; persist(); };
@@ -908,7 +993,9 @@ const OSCE = (() => {
       qi = qs.length; s.phase = 'done'; persist();
       hush();
       const rec = live ? await live.stop() : null;
-      lastRec = rec;
+      // tagged with the station so a circuit cannot hand station 2 the tape
+      // from station 1
+      lastRec = { station: st.id, rec };
       debrief(timedOut, rec);
     }
 
@@ -977,13 +1064,57 @@ const OSCE = (() => {
 
   function makeCapture(host) {
     let media = null, rec = null, chunks = [], sr = null, onText = null, mime = '', started = 0;
+    let onState = null, watch = null, failed = '';
     const say = (msg, cls) => { if (host) host.innerHTML = `<p class="os-mic-msg ${cls || ''}">${msg}</p>`; };
+
+    /* The truth about whether anything is being recorded, asked of the
+       recorder and the microphone track rather than remembered from when the
+       station started. A candidate who thinks they are being recorded for
+       fifteen minutes and is not has wasted the fifteen minutes. */
+    function state() {
+      const track = media?.getAudioTracks?.()[0];
+      return {
+        recording: rec?.state === 'recording' && track?.readyState === 'live' && !track.muted,
+        paused: rec?.state === 'paused',
+        everStarted: !!started,
+        failed,
+        secs: started ? Math.round((Date.now() - started) / 1000) : 0,
+        transcribing: !!sr
+      };
+    }
+    let last = '';
+    function ping() {
+      const s = state();
+      const key = `${s.recording}|${s.paused}|${s.failed}`;
+      if (key !== last) { last = key; onState?.(s); }
+    }
+
+    async function openMic() {
+      /* echoCancellation OFF is deliberate: it is what lets the microphone
+         pick the EXAMINER up off the device speaker, so the tape has both
+         voices the way the real room does. Automatic gain stays on — it is
+         what keeps a candidate who turns away from the iPad audible. */
+      const wantBoth = examinerOnTape();
+      const audio = wantBoth
+        ? { echoCancellation: false, noiseSuppression: false, autoGainControl: true }
+        : true;
+      try { return await navigator.mediaDevices.getUserMedia({ audio }); }
+      catch (e) {
+        // some devices refuse the constrained form but allow the plain one
+        if (wantBoth) { try { return await navigator.mediaDevices.getUserMedia({ audio: true }); } catch {} }
+        throw e;
+      }
+    }
 
     async function start() {
       try {
-        media = await navigator.mediaDevices.getUserMedia({ audio: true });
+        media = await openMic();
       } catch (e) {
-        say('⚠ The microphone was refused, so nothing will be recorded. You can still type your answers.', 'is-warn');
+        failed = /NotAllowed|Permission/i.test(String(e.name || e))
+          ? 'The microphone was refused. Nothing is being recorded — you can still type your answers.'
+          : 'No microphone is available. Nothing is being recorded — you can still type your answers.';
+        say('⚠ ' + failed, 'is-warn');
+        ping();
         return;
       }
       mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/aac']
@@ -993,9 +1124,18 @@ const OSCE = (() => {
         // station near 2.5 MB — small enough to send for marking
         rec = new MediaRecorder(media, Object.assign(mime ? { mimeType: mime } : {}, { audioBitsPerSecond: 24000 }));
         rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+        rec.onerror = () => { failed = 'The recording stopped unexpectedly.'; ping(); revive(); };
         rec.start(1000);
-        started = Date.now();
-      } catch { rec = null; }
+        started = started || Date.now();
+      } catch { rec = null; failed = 'This browser would not start a recording.'; }
+
+      /* iOS hands the audio session to the speech synthesiser when the
+         examiner reads a question, which silently ends the capture. Watch for
+         it and put the recording back rather than discovering at the debrief
+         that fourteen of the fifteen minutes are missing. */
+      media.getAudioTracks().forEach(t => t.addEventListener('ended', () => { ping(); revive(); }));
+      clearInterval(watch);
+      watch = setInterval(() => { ping(); if (!state().recording && !state().paused && !failedHard()) revive(); }, 2000);
       // the browser's own recogniser: free, and good enough once you correct it
       const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (SR) {
@@ -1015,9 +1155,36 @@ const OSCE = (() => {
       say(sr ? '🎙 Listening — speak normally.' : '🎙 Recording. This browser has no live transcription, so type your answers as you go (the audio is still saved).', sr ? 'is-on' : 'is-warn');
     }
     function attach(fn) { onText = fn; }
-    function pause() { try { rec?.state === 'recording' && rec.pause(); } catch {} try { if (sr) { sr._stopped = true; sr.stop(); } } catch {} }
-    function resume() { try { rec?.state === 'paused' && rec.resume(); } catch {} try { if (sr) { sr._stopped = false; sr.start(); } } catch {} }
+    function watchState(fn) { onState = fn; last = ''; ping(); }
+    /* A refused microphone is final — asking again every two seconds would
+       just spam the permission prompt. An interrupted one is not. */
+    const failedHard = () => /refused|available/i.test(failed);
+
+    let reviving = false;
+    async function revive() {
+      if (reviving || failedHard() || paused_) return;
+      reviving = true;
+      try {
+        try { rec?.state !== 'inactive' && rec.stop(); } catch {}
+        try { media?.getTracks().forEach(t => t.stop()); } catch {}
+        media = await openMic();
+        rec = new MediaRecorder(media, Object.assign(mime ? { mimeType: mime } : {}, { audioBitsPerSecond: 24000 }));
+        rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+        rec.onerror = () => { ping(); };
+        rec.start(1000);
+        // the earlier chunks are kept, so the tape is continuous either side
+        failed = '';
+        media.getAudioTracks().forEach(t => t.addEventListener('ended', () => { ping(); revive(); }));
+      } catch { failed = 'The recording could not be restarted.'; }
+      reviving = false;
+      ping();
+    }
+
+    let paused_ = false;
+    function pause() { paused_ = true; try { rec?.state === 'recording' && rec.pause(); } catch {} try { if (sr) { sr._stopped = true; sr.stop(); } } catch {} ping(); }
+    function resume() { paused_ = false; try { rec?.state === 'paused' && rec.resume(); } catch {} try { if (sr) { sr._stopped = false; sr.start(); } } catch {} ping(); }
     async function stop() {
+      clearInterval(watch); watch = null;
       try { if (sr) { sr._stopped = true; sr.stop(); } } catch {}
       const done = new Promise(res => { if (!rec) return res(null); rec.onstop = () => res(true); try { rec.stop(); } catch { res(null); } });
       await done;
@@ -1030,7 +1197,11 @@ const OSCE = (() => {
         bytes: blob.size, secs,
         mins: `${fmt(secs)} of audio · ${(blob.size / 1024 / 1024).toFixed(1)} MB` };
     }
-    return { ok: () => !!rec, start, attach, pause, resume, stop, kill: () => { try { sr && (sr._stopped = true, sr.stop()); } catch {} try { rec?.state !== 'inactive' && rec.stop(); } catch {} try { media?.getTracks().forEach(t => t.stop()); } catch {} } };
+    return { ok: () => !!rec, start, attach, pause, resume, stop, state, watchState,
+      kill: () => { clearInterval(watch); watch = null;
+        try { sr && (sr._stopped = true, sr.stop()); } catch {}
+        try { rec?.state !== 'inactive' && rec.stop(); } catch {}
+        try { media?.getTracks().forEach(t => t.stop()); } catch {} } };
   }
   function stopLive() { try { live?.kill(); } catch {} live = null; }
 

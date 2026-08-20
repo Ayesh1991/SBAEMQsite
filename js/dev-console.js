@@ -150,8 +150,19 @@ const DevConsole = (() => {
     put('#hub-papers', paperN); put('#hub-decks', deckN); put('#hub-users', userN); put('#hub-bp', bpN);
     let osceN = '—', walN = '—';
     try { osceN = ((await ctx.Backend.getOsceStations()) || []).length + ' stations'; } catch { osceN = 'run schema.sql'; }
-    try { const t = (await ctx.Backend.listAllTopUps()) || []; const p = t.filter(x => x.status === 'pending').length;
-      walN = p ? p + ' awaiting approval' : t.length + ' top-ups'; } catch { walN = 'run schema.sql'; }
+    /* Money waiting on a person is the one count on this page that someone
+       else is standing still for, so it says so plainly and the card is
+       marked rather than showing a neutral total. */
+    try {
+      const t = (await ctx.Backend.listAllTopUps()) || [];
+      const p = t.filter(x => x.status === 'pending').length;
+      const u = t.filter(x => x.status === 'approved' && x.extracted?.provisional && !x.extracted?.confirmed).length;
+      walN = p || u
+        ? [p ? `${p} to approve` : '', u ? `${u} to confirm` : ''].filter(Boolean).join(' · ')
+        : t.length + ' top-ups';
+      const card = view.querySelector('#hub-wallet')?.closest('.dev-hub-card');
+      if (card) card.classList.toggle('is-waiting', !!(p || u));
+    } catch { walN = 'run schema.sql'; }
     put('#hub-flags', flagN); put('#hub-ai', aiN); put('#hub-essays', essayN);
     put('#hub-osce', osceN); put('#hub-wallet', walN);
     put('#hub-cpd', cpdN);

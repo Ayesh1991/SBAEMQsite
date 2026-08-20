@@ -213,17 +213,33 @@
     TeaRoom.init();
   }
 
-  // small red count on the Developer tab: pending proposals + pending users
+  /* Small red count on the Developer tab: pending proposals, pending users,
+     and MONEY — a top-up waiting for approval, or one that credited itself
+     and still has to be checked against the bank statement. Money is the one
+     a person is waiting on, so it is also called out by name. */
   async function refreshDevBadge() {
     try {
-      const [props, users] = await Promise.all([
+      const [props, users, tops] = await Promise.all([
         Backend.listProposals().catch(() => []),
-        Backend.listAllUsers().catch(() => [])
+        Backend.listAllUsers().catch(() => []),
+        Backend.listAllTopUps().catch(() => [])
       ]);
+      const pending = tops.filter(t => t.status === 'pending').length;
+      const unconfirmed = tops.filter(t => t.status === 'approved'
+        && t.extracted?.provisional && !t.extracted?.confirmed).length;
       const n = props.filter(p => p.status === 'pending').length +
-                users.filter(u => u.status === 'pending').length;
+                users.filter(u => u.status === 'pending').length +
+                pending + unconfirmed;
       const el = document.getElementById('nav-dev-badge');
-      if (el) { el.textContent = n > 9 ? '9+' : String(n); el.hidden = n === 0; }
+      if (el) {
+        el.textContent = n > 9 ? '9+' : String(n);
+        el.hidden = n === 0;
+        el.classList.toggle('is-money', pending + unconfirmed > 0);
+        el.title = [pending ? `${pending} top-up${pending === 1 ? '' : 's'} to approve` : '',
+          unconfirmed ? `${unconfirmed} auto-credit${unconfirmed === 1 ? '' : 's'} to confirm` : '']
+          .filter(Boolean).join(' · ') || 'Waiting for you';
+      }
+      window.__aureumPay = { pending, unconfirmed };
     } catch { /* badge is best-effort */ }
   }
 

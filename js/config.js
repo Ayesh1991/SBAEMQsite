@@ -153,11 +153,20 @@ window.AUREUM_CONFIG = {
     // server also accepts an OPENAI_DEFAULT_MODEL env override so the exact
     // string can be corrected without a redeploy of the client.
     gptModel: 'gpt-5.6-luna',
+    /* Tried and measured, not assumed: sending an input_audio part to
+       gpt-5.6-luna returns
+         400 Invalid 'messages[1]'. Content blocks are expected to be
+             either text or image_url type.
+       so this model id takes text and images and nothing else. The flag is
+       therefore off and the OSCE tab does not offer it the recording.
+
+       If OpenAI ships an audio-capable id (the ones that do take audio accept
+       WAV or MP3 only), add it here with audio: true and audioFormat: 'wav' —
+       the browser re-encoding and the server path are both already written
+       and will start working the moment the flag is set. */
     gptModels: [
-      // audioFormat: 'wav' — OpenAI takes an input_audio part, but only wav or
-      // mp3, so the recording is decoded and re-encoded in the browser before
-      // it is sent. Clear this if the id you use is a text-only variant.
-      { id: 'gpt-5.6-luna', label: 'GPT 5.6 Luna', audio: true, audioFormat: 'wav' }
+      { id: 'gpt-5.6-luna', label: 'GPT 5.6 Luna', audio: false,
+        why: 'This GPT model takes text and images only — it rejects an audio attachment outright.' }
     ],
     // USD per 1,000,000 tokens — the invoice engine (js/billing.js) matches
     // each metered model id against these by longest prefix. Update here when
