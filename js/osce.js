@@ -917,16 +917,27 @@ const OSCE = (() => {
       const s = live?.state?.() || { recording: false, failed: 'No recording was started.' };
       chip.classList.toggle('is-off', !s.recording);
       chip.classList.toggle('is-paused', !!s.paused);
-      chip.innerHTML = `<i></i> ${s.paused ? 'paused' : s.recording ? 'recording' : 'not recording'}`;
+      chip.innerHTML = `<i></i> ${s.paused ? 'paused' : s.recording ? (s.bothVoices ? 'recording both' : 'recording') : 'not recording'}`;
+      chip.title = s.recording && s.bothVoices
+        ? 'Your voice and the examiner\'s are both going onto the tape'
+        : s.recording ? 'Your voice is being recorded' : '';
       if (note) {
         note.textContent = s.transcribing
           ? 'Speak your answer. What the browser hears appears below — you can correct it later.'
           : 'Speak your answer. This browser does not transcribe as you go, so the recording is the record — type anything you want the marker to be sure of.';
       }
       if (!warn) return;
-      const msg = s.failed || (!s.recording && !s.paused ? 'The recording has stopped. Trying to restart it…' : '');
+      const msg = s.failed || (!s.recording && !s.paused ? 'The recording has stopped. Putting it back…' : '');
       warn.hidden = !msg;
-      warn.innerHTML = msg ? `⚠ ${esc(msg)}` : '';
+      warn.innerHTML = msg
+        ? `⚠ ${esc(msg)}${s.failed ? ` <button class="btn btn-ghost btn-sm" id="os-mic-retry">🎙 Turn the microphone back on</button>` : ''}`
+        : '';
+      warn.querySelector('#os-mic-retry')?.addEventListener('click', async e => {
+        // this tap is the user gesture iOS requires; nothing else will do
+        e.target.disabled = true; e.target.textContent = 'Asking…';
+        await live?.retry();
+        paintRecState(host);
+      });
     }
 
     function show(i) {
@@ -1077,6 +1088,7 @@ const OSCE = (() => {
         recording: rec?.state === 'recording' && track?.readyState === 'live' && !track.muted,
         paused: rec?.state === 'paused',
         everStarted: !!started,
+        bothVoices: bothVoices(),
         failed,
         secs: started ? Math.round((Date.now() - started) / 1000) : 0,
         transcribing: !!sr
@@ -1089,30 +1101,52 @@ const OSCE = (() => {
       if (key !== last) { last = key; onState?.(s); }
     }
 
+    /* ASK FOR THE PLAIN MICROPHONE, ALWAYS.
+
+       v63 asked for { echoCancellation: false, … } up front so the tape would
+       also carry the examiner's voice off the speaker. On iPadOS that request
+       is rejected outright rather than merely ignored, and — worse — the
+       rejection consumes the user gesture, so the fallback to a plain request
+       fails too and the whole thing reports "the microphone was refused" on a
+       device where the microphone was never actually asked for.
+
+       So: open the microphone the way that has always worked, THEN try to
+       relax echo cancellation on the track that is already running. If the
+       platform will not do it, the recording is unaffected — only the
+       examiner's voice is missing from the tape, which is a preference, not
+       the feature. Never let a nicety cost the recording. */
     async function openMic() {
-      /* echoCancellation OFF is deliberate: it is what lets the microphone
-         pick the EXAMINER up off the device speaker, so the tape has both
-         voices the way the real room does. Automatic gain stays on — it is
-         what keeps a candidate who turns away from the iPad audible. */
-      const wantBoth = examinerOnTape();
-      const audio = wantBoth
-        ? { echoCancellation: false, noiseSuppression: false, autoGainControl: true }
-        : true;
-      try { return await navigator.mediaDevices.getUserMedia({ audio }); }
-      catch (e) {
-        // some devices refuse the constrained form but allow the plain one
-        if (wantBoth) { try { return await navigator.mediaDevices.getUserMedia({ audio: true }); } catch {} }
-        throw e;
+      const media = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (examinerOnTape()) {
+        const track = media.getAudioTracks()[0];
+        try { await track?.applyConstraints({ echoCancellation: false, noiseSuppression: false }); }
+        catch { /* the tape will carry the candidate only; the station still runs */ }
       }
+      return media;
+    }
+    /** Did the relaxed constraint actually take? Reported honestly on screen. */
+    function bothVoices() {
+      if (!examinerOnTape()) return false;
+      try { return media?.getAudioTracks()[0]?.getSettings?.().echoCancellation === false; }
+      catch { return false; }
     }
 
     async function start() {
       try {
         media = await openMic();
       } catch (e) {
-        failed = /NotAllowed|Permission/i.test(String(e.name || e))
-          ? 'The microphone was refused. Nothing is being recorded — you can still type your answers.'
-          : 'No microphone is available. Nothing is being recorded — you can still type your answers.';
+        /* Say WHICH refusal it was. "The microphone was refused" sent someone
+           hunting a permission that was never the problem, so the name of the
+           error now decides the wording — and on an iPad the answer is nearly
+           always the per-site setting behind the aA menu. */
+        const name = String(e && e.name || e);
+        failed = /NotAllowed|SecurityError/i.test(name)
+          ? 'Safari is blocking the microphone for this site. On an iPad: tap “aA” in the address bar → Website Settings → Microphone → Allow, then tap “Turn the microphone back on”.'
+          : /NotFound|Devices/i.test(name)
+            ? 'No microphone was found on this device. You can still type your answers.'
+            : /NotReadable|Aborted/i.test(name)
+              ? 'Another app is using the microphone. Close it, then tap “Turn the microphone back on”.'
+              : `The microphone could not be started (${name}). Tap “Turn the microphone back on” to try again.`;
         say('⚠ ' + failed, 'is-warn');
         ping();
         return;
@@ -1133,9 +1167,13 @@ const OSCE = (() => {
          examiner reads a question, which silently ends the capture. Watch for
          it and put the recording back rather than discovering at the debrief
          that fourteen of the fifteen minutes are missing. */
-      media.getAudioTracks().forEach(t => t.addEventListener('ended', () => { ping(); revive(); }));
+      media.getAudioTracks().forEach(t => t.addEventListener('ended', () => {
+        failed = 'The microphone was switched off — another app may have taken it. Tap “Turn the microphone back on”.';
+        ping();
+      }));
       clearInterval(watch);
-      watch = setInterval(() => { ping(); if (!state().recording && !state().paused && !failedHard()) revive(); }, 2000);
+      // only ever restarts the RECORDER, never re-asks for the microphone
+      watch = setInterval(() => { const s = state(); ping(); if (!s.recording && !s.paused && trackLive()) revive(); }, 2000);
       // the browser's own recogniser: free, and good enough once you correct it
       const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (SR) {
@@ -1156,28 +1194,45 @@ const OSCE = (() => {
     }
     function attach(fn) { onText = fn; }
     function watchState(fn) { onState = fn; last = ''; ping(); }
-    /* A refused microphone is final — asking again every two seconds would
-       just spam the permission prompt. An interrupted one is not. */
-    const failedHard = () => /refused|available/i.test(failed);
 
+    /* Putting a stalled recording back WITHOUT asking for the microphone
+       again. iOS grants getUserMedia only inside a user gesture, so a
+       watchdog that called it every two seconds could never succeed — it
+       would just fail repeatedly and, on some versions, sour the permission
+       for the rest of the visit. A recorder that stopped while its track is
+       still live needs no permission at all: start a new one on the track
+       already in hand and keep the chunks, so the tape runs on unbroken.
+
+       If the TRACK itself has died, only the candidate can revive it, so the
+       warning offers a button instead of retrying behind their back. */
     let reviving = false;
+    function trackLive() {
+      const t = media?.getAudioTracks?.()[0];
+      return !!t && t.readyState === 'live';
+    }
     async function revive() {
-      if (reviving || failedHard() || paused_) return;
+      if (reviving || paused_ || !trackLive()) return;
       reviving = true;
       try {
         try { rec?.state !== 'inactive' && rec.stop(); } catch {}
-        try { media?.getTracks().forEach(t => t.stop()); } catch {}
-        media = await openMic();
         rec = new MediaRecorder(media, Object.assign(mime ? { mimeType: mime } : {}, { audioBitsPerSecond: 24000 }));
         rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
         rec.onerror = () => { ping(); };
         rec.start(1000);
-        // the earlier chunks are kept, so the tape is continuous either side
         failed = '';
-        media.getAudioTracks().forEach(t => t.addEventListener('ended', () => { ping(); revive(); }));
-      } catch { failed = 'The recording could not be restarted.'; }
+      } catch { failed = 'The recording stopped and could not be restarted. Tap “Turn the microphone back on”.'; }
       reviving = false;
       ping();
+    }
+
+    /** The candidate's own tap — the only thing iOS accepts as permission. */
+    async function retry() {
+      failed = '';
+      ping();
+      try { media?.getTracks().forEach(t => t.stop()); } catch {}
+      media = null; rec = null;
+      await start();
+      return state();
     }
 
     let paused_ = false;
@@ -1197,7 +1252,7 @@ const OSCE = (() => {
         bytes: blob.size, secs,
         mins: `${fmt(secs)} of audio · ${(blob.size / 1024 / 1024).toFixed(1)} MB` };
     }
-    return { ok: () => !!rec, start, attach, pause, resume, stop, state, watchState,
+    return { ok: () => !!rec, start, attach, pause, resume, stop, state, watchState, retry, bothVoices,
       kill: () => { clearInterval(watch); watch = null;
         try { sr && (sr._stopped = true, sr.stop()); } catch {}
         try { rec?.state !== 'inactive' && rec.stop(); } catch {}
