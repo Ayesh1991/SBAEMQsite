@@ -224,18 +224,26 @@ const OSCE = (() => {
      moment the quota is hit, and the browser's own synthesiser and recogniser
      carry on exactly as they did before. A station must never depend on a
      free tier being awake. */
-  let groqOff = false;                       // set once a 429 comes back
+  let groqOff = false;                       // a fault that will not fix itself
+  /* A quota is not a fault — it ends. Groq says when, so a rate limit now
+     stands the layer down until that moment instead of for the whole visit:
+     a one-minute ceiling used to cost every remaining question in the
+     station. Only a wait long enough to outlast the station is treated as
+     the end of it. */
+  let groqUntil = 0;
+  const groqWaiting = () => groqUntil > Date.now();
+  const groqBackIn = () => Math.max(0, Math.ceil((groqUntil - Date.now()) / 1000));
   /* WHY it is not being used, kept and shown. A decommissioned model failed
      silently for a day — the 400 was in Groq's own log and nowhere on screen —
      so the reason now travels with the fallback instead of disappearing. */
   const groqSay = { source: 'browser', why: '', model: '' };
-  function groqReport() { return Object.assign({}, groqSay, { off: groqOff }); }
+  function groqReport() { return Object.assign({}, groqSay, { off: groqOff || groqWaiting(), backIn: groqBackIn() }); }
   /* Once the developer has pinned a working model, the layer should come back
      without anyone having to reload the page. */
-  function resetGroq() { groqOff = false; groqSay.source = 'browser'; groqSay.why = ''; groqSay.model = ''; }
+  function resetGroq() { groqOff = false; groqUntil = 0; groqSay.source = 'browser'; groqSay.why = ''; groqSay.model = ''; }
 
   const groqCfg = () => cfg().ai?.groq || {};
-  const groqOn = k => !groqOff && groqCfg().enabled !== false && groqCfg()[k] !== false;
+  const groqOn = k => !groqOff && !groqWaiting() && groqCfg().enabled !== false && groqCfg()[k] !== false;
 
   async function groqCall(body) {
     const token = await Backend.getAccessToken();
@@ -251,10 +259,17 @@ const OSCE = (() => {
     if (res.ok) { groqSay.why = ''; return data; }
     groqSay.why = data.error || `HTTP ${res.status}`;
     groqSay.model = data.model || '';
-    /* A quota exhausted, a missing grant, a missing key or a retired model
-       all stand the layer down for the visit rather than being retried
-       question after question. */
-    if ([429, 403, 503].includes(res.status) || /decommission|not_found|no .* model/i.test(groqSay.why)) groqOff = true;
+    /* A missing grant, a missing key or a retired model will not come back on
+       their own, so the layer stands down for the visit. A quota WILL come
+       back: it waits out the reset Groq named and then tries again, unless
+       the wait is longer than a station, in which case it is over for now. */
+    if (res.status === 429) {
+      const wait = Number(data.retryAfter) || 0;
+      if (wait > 0 && wait <= 20 * 60) groqUntil = Date.now() + wait * 1000;
+      else groqOff = true;
+    } else if ([403, 503].includes(res.status) || /decommission|not_found|no .* model/i.test(groqSay.why)) {
+      groqOff = true;
+    }
     return null;
   }
 
@@ -1035,30 +1050,56 @@ const OSCE = (() => {
       }
       if (!groqCfg().voice || groqCfg().enabled === false) { el.hidden = true; return; }
       el.className = 'os-voiceline';
+      /* A quota that resets in ninety seconds is a different fact from one
+         that is gone for the day, and the candidate can act on the first:
+         the station picks the real voice back up the moment it returns. */
+      const back = r.backIn > 0
+        ? ` The quota resets in ${r.backIn < 90 ? `${r.backIn} seconds` : `${Math.round(r.backIn / 60)} minutes`} —
+            questions after that get the real voice again.` : '';
+      /* The server's sentence already carries the wait it was told; saying it
+         twice, once frozen and once counting down, reads as two answers. The
+         live one wins and the frozen tail is trimmed. */
+      const why = String(r.why || '').replace(/\s*[—-]\s*back in [^.]*/i, back ? '' : '$&').replace(/\.\s*$/, '');
       el.innerHTML = `🔈 The <strong>browser's own voice</strong> will read the questions${
-        r.why ? ` — the real voice is unavailable: <em>${esc(r.why)}</em>` : ''}.`;
+        why ? ` — the real voice is unavailable: <em>${esc(why)}</em>` : ''}.${back}`;
     }
+
+    /* A declaration, not a `const`: brief() calls prefetchVoices() from above
+       this point, and a const would still be in its temporal dead zone —
+       the same trap the note beside `voices` describes, and the rejection
+       lands in the same silent .catch(). */
+    function lineOf(q) { return (q.reveal_before ? q.reveal_before + '. ' : '') + q.prompt; }
 
     async function prefetchVoices() {
       if (voicesReady || !groqOn('voice')) return;
       voicesReady = true;
       for (const q of qs) {
-        const line = (q.reveal_before ? q.reveal_before + '. ' : '') + q.prompt;
-        const clip = await groqVoice(line);
+        const clip = await groqVoice(lineOf(q));
         if (!clip) break;                       // quota gone; the browser voice takes over
         voices.set(q.id, clip);
       }
     }
 
     async function startCapture() {
-      live = makeCapture(stage.querySelector('#os-mic'), voices.size > 0);
+      /* The mix is also wanted when the quota is merely resting: the real
+         voice may return part-way through the station, and the recorder
+         cannot be re-pointed once it is running. */
+      live = makeCapture(stage.querySelector('#os-mic'), voices.size > 0 || groqReport().backIn > 0);
       live.watchState(() => paintRecState(stage));
       await live.start();
     }
 
     /** Say the examiner's line: the real voice onto the tape, or the browser's. */
     async function examinerSays(q, text) {
-      const clip = voices.get(q?.id);
+      let clip = voices.get(q?.id);
+      /* Prefetch stops at the first refusal, so a station that began during a
+         one-minute ceiling had the browser voice for all fifteen. If the
+         quota has come back by now, this question gets the real voice. */
+      if (!clip && q && groqOn('voice')) {
+        clip = await groqVoice(text || lineOf(q));
+        // only the full line is worth keeping — "repeat" says less than that
+        if (clip && text === lineOf(q)) voices.set(q.id, clip);
+      }
       if (clip && live?.speakClip) {
         hush();
         const ok = await live.speakClip(clip);

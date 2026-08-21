@@ -3157,6 +3157,28 @@ const DevConsole = (() => {
       return;
     }
     const row = (k, ok, txt) => `<tr class="${ok ? '' : 'bad'}"><th>${esc(k)}</th><td>${ok ? '✓' : '✗'} ${txt}</td></tr>`;
+    /* Groq states what is left of the free tier on every response. Nothing
+       here decides which counters matter — whatever it sent is shown, so a
+       limit on audio-seconds reads the same as one on requests, and "when
+       does it come back?" stops being a guess. */
+    const clock = s => {
+      const n = parseFloat(s);
+      if (!isFinite(n)) return esc(String(s));
+      const secs = /ms$/i.test(s) ? n / 1000 : /m(?!s)/i.test(s) ? n * 60 : /h/i.test(s) ? n * 3600 : n;
+      return secs < 90 ? `${Math.round(secs)}s` : secs < 5400 ? `${Math.round(secs / 60)} min` : `${(secs / 3600).toFixed(1)} h`;
+    };
+    const quota = (label, lim) => {
+      const keys = Object.keys(lim || {}).filter(k => /^remaining-/.test(k));
+      if (!keys.length) return '';
+      const cells = keys.map(k => {
+        const what = k.replace(/^remaining-/, '');
+        const reset = lim[`reset-${what}`];
+        return `<li><strong>${esc(lim[k])}</strong> of ${esc(lim[`limit-${what}`] || '?')} ${esc(what)} left${
+          reset ? ` · resets in ${clock(reset)}` : ''}</li>`;
+      }).join('');
+      return `<div class="groq-quota"><span class="tiny muted">${esc(label)}</span><ul class="tiny">${cells}</ul></div>`;
+    };
+    const quotas = quota('Voice', d.tts?.limits) + quota('Transcription', d.asr?.limits);
     const audio = d.tts?.ok
       ? `<div class="groq-play">
            <audio controls src="data:${esc(d.tts.mime || 'audio/wav')};base64,${d.tts.audio}"></audio>
@@ -3178,6 +3200,7 @@ const DevConsole = (() => {
           : `<code>${esc(d.asr?.model || d.chosen?.asr || 'none found')}</code> — ${esc(d.asr?.error || 'not attempted')}`)}
       </tbody></table>
       ${audio}
+      ${quotas ? `<div class="groq-quotas">${quotas}</div>` : ''}
       ${(d.models || []).length ? `<details class="dev-collapse" style="margin-top:12px">
         <summary><span>Everything this account can run (${d.models.length})</span><span class="dc-caret">▸</span></summary>
         <div class="dev-inline" style="margin-top:10px">
