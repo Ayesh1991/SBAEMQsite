@@ -174,7 +174,11 @@ window.AUREUM_CONFIG = {
       enabled: true,
       whisper: true,             // transcribe the station recording
       voice: true,               // read the questions aloud in a real voice
-      voiceName: 'Fritz-PlayAI'  // GROQ_TTS_VOICE overrides this server-side
+      /* Blank on purpose. A name here belongs to whichever model was current
+         when it was written — `Fritz-PlayAI` outlived the model it named —
+         so the server works out a voice the live model accepts and remembers
+         it. Pin one in Developer → AI systems → Check Groq to override. */
+      voiceName: ''
     },
     gptModels: [
       { id: 'gpt-5.6-luna', label: 'GPT 5.6 Luna', audio: false,

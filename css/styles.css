@@ -1372,6 +1372,12 @@ details[open] > summary .tw-caret { transform: rotate(90deg); }
   border-radius: 8px; padding: 6px 8px; font-size: .78rem; max-width: 220px;
 }
 .ai-feat-usage { font-size: .78rem; color: var(--ink-2); min-width: 150px; text-align: right; }
+/* what is left of the free tier, as Groq itself reports it */
+.groq-quotas { display: flex; gap: 22px; flex-wrap: wrap; margin-top: 12px; }
+.groq-quota ul { margin: 4px 0 0; padding-left: 18px; color: var(--ink-2); }
+.groq-quota li { margin: 2px 0; }
+.groq-quota strong { color: var(--ink); }
+
 /* a free feature has no model to choose — it says what it is running on */
 .ai-feat-fixed {
   border: 1px dashed rgba(255,255,255,.16); border-radius: 8px;

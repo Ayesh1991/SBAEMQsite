@@ -267,8 +267,10 @@ export async function onRequest(context) {
       const spoken = await callGroqSpeech('This is the AUREUM examiner. If you can hear this, the voice is live.',
         body.voice || '', env, out.saved);
       out.tts = spoken.error
-        ? { ok: false, model: spoken.model, error: spoken.error, code: spoken.code, voices: spoken.voices || [], tried: spoken.tried || [] }
-        : { ok: true, model: spoken.model, bytes: Math.round((spoken.audio || '').length * 0.75), audio: spoken.audio, mime: spoken.mime, voice: spoken.voice || '' };
+        ? { ok: false, model: spoken.model, error: spoken.error, code: spoken.code, voices: spoken.voices || [],
+            tried: spoken.tried || [], limits: spoken.limits || {}, retryAfter: spoken.retryAfter || 0 }
+        : { ok: true, model: spoken.model, bytes: Math.round((spoken.audio || '').length * 0.75), audio: spoken.audio,
+            mime: spoken.mime, voice: spoken.voice || '', limits: spoken.limits || {} };
       /* Every voice worth offering in the picker: what the model is known to
          ship with, plus anything it named when it refused, plus the one that
          actually worked. */
@@ -281,8 +283,9 @@ export async function onRequest(context) {
       const heard = await callGroqWhisper(
         { data: out.tts.ok ? spoken.audio : toneWav(), mime: 'audio/wav' }, '', env, out.saved);
       out.asr = heard.error
-        ? { ok: false, model: heard.model, error: heard.error, code: heard.code }
-        : { ok: true, model: heard.model, text: heard.text, tone: !out.tts.ok };
+        ? { ok: false, model: heard.model, error: heard.error, code: heard.code,
+            limits: heard.limits || {}, retryAfter: heard.retryAfter || 0 }
+        : { ok: true, model: heard.model, text: heard.text, tone: !out.tts.ok, limits: heard.limits || {} };
       return json(out);
     }
 
@@ -304,7 +307,7 @@ export async function onRequest(context) {
         if (String(a.data).length > 34_000_000) return json({ error: 'That recording is too long to transcribe.', fallback: true }, 413);
         const gs = await groqSettings(env);
         const r = await callGroqWhisper(a, body.prompt || '', env, gs);
-        if (r.limited) return json({ error: r.error, fallback: true, rateLimited: true }, 429);
+        if (r.limited) return json({ error: r.error, fallback: true, rateLimited: true, retryAfter: r.retryAfter || 0 }, 429);
         if (r.error) return json({ error: r.error, fallback: true, model: r.model, code: r.code }, 502);
         await logTokens(token, env, 'groq', { model: r.model, in: 0, out: 0 }, 'transcribe');
         return json({ text: r.text, model: r.model, secs: r.secs });
@@ -314,7 +317,7 @@ export async function onRequest(context) {
       if (!said.trim()) return json({ error: 'Nothing to say.', fallback: true }, 400);
       const gs2 = await groqSettings(env);
       const r = await callGroqSpeech(said, body.voice || '', env, gs2);
-      if (r.limited) return json({ error: r.error, fallback: true, rateLimited: true }, 429);
+      if (r.limited) return json({ error: r.error, fallback: true, rateLimited: true, retryAfter: r.retryAfter || 0 }, 429);
       if (r.error) return json({ error: r.error, fallback: true, model: r.model, code: r.code, voices: r.voices || [] }, 502);
       await logTokens(token, env, 'groq', { model: r.model, in: 0, out: 0 }, 'examiner_voice');
       return json({ audio: r.audio, mime: r.mime, model: r.model, voice: r.voice || '' });
@@ -792,6 +795,38 @@ function toneWav() {
   return btoa(bin);
 }
 
+/* Groq reports what is left of the free tier on EVERY response, in
+   x-ratelimit-* headers, and says how long to wait on a 429 — and all of it
+   was being thrown away, which is why "how long until it comes back?" had no
+   answer but a guess. Nothing here assumes which counters exist: whatever
+   the service sends is passed on, so a limit on audio-seconds shows up the
+   same as one on requests. */
+function rateHeaders(res) {
+  const out = {};
+  try {
+    res.headers.forEach((v, k) => { if (/^x-ratelimit-/i.test(k)) out[k.replace(/^x-ratelimit-/i, '')] = v; });
+  } catch {}
+  return out;
+}
+/* Seconds to wait, from the header if there is one, otherwise from the
+   sentence Groq puts in the body: "Please try again in 7m2.312s". */
+function retrySeconds(res, message) {
+  const h = Number(res?.headers?.get?.('retry-after'));
+  if (h > 0) return Math.ceil(h);
+  const m = /try again in\s+(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:([\d.]+)\s*s)?/i.exec(String(message || ''));
+  if (!m || !(m[1] || m[2] || m[3])) return 0;
+  return Math.ceil((Number(m[1] || 0) * 3600) + (Number(m[2] || 0) * 60) + Number(m[3] || 0));
+}
+/** "about 7 minutes", "in 40 seconds" — a wait a person can act on. */
+function waitText(secs) {
+  if (!secs) return '';
+  if (secs < 90) return `about ${secs} second${secs === 1 ? '' : 's'}`;
+  const mins = Math.round(secs / 60);
+  if (mins < 90) return `about ${mins} minute${mins === 1 ? '' : 's'}`;
+  const hrs = Math.round(secs / 3600);
+  return `about ${hrs} hour${hrs === 1 ? '' : 's'}`;
+}
+
 /** base64 → Blob, so the audio can go up as multipart the way Whisper wants. */
 function b64Blob(data, mime) {
   const bin = atob(String(data));
@@ -821,7 +856,11 @@ async function callGroqWhisper(audio, hint, env, saved) {
     });
   } catch (e) { return { error: 'Could not reach the transcription service.' }; }
   if (res.status === 429) {
-    return { limited: true, error: 'The free transcription quota is used up for now. The browser\'s own transcript is being used instead.' };
+    let msg = ''; try { msg = (await res.json())?.error?.message || ''; } catch {}
+    const wait = retrySeconds(res, msg);
+    return { limited: true, retryAfter: wait, model, limits: rateHeaders(res),
+      error: `The free transcription quota is used up${wait ? ` — back in ${waitText(wait)}` : ' for now'}. `
+        + 'The browser\'s own transcript is being used instead.' };
   }
   if (!res.ok) {
     let code = '', detail = '';
@@ -832,7 +871,7 @@ async function callGroqWhisper(audio, hint, env, saved) {
       model, code };
   }
   const data = await res.json().catch(() => ({}));
-  return { text: String(data.text || '').trim(), model, secs: data.duration || 0 };
+  return { text: String(data.text || '').trim(), model, secs: data.duration || 0, limits: rateHeaders(res) };
 }
 
 /** The examiner, read aloud. Returned as base64 so it can be mixed into the tape. */
@@ -884,7 +923,12 @@ async function callGroqSpeech(text, voice, env, saved) {
         });
       } catch { return { error: 'Could not reach the voice service.', model }; }
       if (res.ok) { used = v; break; }
-      if (res.status === 429) return { limited: true, error: 'The free voice quota is used up for now.', model };
+      if (res.status === 429) {
+        let msg = ''; try { msg = (await res.json())?.error?.message || ''; } catch {}
+        const wait = retrySeconds(res, msg);
+        return { limited: true, retryAfter: wait, model, limits: rateHeaders(res),
+          error: `The free voice quota is used up${wait ? ` — back in ${waitText(wait)}` : ' for now'}.` };
+      }
       code = ''; detail = '';
       try { const e = (await res.json())?.error || {}; code = e.code || ''; detail = e.message || ''; } catch {}
       const said = code + ' ' + detail;
@@ -910,10 +954,11 @@ async function callGroqSpeech(text, voice, env, saved) {
       model, code, voices: offered, tried: [...tried].filter(Boolean) };
   }
   if (used) groqVoiceCache[model] = used;
+  const limits = rateHeaders(res);
   const buf = new Uint8Array(await res.arrayBuffer());
   let bin = '';
   for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
-  return { audio: btoa(bin), mime: 'audio/wav', model, voice: used };
+  return { audio: btoa(bin), mime: 'audio/wav', model, voice: used, limits };
 }
 
 /* A refusal such as "voice must be one of: tara, leah, jess" carries the
