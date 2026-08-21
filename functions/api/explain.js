@@ -267,8 +267,13 @@ export async function onRequest(context) {
       const spoken = await callGroqSpeech('This is the AUREUM examiner. If you can hear this, the voice is live.',
         body.voice || '', env, out.saved);
       out.tts = spoken.error
-        ? { ok: false, model: spoken.model, error: spoken.error, code: spoken.code }
-        : { ok: true, model: spoken.model, bytes: Math.round((spoken.audio || '').length * 0.75), audio: spoken.audio, mime: spoken.mime };
+        ? { ok: false, model: spoken.model, error: spoken.error, code: spoken.code, voices: spoken.voices || [], tried: spoken.tried || [] }
+        : { ok: true, model: spoken.model, bytes: Math.round((spoken.audio || '').length * 0.75), audio: spoken.audio, mime: spoken.mime, voice: spoken.voice || '' };
+      /* Every voice worth offering in the picker: what the model is known to
+         ship with, plus anything it named when it refused, plus the one that
+         actually worked. */
+      out.voices = [...new Set([].concat(knownVoices(out.tts.model || out.chosen.tts),
+        out.tts.voices || [], out.tts.voice ? [out.tts.voice] : [], out.saved?.voiceName ? [out.saved.voiceName] : []))].filter(Boolean);
       if (out.tts.ok) {
         const heard = await callGroqWhisper({ data: spoken.audio, mime: 'audio/wav' }, '', env, out.saved);
         out.asr = heard.error
@@ -284,6 +289,11 @@ export async function onRequest(context) {
         if (!flags.groq) return json({ error: 'Not enabled for your account.', fallback: true }, 403);
       }
       if (!env.GROQ_API_KEY) return json({ error: 'GROQ_API_KEY is not configured.', fallback: true }, 503);
+      /* The switch in AI systems has to mean something. Turning either of
+         these off leaves the browser's own recogniser and voice doing the
+         work, which is exactly what the fallback flag tells the client. */
+      const fc = await getFeatureConfig(env, action === 'transcribe' ? 'whisper_asr' : 'examiner_voice');
+      if (fc.enabled === false) return json({ error: 'Turned off in Developer → AI systems.', fallback: true }, 403);
 
       if (action === 'transcribe') {
         const a = body.audio || {};
@@ -302,9 +312,9 @@ export async function onRequest(context) {
       const gs2 = await groqSettings(env);
       const r = await callGroqSpeech(said, body.voice || '', env, gs2);
       if (r.limited) return json({ error: r.error, fallback: true, rateLimited: true }, 429);
-      if (r.error) return json({ error: r.error, fallback: true, model: r.model, code: r.code }, 502);
+      if (r.error) return json({ error: r.error, fallback: true, model: r.model, code: r.code, voices: r.voices || [] }, 502);
       await logTokens(token, env, 'groq', { model: r.model, in: 0, out: 0 }, 'examiner_voice');
-      return json({ audio: r.audio, mime: r.mime, model: r.model });
+      return json({ audio: r.audio, mime: r.mime, model: r.model, voice: r.voice || '' });
     }
 
     // ---- OSCE: talk to a model about the report it just produced ----
@@ -403,13 +413,18 @@ async function getUserFlags(token, userId, env) {
 // per-feature config from the AI systems panel (app_config id='ai_features').
 // { enabled, provider, model, split } — the panel's choice is authoritative
 // over whatever the client sends, so feature model/billing can't be forged.
+// Held for a minute per isolate: the spoken examiner asks once a sentence,
+// and a panel edit that takes a minute to bite is nobody's emergency.
+let featureCache = { at: 0, data: null };
 async function getFeatureConfig(env, feature) {
+  if (featureCache.data && Date.now() - featureCache.at < 60e3) return featureCache.data[feature] || {};
   try {
     const res = await sb(`/rest/v1/app_config?id=eq.ai_features&select=data`, env,
       { headers: { Authorization: 'Bearer ' + env.SUPABASE_ANON_KEY } });
     if (!res.ok) return {};
     const rows = await res.json();
-    return (rows[0]?.data || {})[feature] || {};
+    featureCache = { at: Date.now(), data: rows[0]?.data || {} };
+    return featureCache.data[feature] || {};
   } catch { return {}; }
 }
 // shared-pool meter for platform jobs (tagging, insights, audits) — cost is
@@ -692,6 +707,9 @@ const GROQ = 'https://api.groq.com/openai/v1';
    Order of preference: what the developer picked in Rates & settings, then
    the env override, then whatever discovery finds. */
 let groqModelCache = { at: 0, ids: [] };
+/* The voice a speech model actually accepted, remembered per isolate so the
+   search for one happens once rather than on every sentence. */
+let groqVoiceCache = {};
 async function groqModels(env, force) {
   if (!force && groqModelCache.ids.length && Date.now() - groqModelCache.at < 30 * 60e3) return groqModelCache.ids;
   try {
@@ -715,6 +733,11 @@ const GROQ_TTS = /tts|orpheus|playai|canary|sonic|bark|xtts|speecht5|vits|voice|
 // a voice that is not English is the wrong voice for a PGIM examiner
 const NOT_EN = /arabic|saudi|spanish|french|german|hindi|chinese|japanese|korean|italian|portug|turkish|russian|dutch|polish/i;
 const isGroqTts = id => GROQ_TTS.test(id) && !GROQ_ASR.test(id);
+/* The voice names each family ships with. Only a starting point — whatever
+   the service names in a refusal is trusted over this list. */
+const knownVoices = m => /orpheus/i.test(m) ? ['tara', 'leah', 'jess', 'leo', 'dan', 'mia', 'zac', 'zoe']
+                       : /playai/i.test(m) ? ['Fritz-PlayAI', 'Celeste-PlayAI']
+                       : [];
 
 /** The best available id for a job, discovered rather than assumed. */
 async function pickGroqModel(kind, env, saved) {
@@ -791,45 +814,103 @@ async function callGroqWhisper(audio, hint, env, saved) {
 async function callGroqSpeech(text, voice, env, saved) {
   const model = await pickGroqModel('tts', env, saved);
   if (!model) return { error: 'No speech model is available on this Groq account. Open Developer → AI systems → Check Groq to see what it offers, and whether the model needs its terms accepted first.' };
-  const wanted = voice || saved?.voiceName || env.GROQ_TTS_VOICE || '';
+  /* Orpheus refuses a request with no voice: HTTP 400, "voice is required".
+     Families disagree about this — some default, some insist — and the id
+     alone does not say which, so a family's known voices are tried in turn
+     and the one that works is remembered for this isolate. One extra request
+     the first time, none afterwards. Whatever the developer pins always
+     wins, and any list the API names in its error is passed back so it can
+     be pinned from the panel. */
+  const asked = voice || saved?.voiceName || env.GROQ_TTS_VOICE || '';
+  const known = knownVoices(model);
+  /* A voice pinned for a model that has since been retired belongs to the
+     wrong family — `Fritz-PlayAI` means nothing to Orpheus — so it is not
+     allowed to veto the search. */
+  const pinned = asked && !(known.length && /playai/i.test(asked) !== /playai/i.test(model)) ? asked : '';
+  const remembered = groqVoiceCache[model] || '';
+  const queue = pinned ? [pinned]
+              : remembered ? [remembered, ...known.filter(v => v !== remembered)]
+              : known.slice();
+  if (!queue.length) queue.push('');
+
   /* Different speech families want different things: some require a named
      voice, some reject response_format, some reject an unknown voice
      outright. Rather than encode one vendor's rules, the call is retried
-     without whichever parameter the error complains about — so a model that
-     appears on the account works without anyone having to look up its
+     without whichever parameter the error complains about, and with the next
+     candidate voice when the voice itself is what it refused — so a model
+     that appears on the account works without anyone having to look up its
      signature first. */
-  const attempts = [
-    { model, input: text, response_format: 'wav', ...(wanted ? { voice: wanted } : {}) },
-    { model, input: text, ...(wanted ? { voice: wanted } : {}) },
-    { model, input: text, response_format: 'wav' }
-  ];
-  let res = null, code = '', detail = '';
-  for (const body of attempts) {
-    try {
-      res = await fetch(`${GROQ}/audio/speech`, {
-        method: 'POST',
-        headers: { Authorization: 'Bearer ' + env.GROQ_API_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      });
-    } catch { return { error: 'Could not reach the voice service.', model }; }
-    if (res.ok) break;
-    if (res.status === 429) return { limited: true, error: 'The free voice quota is used up for now.', model };
-    code = ''; detail = '';
-    try { const e = (await res.json())?.error || {}; code = e.code || ''; detail = e.message || ''; } catch {}
-    if (/decommission|not_found|does not exist/i.test(code + ' ' + detail)) { groqModelCache = { at: 0, ids: [] }; break; }
-    // only worth another attempt when a PARAMETER is what it objected to
-    if (!/response_format|voice|unsupported|invalid|required/i.test(code + ' ' + detail)) break;
+  const tried = new Set();
+  let res = null, code = '', detail = '', used = '', offered = [], stop = false;
+  while (queue.length && !stop) {
+    const v = queue.shift();
+    if (tried.has(v)) continue;
+    tried.add(v);
+    const bodies = [
+      { model, input: text, response_format: 'wav', ...(v ? { voice: v } : {}) },
+      { model, input: text, ...(v ? { voice: v } : {}) }
+    ];
+    for (const body of bodies) {
+      try {
+        res = await fetch(`${GROQ}/audio/speech`, {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + env.GROQ_API_KEY, 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+      } catch { return { error: 'Could not reach the voice service.', model }; }
+      if (res.ok) { used = v; break; }
+      if (res.status === 429) return { limited: true, error: 'The free voice quota is used up for now.', model };
+      code = ''; detail = '';
+      try { const e = (await res.json())?.error || {}; code = e.code || ''; detail = e.message || ''; } catch {}
+      const said = code + ' ' + detail;
+      /* The refusal usually names the voices it WOULD have taken. That list
+         beats anything compiled from documentation, so it goes to the front
+         of the queue and is handed back for the panel to offer. */
+      if (!offered.length) {
+        offered = voicesNamedIn(detail);
+        for (const o of offered) if (!tried.has(o)) queue.push(o);
+      }
+      if (/decommission|not_found|does not exist/i.test(said)) { groqModelCache = { at: 0, ids: [] }; stop = true; break; }
+      if (/response_format|format/i.test(said)) continue;  // same voice, without the format
+      if (/voice/i.test(said)) break;                      // another voice may be accepted
+      stop = true; break;                                  // it objected to something else entirely
+    }
+    if (res && res.ok) break;
   }
   if (!res || !res.ok) {
-    const hint = /voice/i.test(code + ' ' + detail)
-      ? ' — this model needs a named voice: put one in Developer → AI systems → Check Groq.' : '';
+    const hint = !/voice/i.test(code + ' ' + detail) ? ''
+      : offered.length ? ` — it accepts: ${offered.slice(0, 12).join(', ')}. Pin one in Developer → AI systems → Check Groq.`
+      : ' — this model needs a named voice: put one in Developer → AI systems → Check Groq.';
     return { error: `The voice service refused (HTTP ${res?.status || 0}${code ? ' ' + code : ''})${detail ? ': ' + detail : ''}${hint}`,
-      model, code };
+      model, code, voices: offered, tried: [...tried].filter(Boolean) };
   }
+  if (used) groqVoiceCache[model] = used;
   const buf = new Uint8Array(await res.arrayBuffer());
   let bin = '';
   for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
-  return { audio: btoa(bin), mime: 'audio/wav', model };
+  return { audio: btoa(bin), mime: 'audio/wav', model, voice: used };
+}
+
+/* A refusal such as "voice must be one of: tara, leah, jess" carries the
+   answer inside it. Only plain names are taken, so prose around the list
+   cannot be mistaken for a voice. */
+function voicesNamedIn(msg) {
+  const s = String(msg || '').replace(/['"[\]]/g, '');
+  // the LAST marker wins: "voice is required: must be one of tara, leah"
+  const marks = /(?:one of|supported voices?|available voices?|valid voices?|must be)\s*:?\s*/gi;
+  let end = -1, m;
+  while ((m = marks.exec(s))) end = m.index + m[0].length;
+  if (end < 0) return [];
+  // a comma-separated run and nothing beyond it, so trailing prose is not a voice
+  const run = /^[A-Za-z][\w-]{0,30}(?:\s*,\s*(?:or\s+)?[A-Za-z][\w-]{0,30})*/.exec(s.slice(end, end + 400));
+  if (!run) return [];
+  const out = [];
+  for (const raw of run[0].split(',')) {
+    const v = raw.replace(/^\s*or\s+/i, '').trim();
+    if (v && !out.includes(v) && !/^(or|and|the|an?|is|are|be|of|one|voices?)$/i.test(v)) out.push(v);
+    if (out.length >= 40) break;
+  }
+  return out;
 }
 
 /* ---------------- payment slip ---------------- */

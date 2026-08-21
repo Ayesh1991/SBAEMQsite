@@ -1928,13 +1928,13 @@ const DevConsole = (() => {
         'that have, because the scheme\'s own vocabulary is passed as a spelling hint. Costs nothing, marks ' +
         'nothing: the transcript still goes to the marker you chose. Falls back to the browser when the free ' +
         'quota runs out.',
-      defaults: { enabled: true, provider: 'groq', model: 'whisper-large-v3-turbo', split: 'per-user' } },
+      defaults: { enabled: true, provider: 'groq', model: 'auto', split: 'free' } },
     { id: 'examiner_voice', name: '🎙 Spoken examiner', status: 'live', billing: 'free',
       desc: 'Reads each question aloud in a real voice instead of the browser\'s synthesiser, and mixes that ' +
         'audio straight into the recording — so the tape carries both voices even through headphones, which the ' +
         'speaker-bleed trick cannot manage. Prefetched while the candidate reads the scenario, so nothing waits ' +
         'mid-station. Falls back to the browser voice.',
-      defaults: { enabled: true, provider: 'groq', model: 'playai-tts', split: 'per-user' } },
+      defaults: { enabled: true, provider: 'groq', model: 'auto', split: 'free' } },
     { id: 'topup_reader', name: '🧾 Payment slip reader', status: 'live', billing: 'per-user',
       desc: 'Reads an uploaded bank slip and pulls out the amount, the payer\'s reference and the transaction ' +
         'number so a top-up can be approved in one click. Deliberately the cheapest call in the app: the image is ' +
@@ -2110,12 +2110,40 @@ const DevConsole = (() => {
     // Google retired 1.x/2.x and gemini-3-flash for new keys — a stale saved
     // choice migrates to the feature default (the server does the same).
     const retired = m => /^gemini-(1|2)[.\-]/.test(m || '') || m === 'gemini-3-flash';
+    /* The free features run on Groq, which picks its own model at call time
+       and can have one pinned in Check Groq. Offering them the paid-model
+       list was simply wrong — none of those ids exist on Groq — so the row
+       reports what Groq is actually set to instead of pretending to choose. */
+    let groqCfg = {};
+    try { groqCfg = (await ctx.Backend.getGroqConfig?.()) || {}; } catch { groqCfg = {}; }
+    const groqPin = fid => fid === 'whisper_asr' ? (groqCfg.whisperModel || '')
+                         : fid === 'examiner_voice' ? (groqCfg.ttsModel || '') : '';
     host.innerHTML = AI_FEATURES.map(f => {
       const c = Object.assign({}, f.defaults, saved[f.id] || {});
       if (c.provider === 'gemini' && retired(c.model)) c.model = f.defaults.model;
       const u = usageOf(f.id);
       const modelId = `${c.provider}|${c.model}`;
       const planned = f.status === 'planned';
+      const free = f.billing === 'free';
+      const pin = free ? groqPin(f.id) : '';
+      if (free) return `
+        <div class="ai-feat" data-feat="${f.id}">
+          <div class="ai-feat-main">
+            <div class="ai-feat-name">${f.name}
+              <span class="qedit-tag" style="background:rgba(52,211,153,.15);color:#34d399">live</span>
+              <span class="tiny muted">free · Groq</span>
+            </div>
+            <p class="muted tiny">${f.desc}</p>
+          </div>
+          <div class="ai-feat-controls">
+            <label class="dev-flag" title="Enable / disable"><input type="checkbox" data-fc="enabled" ${c.enabled ? 'checked' : ''}><span></span></label>
+            <input type="hidden" data-fc="model" value="groq|${pin || 'auto'}">
+            <span class="tiny muted ai-feat-fixed" title="Set in Check Groq, below">
+              ${pin ? `<code>${ctx.esc(pin)}</code>` : 'model chosen automatically'}${
+                f.id === 'examiner_voice' && groqCfg.voiceName ? ` · voice <code>${ctx.esc(groqCfg.voiceName)}</code>` : ''}</span>
+            <span class="ai-feat-usage" title="This month">${u.calls} call${u.calls === 1 ? '' : 's'} · <strong>no charge</strong></span>
+          </div>
+        </div>`;
       return `
         <div class="ai-feat ${planned ? 'ai-feat-planned' : ''}" data-feat="${f.id}">
           <div class="ai-feat-main">
@@ -2146,7 +2174,9 @@ const DevConsole = (() => {
       const rec = {
         enabled: row.querySelector('[data-fc="enabled"]').checked,
         provider, model,
-        split: def.billing === 'per-user' ? 'per-user' : row.querySelector('[data-fc="split"]').value
+        split: def.billing === 'free' ? 'free'
+             : def.billing === 'per-user' ? 'per-user'
+             : row.querySelector('[data-fc="split"]').value
       };
       try {
         const all = Object.assign({}, (await ctx.Backend.getAiFeatures()) || {});
@@ -3137,8 +3167,10 @@ const DevConsole = (() => {
       <table class="st-fx-pdf groq-table"><tbody>
         ${row('API key', d.key, d.key ? 'set in Cloudflare' : 'GROQ_API_KEY is missing — add it and redeploy')}
         ${row('Models offered', (d.models || []).length > 0, `${(d.models || []).length} on this account`)}
-        ${row('Speech model', !!d.tts?.ok, d.tts?.ok ? `<code>${esc(d.tts.model)}</code> — ${d.tts.bytes.toLocaleString('en-US')} bytes of audio`
-          : `<code>${esc(d.tts?.model || d.chosen?.tts || 'none found')}</code> — ${esc(d.tts?.error || 'not attempted')}`)}
+        ${row('Speech model', !!d.tts?.ok, d.tts?.ok
+          ? `<code>${esc(d.tts.model)}</code>${d.tts.voice ? ` in the voice <code>${esc(d.tts.voice)}</code>` : ''} — ${d.tts.bytes.toLocaleString('en-US')} bytes of audio`
+          : `<code>${esc(d.tts?.model || d.chosen?.tts || 'none found')}</code> — ${esc(d.tts?.error || 'not attempted')}${
+              (d.tts?.tried || []).length ? `<br><span class="tiny muted">Voices tried: ${d.tts.tried.map(v => esc(v)).join(', ')}</span>` : ''}`)}
         ${row('Transcription', !!d.asr?.ok, d.asr?.ok ? `<code>${esc(d.asr.model)}</code> heard: “${esc(d.asr.text)}”`
           : `<code>${esc(d.asr?.model || d.chosen?.asr || 'none found')}</code> — ${esc(d.asr?.error || 'not attempted (needs the voice first)')}`)}
       </tbody></table>
@@ -3151,11 +3183,14 @@ const DevConsole = (() => {
           <label class="wl-f"><span>Transcription model</span>
             <select class="sel" id="groq-asr">${modelOpts(d.kinds?.asr?.length ? d.kinds.asr : d.models, d.saved?.whisperModel || d.chosen?.asr)}</select></label>
           <label class="wl-f"><span>Voice name</span>
-            <input type="text" id="groq-voice" value="${esc(d.saved?.voiceName || '')}" placeholder="only if the model demands one"></label>
+            <input type="text" id="groq-voice" list="groq-voices" value="${esc(d.saved?.voiceName || '')}" placeholder="leave blank — AUREUM finds one">
+            <datalist id="groq-voices">${(d.voices || []).map(v => `<option value="${esc(v)}"></option>`).join('')}</datalist></label>
           <button class="btn btn-gold" id="groq-save" style="align-self:end">Save</button>
         </div>
         <p class="muted tiny">Pinning a model here overrides discovery. Leave them alone and AUREUM picks for itself
-          each time, which is what survives the next decommissioning.</p>
+          each time, which is what survives the next decommissioning.
+          ${(d.voices || []).length ? `Voices this model takes: ${d.voices.map(v => esc(v)).join(', ')}.` : ''}
+          A voice left blank is worked out on the first call and remembered.</p>
         <p class="groq-all muted tiny">${d.models.map(m => esc(m)).join(' · ')}</p>
       </details>` : ''}`;
 
