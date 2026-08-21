@@ -1372,6 +1372,12 @@ details[open] > summary .tw-caret { transform: rotate(90deg); }
   border-radius: 8px; padding: 6px 8px; font-size: .78rem; max-width: 220px;
 }
 .ai-feat-usage { font-size: .78rem; color: var(--ink-2); min-width: 150px; text-align: right; }
+/* a free feature has no model to choose — it says what it is running on */
+.ai-feat-fixed {
+  border: 1px dashed rgba(255,255,255,.16); border-radius: 8px;
+  padding: 6px 8px; max-width: 220px;
+}
+.ai-feat-fixed code { font-size: .74rem; }
 
 /* ============================================================
    v18 — flashcard navigation row (back / flip / next)
@@ -3952,6 +3958,12 @@ body.eco-open .ap-dock { z-index: 2390; }
 .st-slip img { max-width: 420px; width: 100%; border-radius: 10px; margin-top: 10px; }
 .dev-inline { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; }
 .dev-inline .wl-f { flex: 1 1 220px; margin-bottom: 0; }
+/* a bare text input here inherited the browser's white box next to the
+   dark selects — it is the same control, so it looks like one */
+.dev-inline input[type="text"] {
+  width: 100%; background: rgba(255,255,255,.05); color: inherit;
+  border: 1px solid rgba(255,255,255,.14); border-radius: 8px; padding: 8px 10px; font: inherit;
+}
 .os-rec.is-off { color: var(--ink-3); }
 .os-rec.is-off i { background: var(--ink-3); animation: none; }
 
