@@ -274,12 +274,15 @@ export async function onRequest(context) {
          actually worked. */
       out.voices = [...new Set([].concat(knownVoices(out.tts.model || out.chosen.tts),
         out.tts.voices || [], out.tts.voice ? [out.tts.voice] : [], out.saved?.voiceName ? [out.saved.voiceName] : []))].filter(Boolean);
-      if (out.tts.ok) {
-        const heard = await callGroqWhisper({ data: spoken.audio, mime: 'audio/wav' }, '', env, out.saved);
-        out.asr = heard.error
-          ? { ok: false, model: heard.model, error: heard.error, code: heard.code }
-          : { ok: true, model: heard.model, text: heard.text };
-      }
+      /* When the voice fails there is no sentence to read back — but the
+         transcription half must still be answerable, so a test tone stands
+         in for it rather than reporting "not attempted" and leaving the
+         developer blind to a second, separate fault. */
+      const heard = await callGroqWhisper(
+        { data: out.tts.ok ? spoken.audio : toneWav(), mime: 'audio/wav' }, '', env, out.saved);
+      out.asr = heard.error
+        ? { ok: false, model: heard.model, error: heard.error, code: heard.code }
+        : { ok: true, model: heard.model, text: heard.text, tone: !out.tts.ok };
       return json(out);
     }
 
@@ -734,8 +737,11 @@ const GROQ_TTS = /tts|orpheus|playai|canary|sonic|bark|xtts|speecht5|vits|voice|
 const NOT_EN = /arabic|saudi|spanish|french|german|hindi|chinese|japanese|korean|italian|portug|turkish|russian|dutch|polish/i;
 const isGroqTts = id => GROQ_TTS.test(id) && !GROQ_ASR.test(id);
 /* The voice names each family ships with. Only a starting point — whatever
-   the service names in a refusal is trusted over this list. */
-const knownVoices = m => /orpheus/i.test(m) ? ['tara', 'leah', 'jess', 'leo', 'dan', 'mia', 'zac', 'zoe']
+   the service names in a refusal is trusted over this list, because it was
+   wrong once already: Orpheus's own documentation lists tara, leah, jess and
+   the rest, and Groq answered "must be one of: autumn diana hannah austin
+   daniel troy". These are the names Groq actually serves. */
+const knownVoices = m => /orpheus/i.test(m) ? ['autumn', 'diana', 'hannah', 'austin', 'daniel', 'troy']
                        : /playai/i.test(m) ? ['Fritz-PlayAI', 'Celeste-PlayAI']
                        : [];
 
@@ -765,6 +771,25 @@ async function groqSettings(env) {
     const rows = await res.json();
     return rows?.[0]?.data || {};
   } catch { return {}; }
+}
+
+/* A second of a 440 Hz tone, as a WAV. There are no words in it, so Whisper
+   returns nothing — which is the point: a 200 proves the key, the model and
+   the endpoint are alive even when the voice half of the check has failed
+   and there is no spoken sentence to read back. */
+function toneWav() {
+  const rate = 16000, n = rate;
+  const buf = new Uint8Array(44 + n * 2);
+  const dv = new DataView(buf.buffer);
+  const put = (o, t) => { for (let i = 0; i < t.length; i++) dv.setUint8(o + i, t.charCodeAt(i)); };
+  put(0, 'RIFF'); dv.setUint32(4, 36 + n * 2, true); put(8, 'WAVEfmt ');
+  dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+  dv.setUint32(24, rate, true); dv.setUint32(28, rate * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+  put(36, 'data'); dv.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) dv.setInt16(44 + i * 2, Math.sin(2 * Math.PI * 440 * i / rate) * 6000, true);
+  let bin = '';
+  for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+  return btoa(bin);
 }
 
 /** base64 → Blob, so the audio can go up as multipart the way Whisper wants. */
@@ -841,8 +866,8 @@ async function callGroqSpeech(text, voice, env, saved) {
      that appears on the account works without anyone having to look up its
      signature first. */
   const tried = new Set();
-  let res = null, code = '', detail = '', used = '', offered = [], stop = false;
-  while (queue.length && !stop) {
+  let res = null, code = '', detail = '', used = '', offered = [], stop = false, budget = 8;
+  while (queue.length && !stop && budget-- > 0) {
     const v = queue.shift();
     if (tried.has(v)) continue;
     tried.add(v);
@@ -864,11 +889,11 @@ async function callGroqSpeech(text, voice, env, saved) {
       try { const e = (await res.json())?.error || {}; code = e.code || ''; detail = e.message || ''; } catch {}
       const said = code + ' ' + detail;
       /* The refusal usually names the voices it WOULD have taken. That list
-         beats anything compiled from documentation, so it goes to the front
-         of the queue and is handed back for the panel to offer. */
+         beats anything compiled from documentation, so it jumps the queue
+         and is handed back for the panel to offer. */
       if (!offered.length) {
         offered = voicesNamedIn(detail);
-        for (const o of offered) if (!tried.has(o)) queue.push(o);
+        queue.unshift(...offered.filter(o => !tried.has(o)));
       }
       if (/decommission|not_found|does not exist/i.test(said)) { groqModelCache = { at: 0, ids: [] }; stop = true; break; }
       if (/response_format|format/i.test(said)) continue;  // same voice, without the format
@@ -895,19 +920,33 @@ async function callGroqSpeech(text, voice, env, saved) {
    answer inside it. Only plain names are taken, so prose around the list
    cannot be mistaken for a voice. */
 function voicesNamedIn(msg) {
-  const s = String(msg || '').replace(/['"[\]]/g, '');
-  // the LAST marker wins: "voice is required: must be one of tara, leah"
-  const marks = /(?:one of|supported voices?|available voices?|valid voices?|must be)\s*:?\s*/gi;
-  let end = -1, m;
-  while ((m = marks.exec(s))) end = m.index + m[0].length;
-  if (end < 0) return [];
-  // a comma-separated run and nothing beyond it, so trailing prose is not a voice
-  const run = /^[A-Za-z][\w-]{0,30}(?:\s*,\s*(?:or\s+)?[A-Za-z][\w-]{0,30})*/.exec(s.slice(end, end + 400));
-  if (!run) return [];
+  const s = String(msg || '');
+  if (!/voice/i.test(s)) return [];
+  /* Two shapes seen in the wild, and the first cost a round of wrong
+     guesses: Groq brackets its list and separates with spaces —
+     "must be one of the following voices: [autumn diana hannah]" — while a
+     comma-separated list after a colon is the commoner form. Brackets win
+     when present because they mark the list unambiguously. */
+  const br = /[[(]([^)\]]{3,400})[)\]]/.exec(s);
+  let seg = br ? br[1] : '';
+  if (!seg) {
+    // a colon is the reliable separator; without one, the marker itself is
+    let end = -1, m;
+    const withColon = /(?:one of|following|supported|available|valid|must be)[^:]{0,60}:\s*/gi;
+    while ((m = withColon.exec(s))) end = m.index + m[0].length;
+    if (end < 0) {
+      const bare = /(?:one of|supported voices?|available voices?|valid voices?)\s+/gi;
+      while ((m = bare.exec(s))) end = m.index + m[0].length;
+    }
+    if (end < 0) return [];
+    seg = s.slice(end, end + 400);
+  }
+  seg = seg.split(/[.;]\s|\n/)[0];  // one sentence — the rest is prose
+  const filler = /^(or|and|the|an?|is|are|be|of|one|to|for|following|supported|available|valid|must|voices?)$/i;
   const out = [];
-  for (const raw of run[0].split(',')) {
-    const v = raw.replace(/^\s*or\s+/i, '').trim();
-    if (v && !out.includes(v) && !/^(or|and|the|an?|is|are|be|of|one|voices?)$/i.test(v)) out.push(v);
+  for (const raw of seg.split(/[,\s]+/)) {
+    const v = raw.trim().replace(/^['"]+|['"]+$/g, '');
+    if (/^[A-Za-z][A-Za-z0-9_-]{1,30}$/.test(v) && !filler.test(v) && !out.includes(v)) out.push(v);
     if (out.length >= 40) break;
   }
   return out;
