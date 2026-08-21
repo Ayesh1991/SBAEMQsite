@@ -3171,8 +3171,11 @@ const DevConsole = (() => {
           ? `<code>${esc(d.tts.model)}</code>${d.tts.voice ? ` in the voice <code>${esc(d.tts.voice)}</code>` : ''} — ${d.tts.bytes.toLocaleString('en-US')} bytes of audio`
           : `<code>${esc(d.tts?.model || d.chosen?.tts || 'none found')}</code> — ${esc(d.tts?.error || 'not attempted')}${
               (d.tts?.tried || []).length ? `<br><span class="tiny muted">Voices tried: ${d.tts.tried.map(v => esc(v)).join(', ')}</span>` : ''}`)}
-        ${row('Transcription', !!d.asr?.ok, d.asr?.ok ? `<code>${esc(d.asr.model)}</code> heard: “${esc(d.asr.text)}”`
-          : `<code>${esc(d.asr?.model || d.chosen?.asr || 'none found')}</code> — ${esc(d.asr?.error || 'not attempted (needs the voice first)')}`)}
+        ${row('Transcription', !!d.asr?.ok, d.asr?.ok
+          ? (d.asr.tone
+              ? `<code>${esc(d.asr.model)}</code> answered a test tone — the key, the model and the endpoint are alive. There were no words in it to hear, so fix the voice above to test it on real speech.`
+              : `<code>${esc(d.asr.model)}</code> heard: “${esc(d.asr.text)}”`)
+          : `<code>${esc(d.asr?.model || d.chosen?.asr || 'none found')}</code> — ${esc(d.asr?.error || 'not attempted')}`)}
       </tbody></table>
       ${audio}
       ${(d.models || []).length ? `<details class="dev-collapse" style="margin-top:12px">
