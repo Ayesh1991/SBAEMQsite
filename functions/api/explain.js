@@ -323,6 +323,65 @@ export async function onRequest(context) {
       return json({ audio: r.audio, mime: r.mime, model: r.model, voice: r.voice || '' });
     }
 
+    /* ---- OSCE: place a station on the blueprint ----
+       Developer-only, and deliberately the LAST resort: the rules in
+       osce-blueprint.js place most stations, and a rule that can be read
+       and corrected beats a model that has to be asked again. This is
+       asked only about what the rules could not place, so it runs over a
+       handful of stations rather than the whole bank. */
+    if (action === 'oscetag') {
+      if (!isDev) return json({ error: 'Developer only.' }, 403);
+      const list = (body.stations || []).slice(0, 12);
+      if (!list.length) return json({ tags: [] });
+      const prompt = [
+        'You are filing OSCE examination stations against an examination blueprint.',
+        'Here are the modules and their topics. The format is  moduleId: Module name [topicId=Topic name; ...]',
+        String(body.modules || '').slice(0, 6000),
+        '',
+        'For each station below, choose the ONE topic that best describes what the station is examining.',
+        'Rules:',
+        '- Use only moduleId and topicId values that appear in the list above. Never invent one.',
+        '- Judge by what the candidate is being ASKED TO DO, not by every condition mentioned in passing.',
+        '- If nothing in the list genuinely fits, return null for that station rather than forcing it.',
+        '',
+        'Return ONLY a JSON array, no prose and no code fence:',
+        '[{"id":"<station id>","module":"<moduleId or null>","topic":"<topicId or null>","why":"<six words at most>"}]',
+        '',
+        'Stations:',
+        ...list.map((s, i) => `${i + 1}. id=${s.id}\ntitle: ${String(s.topic || '').slice(0, 160)}\ntext: ${String(s.text || '').slice(0, 700)}`)
+      ].join('\n');
+      const r = await run(prompt, 'osce_tag', 1400);
+      let tags = [];
+      try {
+        const m = /\[[\s\S]*\]/.exec(String(r.text || ''));
+        tags = m ? JSON.parse(m[0]) : [];
+      } catch { tags = []; }
+      if (!Array.isArray(tags)) tags = [];
+      return json({ tags: tags.filter(t => t && t.id && t.module && t.topic), model: r.model,
+        usage: { in: r.in, out: r.out } });
+    }
+
+    /* ---- OSCE: flashcards from what was missed ----
+       Built from the marking, not from the topic: a card is only worth
+       making about a point the candidate actually failed to say. */
+    if (action === 'oscecards') {
+      const r = await run(buildOsceCardsPrompt(body), 'osce_cards', 3000);
+      let cards = [];
+      try {
+        const m = /\[[\s\S]*\]/.exec(String(r.text || ''));
+        cards = m ? JSON.parse(m[0]) : [];
+      } catch { cards = []; }
+      if (!Array.isArray(cards)) cards = [];
+      cards = cards.filter(c => c && c.front && c.back).slice(0, 15).map(c => ({
+        front: String(c.front).slice(0, 300),
+        back: String(c.back).slice(0, 900),
+        highlight: String(c.highlight || '').slice(0, 160),
+        hook: String(c.hook || '').slice(0, 220),
+        tag: String(c.tag || '').slice(0, 60)
+      }));
+      return json({ cards, model: r.model, usage: { in: r.in, out: r.out } });
+    }
+
     // ---- OSCE: talk to a model about the report it just produced ----
     if (action === 'oscechat') {
       const r = await run(buildOsceChatPrompt(body), 'osce_chat', 2200);
@@ -604,6 +663,57 @@ function buildOsceAudioPrompt(body) {
 /* A candidate talking to the model about the report it just wrote. The whole
    station is NOT resent — only the marking the conversation is about, which
    keeps a five-message exchange cheaper than the marking itself was. */
+/* Flashcards from a station that has already been marked.
+
+   The rule that makes these worth the money: a card may only be made
+   about a marking point the candidate MISSED. Cards about what they
+   already said are revision of the wrong thing, and a deck of fifteen
+   half-relevant cards is worse than a deck of six sharp ones — so the
+   count is a ceiling, never a target.
+
+   Each card carries a HIGHLIGHT (the few words that must be recalled —
+   a dose, a threshold, a cut-off) and a HOOK (why it is that number, or
+   a way to hold it). The hook is what turns a fact into something
+   retrievable under exam pressure, and it is the part a generic
+   generator leaves out. */
+function buildOsceCardsPrompt(body) {
+  const st = body.station || {};
+  const missed = (body.missed || []).slice(0, 40);
+  return [
+    'You are a PGIM MD Part II (Obstetrics & Gynaecology) examiner writing revision flashcards',
+    'for a candidate who has just been marked on a spoken OSCE station.',
+    '',
+    `Station: ${String(st.topic || '').slice(0, 160)}`,
+    `Scenario: ${String(st.scenario || '').slice(0, 700)}`,
+    '',
+    'These are the marking points the candidate did NOT say, or said only partly.',
+    'The question they came from is given so you can see the context:',
+    ...missed.map((m, i) => `${i + 1}. [${m.status || 'missed'}] under "${String(m.prompt || '').slice(0, 140)}" — ${String(m.point || '').slice(0, 300)}`),
+    '',
+    'Write flashcards that would stop this candidate losing these marks again.',
+    '',
+    'RULES — these decide whether the deck is worth keeping:',
+    '- ONE card per idea. Never split a single fact across two cards, never merge two facts into one.',
+    '- Group related missed points into one card where they are genuinely one idea',
+    '  (all the criteria of one syndrome; the whole dose regimen of one drug).',
+    `- At most ${Math.min(15, Math.max(3, body.max || 15))} cards, and FEWER IS BETTER. Only make a card that earns its place.`,
+    '- The FRONT must be a question that can be answered out loud in under thirty seconds.',
+    '  Never "Discuss X". Prefer "What dose of X, and for how long?", "Name the four criteria for X".',
+    '- The BACK must be complete enough to mark against: give the actual numbers, doses, routes,',
+    '  thresholds and time windows. "Give magnesium sulphate" is useless; the regimen is the answer.',
+    '- HIGHLIGHT: the handful of words that carry the marks — the number, the drug, the cut-off.',
+    '- HOOK: a memory aid that is TRUE and specific to this fact — where the number comes from,',
+    '  a contrast with a neighbouring number that is easy to confuse it with, or a short mnemonic.',
+    '  Never write a hook that is merely a restatement of the answer. If there is no honest hook,',
+    '  return an empty string rather than inventing one.',
+    '- Use current RCOG / NICE / SLCOG practice. Where guidance genuinely differs, say which body.',
+    '- Never invent a figure. If you are not sure of a number, write the principle without it.',
+    '',
+    'Return ONLY a JSON array, no prose and no code fence:',
+    '[{"front":"...","back":"...","highlight":"...","hook":"...","tag":"<2-4 words naming the idea>"}]'
+  ].join('\n');
+}
+
 function buildOsceChatPrompt(body) {
   const st = body.station || {};
   const r = body.result || {};

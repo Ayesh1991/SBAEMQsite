@@ -71,7 +71,9 @@ const Backend = (() => {
   }
   const OSCE_CARD_KEYS = ['id', 'topic', 'scenario', 'station_time_min', 'reading_time_min',
     'total_marks', 'pass_mark', 'pass_mark_percent', 'q_count', 'points_count', 'image_count', 'collection',
-    'edited_by', 'edited_at'];
+    // the blueprint tag travels on the card: the circuit builder and the
+    // coverage map both need it, and neither should pull whole stations
+    'bp', 'edited_by', 'edited_at'];
   const osceCard = m => { const o = {}; OSCE_CARD_KEYS.forEach(k => { if (m[k] != null) o[k] = m[k]; }); return o; };
   /** An attempt row for a LIST: the score, never the answers. */
   const osceAttemptCard = a => ({
@@ -174,6 +176,25 @@ const Backend = (() => {
     async function saveGroqConfig(c) { write('groqcfg', c); return c; }
     async function getOsceCollections() { return read('oscecollections', null); }
     async function saveOsceCollections(list) { write('oscecollections', list); return list; }
+    async function getOsceBlueprint() { return read('osceblueprint', null); }
+    async function saveOsceBlueprint(b) { write('osceblueprint', b); return b; }
+    /** Write a blueprint tag onto stations without touching anything else. */
+    async function tagOsceStations(map) {
+      const l = read('oscestations', []); let n = 0;
+      l.forEach(s => { if (map[s.id]) { s.bp = map[s.id]; n++; } });
+      write('oscestations', l); return n;
+    }
+    async function listOsceDecks() { const e = sessionEmail(); if (!e) return []; return read('oscedecks:' + e, []); }
+    async function saveOsceDeck(d) {
+      const e = sessionEmail(); if (!e) return d;
+      const l = read('oscedecks:' + e, []); const i = l.findIndex(x => x.id === d.id);
+      if (i >= 0) l[i] = d; else l.unshift(d);
+      write('oscedecks:' + e, l); return d;
+    }
+    async function deleteOsceDeck(id) {
+      const e = sessionEmail(); if (!e) return;
+      write('oscedecks:' + e, read('oscedecks:' + e, []).filter(x => x.id !== id));
+    }
     async function listOsceAttempts() { const e = sessionEmail(); if (!e) return []; return Object.values(read('osceattempts:' + e, {})).map(osceAttemptCard); }
     async function getOsceAttempt(id) { const e = sessionEmail(); if (!e) return null; return read('osceattempts:' + e, {})[id] || null; }
     async function saveOsceAttempt(a) { const e = sessionEmail(); if (!e) return a; const m = read('osceattempts:' + e, {}); m[a.id] = a; write('osceattempts:' + e, m); return a; }
@@ -613,6 +634,7 @@ const Backend = (() => {
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
       getOsceStations, getOsceStation, getOsceSearchIndex, publishOsceStation, unpublishOsceStation,
       moveOsceStations, getOsceCollections, saveOsceCollections, getGroqConfig, saveGroqConfig,
+      getOsceBlueprint, saveOsceBlueprint, tagOsceStations, listOsceDecks, saveOsceDeck, deleteOsceDeck,
       listOsceAttempts, getOsceAttempt,
       saveOsceAttempt, deleteOsceAttempt, uploadOsceAudio, getOsceAudioUrl, sweepOsceAudio,
       uploadOsceImage, osceImageUrl, deleteOsceImage,
@@ -791,7 +813,7 @@ const Backend = (() => {
       'station_time_min:meta->station_time_min,reading_time_min:meta->reading_time_min,' +
       'total_marks:meta->total_marks,pass_mark:meta->pass_mark,pass_mark_percent:meta->pass_mark_percent,' +
       'q_count:meta->q_count,points_count:meta->points_count,image_count:meta->image_count,' +
-      'collection:meta->>collection,' +
+      'collection:meta->>collection,bp:meta->bp,' +
       'edited_by:meta->>edited_by,edited_at:meta->edited_at';
     let osceCardsOk = true;
     async function getOsceStations() {
@@ -887,8 +909,65 @@ const Backend = (() => {
     }
     async function saveOsceCollections(list) {
       await ensureClient();
-      await sb.from('app_config').upsert({ id: 'osce', data: { collections: list } });
+      const { data } = await sb.from('app_config').select('data').eq('id', 'osce').single();
+      await sb.from('app_config').upsert({ id: 'osce', data: Object.assign({}, data?.data, { collections: list }) });
       return list;
+    }
+    /* The blueprint shares the 'osce' config row with the collections, so
+       each must merge rather than overwrite — saving one used to erase the
+       other. */
+    async function getOsceBlueprint() {
+      await ensureClient();
+      const { data } = await sb.from('app_config').select('data').eq('id', 'osce').single();
+      return data?.data?.blueprint || null;
+    }
+    async function saveOsceBlueprint(b) {
+      await ensureClient();
+      const { data } = await sb.from('app_config').select('data').eq('id', 'osce').single();
+      await sb.from('app_config').upsert({ id: 'osce', data: Object.assign({}, data?.data, { blueprint: b }) });
+      return b;
+    }
+    /* Tagging touches one key of `meta` on many rows. Read-modify-write per
+       station, in small batches: the alternative is a migration for a column
+       that only the blueprint cares about. */
+    async function tagOsceStations(map) {
+      await ensureClient();
+      const ids = Object.keys(map || {});
+      if (!ids.length) return 0;
+      let n = 0;
+      for (let i = 0; i < ids.length; i += 40) {
+        const slice = ids.slice(i, i + 40);
+        const { data, error } = await sb.from('osce_stations').select('id,meta').in('id', slice);
+        if (error) throw new Error('Could not read the stations to tag: ' + (error.message || error.code));
+        const rows = (data || []).map(r => ({ id: r.id, meta: Object.assign({}, r.meta, { bp: map[r.id] }) }));
+        if (!rows.length) continue;
+        const { error: e2 } = await sb.from('osce_stations').upsert(rows);
+        if (e2) throw new Error('Could not save the tags: ' + (e2.message || e2.code));
+        n += rows.length;
+      }
+      return n;
+    }
+    /* Flashcard decks made from an attempt. Stored beside the attempts they
+       came from, one row per deck, owned by the candidate. */
+    async function listOsceDecks() {
+      await ensureClient(); const id = await uid(); if (!id) return [];
+      const { data, error } = await sb.from('osce_decks').select('id,attempt_id,payload,created_at')
+        .eq('user_id', id).order('created_at', { ascending: false });
+      if (error) return [];
+      return (data || []).map(r => Object.assign({}, r.payload, { id: r.id, attemptId: r.attempt_id,
+        created: new Date(r.created_at).getTime() }));
+    }
+    async function saveOsceDeck(d) {
+      await ensureClient(); const id = await uid(); if (!id) throw new Error('Sign in first.');
+      const { error } = await sb.from('osce_decks').upsert({
+        id: d.id, user_id: id, attempt_id: d.attemptId || null,
+        payload: Object.assign({}, d, { id: undefined, attemptId: undefined, created: undefined }) });
+      if (error) throw new Error('Could not save the deck: ' + (error.message || error.code));
+      return d;
+    }
+    async function deleteOsceDeck(did) {
+      await ensureClient(); const id = await uid(); if (!id) return;
+      await sb.from('osce_decks').delete().eq('id', did).eq('user_id', id);
     }
     /* A list of attempts needs the score, not the answers. Selecting whole
        payloads shipped every question, every marking point and every
@@ -1752,6 +1831,7 @@ const Backend = (() => {
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
       getOsceStations, getOsceStation, getOsceSearchIndex, publishOsceStation, unpublishOsceStation,
       moveOsceStations, getOsceCollections, saveOsceCollections, getGroqConfig, saveGroqConfig,
+      getOsceBlueprint, saveOsceBlueprint, tagOsceStations, listOsceDecks, saveOsceDeck, deleteOsceDeck,
       listOsceAttempts, getOsceAttempt,
       saveOsceAttempt, deleteOsceAttempt, uploadOsceAudio, getOsceAudioUrl, sweepOsceAudio,
       uploadOsceImage, osceImageUrl, deleteOsceImage,

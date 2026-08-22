@@ -2571,6 +2571,38 @@ const DevConsole = (() => {
           </details>
         </div>
 
+        <div class="card" data-animate>
+          <h3 class="card-title">🗺 Exam blueprint</h3>
+          <p class="muted">The thirteen modules the OSCE samples from, and the topics beneath each. The exam is nine
+            stations, so there are deliberately more topics here than can appear on any one day — this is a sampling
+            frame, not a checklist. The simulator builds a circuit that spans as many modules as it can, and the
+            coverage map in the OSCE tab is drawn from this.</p>
+          <div id="os-bp"></div>
+          <div class="dev-inline" style="margin-top:12px">
+            <label class="wl-f"><span>Add a module</span>
+              <input type="text" id="os-bp-newmod" placeholder="e.g. Neonatology" maxlength="60"></label>
+            <button class="btn btn-ghost" id="os-bp-addmod" style="align-self:end">＋ Add module</button>
+            <button class="btn btn-gold" id="os-bp-save" style="align-self:end">💾 Save blueprint</button>
+            <button class="btn btn-ghost" id="os-bp-reset" style="align-self:end" title="Back to the shipped blueprint">↺ Defaults</button>
+          </div>
+          <span class="dev-status" id="os-bp-msg"></span>
+        </div>
+
+        <div class="card" data-animate>
+          <h3 class="card-title">🏷 Tag the stations</h3>
+          <p class="muted">Every station needs a module and a topic before the simulator can balance a circuit around
+            it. The rules run first — they read the station's title, scenario and prompts against the synonyms in the
+            blueprint above, and a rule you can read is a rule you can correct. Only what the rules could not place
+            confidently is sent to a model, and nothing overwrites a tag you set by hand.</p>
+          <div class="dev-inline">
+            <button class="btn btn-gold" id="os-tag-run">Match with rules</button>
+            <button class="btn btn-ghost" id="os-tag-ai" disabled>Ask AI about the leftovers</button>
+            <button class="btn btn-primary" id="os-tag-save" disabled>Save the tags</button>
+            <span class="dev-status" id="os-tag-msg"></span>
+          </div>
+          <div id="os-tag-out"></div>
+        </div>
+
         <div class="dev-toolbar" data-animate>
           <button class="btn btn-gold" id="os-scan">Scan Drive for OSCE stations</button>
           <label class="wl-f" style="max-width:220px"><span>Import into</span>
@@ -2597,7 +2629,272 @@ const DevConsole = (() => {
     view.querySelector('#os-scan').addEventListener('click', scanOsce);
     view.querySelector('#os-paste-btn').addEventListener('click', pasteOsce);
     await wireOsceCollections(view);
+    await wireBlueprint(view);
+    wireTagger(view);
     await refreshOscePublished(view);
+  }
+
+  /* ================================================================
+     THE BLUEPRINT EDITOR
+
+     Modules and topics, editable in place. Synonyms are exposed because
+     they are the whole reason the tagger can be deterministic: adding
+     "twin peak sign" to the Twins topic is a better fix than asking a
+     model to guess again.
+     ================================================================ */
+
+  let bpDraft = null;
+
+  async function wireBlueprint(view) {
+    const { esc } = ctx;
+    const host = view.querySelector('#os-bp');
+    const msg = view.querySelector('#os-bp-msg');
+    if (!host) return;
+    bpDraft = JSON.parse(JSON.stringify(await OsceBlueprint.get(true)));
+
+    const paint = () => {
+      host.innerHTML = bpDraft.map((m, mi) => `
+        <details class="dev-collapse os-bp-mod" data-mi="${mi}">
+          <summary>
+            <span class="card-title">${esc(m.name)} <span class="tiny muted">${(m.topics || []).length} topics</span></span>
+            <span class="dc-caret">▸</span>
+          </summary>
+          <div class="dev-inline" style="margin:8px 0 12px">
+            <label class="wl-f"><span>Module name</span>
+              <input type="text" data-bp="modname" value="${esc(m.name)}" maxlength="60"></label>
+            <button class="btn btn-ghost btn-sm" data-bp="delmod" style="align-self:end">Remove module</button>
+          </div>
+          <table class="st-fx-pdf os-bp-table"><tbody>
+            ${(m.topics || []).map((t, ti) => `
+              <tr data-ti="${ti}">
+                <td><input type="text" data-bp="topname" value="${esc(t.name)}" maxlength="90"></td>
+                <td><input type="text" data-bp="topsyn" value="${esc((t.syn || []).join(', '))}"
+                      placeholder="other words a station might use, comma separated"></td>
+                <td><button class="btn btn-ghost btn-sm" data-bp="deltop">✕</button></td>
+              </tr>`).join('')}
+          </tbody></table>
+          <div class="dev-inline" style="margin-top:10px">
+            <label class="wl-f"><span>Add a topic</span>
+              <input type="text" data-bp="newtop" placeholder="e.g. Cord prolapse" maxlength="90"></label>
+            <button class="btn btn-ghost btn-sm" data-bp="addtop" style="align-self:end">＋ Add topic</button>
+          </div>
+        </details>`).join('');
+    };
+    paint();
+
+    const slug = s => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
+      || 't' + Math.random().toString(36).slice(2, 7);
+
+    host.addEventListener('input', e => {
+      const what = e.target.dataset.bp;
+      const mod = bpDraft[Number(e.target.closest('[data-mi]').dataset.mi)];
+      if (what === 'modname') mod.name = e.target.value;
+      if (what === 'topname') mod.topics[Number(e.target.closest('[data-ti]').dataset.ti)].name = e.target.value;
+      if (what === 'topsyn') mod.topics[Number(e.target.closest('[data-ti]').dataset.ti)].syn =
+        e.target.value.split(',').map(s => s.trim()).filter(Boolean);
+    });
+    host.addEventListener('click', e => {
+      const b = e.target.closest('[data-bp]'); if (!b) return;
+      const what = b.dataset.bp;
+      const wrap = b.closest('[data-mi]'); if (!wrap) return;
+      const mi = Number(wrap.dataset.mi);
+      if (what === 'delmod') {
+        if (!confirm(`Remove the module “${bpDraft[mi].name}” and its topics? Stations already tagged to it keep their tag until they are re-tagged.`)) return;
+        bpDraft.splice(mi, 1); paint();
+      }
+      if (what === 'deltop') {
+        const ti = Number(b.closest('[data-ti]').dataset.ti);
+        bpDraft[mi].topics.splice(ti, 1); paint();
+        wrap.setAttribute('open', '');
+      }
+      if (what === 'addtop') {
+        const inp = wrap.querySelector('[data-bp="newtop"]');
+        const name = inp.value.trim(); if (!name) return;
+        bpDraft[mi].topics.push({ id: slug(name), name, syn: [] });
+        paint();
+        host.querySelector(`[data-mi="${mi}"]`)?.setAttribute('open', '');
+      }
+    });
+
+    view.querySelector('#os-bp-addmod').addEventListener('click', () => {
+      const inp = view.querySelector('#os-bp-newmod');
+      const name = inp.value.trim(); if (!name) return;
+      bpDraft.push({ id: slug(name), name, topics: [] });
+      inp.value = ''; paint();
+    });
+    view.querySelector('#os-bp-reset').addEventListener('click', () => {
+      if (!confirm('Discard your blueprint and go back to the one that ships with AUREUM?')) return;
+      bpDraft = OsceBlueprint.shipped(); paint();
+      msg.innerHTML = '<span class="muted">Defaults loaded — press Save to keep them.</span>';
+    });
+    view.querySelector('#os-bp-save').addEventListener('click', async e => {
+      e.target.disabled = true;
+      try {
+        const clean = bpDraft.filter(m => m.name.trim()).map(m => ({
+          id: m.id, name: m.name.trim(),
+          topics: (m.topics || []).filter(t => t.name.trim())
+            .map(t => ({ id: t.id, name: t.name.trim(), syn: t.syn || [] }))
+        }));
+        await OsceBlueprint.save(clean);
+        bpDraft = JSON.parse(JSON.stringify(clean));
+        if (typeof Cache !== 'undefined') Cache.bust('osce-stations');
+        msg.innerHTML = `<span class="good">✓ Saved — ${clean.length} modules, ${
+          clean.reduce((n, m) => n + m.topics.length, 0)} topics.</span>`;
+      } catch (err) { msg.innerHTML = `<span class="bad">${esc(err.message || err)}</span>`; }
+      e.target.disabled = false;
+    });
+  }
+
+  /* ================================================================
+     THE TAGGER
+
+     Rules first, model second, hand always. The three piles are shown
+     separately because they need different attention: "confident" wants
+     a glance, "unsure" wants a decision, "no match" wants either a
+     synonym adding to the blueprint or a model's opinion.
+     ================================================================ */
+
+  let tagRows = [];
+
+  function wireTagger(view) {
+    const { esc } = ctx;
+    const out = view.querySelector('#os-tag-out');
+    const msg = view.querySelector('#os-tag-msg');
+    const aiBtn = view.querySelector('#os-tag-ai');
+    const saveBtn = view.querySelector('#os-tag-save');
+    if (!out) return;
+
+    const modules = () => bpDraft || [];
+    const optionsFor = (mid, tid) => modules().map(m => `
+      <optgroup label="${esc(m.name)}">
+        ${(m.topics || []).map(t => `<option value="${esc(m.id)}/${esc(t.id)}" ${
+          m.id === mid && t.id === tid ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}
+      </optgroup>`).join('');
+
+    const paint = () => {
+      if (!tagRows.length) { out.innerHTML = ''; return; }
+      const pile = k => tagRows.filter(r => r.pile === k);
+      const block = (k, title, note) => {
+        const rows = pile(k);
+        if (!rows.length) return '';
+        return `<details class="dev-collapse" ${k === 'unsure' || k === 'none' ? 'open' : ''} style="margin-top:12px">
+          <summary><span class="card-title">${title} (${rows.length})</span><span class="dc-caret">▸</span></summary>
+          <p class="muted tiny">${note}</p>
+          <table class="st-fx-pdf os-tag-table"><tbody>
+            ${rows.map(r => `<tr data-tid="${esc(r.id)}">
+              <td><strong>${esc(r.topic || r.id)}</strong>
+                <span class="tiny muted">${esc(r.collection || 'unfiled')}${
+                  r.why?.length ? ` · matched on “${esc(r.why.join('”, “'))}”` : ''}${
+                  r.by === 'ai' ? ' · from the model' : ''}${
+                  r.locked ? ' · set by hand' : ''}</span></td>
+              <td><select class="sel" data-tagsel>
+                    <option value="">— leave untagged —</option>
+                    ${optionsFor(r.module, r.topicId)}
+                  </select></td>
+            </tr>`).join('')}
+          </tbody></table>
+        </details>`;
+      };
+      out.innerHTML =
+        block('hand', 'Already tagged by hand', 'These are not touched by the rules or the model. Change one here if it is wrong.') +
+        block('sure', 'Matched confidently', 'The rules found one clear topic. Worth a glance, rarely worth a change.') +
+        block('unsure', 'Needs a decision', 'More than one topic fitted, or the evidence was thin. Pick the right one, or ask the model below.') +
+        block('none', 'No match at all', 'Nothing in the blueprint matched. Either add a synonym to the blueprint above — the better fix, because it will match every future station too — or ask the model.');
+      out.querySelectorAll('[data-tagsel]').forEach(sel => sel.addEventListener('change', () => {
+        const id = sel.closest('[data-tid]').dataset.tid;
+        const row = tagRows.find(r => r.id === id); if (!row) return;
+        const [m, t] = String(sel.value).split('/');
+        row.module = m || null; row.topicId = t || null; row.by = 'hand'; row.changed = true;
+      }));
+      saveBtn.disabled = false;
+      aiBtn.disabled = !pile('unsure').length && !pile('none').length;
+    };
+
+    view.querySelector('#os-tag-run').addEventListener('click', async e => {
+      e.target.disabled = true; msg.textContent = 'Reading the stations…';
+      try {
+        /* The rules need the SCENARIO and the prompts, which the card does
+           not carry — so the full stations are pulled once, here, rather
+           than on every visit to the bank. */
+        const cards = await ctx.Backend.getOsceStations();
+        const full = [];
+        for (const c of cards) {
+          msg.textContent = `Reading the stations… ${full.length + 1} of ${cards.length}`;
+          try { full.push(await ctx.Backend.getOsceStation(c.id)); }
+          catch { full.push(c); }
+        }
+        const mods = modules();
+        tagRows = full.map(st => {
+          const existing = OsceBlueprint.tagOf(st);
+          if (existing && existing.by === 'hand') {
+            return { id: st.id, topic: st.topic, collection: st.collection, pile: 'hand', locked: true,
+              module: existing.module, topicId: existing.topic, by: 'hand' };
+          }
+          const s = OsceBlueprint.suggest(st, mods);
+          const pile = !s.tag ? 'none' : s.confident ? 'sure' : 'unsure';
+          return { id: st.id, topic: st.topic, collection: st.collection, pile,
+            module: s.tag?.module || null, topicId: s.tag?.topic || null,
+            why: s.why || [], by: s.tag ? 'rule' : null, changed: !!s.tag,
+            hay: OsceBlueprint.hayOf(st).slice(0, 600) };
+        });
+        const n = k => tagRows.filter(r => r.pile === k).length;
+        msg.innerHTML = `<span class="good">${n('sure')} confident · ${n('unsure')} need a decision · ${n('none')} no match · ${n('hand')} left alone.</span>`;
+        paint();
+      } catch (err) { msg.innerHTML = `<span class="bad">${esc(err.message || err)}</span>`; }
+      e.target.disabled = false;
+    });
+
+    aiBtn.addEventListener('click', async e => {
+      e.target.disabled = true;
+      const todo = tagRows.filter(r => r.pile === 'unsure' || r.pile === 'none');
+      const mods = modules();
+      const menu = mods.map(m => `${m.id}: ${m.name} [${(m.topics || []).map(t => `${t.id}=${t.name}`).join('; ')}]`).join('\n');
+      let done = 0;
+      try {
+        const token = await ctx.Backend.getAccessToken();
+        for (let i = 0; i < todo.length; i += 12) {
+          const batch = todo.slice(i, i + 12);
+          msg.textContent = `Asking the model… ${done} of ${todo.length}`;
+          const res = await fetch(ctx.cfg.ai.apiBase, {
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+            body: JSON.stringify({ action: 'oscetag', modules: menu,
+              stations: batch.map(r => ({ id: r.id, topic: r.topic, text: r.hay })) })
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || `The tagger failed (HTTP ${res.status}).`);
+          for (const got of (data.tags || [])) {
+            const row = tagRows.find(r => r.id === got.id);
+            if (!row || row.locked) continue;
+            const m = mods.find(x => x.id === got.module);
+            const t = (m?.topics || []).find(x => x.id === got.topic);
+            if (!m || !t) continue;                    // a module it invented is not a module
+            row.module = m.id; row.topicId = t.id; row.by = 'ai'; row.changed = true; row.pile = 'unsure';
+            row.why = got.why ? [String(got.why).slice(0, 60)] : [];
+          }
+          done += batch.length;
+        }
+        msg.innerHTML = `<span class="good">✓ The model placed ${tagRows.filter(r => r.by === 'ai').length} of ${todo.length}. Check them, then save.</span>`;
+        paint();
+      } catch (err) { msg.innerHTML = `<span class="bad">${esc(err.message || err)}</span>`; }
+      e.target.disabled = false;
+    });
+
+    saveBtn.addEventListener('click', async e => {
+      e.target.disabled = true; msg.textContent = 'Saving…';
+      try {
+        const map = {};
+        tagRows.forEach(r => {
+          if (!r.changed || !r.module || !r.topicId) return;
+          map[r.id] = { module: r.module, topic: r.topicId, by: r.by || 'rule', at: Date.now() };
+        });
+        const n = await ctx.Backend.tagOsceStations(map);
+        if (typeof Cache !== 'undefined') Cache.bust('osce-stations');
+        if (typeof OSCE !== 'undefined') OSCE.bustStations?.();
+        msg.innerHTML = `<span class="good">✓ ${n} stations tagged.</span>`;
+        tagRows.forEach(r => { if (map[r.id]) r.changed = false; });
+      } catch (err) { msg.innerHTML = `<span class="bad">${esc(err.message || err)}</span>`; }
+      e.target.disabled = false;
+    });
   }
 
   async function wireOsceCollections(view) {
