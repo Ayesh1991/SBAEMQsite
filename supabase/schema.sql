@@ -1171,3 +1171,27 @@ create policy "osce images add" on storage.objects for insert
 create policy "osce images remove" on storage.objects for delete
   to authenticated
   using (bucket_id = 'osce-images' and auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+
+/* ============================================================
+   v72 — OSCE flashcard decks
+
+   A deck is built from ONE attempt: the points that were missed, turned
+   into at most fifteen cards. It belongs to the candidate who sat the
+   station and to nobody else, so the policy is the same "own rows only"
+   shape as osce_attempts.
+
+   The blueprint itself needs no table — it is one key inside the
+   existing app_config row with id 'osce', beside the collections.
+   ============================================================ */
+create table if not exists public.osce_decks (
+  id         text primary key,
+  user_id    uuid not null references auth.users(id) on delete cascade,
+  attempt_id text,
+  payload    jsonb not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists osce_decks_user_idx on public.osce_decks (user_id, created_at desc);
+alter table public.osce_decks enable row level security;
+drop policy if exists "osce decks own" on public.osce_decks;
+create policy "osce decks own" on public.osce_decks for all
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);

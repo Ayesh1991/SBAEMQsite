@@ -769,6 +769,14 @@ const OSCE = (() => {
 
   async function renderSim(view, user) {
     const list = await stations().catch(() => []);   // cards only — the circuit needs names, not schemes
+    const modules = await OsceBlueprint.get().catch(() => []);
+    let attempts = [];
+    try { attempts = (await Backend.listOsceAttempts()) || []; } catch {}
+    const byId = {}; list.forEach(s => byId[s.id] = s);
+    const history = OsceBlueprint.historyOf(attempts, byId);
+    const tagged = list.filter(s => OsceBlueprint.tagOf(s));
+    const modsWithStations = new Set(tagged.map(s => OsceBlueprint.tagOf(s).module));
+
     view.innerHTML = shell('sim', `
       <header data-animate>
         <p class="kicker">OSCE EXAM SIMULATOR</p>
@@ -777,6 +785,14 @@ const OSCE = (() => {
           today allows — four stations is an hour. You can pause between stations, or in the middle of one, and pick
           the circuit up later exactly where you left it.</p>
       </header>
+
+      <div class="card os-blind" data-animate>
+        <h3 class="card-title">🙈 You will not be told the topic</h3>
+        <p class="muted">In the real room the examiner reads you a scenario and starts asking. Nobody says
+          “this is a pulmonary embolism station” first — and being told narrows the discussion before it begins.
+          So a circuit shows you the scenario and nothing else. The topic, the module and the marking scheme appear
+          when the station is over.</p>
+      </div>
 
       <div class="card os-simset" data-animate>
         <h3 class="card-title">How many stations?</h3>
@@ -788,11 +804,13 @@ const OSCE = (() => {
 
         <h3 class="card-title" style="margin-top:22px">Which stations?</h3>
         <div class="os-pickmode" id="os-pickmode">
-          <button class="os-pick-b active" data-mode="random">🎲 Surprise me</button>
+          <button class="os-pick-b active" data-mode="blueprint">🗺 Across the blueprint</button>
+          <button class="os-pick-b" data-mode="random">🎲 Surprise me</button>
           <button class="os-pick-b" data-mode="unseen">✦ Ones I haven't done</button>
           <button class="os-pick-b" data-mode="pick">☑ Let me choose</button>
         </div>
         <div id="os-picklist" hidden></div>
+        <div id="os-bpnote"></div>
 
         <div class="os-simset-foot">
           <span class="muted tiny" id="os-sim-sum"></span>
@@ -804,16 +822,24 @@ const OSCE = (() => {
     FX.viewIn(view);
     if (!list.length) return;
 
-    let want = 9, mode = 'random', chosen = new Set();
+    let want = 9, mode = 'blueprint', chosen = new Set();
     let done = new Set();
-    try { (await Backend.listOsceAttempts()).forEach(a => done.add(a.station_id)); } catch {}
+    attempts.forEach(a => done.add(a.station_id));
 
     const pickHost = view.querySelector('#os-picklist');
+    const bpNote = view.querySelector('#os-bpnote');
     const sum = view.querySelector('#os-sim-sum');
     const note = view.querySelector('#os-count-note');
 
+    /* The circuit is settled ONCE, when the button is pressed — not on every
+       repaint. A pool that reshuffled itself as you looked at it made the
+       summary a lie about what you were going to sit. */
     function pool() {
       if (mode === 'pick') return list.filter(s => chosen.has(s.id));
+      if (mode === 'blueprint' && tagged.length) {
+        const c = OsceBlueprint.buildCircuit(tagged, history, want, { avoid: done });
+        if (c.length) return c;
+      }
       const src = mode === 'unseen' ? list.filter(s => !done.has(s.id)) : list.slice();
       const bag = (src.length ? src : list).slice();
       for (let i = bag.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [bag[i], bag[j]] = [bag[j], bag[i]]; }
@@ -828,7 +854,28 @@ const OSCE = (() => {
       view.querySelector('#os-sim-go').disabled = !p.length;
       note.textContent = mode === 'unseen'
         ? `${list.filter(s => !done.has(s.id)).length} of ${list.length} stations are still untried.`
-        : `${list.length} stations are published.`;
+        : mode === 'blueprint'
+          ? `${tagged.length} of ${list.length} stations are placed on the blueprint, across ${modsWithStations.size} modules.`
+          : `${list.length} stations are published.`;
+
+      /* What the balancing is about to do, said before it does it. The
+         modules it will reach for are the ones sat least — so four stations
+         today and four tomorrow cover eight modules, not the same four. */
+      if (mode === 'blueprint') {
+        if (!tagged.length) {
+          bpNote.innerHTML = `<p class="muted tiny os-bp-warn">No station has been placed on the blueprint yet, so this
+            falls back to a random draw. Tag them in <strong>Developer → OSCE stations</strong>.</p>`;
+        } else {
+          const covered = [...new Set(p.map(s => OsceBlueprint.tagOf(s)?.module).filter(Boolean))];
+          const least = [...modsWithStations].sort((a, b) => (history[a] || 0) - (history[b] || 0)).slice(0, 3);
+          bpNote.innerHTML = `<p class="muted tiny os-bp-warn">This draw spans
+            <strong>${covered.length}</strong> module${covered.length === 1 ? '' : 's'}, chosen from the ones you have
+            sat least — ${esc(least.map(m => OsceBlueprint.moduleName(modules, m)).join(', '))} first. Curated banks are
+            preferred; the common bank is the reserve when a module has nothing else.
+            <em>Which modules they are is not shown, for the same reason the topics are not.</em></p>`;
+        }
+      } else { bpNote.innerHTML = ''; }
+
       if (mode === 'pick') {
         pickHost.hidden = false;
         pickHost.innerHTML = `<div class="os-picks">${list.map(s => `
@@ -859,7 +906,12 @@ const OSCE = (() => {
     view.querySelector('#os-sim-go').addEventListener('click', async () => {
       const p = pool(); if (!p.length) return;
       const sid = 'os-' + Date.now().toString(36);
-      await saveSession({ id: sid, stations: p.map(s => s.id), at: 0, phase: 'brief', answers: {}, elapsed: 0, started: Date.now(), circuit: true });
+      /* `blind` travels with the session, so a circuit resumed tomorrow is
+         still blind — the flag belongs to the sitting, not to the tab it
+         was started in. Choosing the stations yourself cannot be blind:
+         you have already read the list. */
+      await saveSession({ id: sid, stations: p.map(s => s.id), at: 0, phase: 'brief', answers: {}, elapsed: 0,
+        started: Date.now(), circuit: true, blind: mode !== 'pick' });
       location.hash = '#/osce/run/' + sid;
     });
     paint();
@@ -881,7 +933,29 @@ const OSCE = (() => {
   }
   async function dropSession(id) {
     try { localStorage.removeItem('aureum.' + sKey(id)); } catch {}
+    try { localStorage.removeItem('aureum.' + mKey(id)); } catch {}
     try { await Backend.clearSession(sKey(id)); } catch {}
+  }
+
+  /* ---------------- where a circuit's marks live ----------------
+     NOT inside the session. The runner holds its own copy of the session
+     and writes it every five seconds; a result that the background marker
+     had just recorded was being overwritten by that stale copy, and the
+     station silently went back to "marking…" for ever. Two writers, one
+     object, last-write-wins — the oldest bug in the book.
+
+     The marks therefore get their own key, written only by the marker and
+     read by the results page. Merging carefully would have worked; not
+     sharing the object cannot go wrong in the first place. */
+  const mKey = id => 'osce-marks:' + id;
+  function loadMarks(sid) {
+    try { return JSON.parse(localStorage.getItem('aureum.' + mKey(sid)) || '{}') || {}; } catch { return {}; }
+  }
+  function saveMark(sid, stationId, entry) {
+    const all = loadMarks(sid);
+    all[stationId] = Object.assign({}, all[stationId], entry);
+    try { localStorage.setItem('aureum.' + mKey(sid), JSON.stringify(all)); } catch {}
+    return all;
   }
 
   /* ================= the runner (#/osce/run/:sid) ================= */
@@ -902,12 +976,18 @@ const OSCE = (() => {
     let elapsed = s.elapsed || 0;
     let running = false, tid = null;
 
+    /* A blind sitting never names the station while it is being sat. The
+       title is the single biggest giveaway — reading "Pulmonary embolism"
+       decides the differential before the candidate has heard the history,
+       which is precisely the help the real room does not give. */
+    const blind = !!s.blind;
+
     view.innerHTML = `
-      <section class="page os-run">
+      <section class="page os-run${blind ? ' is-blind' : ''}">
         <div class="os-run-bar">
           <div class="os-run-id">
             <span class="os-run-n">${s.circuit ? `Station ${s.at + 1} of ${s.stations.length}` : 'Single station'}</span>
-            <span class="os-run-topic">${esc(st.topic || '')}</span>
+            <span class="os-run-topic">${blind ? '<em class="os-sealed">Topic sealed until the end</em>' : esc(st.topic || '')}</span>
           </div>
           <div class="os-clock" id="os-clock"><span id="os-time">${fmt(total - elapsed)}</span><i id="os-ring"></i></div>
           <div class="os-run-acts">
@@ -1003,7 +1083,11 @@ const OSCE = (() => {
       stage.innerHTML = `
         <div class="os-sheet" data-animate>
           <p class="kicker">${resuming ? 'RESUMING' : 'READ THE SCENARIO'}</p>
-          <h2>${esc(st.topic || '')}</h2>
+          ${blind
+            ? `<h2 class="os-blind-h">Station ${s.at + 1}</h2>
+               <p class="muted tiny os-sealed-note">The examiner does not tell you what this station is about.
+                 The topic and the marking scheme are revealed once the clock stops.</p>`
+            : `<h2>${esc(st.topic || '')}</h2>`}
           <p class="os-scenario big">${esc(st.scenario || '')}</p>
           <p class="muted os-readnote">${resuming
             ? `You were ${fmt(elapsed)} into this station and had answered ${qi} of ${qs.length} questions. The clock picks up where it stopped.`
@@ -1308,7 +1392,13 @@ const OSCE = (() => {
             </div>`).join('')}
         </div>
 
-        <div class="card os-markbox" data-animate>
+        ${s.circuit ? `<div class="card os-markbox os-markbox-auto" data-animate>
+          <h3 class="card-title">✨ This station will be marked while you sit the next one</h3>
+          <p class="muted">Correct the transcript above if the recogniser mangled a drug name — then move on. The
+            recording and your answers are sent for marking as you leave, one station at a time, and every result is
+            waiting together at the end of the circuit. Nothing is lost if a marking fails: the recording is kept for
+            24 hours and you can send it again from the results page.</p>
+        </div>` : `<div class="card os-markbox" data-animate>
           <h3 class="card-title">✨ Mark it against the scheme</h3>
           <p class="muted">Every scheme point is marked covered, partial or missed, and you get an examiner's verdict,
             the marks you missed and what to do about them. This is the only step that uses AI, and what it costs is
@@ -1321,11 +1411,13 @@ const OSCE = (() => {
           <p class="os-est" id="os-est"></p>
           ${spoken || rec?.blob ? '' : '<p class="muted tiny">Nothing was captured, so there is nothing to mark. Type your answers above if you want it marked anyway.</p>'}
           <div id="os-mark-out"></div>
-        </div>
+        </div>`}
 
         <div class="os-run-foot">
-          ${s.circuit && s.at + 1 < s.stations.length
-            ? `<button class="btn btn-primary btn-lg" id="os-nextst">Next station (${s.at + 2} of ${s.stations.length}) →</button>`
+          ${s.circuit
+            ? (s.at + 1 < s.stations.length
+                ? `<button class="btn btn-primary btn-lg" id="os-nextst">Next station (${s.at + 2} of ${s.stations.length}) →</button>`
+                : `<button class="btn btn-gold btn-lg" id="os-nextst">Finish the circuit and see the results →</button>`)
             : `<a class="btn btn-ghost" href="#/osce">Back to the stations</a>`}
         </div>`;
 
@@ -1339,8 +1431,29 @@ const OSCE = (() => {
         if (mic) el.parentNode.insertBefore(mic, el.nextSibling);
       });
       transcribeIfWorthIt(stage, rec);
-      wireMarkControls(stage, st, ans, said, rec, s);
-      stage.querySelector('#os-nextst')?.addEventListener('click', async () => {
+      // a circuit has no marking controls to wire: it marks itself as you leave
+      if (!s.circuit) wireMarkControls(stage, st, ans, said, rec, s);
+      /* In a circuit, leaving a station HANDS IT OVER rather than waiting on
+         it: the tape and the transcript join the queue, and the clock for the
+         next station starts while the last one is being marked. The results
+         are collected at the end, where the candidate has time to read them. */
+      stage.querySelector('#os-nextst')?.addEventListener('click', async ev => {
+        ev.target.disabled = true;
+        const last = s.at + 1 >= s.stations.length;
+        const already = loadMarks(sid)[st.id];
+        const worthMarking = spoken || rec?.blob;
+        if (!already && worthMarking) {
+          saveMark(sid, st.id, { status: 'queued', at: Date.now() });
+          queueMark({ sid, st, ans: Object.assign({}, ans), rec, session: { elapsed },
+            choice: chosenModel(), attemptId: 'oa-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5) });
+        } else if (!already) {
+          saveMark(sid, st.id, { status: 'skipped', message: 'Nothing was captured for this station.', at: Date.now() });
+        }
+        if (last) {
+          s.phase = 'circuit'; await saveSession(s); stopLive();
+          location.hash = '#/osce/circuit/' + sid;
+          return;
+        }
         s.at += 1; s.qi = 0; s.elapsed = 0; s.phase = 'brief';
         await saveSession(s); stopLive(); renderRun(view, sid, user);
       });
@@ -1737,9 +1850,156 @@ const OSCE = (() => {
       <p class="muted tiny">${useAudio ? 'Listening to the recording and marking' : 'Marking'} ${qsOf(st).length} answers against
         ${qsOf(st).reduce((n, q) => n + (q.marking_points || []).length, 0)} marking points…</p>`;
     try {
-      if (typeof Wallet !== 'undefined' && !(await Wallet.canSpend())) throw new Error(Wallet.blockedMessage());
-      const token = await Backend.getAccessToken();
-      if (!token) throw new Error('Sign in to have a station marked.');
+      const attempt = await markCore({ st, ans, rec, session, choice,
+        say: t => { const n = out.querySelector('.os-mark-step'); if (n) n.textContent = t;
+          else out.insertAdjacentHTML('beforeend', `<p class="muted tiny os-mark-step">${esc(t)}</p>`); } });
+      out.innerHTML = '';
+      location.hash = '#/osce/result/' + attempt.id;
+    } catch (e) {
+      out.innerHTML = `<p class="ai-error">${esc(e.message || e)}</p>`;
+      btn.disabled = false;
+    }
+  }
+
+  /* ================= marking a circuit in the background =================
+
+     WHY THIS SHAPE, and not "keep every tape and send them all at the end":
+
+     • Nine fifteen-minute tapes is roughly 25 MB of Blob held in one tab for
+       two hours. On an iPad that is exactly the sort of tab iOS reclaims —
+       and it would take the whole circuit with it. Sending each station as
+       it finishes means the recording stops being the browser's problem
+       within a minute of the clock stopping.
+     • The wait lands where there is time to spare. Marking takes as long as
+       it takes; doing it while the candidate reads the next scenario spends
+       time that was going to be spent anyway. Batching nine at the end puts
+       every second of it at the one moment they are waiting to see results.
+     • A failure surfaces at station three, not after station nine, and the
+       tape is still to hand.
+     • Nine audio uploads fired together is the shape most likely to trip a
+       per-minute limit. One at a time never does.
+
+     So: one worker, one job at a time, started the moment a station is left.
+     The queue survives navigation within the app because it lives here, in
+     the module — not in the view. It does not survive a reload, which is why
+     each job's outcome is written into the session as it lands. */
+
+  const markQ = [];
+  let markBusy = false;
+  const markWatchers = new Set();
+  function onMarkChange(fn) { markWatchers.add(fn); return () => markWatchers.delete(fn); }
+  function markPing() { markWatchers.forEach(fn => { try { fn(); } catch {} }); }
+  /** What the circuit results page needs to draw itself, without the tapes. */
+  function markState(sid) {
+    const jobs = markQ.filter(j => j.sid === sid);
+    return { queued: jobs.length, busy: markBusy && jobs.some(j => j.running) };
+  }
+
+  async function queueMark(job) {
+    markQ.push(job);
+    markPing();
+    if (!markBusy) drainMarks();
+  }
+
+  async function drainMarks() {
+    if (markBusy) return;
+    markBusy = true;
+    while (markQ.length) {
+      const job = markQ[0];
+      job.running = true; markPing();
+      const meta = {};
+      try {
+        const attempt = await markCore({ st: job.st, ans: job.ans, rec: job.rec, session: job.session,
+          choice: job.choice, attemptId: job.attemptId, meta });
+        saveMark(job.sid, job.st.id, { status: 'done', attemptId: attempt.id,
+          percent: attempt.result?.percent ?? null, pass: !!attempt.result?.pass, at: Date.now() });
+      } catch (e) {
+        /* A failure is recorded, never swallowed. The tape went up before
+           the model was called, so `retryMark` has something to send. */
+        saveMark(job.sid, job.st.id, { status: 'error', message: String(e.message || e),
+          attemptId: meta.attemptId || job.attemptId, audioPath: meta.audioPath || null,
+          secs: job.rec?.secs || 0, at: Date.now() });
+      }
+      markQ.shift();
+      try { if (job.rec?.url) URL.revokeObjectURL(job.rec.url); } catch {}
+      markPing();
+    }
+    markBusy = false;
+    markPing();
+  }
+
+  /* Re-send a station whose marking failed. The recording is on the server
+     for 24 hours precisely so this is possible after the tab that recorded
+     it has gone. */
+  async function retryMark(sid, stationId, onStep = () => {}) {
+    const s = await loadSession(sid);
+    if (!s) throw new Error('That circuit is no longer stored.');
+    const st = await station(stationId);
+    if (!st) throw new Error('That station is no longer published.');
+    const entry = loadMarks(sid)[stationId] || {};
+    const ans = (s.answers || {})[stationId] || {};
+    let rec = null;
+    /* The local backend keys the tape by attempt id, the cloud one by the
+       storage path it handed back. Whichever this build is, the value the
+       upload returned is the one that works. */
+    const handle = entry.audioPath || entry.attemptId;
+    if (handle) {
+      onStep('Fetching the recording that was kept…');
+      try {
+        const url = await Backend.getOsceAudioUrl(handle);
+        if (url) {
+          const blob = await (await fetch(url)).blob();
+          if (blob && blob.size > 1000) rec = { blob, mime: blob.type || 'audio/webm', secs: entry.secs || 0 };
+        }
+      } catch { /* fall through: the transcript alone can still be marked */ }
+    }
+    if (!rec) onStep('The recording is no longer on the server — marking from the transcript instead.');
+    const attempt = await markCore({ st, ans, rec, session: s, choice: chosenModel(), say: onStep,
+      attemptId: entry.attemptId,
+      // already stored: do not upload the same tape a second time
+      kept: rec && entry.audioPath ? { path: entry.audioPath, expires: entry.audioExpires } : null });
+    saveMark(sid, stationId, { status: 'done', attemptId: attempt.id,
+      percent: attempt.result?.percent ?? null, pass: !!attempt.result?.pass, at: Date.now() });
+    markPing();
+    return attempt;
+  }
+
+  /* ---------------- the marking core ----------------
+     One path, used by the button on a single station and by the background
+     queue in a circuit. Two things are deliberate here:
+
+     • The TAPE GOES UP FIRST, before the model is called. It used to be
+       uploaded only after a successful marking, which meant a failed
+       marking took the recording with it — the one case where you most
+       want it back. Now the audio survives the failure and the same
+       station can be re-sent from the server for the 24 hours it is kept.
+
+     • The attempt id is minted BEFORE either step, because it is the name
+       the tape is stored under and the two must agree. */
+  async function markCore({ st, ans, rec, session, choice, say = () => {}, kept = null, attemptId = null, meta = {} }) {
+    if (typeof Wallet !== 'undefined' && !(await Wallet.canSpend())) throw new Error(Wallet.blockedMessage());
+    const token = await Backend.getAccessToken();
+    if (!token) throw new Error('Sign in to have a station marked.');
+    const id = attemptId || ('oa-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5));
+    const useAudio = effectiveSource(rec, choice) === 'audio';
+
+    /* `meta` is filled in as the upload succeeds, so the CALLER holds the
+       storage path even when the marking that follows throws. Without it a
+       failed station had nowhere to retry from. */
+    let audioPath = kept?.path || null, audioExpires = kept?.expires || null;
+    if (rec?.blob && !audioPath) {
+      try {
+        say('Keeping the recording…');
+        const up = await Backend.uploadOsceAudio(id, rec.blob);
+        if (up) { audioPath = up.path; audioExpires = up.expires; }
+      } catch { /* the marking is the point; the tape is a bonus */ }
+    }
+    meta.attemptId = id; meta.audioPath = audioPath; meta.audioExpires = audioExpires;
+    return markSend({ id, st, ans, rec, session, choice, useAudio, say, audioPath, audioExpires, token });
+  }
+
+  async function markSend({ id, st, ans, rec, session, choice, useAudio, say, audioPath, audioExpires, token }) {
+    {
       const body = {
         action: 'osce', provider: choice.provider, model: choice.model, dailyLimit: cfg().ai.dailyLimit,
         station: { topic: st.topic, scenario: st.scenario, total_marks: marksOf(st), pass_mark: passOf(st),
@@ -1758,14 +2018,14 @@ const OSCE = (() => {
         // gets it exactly as it was recorded
         let send = rec.blob, mime = rec.mime || 'audio/webm';
         if (choice.audioFormat === 'wav') {
-          out.innerHTML += `<p class="muted tiny" id="os-wav">Re-encoding the recording for ${esc(choice.label)}…</p>`;
+          say(`Re-encoding the recording for ${choice.label}…`);
           const w = await toWav(rec.blob, rec.secs);
           send = w.blob; mime = 'audio/wav';
-          const note = document.querySelector('#os-wav');
-          if (note) note.textContent = `Re-encoded to ${(w.rate / 1000)} kHz mono — ${(w.bytes / 1048576).toFixed(1)} MB to upload.`;
+          say(`Re-encoded to ${(w.rate / 1000)} kHz mono — ${(w.bytes / 1048576).toFixed(1)} MB to upload.`);
         }
         body.audio = { mime, data: await toBase64(send) };
       }
+      say('Marking against the scheme…');
       const res = await fetch(cfg().ai.apiBase, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
         body: JSON.stringify(body)
@@ -1781,29 +2041,23 @@ const OSCE = (() => {
       const rate = (typeof Wallet !== 'undefined') ? Wallet.rate() : 340;
       const usd = ((data.usage?.in || 0) / 1e6) * (choice.rate.in || 0) + ((data.usage?.out || 0) / 1e6) * (choice.rate.out || 0);
       const attempt = {
-        id: 'oa-' + Date.now().toString(36),
+        id,
         station_id: st.id, station: { topic: st.topic, scenario: st.scenario, total_marks: marksOf(st), pass_mark: passOf(st) },
+        // the blueprint tag is copied onto the attempt: a station may be
+        // re-tagged later, and a past result must keep the module it was
+        // actually sat under or the coverage map rewrites its own history
+        bp: OsceBlueprint.tagOf(st) || null,
         questions: qsOf(st), answers, result, created: Date.now(),
         model: data.model || choice.model, modelLabel: choice.label, provider: choice.provider,
         heard: !!data.heard, elapsed: session?.elapsed || null,
         cost: { inTok: data.usage?.in || 0, outTok: data.usage?.out || 0, usd, lkr: usd * rate, rate }
       };
-      /* Keep the tape for a day. It is what makes the marking checkable —
-         you can hear what you actually said against what you were marked on —
-         and it costs almost nothing at 24 kbps. After 24 hours it is swept. */
-      if (rec?.blob) {
-        try {
-          const up = await Backend.uploadOsceAudio(attempt.id, rec.blob);
-          if (up) { attempt.audioPath = up.path; attempt.audioExpires = up.expires; attempt.audioSecs = rec.secs; }
-        } catch { /* the marking is the point; the tape is a bonus */ }
-      }
+      /* The tape is already up — it went before the model was called, so a
+         failed marking leaves something to retry with. Record where. */
+      if (audioPath) { attempt.audioPath = audioPath; attempt.audioExpires = audioExpires; attempt.audioSecs = rec?.secs || null; }
       try { await Backend.saveOsceAttempt(attempt); } catch {}
       try { if (typeof Wallet !== 'undefined') Wallet.bust(); } catch {}
-      out.innerHTML = '';
-      location.hash = '#/osce/result/' + attempt.id;
-    } catch (e) {
-      out.innerHTML = `<p class="ai-error">${esc(e.message || e)}</p>`;
-      btn.disabled = false;
+      return attempt;
     }
   }
 
@@ -2032,6 +2286,17 @@ const OSCE = (() => {
           <p class="ai-disclaimer">AI-generated — verify against NICE / RCOG / SLCOG guidance.</p>
         </div>
 
+        <div class="card os-deckmake" data-animate>
+          <h3 class="card-title">🃏 Turn what you missed into flashcards</h3>
+          <p class="muted">A deck built only from the points this marking says you did not say — at most fifteen cards,
+            each with the figure that carries the mark and an honest way to remember it. It lands under
+            <strong>Flashcards</strong> in this tab, as its own deck for this attempt.</p>
+          <div class="os-mark-acts">
+            <button class="btn btn-gold" id="os-makedeck">Make a deck from this station</button>
+            <span class="dev-status" id="os-deck-msg"></span>
+          </div>
+        </div>
+
         <div class="es-report-foot">
           <button class="btn btn-gold" id="os-print">🖨 Print / Save as PDF</button>
           <a class="btn btn-ghost" href="#/osce/station/${encodeURIComponent(a.station_id)}">↺ Sit it again</a>
@@ -2070,6 +2335,7 @@ const OSCE = (() => {
 
     wireHearVerdict(view, a);
     wireExplore(view, a);
+    wireDeckMaker(view, a);
     view.querySelector('#os-print').addEventListener('click', () => printPicker(a));
     view.querySelector('#os-del').addEventListener('click', async () => {
       if (!confirm('Delete this OSCE result?')) return;
@@ -2321,45 +2587,69 @@ const OSCE = (() => {
     const qById = {}; (a.questions || []).forEach(q => qById[String(q.id)] = q);
     const ansById = {}; (a.answers || []).forEach(x => ansById[String(x.id)] = x.transcript);
     const mark = s => /cover/i.test(s) ? '✓' : /partial/i.test(s) ? '~' : '✗';
-    const doc = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(a.station?.topic || 'OSCE')} — OSCE result</title>
-<style>
+    /* Printed from the PAGE, not from a hidden iframe. iPadOS Safari ignores
+       print() called on an off-screen frame — the button appeared to do
+       nothing at all, which is exactly what was reported. Every rule is
+       scoped under #os-printdoc so the app's own styling is untouched, and
+       @media print hides everything except the sheet. */
+    const P = '#os-printdoc';
+    const styles = `
 @page { size: A4 portrait; margin: 16mm 15mm 14mm; }
-*{box-sizing:border-box} html,body{margin:0;padding:0}
-body{background:#f1f2f6;color:#111;font-family:"Helvetica Neue",Arial,sans-serif;font-size:10pt;line-height:1.5;
+${P}, ${P} *{box-sizing:border-box}
+${P}{position:fixed;inset:0;z-index:9000;overflow:auto;background:#f1f2f6;color:#111;
+  font-family:"Helvetica Neue",Arial,sans-serif;font-size:10pt;line-height:1.5;
   -webkit-print-color-adjust:exact;print-color-adjust:exact}
-.sheet{background:#fff}
-@media screen{.sheet{width:210mm;min-height:297mm;margin:0 auto;padding:16mm 15mm;box-shadow:0 2px 18px rgba(0,0,0,.16)}}
-h1{font-family:Georgia,serif;font-size:21pt;margin:0 0 4px}
-h2{font-size:13pt;margin:0 0 8px;border-left:4px solid #0d8f7d;padding-left:9px}
-h3{font-size:10.5pt;margin:12px 0 4px}
-p{margin:0 0 .6em} ul,ol{margin:0 0 .6em;padding-left:1.3em}
-.brand{font-size:7.5pt;letter-spacing:.22em;text-transform:uppercase;color:#7a5a10;margin:0 0 2px}
-.eyebrow{font-size:8pt;letter-spacing:.12em;text-transform:uppercase;color:#666;margin:0 0 4px}
-.cover{border-bottom:3px solid #0d8f7d;padding-bottom:12px;margin-bottom:16px}
-.scorebox{display:flex;gap:16px;margin-top:10px}
-.pct{flex:0 0 120px;border:2px solid ${r.pass ? '#047857' : '#c62828'};color:${r.pass ? '#047857' : '#c62828'};
+${P} .sheet{background:#fff;width:210mm;min-height:297mm;margin:0 auto 28px;padding:16mm 15mm;box-shadow:0 2px 18px rgba(0,0,0,.16)}
+${P} h1{font-family:Georgia,serif;font-size:21pt;margin:0 0 4px;color:#111}
+${P} h2{font-size:13pt;margin:0 0 8px;border-left:4px solid #0d8f7d;padding-left:9px;color:#111}
+${P} h3{font-size:10.5pt;margin:12px 0 4px;color:#111}
+${P} p{margin:0 0 .6em} ${P} ul,${P} ol{margin:0 0 .6em;padding-left:1.3em}
+${P} .brand{font-size:7.5pt;letter-spacing:.22em;text-transform:uppercase;color:#7a5a10;margin:0 0 2px}
+${P} .eyebrow{font-size:8pt;letter-spacing:.12em;text-transform:uppercase;color:#666;margin:0 0 4px}
+${P} .cover{border-bottom:3px solid #0d8f7d;padding-bottom:12px;margin-bottom:16px}
+${P} .scorebox{display:flex;gap:16px;margin-top:10px}
+${P} .pct{flex:0 0 120px;border:2px solid ${r.pass ? '#047857' : '#c62828'};color:${r.pass ? '#047857' : '#c62828'};
   border-radius:8px;padding:10px 8px;text-align:center}
-.pct b{display:block;font-size:26pt;line-height:1}.pct span{display:block;font-size:8pt;text-transform:uppercase;margin-top:5px}
-.kv{flex:1;border-collapse:collapse;font-size:9pt}.kv th{text-align:left;padding:3px 8px 3px 0;color:#444;white-space:nowrap;width:1%}
-.kv td{padding:3px 12px 3px 0}
-.blk{margin:0 0 16px;break-inside:auto}
-.callout{border:1px solid #d5d5d5;border-left:3px solid #0d8f7d;padding:8px 11px;margin:0 0 .8em;background:#fafafa;break-inside:avoid}
-.q{border:1px solid #e0e0e0;border-radius:5px;padding:9px 11px;margin-bottom:9px;break-inside:avoid}
-.qh{display:flex;gap:9px;align-items:baseline;margin-bottom:5px}
-.qh b{flex:1}.qh i{font-style:normal;font-weight:700;white-space:nowrap}
-.pts{list-style:none;padding:0;margin:0}
-.pts li{display:flex;gap:6px;margin-bottom:.18em}
-.pip{width:13px;text-align:center;font-weight:800;flex:0 0 13px}
-.cov{color:#0d8f7d}.par{color:#a5750f}.mis{color:#c62828}
-.note{display:block;font-style:italic;color:#666;font-size:.9em}
-.said{border-left:2px solid #ddd;padding-left:9px;margin-top:6px;font-size:.9em;color:#555}
-.foot{margin-top:18px;padding-top:6px;border-top:1px solid #ddd;display:flex;justify-content:space-between;font-size:7.5pt;color:#888}
-.blank li{color:#333}
-.qimgs{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 8px}
-.qimgs figure{margin:0;flex:1 1 240px;max-width:100%;break-inside:avoid}
-.qimgs img{width:100%;height:auto;border:1px solid #ddd;border-radius:3px}
-.qimgs figcaption{font-size:8pt;color:#666;margin-top:2px}
-</style></head><body><div class="sheet">
+${P} .pct b{display:block;font-size:26pt;line-height:1}
+${P} .pct span{display:block;font-size:8pt;text-transform:uppercase;margin-top:5px}
+${P} .kv{flex:1;border-collapse:collapse;font-size:9pt}
+${P} .kv th{text-align:left;padding:3px 8px 3px 0;color:#444;white-space:nowrap;width:1%}
+${P} .kv td{padding:3px 12px 3px 0}
+${P} .blk{margin:0 0 16px;break-inside:auto}
+${P} .callout{border:1px solid #d5d5d5;border-left:3px solid #0d8f7d;padding:8px 11px;margin:0 0 .8em;background:#fafafa;break-inside:avoid}
+${P} .q{border:1px solid #e0e0e0;border-radius:5px;padding:9px 11px;margin-bottom:9px;break-inside:avoid}
+${P} .qh{display:flex;gap:9px;align-items:baseline;margin-bottom:5px}
+${P} .qh b{flex:1}${P} .qh i{font-style:normal;font-weight:700;white-space:nowrap}
+${P} .pts{list-style:none;padding:0;margin:0}
+${P} .pts li{display:flex;gap:6px;margin-bottom:.18em}
+${P} .pip{width:13px;text-align:center;font-weight:800;flex:0 0 13px}
+${P} .cov{color:#0d8f7d}${P} .par{color:#a5750f}${P} .mis{color:#c62828}
+${P} .note{display:block;font-style:italic;color:#666;font-size:.9em}
+${P} .said{border-left:2px solid #ddd;padding-left:9px;margin-top:6px;font-size:.9em;color:#555}
+${P} .foot{margin-top:18px;padding-top:6px;border-top:1px solid #ddd;display:flex;justify-content:space-between;font-size:7.5pt;color:#888}
+${P} .blank li{color:#333}
+${P} .qimgs{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 8px}
+${P} .qimgs figure{margin:0;flex:1 1 240px;max-width:100%;break-inside:avoid}
+${P} .qimgs img{width:100%;height:auto;border:1px solid #ddd;border-radius:3px}
+${P} .qimgs figcaption{font-size:8pt;color:#666;margin-top:2px}
+${P} .os-pd-bar{position:sticky;top:0;z-index:2;display:flex;gap:10px;justify-content:center;align-items:center;
+  padding:10px;background:#1b1b22;color:#fff;font-size:11pt}
+${P} .os-pd-bar button{font:inherit;font-size:10pt;padding:7px 16px;border-radius:8px;border:0;cursor:pointer}
+${P} .os-pd-print{background:#e8b53f;color:#241d05;font-weight:700}
+${P} .os-pd-close{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.4)}
+${P} .os-pd-hint{color:#b9b9c4;font-size:9pt}
+@media print {
+  html,body{background:#fff !important;margin:0 !important;padding:0 !important;height:auto !important;overflow:visible !important}
+  body > *:not(${P}){display:none !important}
+  ${P}{position:static !important;overflow:visible !important;background:#fff !important}
+  ${P} .os-pd-bar{display:none !important}
+  ${P} .sheet{width:auto !important;min-height:0 !important;margin:0 !important;padding:0 !important;box-shadow:none !important}
+}`;
+    const doc = `<div class="os-pd-bar">
+  <button class="os-pd-print" type="button" data-pd-print>🖨 Print / Save as PDF</button>
+  <button class="os-pd-close" type="button" data-pd-close>Close</button>
+  <span class="os-pd-hint">Choose “Save as PDF” as the printer to keep a copy.</span>
+</div><div class="sheet">
 <header class="cover">
   <p class="brand">AUREUM · Pathway to MD</p>
   <p class="eyebrow">${has('cover') ? 'OSCE station report' : 'OSCE marking scheme'}</p>
@@ -2410,14 +2700,51 @@ ${has('improve') && (r.improvements || []).length ? `<section class="blk"><h2>Wh
 ${has('good') && (r.strengths || []).length ? `<section class="blk"><h2>What was good</h2><ul>${r.strengths.map(x => `<li>${esc(x)}</li>`).join('')}</ul></section>` : ''}
 ${has('learning') && (r.keyLearning || []).length ? `<section class="blk"><h2>Key learning points</h2><ol>${r.keyLearning.map(x => `<li>${esc(x)}</li>`).join('')}</ol></section>` : ''}
 <footer class="foot"><span>${esc(a.station?.topic || '')} — OSCE</span><span>AUREUM · printed ${esc(new Date().toLocaleDateString('en-GB', { dateStyle: 'medium' }))}</span></footer>
-</div></body></html>`;
+</div>`;
 
-    const f = document.createElement('iframe');
-    f.style.cssText = 'position:fixed;right:0;bottom:0;width:1px;height:1px;opacity:0;border:0';
-    document.body.appendChild(f);
-    f.srcdoc = doc;
-    f.onload = () => { try { f.contentWindow.focus(); f.contentWindow.print(); } catch {}
-      setTimeout(() => f.remove(), 60000); };
+    document.getElementById('os-printdoc')?.remove();
+    document.getElementById('os-printdoc-css')?.remove();
+    const css = document.createElement('style');
+    css.id = 'os-printdoc-css';
+    css.textContent = styles;
+    document.head.appendChild(css);
+
+    const host = document.createElement('div');
+    host.id = 'os-printdoc';
+    host.innerHTML = doc;
+    document.body.appendChild(host);
+
+    const shut = () => {
+      host.remove(); css.remove();
+      document.removeEventListener('keydown', onKey);
+      document.documentElement.style.overflow = prevOverflow;
+    };
+    const onKey = e => { if (e.key === 'Escape') shut(); };
+    const prevOverflow = document.documentElement.style.overflow;
+    document.documentElement.style.overflow = 'hidden';
+    document.addEventListener('keydown', onKey);
+    host.querySelector('[data-pd-close]').addEventListener('click', shut);
+    host.querySelector('[data-pd-print]').addEventListener('click', () => { try { window.print(); } catch {} });
+
+    /* On a desktop browser print() blocks until the dialog is dismissed, so
+       the sheet can be cleared the moment it returns and the app is back
+       exactly as before. On iOS it does NOT: "Save as PDF" happens in a
+       share sheet raised after print() has returned, and a page that tore
+       itself down underneath would take the document with it. There the
+       sheet stays, with a Close button, until the reader is finished. */
+    const iOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+      || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const go = () => {
+      try { window.print(); } catch {}
+      if (!iOS) setTimeout(shut, 250);
+    };
+    const imgs = [...host.querySelectorAll('img')];
+    if (!imgs.length) { setTimeout(go, 60); return; }
+    // a CTG station without its trace is not the station — wait for the pictures
+    let left = imgs.length;
+    const tick = () => { if (--left <= 0) setTimeout(go, 60); };
+    imgs.forEach(im => im.complete ? tick() : (im.onload = im.onerror = tick));
+    setTimeout(() => { if (left > 0) { left = 0; go(); } }, 4000);
   }
 
   /* ---------------- shell ---------------- */
@@ -2430,8 +2757,517 @@ ${has('learning') && (r.keyLearning || []).length ? `<section class="blk"><h2>Ke
         ${tab('bank', '#/osce', 'Station bank')}
         ${tab('sim', '#/osce/sim', 'Exam simulator')}
         ${tab('mine', '#/osce/mine', 'My attempts')}
+        ${tab('progress', '#/osce/progress', 'Progress')}
+        ${tab('cards', '#/osce/cards', 'Flashcards')}
         ${tab('edit', '#/osce/edit', 'Station editor')}
       </div>${inner}</section>`;
+  }
+
+  /* ================= the circuit results (#/osce/circuit/:sid) =================
+     Nine stations' worth of marking lands here as it finishes. The page
+     redraws itself whenever the queue moves, so the candidate watches the
+     results arrive instead of staring at a spinner — and a station that
+     failed offers to go again rather than simply being absent. */
+
+  async function renderCircuit(view, sid, user) {
+    const s = await loadSession(sid);
+    if (!s) {
+      view.innerHTML = shell('sim', `<p class="muted">That circuit is no longer stored. <a class="link" href="#/osce/mine">Your attempts</a></p>`);
+      FX.viewIn(view); return;
+    }
+    const cards = await stations().catch(() => []);
+    const byId = {}; cards.forEach(c => byId[c.id] = c);
+    const modules = await OsceBlueprint.get().catch(() => []);
+
+    let off = null;
+    const draw = async () => {
+      const cur = await loadSession(sid) || s;
+      const marks = loadMarks(sid);
+      const rows = cur.stations.map((id, i) => ({ i, id, st: byId[id] || { id }, m: marks[id] || { status: 'none' } }));
+      const done = rows.filter(r => r.m.status === 'done');
+      const failed = rows.filter(r => r.m.status === 'error');
+      const waiting = rows.filter(r => r.m.status === 'queued');
+      const scored = done.filter(r => r.m.percent != null);
+      const mean = scored.length ? Math.round(scored.reduce((n, r) => n + r.m.percent, 0) / scored.length) : null;
+      const passed = done.filter(r => r.m.pass).length;
+
+      view.innerHTML = shell('sim', `
+        <header data-animate>
+          <p class="kicker">CIRCUIT COMPLETE</p>
+          <h1 class="page-title">${cur.stations.length} stations</h1>
+          <p class="muted">${waiting.length
+            ? `Marking is still running — <strong>${waiting.length}</strong> to go. You can leave this page; it carries on.`
+            : 'Every station has been through the marker.'}</p>
+        </header>
+
+        ${scored.length ? `<div class="card os-circ-sum" data-animate>
+          <div class="os-circ-figs">
+            <div class="os-circ-fig"><b>${mean}%</b><span>mean across ${scored.length} station${scored.length === 1 ? '' : 's'}</span></div>
+            <div class="os-circ-fig"><b>${passed}/${scored.length}</b><span>at or above the pass mark</span></div>
+          </div>
+          ${Charts && scored.length > 1 ? `<div class="os-circ-bars">${scored.map(r => `
+            <div class="os-circ-bar" title="${esc(r.st.topic || '')}">
+              <i style="height:${Math.max(4, r.m.percent)}%;background:${r.m.pass ? 'var(--good,#34d399)' : 'var(--bad,#f87171)'}"></i>
+              <span>${r.i + 1}</span>
+            </div>`).join('')}</div>` : ''}
+        </div>` : ''}
+
+        <div class="card" data-animate>
+          <h3 class="card-title">Station by station</h3>
+          <p class="muted tiny">The topic and the module are shown now the circuit is over — that is the point at which
+            knowing them helps rather than hinders.</p>
+          <div class="os-circ-list">
+            ${rows.map(r => {
+              const tag = OsceBlueprint.tagOf(r.st);
+              const where = tag ? `${OsceBlueprint.moduleName(modules, tag.module)} · ${OsceBlueprint.topicName(modules, tag.module, tag.topic)}` : 'not on the blueprint';
+              const badge = r.m.status === 'done'
+                ? `<span class="os-circ-pct ${r.m.pass ? 'is-pass' : 'is-fail'}">${r.m.percent != null ? r.m.percent + '%' : 'marked'}</span>`
+                : r.m.status === 'queued' ? `<span class="os-circ-wait"><i></i> marking…</span>`
+                : r.m.status === 'error' ? `<span class="os-circ-err">could not be marked</span>`
+                : `<span class="muted tiny">not marked</span>`;
+              return `<div class="os-circ-row" data-st="${esc(r.id)}">
+                <span class="os-circ-n">${r.i + 1}</span>
+                <div class="os-circ-mid">
+                  <strong>${esc(r.st.topic || r.id)}</strong>
+                  <span class="tiny muted">${esc(where)}</span>
+                  ${r.m.status === 'error' ? `<span class="tiny bad">${esc(r.m.message || '')}</span>` : ''}
+                  ${r.m.status === 'skipped' ? `<span class="tiny muted">${esc(r.m.message || '')}</span>` : ''}
+                  <span class="tiny muted os-circ-step" hidden></span>
+                </div>
+                ${badge}
+                <div class="os-circ-acts">
+                  ${r.m.status === 'done' ? `<a class="btn btn-ghost btn-sm" href="#/osce/result/${esc(r.m.attemptId)}">Open the report</a>` : ''}
+                  ${r.m.status === 'error' ? `<button class="btn btn-gold btn-sm" data-retry="${esc(r.id)}">↻ Send it again</button>` : ''}
+                </div>
+              </div>`;
+            }).join('')}
+          </div>
+          ${failed.length ? `<p class="muted tiny" style="margin-top:12px">A recording is kept on the server for 24 hours,
+            so a station that failed can be sent again from here for the rest of the day. After that it is marked from
+            the transcript instead.</p>` : ''}
+        </div>
+
+        <div class="os-run-foot" data-animate>
+          <a class="btn btn-ghost" href="#/osce/progress">See it on the blueprint →</a>
+          <a class="btn btn-ghost" href="#/osce/sim">Sit another circuit</a>
+        </div>`);
+      FX.viewIn(view);
+
+      view.querySelectorAll('[data-retry]').forEach(b => b.addEventListener('click', async () => {
+        const id = b.dataset.retry;
+        b.disabled = true; b.textContent = 'Sending…';
+        const step = b.closest('.os-circ-row').querySelector('.os-circ-step');
+        step.hidden = false;
+        try {
+          await retryMark(sid, id, t => { step.textContent = t; });
+        } catch (e) {
+          step.textContent = String(e.message || e);
+          b.disabled = false; b.textContent = '↻ Send it again';
+        }
+      }));
+    };
+    off = onMarkChange(() => { if (location.hash.includes('/osce/circuit/')) draw(); });
+    await draw();
+  }
+
+  /** The button on a report that turns its misses into a deck. */
+  function wireDeckMaker(view, a) {
+    const btn = view.querySelector('#os-makedeck');
+    const msg = view.querySelector('#os-deck-msg');
+    if (!btn) return;
+    const missed = missedPoints(a);
+    if (!missed.length) {
+      btn.disabled = true;
+      msg.innerHTML = '<span class="muted">Nothing was missed here — there is nothing to make cards from.</span>';
+      return;
+    }
+    btn.textContent = `Make a deck from ${missed.length} missed point${missed.length === 1 ? '' : 's'}`;
+    // a deck already made for this attempt is offered rather than remade
+    (async () => {
+      try {
+        const have = (await Backend.listOsceDecks() || []).find(d => d.attemptId === a.id);
+        if (have) msg.innerHTML = `<a class="link" href="#/osce/cards/${esc(have.id)}">A deck of ${
+          (have.cards || []).length} cards already exists for this attempt →</a> Making another replaces it.`;
+      } catch {}
+    })();
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      msg.innerHTML = '<span class="muted">Working…</span>';
+      try {
+        const d = await makeDeck(a, t => { msg.innerHTML = `<span class="muted">${esc(t)}</span>`; });
+        msg.innerHTML = `<span class="good">✓ ${d.cards.length} cards.</span>
+          <a class="link" href="#/osce/cards/${esc(d.id)}">Open the deck →</a>`;
+      } catch (e) {
+        msg.innerHTML = `<span class="bad">${esc(e.message || e)}</span>`;
+      }
+      btn.disabled = false;
+    });
+  }
+
+  /* ================= flashcards from an attempt =================
+
+     A deck is made from what was MISSED, never from the topic. Cards about
+     what the candidate already said are revision of the wrong thing, and a
+     deck of fifteen half-relevant cards is worse than six sharp ones — so
+     fifteen is a ceiling the prompt is told not to fill for its own sake.
+
+     One deck per attempt, so a deck always has a date, a station and a
+     score behind it. Re-running an attempt replaces its deck rather than
+     breeding a second one. */
+
+  const MISSED_LIMIT = 40;
+
+  /** The points a marking says were missed or only partly said. */
+  function missedPoints(a) {
+    const out = [];
+    for (const qr of (a.result?.questions || [])) {
+      const q = (a.questions || []).find(x => String(x.id) === String(qr.id));
+      for (const p of (qr.points || [])) {
+        if (/cover/i.test(p.status)) continue;
+        out.push({ point: p.point, status: /partial/i.test(p.status) ? 'partly said' : 'missed',
+          prompt: q?.prompt || '', note: p.note || '' });
+      }
+    }
+    return out.slice(0, MISSED_LIMIT);
+  }
+
+  async function makeDeck(a, onStep = () => {}) {
+    const missed = missedPoints(a);
+    if (!missed.length) throw new Error('Nothing was missed in this station, so there is nothing to make cards from.');
+    if (typeof Wallet !== 'undefined' && !(await Wallet.canSpend())) throw new Error(Wallet.blockedMessage());
+    const token = await Backend.getAccessToken();
+    if (!token) throw new Error('Sign in to make a deck.');
+    const choice = chosenModel();
+    onStep(`Turning ${missed.length} missed point${missed.length === 1 ? '' : 's'} into cards…`);
+    const res = await fetch(cfg().ai.apiBase, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify({ action: 'oscecards', provider: choice.provider, model: choice.model,
+        dailyLimit: cfg().ai.dailyLimit, max: 15,
+        station: { topic: a.station?.topic, scenario: a.station?.scenario }, missed })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `The cards could not be made (HTTP ${res.status}).`);
+    const cards = (data.cards || []).slice(0, 15);
+    if (!cards.length) throw new Error('The model returned no usable cards. Try again, or a different model.');
+    const deck = {
+      id: 'od-' + a.id,                      // one deck per attempt, by construction
+      attemptId: a.id, stationId: a.station_id,
+      title: a.station?.topic || 'OSCE station',
+      bp: a.bp || null,
+      percent: a.result?.percent ?? null,
+      from: missed.length, cards, created: Date.now(),
+      model: data.model || choice.model
+    };
+    await Backend.saveOsceDeck(deck);
+    try { if (typeof Wallet !== 'undefined') Wallet.bust(); } catch {}
+    return deck;
+  }
+
+  /* ================= the decks (#/osce/cards) ================= */
+
+  async function renderDecks(view, deckId, user) {
+    view.innerHTML = shell('cards', `<div id="os-body"><p class="muted">Reading your decks…</p></div>`);
+    FX.viewIn(view);
+    const host = view.querySelector('#os-body');
+    let decks = [];
+    try { decks = (await Backend.listOsceDecks()) || []; } catch {}
+
+    if (deckId) {
+      const d = decks.find(x => x.id === deckId);
+      if (!d) { location.hash = '#/osce/cards'; return; }
+      return paintDeck(view, host, d);
+    }
+
+    if (!decks.length) {
+      host.innerHTML = `<div class="card"><h3 class="card-title">No decks yet</h3>
+        <p class="muted">At the bottom of any marked station there is a button that turns the points you missed into
+          flashcards — a separate deck for each attempt, at most fifteen cards, each with the figure that carries the
+          mark and a way to remember it. They collect here.</p>
+        <a class="btn btn-ghost" href="#/osce/mine">Your marked stations</a></div>`;
+      return;
+    }
+    const modules = await OsceBlueprint.get().catch(() => []);
+    host.innerHTML = `
+      <header data-animate>
+        <p class="kicker">OSCE FLASHCARDS</p>
+        <h1 class="page-title">${decks.length} deck${decks.length === 1 ? '' : 's'}</h1>
+        <p class="muted">One deck per attempt, built from the marks that got away. ${
+          decks.reduce((n, d) => n + (d.cards || []).length, 0)} cards in all.</p>
+      </header>
+      <div class="os-deck-grid" data-animate>
+        ${decks.map(d => `<a class="os-deck" href="#/osce/cards/${esc(d.id)}">
+          <span class="os-deck-n">${(d.cards || []).length}</span>
+          <strong>${esc(d.title)}</strong>
+          <em>${d.bp ? esc(OsceBlueprint.moduleName(modules, d.bp.module)) : 'unplaced'}${
+            d.percent != null ? ` · scored ${d.percent}%` : ''}</em>
+          <span class="tiny muted">${esc(new Date(d.created).toLocaleDateString('en-GB', { dateStyle: 'medium' }))} ·
+            from ${d.from} missed point${d.from === 1 ? '' : 's'}</span>
+        </a>`).join('')}
+      </div>`;
+    FX.viewIn(view);
+  }
+
+  function paintDeck(view, host, d) {
+    let i = 0, flipped = false;
+    const draw = () => {
+      const c = d.cards[i];
+      host.innerHTML = `
+        <header data-animate>
+          <p class="kicker"><a class="link" href="#/osce/cards">← All decks</a></p>
+          <h1 class="page-title">${esc(d.title)}</h1>
+          <p class="muted">Card ${i + 1} of ${d.cards.length}${d.percent != null ? ` · you scored ${d.percent}% on this station` : ''}</p>
+        </header>
+        <div class="os-card ${flipped ? 'is-back' : ''}" id="os-card" data-animate>
+          ${flipped ? `
+            <div class="os-card-back">
+              ${c.highlight ? `<p class="os-card-hi">${esc(c.highlight)}</p>` : ''}
+              <div class="os-card-body">${esc(c.back).replace(/\n/g, '<br>')}</div>
+              ${c.hook ? `<p class="os-card-hook"><strong>Hook.</strong> ${esc(c.hook)}</p>` : ''}
+            </div>`
+          : `<div class="os-card-front">
+              ${c.tag ? `<span class="os-card-tag">${esc(c.tag)}</span>` : ''}
+              <p>${esc(c.front)}</p>
+              <span class="tiny muted">Say it out loud, then turn it over.</span>
+            </div>`}
+        </div>
+        <div class="os-card-nav" data-animate>
+          <button class="btn btn-ghost" id="os-prev" ${i === 0 ? 'disabled' : ''}>← Back</button>
+          <button class="btn btn-gold btn-lg" id="os-flip">${flipped ? 'Hide the answer' : 'Show the answer'}</button>
+          <button class="btn btn-ghost" id="os-next" ${i >= d.cards.length - 1 ? 'disabled' : ''}>Next →</button>
+        </div>
+        <div class="os-run-foot" data-animate>
+          <a class="btn btn-ghost btn-sm" href="#/osce/result/${esc(d.attemptId)}">The station this came from</a>
+          <button class="btn btn-ghost btn-sm" id="os-deck-del">Delete this deck</button>
+        </div>`;
+      FX.viewIn(view);
+      host.querySelector('#os-flip').addEventListener('click', () => { flipped = !flipped; draw(); });
+      host.querySelector('#os-card').addEventListener('click', () => { flipped = !flipped; draw(); });
+      host.querySelector('#os-prev').addEventListener('click', () => { if (i > 0) { i--; flipped = false; draw(); } });
+      host.querySelector('#os-next').addEventListener('click', () => { if (i < d.cards.length - 1) { i++; flipped = false; draw(); } });
+      host.querySelector('#os-deck-del').addEventListener('click', async () => {
+        if (!confirm('Delete this deck? The station and its report are not affected.')) return;
+        try { await Backend.deleteOsceDeck(d.id); } catch {}
+        location.hash = '#/osce/cards';
+      });
+    };
+    draw();
+  }
+
+  /* ================= progress (#/osce/progress) =================
+
+     The blueprint coverage map, the mistakes that keep repeating, and the
+     shape of the scores. Deliberately the same arithmetic as the SBA and
+     EMQ maps: a MODULE's percentage is the mean of its topics, never the
+     pooled station count, so one heavily-stationed topic cannot paint a
+     module green while its neighbours have never been touched.
+
+     A topic with no station is not a gap in anybody's revision — it is a
+     topic that cannot be examined this way — and it is labelled as such
+     rather than sitting there as a permanent reproach. */
+
+  async function renderProgress(view, user) {
+    view.innerHTML = shell('progress', `<div id="os-body"><p class="muted">Reading your attempts…</p></div>`);
+    FX.viewIn(view);
+    const host = view.querySelector('#os-body');
+
+    const [modules, cards] = await Promise.all([
+      OsceBlueprint.get().catch(() => []),
+      stations().catch(() => [])
+    ]);
+    let list = [];
+    try { list = (await Backend.listOsceAttempts()) || []; } catch {}
+    const scored = list.filter(a => a.result && a.result.percent != null);
+
+    if (!scored.length) {
+      host.innerHTML = `<div class="card"><h3 class="card-title">Nothing to map yet</h3>
+        <p class="muted">Sit a station and this fills in: which modules of the blueprint you have covered, which
+          mistakes keep coming back, and how the scores are moving.</p>
+        <a class="btn btn-gold" href="#/osce/sim">Build a circuit</a></div>`;
+      return;
+    }
+
+    const cov = OsceBlueprint.coverage(modules, cards, scored);
+    const mean = Math.round(scored.reduce((n, a) => n + a.result.percent, 0) / scored.length);
+    const passed = scored.filter(a => a.result.pass).length;
+    const recent = scored.slice(0, 8).reverse();
+
+    /* The mistakes need the FULL attempts — the list projection carries the
+       score and nothing else. Only the last dozen are opened: that is where
+       a pattern that still matters will be, and it keeps the page cheap. */
+    host.innerHTML = coverageHtml(cov, modules, mean, passed, scored, recent)
+      + `<div class="card" data-animate id="os-mistakes"><h3 class="card-title">🔁 What keeps costing you marks</h3>
+           <p class="muted">Reading your last stations…</p></div>`;
+    FX.viewIn(view);
+    paintTrend(view, recent);
+
+    const deep = [];
+    for (const a of scored.slice(0, 12)) {
+      try { const full = await Backend.getOsceAttempt(a.id); if (full) deep.push(full); } catch {}
+    }
+    paintMistakes(view.querySelector('#os-mistakes'), deep, modules, cards);
+  }
+
+  function coverageHtml(cov, modules, mean, passed, scored, recent) {
+    const barFor = m => {
+      const pct = m.percent == null ? 0 : m.percent;
+      const cls = m.examinable === 0 ? 'is-none' : pct >= 80 ? 'is-good' : pct >= 40 ? 'is-mid' : 'is-low';
+      return `<div class="os-cov-mod ${cls}">
+        <div class="os-cov-head">
+          <strong>${esc(m.name)}</strong>
+          ${m.examinable === 0
+            ? '<span class="tiny muted">no station examines this yet</span>'
+            : `<span class="tiny muted">${m.touched} of ${m.examinable} topics${m.mean != null ? ` · ${m.mean}% mean` : ''}</span>`}
+        </div>
+        <div class="os-cov-bar"><i style="width:${pct}%"></i></div>
+        <div class="os-cov-topics">
+          ${(m.topics || []).map(t => `<span class="os-cov-chip ${
+            !t.examinable ? 'is-na' : t.attempts ? (t.best >= 70 ? 'is-good' : t.best >= 50 ? 'is-mid' : 'is-low') : 'is-untouched'
+          }" title="${esc(t.name)}${t.examinable ? ` — ${t.stations} station${t.stations === 1 ? '' : 's'}${
+            t.attempts ? `, best ${t.best}%` : ', never sat'}` : ' — no station'}">${esc(t.name)}</span>`).join('')}
+        </div>
+      </div>`;
+    };
+    const noStation = cov.modules.filter(m => m.examinable === 0).length;
+    return `
+      <header data-animate>
+        <p class="kicker">OSCE PROGRESS</p>
+        <h1 class="page-title">Where you stand</h1>
+      </header>
+
+      <div class="card os-prog-figs" data-animate>
+        <div class="os-circ-fig"><b>${scored.length}</b><span>stations marked</span></div>
+        <div class="os-circ-fig"><b>${mean}%</b><span>mean score</span></div>
+        <div class="os-circ-fig"><b>${passed}/${scored.length}</b><span>at or above the pass mark</span></div>
+        <div class="os-circ-fig"><b>${cov.overall}%</b><span>of the blueprint touched</span></div>
+      </div>
+
+      <div class="card" data-animate>
+        <h3 class="card-title">📈 How the scores are moving</h3>
+        <p class="muted tiny">Your last ${recent.length} marked stations, oldest first. The line is the pass mark of
+          each station, which is not the same on every one.</p>
+        <div id="os-trend" class="os-trend"></div>
+      </div>
+
+      <div class="card" data-animate>
+        <h3 class="card-title">🗺 The blueprint, and how much of it you have walked</h3>
+        <p class="muted">The exam draws nine stations from these modules. A module only turns green when the whole of
+          it has been covered — one topic sat nine times does not colour it in. ${
+          noStation ? `<strong>${noStation}</strong> module${noStation === 1 ? ' has' : 's have'} no station written yet;
+          they are greyed out rather than counted against you.` : ''}</p>
+        <div class="os-cov">${cov.modules.map(barFor).join('')}</div>
+        ${cov.untagged ? `<p class="muted tiny" style="margin-top:10px">${cov.untagged} published station${
+          cov.untagged === 1 ? ' is' : 's are'} not yet placed on the blueprint, so they do not appear above.</p>` : ''}
+      </div>`;
+  }
+
+  /** A small column chart of the recent scores against each station's pass mark. */
+  function paintTrend(view, recent) {
+    const host = view.querySelector('#os-trend');
+    if (!host || !recent.length) return;
+    const w = 100 / recent.length;
+    host.innerHTML = recent.map((a, i) => {
+      const pct = a.result.percent;
+      const pass = a.passMark != null && a.result.max ? Math.round(a.passMark / a.result.max * 100) : 70;
+      return `<div class="os-trend-col" style="width:${w}%" title="${esc(a.topic || '')} — ${pct}% (pass ${pass}%)">
+        <i class="${a.result.pass ? 'is-pass' : 'is-fail'}" style="height:${Math.max(3, pct)}%"></i>
+        <u style="bottom:${pass}%"></u>
+        <span>${pct}</span>
+      </div>`;
+    }).join('');
+  }
+
+  /* The repeated mistakes. A point missed once is bad luck; the same point
+     missed in three different stations is the thing to revise tonight —
+     so they are grouped by the WORDS of the marking point, not by station,
+     and only what came back more than once is promoted to the top. */
+  function paintMistakes(host, attempts, modules, cards) {
+    if (!host) return;
+    const byId = {}; cards.forEach(c => byId[c.id] = c);
+    const missed = [];
+    for (const a of attempts) {
+      for (const qr of (a.result?.questions || [])) {
+        for (const p of (qr.points || [])) {
+          if (/cover/i.test(p.status)) continue;
+          missed.push({ point: String(p.point || ''), status: p.status, note: p.note || '',
+            attempt: a.id, topic: a.station?.topic || '', when: a.created || 0,
+            bp: a.bp || OsceBlueprint.tagOf(byId[a.station_id]) || null });
+        }
+      }
+    }
+    if (!missed.length) {
+      host.innerHTML = `<h3 class="card-title">🔁 What keeps costing you marks</h3>
+        <p class="muted">Nothing was missed in the stations that have been marked. That is a good problem.</p>`;
+      return;
+    }
+    // group by the idea, not the wording: the first six significant words
+    const keyOf = s => OsceBlueprint.norm(s).split(' ').filter(w => w.length > 3).slice(0, 6).join(' ');
+    const groups = new Map();
+    for (const m of missed) {
+      const k = keyOf(m.point) || m.point.slice(0, 40);
+      if (!groups.has(k)) groups.set(k, { point: m.point, n: 0, part: 0, topics: new Set(), mods: new Set(), last: 0 });
+      const g = groups.get(k);
+      g.n++; if (/partial/i.test(m.status)) g.part++;
+      if (m.topic) g.topics.add(m.topic);
+      if (m.bp?.module) g.mods.add(m.bp.module);
+      g.last = Math.max(g.last, m.when);
+      if (m.point.length > g.point.length) g.point = m.point;   // keep the fullest wording
+    }
+    const all = [...groups.values()].sort((a, b) => b.n - a.n || b.last - a.last);
+    const repeats = all.filter(g => g.n > 1);
+    const once = all.filter(g => g.n === 1);
+
+    const row = g => `<li class="os-miss ${g.n > 2 ? 'is-hot' : ''}">
+      <span class="os-miss-n">${g.n}×</span>
+      <div>
+        <strong>${esc(g.point)}</strong>
+        <span class="tiny muted">${[...g.mods].map(m => esc(OsceBlueprint.moduleName(modules, m))).join(', ') || 'unplaced'}${
+          g.part ? ` · ${g.part} of those were partly said` : ''} · seen in ${g.topics.size} station${g.topics.size === 1 ? '' : 's'}</span>
+      </div>
+    </li>`;
+
+    host.innerHTML = `
+      <h3 class="card-title">🔁 What keeps costing you marks</h3>
+      <p class="muted">From your last ${attempts.length} marked station${attempts.length === 1 ? '' : 's'}.
+        ${repeats.length
+          ? `<strong>${repeats.length}</strong> point${repeats.length === 1 ? ' has' : 's have'} been missed more than once —
+             those are the ones worth an evening, because they are costing you marks in stations that look nothing alike.`
+          : 'Nothing has been missed twice yet.'}</p>
+      ${repeats.length ? `<ul class="os-miss-list">${repeats.slice(0, 12).map(row).join('')}</ul>` : ''}
+      ${once.length ? `<details class="dev-collapse" style="margin-top:12px">
+        <summary><span class="card-title">Missed once (${once.length})</span><span class="dc-caret">▸</span></summary>
+        <ul class="os-miss-list">${once.slice(0, 40).map(row).join('')}</ul>
+      </details>` : ''}
+      <div class="os-tips" id="os-tips"></div>`;
+
+    /* The advice is derived, not generated: a model is not needed to notice
+       that six of your last ten misses are in one module. */
+    const tips = [];
+    /* Counted from the misses themselves, one point one vote. Summing each
+       GROUP's total into every module it appeared in multiplied the same
+       miss by the number of modules it turned up in, and reported figures
+       larger than the number of points that were ever dropped. */
+    const modCount = new Map();
+    missed.forEach(m => { if (m.bp?.module) modCount.set(m.bp.module, (modCount.get(m.bp.module) || 0) + 1); });
+    const worst = [...modCount.entries()].sort((a, b) => b[1] - a[1])[0];
+    if (worst && worst[1] >= 3 && modCount.size > 1) {
+      tips.push(`Most of what you are dropping sits in <strong>${esc(OsceBlueprint.moduleName(modules, worst[0]))}</strong>
+        — ${worst[1]} of your ${missed.length} missed points. A circuit weighted there will find the rest of them.`);
+    }
+    const partly = all.filter(g => g.part >= g.n / 2 && g.n > 1).length;
+    if (partly) {
+      tips.push(`<strong>${partly}</strong> of your repeated misses were marked <em>partial</em>, not missed — you are
+        reaching the right idea and stopping short of the detail that carries the mark. Say the number, the dose or the
+        time window out loud; that is usually the half you are leaving out.`);
+    }
+    if (repeats.length >= 3) {
+      tips.push(`Make a deck from one of these attempts — a card per repeated point, with the figure on the back —
+        and it will take a fortnight rather than a term to clear them.`);
+    }
+    const tipHost = host.querySelector('#os-tips');
+    if (tips.length && tipHost) {
+      tipHost.innerHTML = `<h4 class="card-title" style="margin-top:18px">What to do about it</h4>
+        <ul class="os-tip-list">${tips.map(t => `<li>${t}</li>`).join('')}</ul>`;
+    }
   }
 
   /** Any station left mid-flight, for the "resume" card on the OSCE home. */
@@ -2528,7 +3364,10 @@ ${has('learning') && (r.keyLearning || []).length ? `<section class="blk"><h2>Ke
   }
 
   return { renderBank, renderStation, renderSim, renderRun, renderResult, renderMine, renderEdit, progress,
+    renderCircuit, renderProgress, renderDecks,
     micButton, groqReport, resetGroq, voiceAvailable: () => groqOn('whisper'),
     stations, bustStations, collections, bustCollections, openSessions, dropSession,
-    marksOf, passOf, qsOf, toWav, wavRateFor, modelChoices, noAudioReason };
+    marksOf, passOf, qsOf, toWav, wavRateFor, modelChoices, noAudioReason,
+    // exposed for tests and for the circuit page's live redraw
+    markState, onMarkChange, retryMark, missedPoints, makeDeck };
 })();
