@@ -4486,3 +4486,60 @@ body.eco-open .ap-dock { z-index: 2390; }
 }
 .os-card-nav { display: flex; gap: 12px; align-items: center; justify-content: center; margin-top: 18px; flex-wrap: wrap; }
 .os-markbox-auto { border-left: 3px solid var(--good, #34d399); }
+
+/* ============================================================
+   v73 — bank priority, fresh tick, the prompting examiner,
+          sending credit, copying a station
+   ============================================================ */
+
+/* the priority selector in the collections editor */
+.os-coll-prio { display: flex; align-items: center; gap: 6px; }
+.os-coll-prio select { padding: 4px 6px; font-size: .76rem; }
+
+/* "all new to me" */
+.os-fresh {
+  display: flex; gap: 11px; align-items: flex-start; margin-top: 14px; padding: 12px 14px;
+  border: 1px solid rgba(255,255,255,.1); border-radius: 12px; cursor: pointer;
+}
+.os-fresh.is-on { border-color: rgba(232,181,63,.5); background: rgba(232,181,63,.06); }
+.os-fresh input { margin-top: 3px; }
+
+/* the examiner dial, in the running bar */
+.os-pdial { display: flex; flex-direction: column; gap: 2px; min-width: 116px; }
+.os-pdial-l { font-size: .64rem; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-2); display: flex; justify-content: space-between; }
+.os-pdial-l i { font-style: normal; color: var(--gold, #e8b53f); font-weight: 700; }
+.os-pdial.is-off .os-pdial-l i { color: var(--ink-2); }
+.os-pdial input[type="range"] { width: 100%; accent-color: var(--gold, #e8b53f); height: 16px; }
+.os-pdial.is-off input[type="range"] { accent-color: #6b6b78; }
+
+/* and its fuller form on the brief */
+.os-pdial-box { margin: 16px 0 4px; padding: 14px 16px; border-radius: 12px; background: rgba(255,255,255,.04); }
+.os-pdial-head { display: flex; justify-content: space-between; align-items: baseline; }
+.os-pdial-num { font-family: Georgia, serif; font-size: 1.4rem; color: var(--gold, #e8b53f); }
+.os-pdial-box input[type="range"] { width: 100%; accent-color: var(--gold, #e8b53f); margin: 8px 0 2px; }
+.os-pdial-scale { display: flex; justify-content: space-between; font-size: .66rem; color: var(--ink-2); }
+
+/* what the examiner just said */
+.os-probe {
+  margin: 10px 0 14px; padding: 11px 14px; border-radius: 12px;
+  background: rgba(94,234,212,.08); border-left: 3px solid #5eead4; font-size: .95rem;
+}
+.os-probe.is-in { animation: os-probe-in .4s ease both; }
+@keyframes os-probe-in { from { opacity: 0; transform: translateY(-5px) } to { opacity: 1; transform: none } }
+.os-probe-who {
+  font-size: .64rem; letter-spacing: .12em; text-transform: uppercase; color: #5eead4;
+  margin-right: 9px;
+}
+
+/* sending credit */
+.wl-send { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; margin-top: 12px; }
+.wl-send .wl-f { flex: 1 1 150px; margin-bottom: 0; }
+.wl-send input {
+  width: 100%; background: rgba(255,255,255,.05); color: inherit;
+  border: 1px solid rgba(255,255,255,.14); border-radius: 8px; padding: 8px 10px; font: inherit;
+}
+#wl-send-go.is-armed { background: linear-gradient(135deg,#f87171,#e8b53f); color: #241d05; }
+.wl-send-who {
+  margin-top: 12px; padding: 11px 13px; border-radius: 10px;
+  background: rgba(232,181,63,.08); border-left: 3px solid var(--gold, #e8b53f);
+}

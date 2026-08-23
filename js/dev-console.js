@@ -2913,11 +2913,19 @@ const DevConsole = (() => {
       host.innerHTML = `<div class="os-coll-rows">${list.map((c, i) => `
         <div class="os-coll-row" data-ci="${i}">
           <input type="text" class="os-coll-name" value="${esc(c.label)}" data-ci="${i}" maxlength="40">
+          <label class="os-coll-prio" title="Which bank a circuit reaches for first. 5 is drawn before 4, and a lower band is only used when the higher one has nothing left for that module.">
+            <span class="tiny muted">Priority</span>
+            <select class="sel" data-cprio="${i}">
+              ${[5, 4, 3, 2, 1].map(n => `<option value="${n}" ${Number(c.priority ?? (c.id === 'common' ? 1 : 3)) === n ? 'selected' : ''}>${n} / 5</option>`).join('')}
+            </select>
+          </label>
           <span class="muted tiny">${counts[c.id] || 0} station${(counts[c.id] || 0) === 1 ? '' : 's'} · <code>${esc(c.id)}</code></span>
           <button class="link-btn" data-cmove="${i}" data-dir="-1" ${i === 0 ? 'disabled' : ''}>↑</button>
           <button class="link-btn" data-cmove="${i}" data-dir="1" ${i === list.length - 1 ? 'disabled' : ''}>↓</button>
           <button class="link-btn qr-danger" data-cdel="${i}">✕</button>
         </div>`).join('')}</div>
+        <p class="muted tiny">A circuit draws from the highest priority band that still has a station for the module it
+          needs, then drops a band at a time. It never leaves a module out just because its best bank is empty.</p>
         ${counts[''] ? `<p class="muted tiny">${counts['']} station${counts[''] === 1 ? '' : 's'} not filed into any collection yet.</p>` : ''}`;
 
       const opts = (withAll, withUnfiled) =>
@@ -2937,6 +2945,13 @@ const DevConsole = (() => {
       host.querySelectorAll('.os-coll-name').forEach(el => el.addEventListener('change', async () => {
         const l = await osceCollections(); l[Number(el.dataset.ci)].label = el.value.trim() || l[Number(el.dataset.ci)].id;
         await saveOsceCollections(l); msg.innerHTML = '<span class="good">✓ Saved.</span>'; paint();
+      }));
+      host.querySelectorAll('[data-cprio]').forEach(el => el.addEventListener('change', async () => {
+        const l = await osceCollections();
+        l[Number(el.dataset.cprio)].priority = Number(el.value);
+        await saveOsceCollections(l);
+        msg.innerHTML = '<span class="good">✓ Priority saved — it applies to the next circuit built.</span>';
+        if (typeof OSCE !== 'undefined') OSCE.bustCollections?.();
       }));
       host.querySelectorAll('[data-cmove]').forEach(b => b.addEventListener('click', async () => {
         const i = Number(b.dataset.cmove), d = Number(b.dataset.dir);

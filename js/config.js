@@ -100,12 +100,17 @@ window.AUREUM_CONFIG = {
      published before collections existed have no `collection` and are shown
      as unfiled until they are moved. */
   osce: {
+    /* `priority` decides which bank a circuit reaches for first: 5 is drawn
+       before 4, and the common bank sits at 1 because it was written in one
+       pass and is weaker than the curated sets. A band is only skipped when
+       it has nothing left for that module — a module is never left out of a
+       circuit merely because its best bank is empty. */
     collections: [
-      { id: 'common',    label: 'Common bank' },
-      { id: 'pera',      label: 'Pera OSCE' },
-      { id: 'galle',     label: 'Galle OSCE' },
-      { id: 'slcog',     label: 'SLCOG OSCE' },
-      { id: 'examiners', label: "Examiners' OSCE" }
+      { id: 'common',    label: 'Common bank',      priority: 1 },
+      { id: 'pera',      label: 'Pera OSCE',        priority: 4 },
+      { id: 'galle',     label: 'Galle OSCE',       priority: 4 },
+      { id: 'slcog',     label: 'SLCOG OSCE',       priority: 5 },
+      { id: 'examiners', label: "Examiners' OSCE",  priority: 5 }
     ],
     defaultCollection: 'common'
   },

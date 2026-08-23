@@ -333,7 +333,8 @@ export async function onRequest(context) {
       if (!isDev) return json({ error: 'Developer only.' }, 403);
       const list = (body.stations || []).slice(0, 12);
       if (!list.length) return json({ tags: [] });
-      const prompt = [
+      // { system, user } — a bare string here fails the same way the cards did
+      const prompt = { system: 'You file OSCE examination stations against a blueprint. Return only JSON.', user: [
         'You are filing OSCE examination stations against an examination blueprint.',
         'Here are the modules and their topics. The format is  moduleId: Module name [topicId=Topic name; ...]',
         String(body.modules || '').slice(0, 6000),
@@ -349,7 +350,7 @@ export async function onRequest(context) {
         '',
         'Stations:',
         ...list.map((s, i) => `${i + 1}. id=${s.id}\ntitle: ${String(s.topic || '').slice(0, 160)}\ntext: ${String(s.text || '').slice(0, 700)}`)
-      ].join('\n');
+      ].join('\n') };
       const r = await run(prompt, 'osce_tag', 1400);
       let tags = [];
       try {
@@ -380,6 +381,115 @@ export async function onRequest(context) {
         tag: String(c.tag || '').slice(0, 60)
       }));
       return json({ cards, model: r.model, usage: { in: r.in, out: r.out } });
+    }
+
+    /* ---- send credit to another user ----
+       Money moves here and nowhere else. The browser cannot be trusted to
+       say what a balance is — it would only have to lie once — so the
+       balance is recomputed on the server from the same two sources the
+       Profile page uses, and the write goes through the service key.
+
+       'quote' resolves a user number to a name so the sender can confirm
+       who they are about to pay BEFORE any money moves. 'send' does it. */
+    if (action === 'sendcredit' || action === 'quotecredit') {
+      if (!env.SUPABASE_SERVICE_KEY) return json({ error: 'Transfers are not configured on this deployment.' }, 503);
+      const svc = { apikey: env.SUPABASE_SERVICE_KEY, Authorization: 'Bearer ' + env.SUPABASE_SERVICE_KEY };
+      const toNo = String(body.to || '').replace(/\D/g, '').slice(0, 12);
+      if (!toNo) return json({ error: 'Enter the user number you are sending to.' }, 400);
+
+      // who is that?
+      let target = null;
+      try {
+        const r = await sb(`/rest/v1/profiles?user_no=eq.${encodeURIComponent(toNo)}&select=id,name,user_no&limit=1`, env, { headers: svc });
+        target = (await r.json())?.[0] || null;
+      } catch {}
+      if (!target) return json({ error: `No user has the number ${toNo}. Check it with them — it is on their Billing & balance page.` }, 404);
+      if (target.id === user.id) return json({ error: 'That is your own number.' }, 400);
+
+      if (action === 'quotecredit') return json({ to: { no: target.user_no, name: target.name || 'a user' } });
+
+      const amount = Math.round(Number(body.amount) * 100) / 100;
+      if (!(amount > 0)) return json({ error: 'Enter an amount greater than zero.' }, 400);
+
+      const bal = await balanceOf(user.id, env, svc);
+      if (bal.error) return json({ error: bal.error }, 502);
+      if (amount > bal.balance + 0.005) {
+        return json({ error: `That is more than your balance. You have LKR ${bal.balance.toFixed(2)}.`,
+          balance: bal.balance }, 400);
+      }
+
+      /* Two rows, written one after the other. If the second fails the
+         first is removed again — a transfer that debits without crediting
+         is the one outcome that must never survive. */
+      const tid = 'tr-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      const myNo = await userNoOf(user.id, env, svc);
+      const note = String(body.note || '').slice(0, 120);
+      const mkRow = (uid, amt, kind, other, otherName) => ({
+        user_id: uid, amount_lkr: amt, status: 'approved', kind, transfer_id: tid,
+        counterparty: other, reference: (kind === 'transfer_out' ? 'to ' : 'from ') + other,
+        note: (kind === 'transfer_out' ? `Sent to ${otherName} (${other})` : `Received from ${otherName} (${other})`)
+          + (note ? ` — ${note}` : '')
+      });
+      let debitId = null;
+      try {
+        const r1 = await sb('/rest/v1/credit_topups', env, {
+          method: 'POST', headers: Object.assign({ Prefer: 'return=representation' }, svc),
+          body: JSON.stringify(mkRow(user.id, -amount, 'transfer_out', target.user_no, target.name || 'a user'))
+        });
+        if (!r1.ok) return json({ error: 'The transfer could not be started.' }, 502);
+        debitId = (await r1.json())?.[0]?.id;
+
+        const r2 = await sb('/rest/v1/credit_topups', env, {
+          method: 'POST', headers: Object.assign({ Prefer: 'return=representation' }, svc),
+          body: JSON.stringify(mkRow(target.id, amount, 'transfer_in', myNo, user.user_metadata?.name || user.email || 'a user'))
+        });
+        if (!r2.ok) {
+          if (debitId) await sb(`/rest/v1/credit_topups?id=eq.${debitId}`, env, { method: 'DELETE', headers: svc });
+          return json({ error: 'The transfer could not be completed, so nothing was taken from your balance.' }, 502);
+        }
+      } catch {
+        if (debitId) { try { await sb(`/rest/v1/credit_topups?id=eq.${debitId}`, env, { method: 'DELETE', headers: svc }); } catch {} }
+        return json({ error: 'The transfer failed, so nothing was taken from your balance.' }, 502);
+      }
+      return json({ ok: true, transferId: tid, amount,
+        to: { no: target.user_no, name: target.name || 'a user' },
+        balance: Math.round((bal.balance - amount) * 100) / 100 });
+    }
+
+    /* ---- OSCE: one push from the examiner, mid-station ----
+       Deliberately the smallest call in the app after the slip reader: a
+       few hundred tokens in, under twenty out, and it must return in about
+       a second because the candidate is sitting in silence waiting. The
+       hard constraint is in the prompt, not here: a probe may point AT a
+       gap but must never say what fills it. */
+    if (action === 'osceprobe') {
+      const missing = (body.missing || []).slice(0, 6);
+      if (!missing.length) return json({ text: '' });
+      const p = {
+        system: 'You are a PGIM MD Part II examiner. You speak one short line at a time and never explain.',
+        user: [
+          'The candidate is answering this question out loud and has just gone quiet:',
+          `"${String(body.question || '').slice(0, 400)}"`,
+          '',
+          'What they have said so far:',
+          String(body.said || '(nothing yet)').slice(-1200),
+          '',
+          'Marking points they have NOT covered:',
+          ...missing.map((m, i) => `${i + 1}. ${m}`),
+          '',
+          'Say ONE short line that pushes them towards ONE of those gaps.',
+          'ABSOLUTE RULES:',
+          '- Never state, name or hint at the answer itself. "What about the monitoring?" is right.',
+          '  "You have not mentioned magnesium sulphate" is wrong — it hands over the mark.',
+          '- Point at the AREA, not the fact. A category, a heading, a stage of management.',
+          '- Twelve words at most. No preamble, no encouragement, no explanation.',
+          '- It must sound like a person in the room: "And the monitoring?" / "Anything on the fetal side?"',
+          '- Return the line only. No quotes, no punctuation beyond a question mark.'
+        ].join('\n')
+      };
+      const r = await run(p, 'osce_probe', 60);
+      const line = String(r.text || '').trim().split('\n')[0].replace(/^["']|["']$/g, '').slice(0, 140);
+      return json({ text: line, model: r.model, usage: { in: r.in, out: r.out } });
     }
 
     // ---- OSCE: talk to a model about the report it just produced ----
@@ -430,6 +540,76 @@ async function sb(path, env, opts = {}) {
   const headers = Object.assign({ apikey: env.SUPABASE_ANON_KEY, 'Content-Type': 'application/json' }, opts.headers || {});
   return fetch(url, { ...opts, headers });
 }
+/* ---------------- the balance, computed where it can be trusted ----------------
+   The Profile page works this out in the browser, which is fine for showing
+   somebody their own money. It is not fine for authorising a transfer: the
+   browser would only have to lie once. So the same arithmetic is repeated
+   here, from the same two sources — credited rupees, minus metered spend
+   priced at the developer's own rate table.
+
+   It must stay in step with js/billing.js. If the pricing table changes
+   shape, this changes with it. */
+/* The developer's saved rate card, under the same id the panel writes
+   ('model_pricing'), with the same fallback to the compiled defaults that
+   js/billing.js uses. A mismatch here would misprice a balance, so the two
+   must be read together whenever either changes. */
+const PRICING_FALLBACK = {
+  'gemini-3.1-flash-lite': { in: 0.25, out: 1.50 },
+  'gemini': { in: 1.5, out: 9 },
+  'claude-haiku-4-5': { in: 1, out: 5 },
+  'claude': { in: 1, out: 5 },
+  'whisper': { in: 0, out: 0 },
+  'llama': { in: 0, out: 0 },
+  'orpheus': { in: 0, out: 0 },
+  'canopylabs': { in: 0, out: 0 }
+};
+async function pricingTable(env, svc) {
+  try {
+    const r = await sb(`/rest/v1/app_config?id=eq.model_pricing&select=data`, env, { headers: svc });
+    const rows = await r.json();
+    const t = rows?.[0]?.data;
+    if (t && Object.keys(t).length) return t;
+  } catch {}
+  return PRICING_FALLBACK;
+}
+async function userNoOf(id, env, svc) {
+  try {
+    const r = await sb(`/rest/v1/profiles?id=eq.${id}&select=user_no&limit=1`, env, { headers: svc });
+    return (await r.json())?.[0]?.user_no || '';
+  } catch { return ''; }
+}
+async function balanceOf(id, env, svc) {
+  try {
+    const [tRes, uRes] = await Promise.all([
+      sb(`/rest/v1/credit_topups?user_id=eq.${id}&status=eq.approved&select=amount_lkr`, env, { headers: svc }),
+      sb(`/rest/v1/ai_token_usage?user_id=eq.${id}&select=model,input_tokens,output_tokens`, env, { headers: svc })
+    ]);
+    if (!tRes.ok || !uRes.ok) return { error: 'Your balance could not be read just now.' };
+    const tops = await tRes.json(), usage = await uRes.json();
+    const credited = (tops || []).reduce((n, t) => n + (Number(t.amount_lkr) || 0), 0);
+
+    const rates = await pricingTable(env, svc);
+    // longest-prefix match, exactly as the invoice engine does it
+    const rateFor = m => {
+      const id = String(m || '').toLowerCase();
+      let best = null, len = -1;
+      for (const k of Object.keys(rates)) {
+        if (id.startsWith(String(k).toLowerCase()) && k.length > len) { best = rates[k]; len = k.length; }
+      }
+      return best || { in: 0, out: 0 };
+    };
+    const usd = (usage || []).reduce((n, r) => {
+      const rt = rateFor(r.model);
+      return n + (Number(r.input_tokens || 0) / 1e6) * (Number(rt.in) || 0)
+               + (Number(r.output_tokens || 0) / 1e6) * (Number(rt.out) || 0);
+    }, 0);
+    const w = await walletSettings(env);
+    const rate = Number(w.usdRate) > 0 ? Number(w.usdRate) : 340;
+    const balance = Math.round((credited - usd * rate) * 100) / 100;
+    return { balance, credited, spentLkr: usd * rate, rate };
+  } catch { return { error: 'Your balance could not be read just now.' }; }
+}
+
 async function verifyUser(token, env) {
   if (!token || !env.SUPABASE_URL || !env.SUPABASE_ANON_KEY) return null;
   const res = await sb('/auth/v1/user', env, { headers: { Authorization: 'Bearer ' + token } });
@@ -629,7 +809,11 @@ function buildOsceAudioPrompt(body) {
     'TWO VOICES MAY BE AUDIBLE. The examiner\'s questions are read aloud by a synthetic voice and the microphone ' +
     'may have picked them up. Anything spoken in that voice is the QUESTION being asked — its wording appears ' +
     'below, so you can recognise it. Credit ONLY what the candidate says in their own voice. If a marking point is ' +
-    'audible solely in the examiner\'s voice, it was not said by the candidate and earns nothing.\n\n' +
+    'audible solely in the examiner\'s voice, it was not said by the candidate and earns nothing.\n' +
+    'THE EXAMINER MAY ALSO INTERJECT during an answer — short pushes such as "Anything else?", "Go on", ' +
+    '"And the monitoring?". These are prompts, not content, and they are in the same synthetic voice. They earn ' +
+    'nothing for anybody. What the candidate says AFTER being pushed counts in full: being prompted is normal in ' +
+    'the real room and is not a reason to mark an answer down.\n\n' +
     OSCE_CALIBRATION;
 
   const user = [
@@ -679,7 +863,12 @@ function buildOsceAudioPrompt(body) {
 function buildOsceCardsPrompt(body) {
   const st = body.station || {};
   const missed = (body.missed || []).slice(0, 40);
-  return [
+  /* `run()` takes { system, user }. Returning a bare string put `undefined`
+     into the prompt part and Gemini answered with
+     "parts[0].data: required oneof field 'data' must have one initialized
+     field" — an error about an empty part, which reads like an audio fault
+     and is nothing of the sort. */
+  return { system: PERSONA + ' You are writing revision flashcards from a marked OSCE station.', user: [
     'You are a PGIM MD Part II (Obstetrics & Gynaecology) examiner writing revision flashcards',
     'for a candidate who has just been marked on a spoken OSCE station.',
     '',
@@ -711,7 +900,7 @@ function buildOsceCardsPrompt(body) {
     '',
     'Return ONLY a JSON array, no prose and no code fence:',
     '[{"front":"...","back":"...","highlight":"...","hook":"...","tag":"<2-4 words naming the idea>"}]'
-  ].join('\n');
+  ].join('\n') };
 }
 
 function buildOsceChatPrompt(body) {
