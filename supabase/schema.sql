@@ -1195,3 +1195,61 @@ alter table public.osce_decks enable row level security;
 drop policy if exists "osce decks own" on public.osce_decks;
 create policy "osce decks own" on public.osce_decks for all
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+/* ============================================================
+   v73 — a real user number, and credit sent between users
+
+   The reference on a bank slip was derived from the last five digits of
+   the user's UUID. That was fine for "put this in the remark field" — a
+   human reads it and the developer checks it. It is NOT fine as the
+   address for a transfer of money: two UUIDs can end in the same five
+   digits, and the wrong person would be credited.
+
+   So the number becomes real: stored, unique, allocated once.
+   ============================================================ */
+create sequence if not exists public.user_no_seq start 10001;
+alter table public.profiles add column if not exists user_no text;
+-- existing rows keep a number for ever once given one
+update public.profiles set user_no = lpad(nextval('public.user_no_seq')::text, 5, '0')
+  where user_no is null;
+alter table public.profiles alter column user_no set default lpad(nextval('public.user_no_seq')::text, 5, '0');
+create unique index if not exists profiles_user_no_key on public.profiles (user_no);
+
+/* Anyone signed in may look up the NUMBER and NAME of another user — that
+   is what makes "send 500 to 10042" possible to confirm before sending.
+   Nothing else about the row is exposed. */
+create or replace view public.user_directory as
+  select id, user_no, name from public.profiles where user_no is not null;
+grant select on public.user_directory to authenticated;
+
+/* A transfer is two rows in the ledger: a negative one for the sender and
+   a positive one for the receiver. Keeping it in the same table means the
+   balance arithmetic, the statement and the passbook all keep working
+   with no change — a transfer simply reads as a debit or a credit.
+
+   The positive-amount check therefore has to go; the amount must still be
+   non-zero, and the server is what refuses an overdraft. */
+do $$
+declare c text;
+begin
+  select conname into c from pg_constraint
+   where conrelid = 'public.credit_topups'::regclass and contype = 'c'
+     and pg_get_constraintdef(oid) ilike '%amount_lkr > 0%' limit 1;
+  if c is not null then execute format('alter table public.credit_topups drop constraint %I', c); end if;
+end $$;
+alter table public.credit_topups drop constraint if exists credit_topups_amount_nonzero;
+alter table public.credit_topups add constraint credit_topups_amount_nonzero check (amount_lkr <> 0);
+
+-- who the other side of a transfer was, for the passbook
+alter table public.credit_topups add column if not exists kind text default 'topup';
+alter table public.credit_topups add column if not exists counterparty text;
+alter table public.credit_topups add column if not exists transfer_id text;
+create index if not exists credit_topups_transfer_idx on public.credit_topups (transfer_id);
+
+/* A user may still only INSERT a pending top-up for themselves. Transfers
+   are written by the server with the service key, which bypasses RLS —
+   deliberately, because the balance check that authorises them cannot be
+   done in the browser. */
+drop policy if exists "topups own insert" on public.credit_topups;
+create policy "topups own insert" on public.credit_topups for insert
+  with check (auth.uid() = user_id and status = 'pending' and amount_lkr > 0 and coalesce(kind,'topup') = 'topup');

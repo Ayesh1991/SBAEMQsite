@@ -253,11 +253,64 @@ const OsceBlueprint = (() => {
     return ((m?.topics || []).find(t => t.id === tid) || {}).name || tid || '';
   }
 
+  /* ---------------- bank priority ----------------
+     Not every bank is worth the same. The common bank was written in one
+     pass and is frankly weaker than the curated ones, so a circuit should
+     exhaust SLCOG, Pera, Galle and the examiners' stations before it
+     reaches for it — but must still reach for it rather than leave a module
+     unrepresented.
+
+     A number, not a rule, because the developer knows which bank is good
+     and the code never will: 5 is drawn first, 1 last. Anything unset sits
+     at 3, and the common bank defaults to 1 because that is the case that
+     prompted this. */
+  const DEFAULT_PRIORITY = 3;
+  const priorityOf = (st, prios) => {
+    const c = String(st?.collection || COMMON);
+    const p = prios && prios[c];
+    return Number.isFinite(Number(p)) ? Number(p) : (c === COMMON ? 1 : DEFAULT_PRIORITY);
+  };
+
+  /* ---------------- module weight ----------------
+     A module with twenty topics and fifty stations is a bigger part of the
+     examination than one with four topics and eight, and should turn up
+     more often. But weight alone would bury the small modules for ever,
+     and a candidate who never sees Core Surgical Skills is not ready.
+
+     So weight decides the ORDER OF PREFERENCE among modules the candidate
+     is equally behind on — it never overrides coverage. Sitting count comes
+     first, weight second. That way the big modules fill the spare places
+     and the small ones still come round.
+
+     The weight itself is the mean of two shares — topics and stations — so
+     a module with many topics but few stations written is not treated as
+     though it were fully stocked. */
+  function moduleWeights(modules, stations) {
+    const topicCount = {}, stationCount = {};
+    modules.forEach(m => { topicCount[m.id] = (m.topics || []).length; stationCount[m.id] = 0; });
+    stations.forEach(st => { const t = tagOf(st); if (t && stationCount[t.module] != null) stationCount[t.module]++; });
+    // topics with no station at all are not part of the examinable size
+    const examinable = {};
+    modules.forEach(m => {
+      const have = new Set();
+      stations.forEach(st => { const t = tagOf(st); if (t?.module === m.id) have.add(t.topic); });
+      examinable[m.id] = have.size;
+    });
+    const totT = Object.values(examinable).reduce((a, b) => a + b, 0) || 1;
+    const totS = Object.values(stationCount).reduce((a, b) => a + b, 0) || 1;
+    const out = {};
+    modules.forEach(m => {
+      out[m.id] = stationCount[m.id] === 0 ? 0
+        : ((examinable[m.id] / totT) + (stationCount[m.id] / totS)) / 2;
+    });
+    return out;
+  }
+
   /* ---------------- choosing a circuit ----------------
      The exam samples nine modules, so a circuit does too. Modules the
      candidate has sat least come first, which is what makes four stations
      today and four tomorrow cover eight modules rather than the same four.
-     Within a module the curated banks win; the common bank is the reserve.
+     Within a module the highest-priority bank wins.
 
      History is per module, counted from attempts already stored — no new
      bookkeeping, and it survives a cleared browser. */
@@ -272,30 +325,49 @@ const OsceBlueprint = (() => {
    * @param {Array}  stations  station cards (need id, topic, collection, bp)
    * @param {Object} history   { [moduleId]: timesSat }
    * @param {number} want      how many stations
-   * @param {Object} opts      { avoid:Set of station ids to prefer not to repeat }
+   * @param {Object} opts
+   *        avoid      Set of station ids already sat — preferred against
+   *        freshOnly  true = a station in `avoid` may NEVER be used
+   *        priorities { [collectionId]: 1..5 }
+   *        weights    { [moduleId]: 0..1 } from moduleWeights()
    * @returns {Array} chosen station cards, one per module wherever possible
    */
   function buildCircuit(stations, history, want, opts = {}) {
     const avoid = opts.avoid || new Set();
+    const freshOnly = !!opts.freshOnly;
+    const prios = opts.priorities || {};
+    const weights = opts.weights || {};
+
+    const pool0 = freshOnly ? stations.filter(s => !avoid.has(s.id)) : stations;
     const byModule = new Map();
-    for (const st of stations) {
+    for (const st of pool0) {
       const t = tagOf(st);
       if (!t) continue;                        // untagged stations never enter a blueprint circuit
       if (!byModule.has(t.module)) byModule.set(t.module, []);
       byModule.get(t.module).push(st);
     }
-    /* Least-sat first, ties broken at random so two circuits in a row are
-       not identical. A module with no station at all simply is not here. */
-    const order = shuffle([...byModule.keys()])
-      .sort((a, b) => (history[a] || 0) - (history[b] || 0));
+    /* Least-sat first; among modules equally behind, the heavier one first;
+       ties broken at random so two circuits in a row are not identical. */
+    const order = shuffle([...byModule.keys()]).sort((a, b) =>
+      ((history[a] || 0) - (history[b] || 0)) || ((weights[b] || 0) - (weights[a] || 0)));
 
     const chosen = [];
+    /* Highest priority band first, and only if that band is empty does the
+       next one get a look. Within a band, unsat stations before sat ones. */
     const pickFrom = list => {
-      const fresh = list.filter(s => !avoid.has(s.id));
-      const pool = fresh.length ? fresh : list;
-      const curated = pool.filter(s => !isCommon(s));
-      const from = curated.length ? curated : pool;     // curated first, common as reserve
-      return shuffle(from)[0];
+      const bands = new Map();
+      for (const s of list) {
+        const p = priorityOf(s, prios);
+        if (!bands.has(p)) bands.set(p, []);
+        bands.get(p).push(s);
+      }
+      for (const p of [...bands.keys()].sort((x, y) => y - x)) {
+        const band = bands.get(p);
+        const fresh = band.filter(s => !avoid.has(s.id));
+        const from = fresh.length ? fresh : (freshOnly ? [] : band);
+        if (from.length) return shuffle(from)[0];
+      }
+      return null;
     };
     // one per module, in least-sat order
     for (const mod of order) {
@@ -303,20 +375,45 @@ const OsceBlueprint = (() => {
       const st = pickFrom(byModule.get(mod));
       if (st) chosen.push(st);
     }
-    /* Still short — more modules were wanted than exist with stations. Go
-       round again, allowing a second station from a module rather than
-       returning a circuit shorter than asked for. */
+    /* Still short — more stations were wanted than there are modules with
+       any. Go round again, allowing a second from a module rather than
+       returning a circuit shorter than asked for. The heavier modules are
+       the ones that get the spare places, which is where weighting earns
+       its keep: the big module is over-sampled only once every module has
+       been represented at all. */
     if (chosen.length < want) {
       const taken = new Set(chosen.map(s => s.id));
-      for (const mod of order) {
-        if (chosen.length >= want) break;
-        const rest = byModule.get(mod).filter(s => !taken.has(s.id));
-        if (!rest.length) continue;
-        const st = pickFrom(rest);
-        if (st) { chosen.push(st); taken.add(st.id); }
+      const held = {};
+      chosen.forEach(s => { const m = tagOf(s).module; held[m] = (held[m] || 0) + 1; });
+      /* Each spare place goes to whichever module has the best
+         weight-per-station-already-held. That is proportional allocation,
+         not a round robin: a module holding half the bank earns roughly
+         half the extras, while a small one still comes round when it is
+         proportionally due. Round-robin here gave every module the same
+         number of extras and threw the weighting away. */
+      let progress = true;
+      while (chosen.length < want && progress) {
+        progress = false;
+        const ranked = [...byModule.keys()]
+          .filter(m => byModule.get(m).some(s => !taken.has(s.id)))
+          .sort((a, b) => ((weights[b] || 0) / (1 + (held[b] || 0))) - ((weights[a] || 0) / (1 + (held[a] || 0))));
+        for (const mod of ranked) {
+          const rest = byModule.get(mod).filter(s => !taken.has(s.id));
+          const st = pickFrom(rest);
+          if (st) {
+            chosen.push(st); taken.add(st.id);
+            held[mod] = (held[mod] || 0) + 1; progress = true;
+            break;                       // re-rank after every place
+          }
+        }
       }
     }
     return shuffle(chosen).slice(0, want);
+  }
+
+  /** How many stations the candidate has never sat, for the "fresh" tick. */
+  function freshCount(stations, avoid) {
+    return stations.filter(s => tagOf(s) && !avoid.has(s.id)).length;
   }
 
   /** How many times each module has been sat, from stored attempts. */
@@ -384,7 +481,7 @@ const OsceBlueprint = (() => {
     return { modules: mods, overall, untagged, totalStations: stations.length };
   }
 
-  return { get, save, bust, shipped, DEFAULT, COMMON,
-    rank, suggest, tagOf, isCommon, moduleName, topicName,
-    buildCircuit, historyOf, coverage, norm, hayOf };
+  return { get, save, bust, shipped, DEFAULT, COMMON, DEFAULT_PRIORITY,
+    rank, suggest, tagOf, isCommon, moduleName, topicName, priorityOf, moduleWeights,
+    buildCircuit, freshCount, historyOf, coverage, norm, hayOf };
 })();

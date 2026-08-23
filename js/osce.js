@@ -289,6 +289,165 @@ const OSCE = (() => {
     return d?.text ? { text: d.text, model: d.model } : null;
   }
 
+  /* ================= copying a station out =================
+
+     The same idea as "Copy question" on an SBA, with one difference that
+     matters: what must be LEFT OUT is bigger here. A station's marking
+     scheme IS the answer, in full, point by point — pasting it into
+     NotebookLM and asking "what should I have said?" would be asking a
+     tool to read back the answer sheet.
+
+     So the scheme never goes, and neither does the candidate's own
+     transcript: what they said is not the station, and it would steer
+     whatever they ask next. What goes is what an examiner would hand a
+     candidate — the scenario, the questions, the marks each carries, and
+     what an image showed. Enough for another tool to work the station out
+     from first principles, which is the point of asking it. */
+
+  function stationAsText(st, opts = {}) {
+    const qs = qsOf(st);
+    const L = [];
+    L.push(`OSCE STATION — ${st.topic || 'untitled'}`);
+    L.push(`${minsOf(st)} minutes · ${qs.length} question${qs.length === 1 ? '' : 's'} · ${marksOf(st)} marks in total`);
+    L.push('');
+    L.push('SCENARIO');
+    L.push(String(st.scenario || '').trim());
+    L.push('');
+    L.push('QUESTIONS');
+    qs.forEach((q, i) => {
+      L.push('');
+      if (q.reveal_before) L.push(`[New information given at this point: ${q.reveal_before}]`);
+      L.push(`${i + 1}. ${String(q.prompt || '').trim()}   (${q.marks} marks)`);
+      const ims = imagesOf(q);
+      if (ims.length) {
+        L.push(`   [The candidate is shown ${ims.length === 1 ? 'an image' : ims.length + ' images'}: ${
+          ims.map(im => im.caption || 'no caption').join('; ')}]`);
+      }
+    });
+    if (opts.ask !== false) {
+      L.push('');
+      L.push('---');
+      L.push('This is a station from the Sri Lankan PGIM MD Part II (Obstetrics & Gynaecology) OSCE.');
+      L.push('The marking scheme has deliberately not been included.');
+      L.push('For each question, work out what a full-mark answer would contain at Part II depth,');
+      L.push('with the doses, thresholds and time windows that carry the marks, and cite the');
+      L.push('RCOG / NICE / SLCOG guidance behind each. Then say which points a candidate is most');
+      L.push('likely to miss under time pressure.');
+    }
+    return L.filter(x => x != null).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  async function copyOut(text, btn, label) {
+    let ok = false;
+    try { await navigator.clipboard.writeText(text); ok = true; } catch {}
+    if (!ok) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text; ta.setAttribute('readonly', '');
+        ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+        document.body.appendChild(ta); ta.select(); ta.setSelectionRange(0, text.length);
+        ok = document.execCommand('copy'); ta.remove();
+      } catch {}
+    }
+    if (!btn) return ok;
+    const was = btn.textContent;
+    btn.textContent = ok ? '✓ copied' : '✗ could not copy';
+    btn.classList.toggle('is-done', ok);
+    setTimeout(() => { if (btn.isConnected) { btn.textContent = label || was; btn.classList.remove('is-done'); } }, 2200);
+    return ok;
+  }
+
+  /* ================= the prompting examiner =================
+
+     A real examiner does not read a question and go silent for four
+     minutes. They wait, and when you stop they push: "anything else?",
+     "you have covered the diagnosis — what about the monitoring?". That
+     pressure is most of what makes the room feel like the room, and it is
+     what the earlier version deliberately removed because a fixed "anything
+     further?" after every answer told you, for free, that your answer was
+     thin. A probe is only honest if it is EARNED — if there really is a
+     marking point you have not said.
+
+     So the engine is built on three ideas:
+
+     1. WHAT IS STILL MISSING IS WORKED OUT LOCALLY. Every marking point is
+        matched against the running transcript by token overlap. No model,
+        no network, no quota — and it runs on every keystroke without
+        costing anything. This is the same rules-first principle as the
+        blueprint tagger, and here it also means the probing keeps working
+        when Groq is rate-limited.
+
+     2. THE MOMENT IS CHOSEN BY SILENCE, not by a timer. The microphone
+        level says when the candidate has stopped talking, which is exactly
+        when a real examiner interjects. Probing over someone mid-sentence
+        would be worse than not probing at all.
+
+     3. THE LEVEL BUYS FREQUENCY AND SHARPNESS. At the bottom it never
+        speaks. In the middle it nudges generically, from a pool of lines
+        fetched once per station so a nudge costs nothing. At the top it
+        asks about the specific point you have missed, which is the only
+        part that needs a model — one small call, and only then.
+
+     A probe never names the answer. "What about monitoring?" is a
+     legitimate examiner's push; "you forgot magnesium sulphate" hands over
+     the mark. The prompt on the server is explicit about that, and the
+     generic pool cannot leak anything by construction. */
+
+  const PROMPT_KEY = 'aureum.osce.promptlevel';
+  function promptLevel() {
+    try { const n = Number(localStorage.getItem(PROMPT_KEY)); return Number.isFinite(n) && n >= 0 ? Math.min(100, n) : 35; }
+    catch { return 35; }
+  }
+  function setPromptLevel(n) { try { localStorage.setItem(PROMPT_KEY, String(Math.max(0, Math.min(100, n | 0)))); } catch {} }
+
+  /** How the dial translates into behaviour. */
+  function promptPlan(level) {
+    if (level <= 0) return { off: true };
+    return {
+      off: false,
+      // 1 → ~14s of silence before a nudge; 100 → 5s
+      silenceMs: Math.round(14000 - (level / 100) * 9000),
+      // at most one nudge per question at the bottom, three at the top
+      maxPerQuestion: level < 34 ? 1 : level < 67 ? 2 : 3,
+      // how often the nudge is about a SPECIFIC missing point
+      pointedChance: level < 34 ? 0 : (level - 33) / 67,
+      // never two probes on top of each other
+      cooldownMs: Math.max(6000, 16000 - (level / 100) * 9000)
+    };
+  }
+
+  const PROMPT_WORDS = [
+    'Anything else?',
+    'What else would you add?',
+    'Go on.',
+    'Can you expand on that?',
+    'Is there anything further?',
+    'And?'
+  ];
+
+  /* Which marking points the candidate has plausibly said. Token overlap,
+     deliberately generous on the point's side and strict on length: a point
+     counts as said when most of its significant words have appeared. It is
+     not marking — the marker does that properly at the end — it is only
+     good enough to decide whether a push is warranted. */
+  const STOP = new Set(['the', 'and', 'for', 'with', 'that', 'this', 'from', 'have', 'has', 'was', 'are', 'not',
+    'you', 'your', 'her', 'his', 'their', 'any', 'all', 'can', 'may', 'should', 'would', 'must', 'give', 'consider',
+    'patient', 'woman', 'mother', 'baby', 'about', 'into', 'onto', 'per', 'via', 'each', 'also', 'other', 'more']);
+  const sig = s => String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/).filter(w => w.length > 3 && !STOP.has(w));
+
+  function saidAlready(point, transcript) {
+    const want = sig(point);
+    if (!want.length) return true;                 // nothing to look for
+    const have = new Set(sig(transcript));
+    const hit = want.filter(w => have.has(w)).length;
+    return hit / want.length >= 0.6;
+  }
+  /** The points of one question that have not been covered yet. */
+  function missingPoints(q, transcript) {
+    return (q.marking_points || []).filter(p => !saidAlready(p, transcript));
+  }
+
   const BOTH_KEY = 'aureum.osce.bothvoices';
   const examinerOnTape = () => { try { return localStorage.getItem(BOTH_KEY) !== '0'; } catch { return true; } };
   const setExaminerOnTape = v => { try { localStorage.setItem(BOTH_KEY, v ? '1' : '0'); } catch {} };
@@ -554,6 +713,8 @@ const OSCE = (() => {
         <div class="os-brief-acts">
           <button class="btn btn-gold btn-lg" id="os-start">▶ Start the station</button>
           <button class="btn btn-ghost" id="os-scheme">📋 Show scheme</button>
+          <button class="btn btn-ghost" id="os-copy"
+            title="Copy the scenario and the questions as plain text — WITHOUT the marking scheme — to paste into NotebookLM, Gemini or ChatGPT">📄 Copy the station</button>
           <a class="btn btn-ghost" href="#/osce/sim">Add it to a simulator session instead</a>
         </div>
         <p class="muted tiny">Most of these stations exist on paper too — open the scheme if you want to check this is
@@ -578,6 +739,8 @@ const OSCE = (() => {
       location.hash = '#/osce/run/' + sid;
     });
     view.querySelector('#os-scheme').addEventListener('click', () => showScheme(st));
+    view.querySelector('#os-copy').addEventListener('click', e =>
+      copyOut(stationAsText(st), e.currentTarget, '📄 Copy the station'));
   }
 
   /* ---------------- the scheme, in a dialog ----------------
@@ -809,6 +972,11 @@ const OSCE = (() => {
           <button class="os-pick-b" data-mode="unseen">✦ Ones I haven't done</button>
           <button class="os-pick-b" data-mode="pick">☑ Let me choose</button>
         </div>
+        <label class="os-fresh" id="os-freshwrap">
+          <input type="checkbox" id="os-fresh">
+          <span><strong>All stations must be new to me</strong><br>
+            <span class="muted tiny" id="os-freshnote"></span></span>
+        </label>
         <div id="os-picklist" hidden></div>
         <div id="os-bpnote"></div>
 
@@ -822,14 +990,25 @@ const OSCE = (() => {
     FX.viewIn(view);
     if (!list.length) return;
 
-    let want = 9, mode = 'blueprint', chosen = new Set();
+    let want = 9, mode = 'blueprint', chosen = new Set(), freshOnly = false;
     let done = new Set();
     attempts.forEach(a => done.add(a.station_id));
+
+    /* The bank priorities and the module weights, worked out once. Weight is
+       a property of the bank as it stands today — how many topics a module
+       actually has stations for, and how many stations those are — so it is
+       recomputed on every visit rather than stored and left to rot. */
+    const colls = await collections().catch(() => []);
+    const priorities = {};
+    colls.forEach(c => priorities[c.id] = Number(c.priority ?? (c.id === 'common' ? 1 : 3)));
+    const weights = OsceBlueprint.moduleWeights(modules, tagged);
 
     const pickHost = view.querySelector('#os-picklist');
     const bpNote = view.querySelector('#os-bpnote');
     const sum = view.querySelector('#os-sim-sum');
     const note = view.querySelector('#os-count-note');
+    const freshBox = view.querySelector('#os-fresh');
+    const freshNote = view.querySelector('#os-freshnote');
 
     /* The circuit is settled ONCE, when the button is pressed — not on every
        repaint. A pool that reshuffled itself as you looked at it made the
@@ -837,20 +1016,32 @@ const OSCE = (() => {
     function pool() {
       if (mode === 'pick') return list.filter(s => chosen.has(s.id));
       if (mode === 'blueprint' && tagged.length) {
-        const c = OsceBlueprint.buildCircuit(tagged, history, want, { avoid: done });
+        const c = OsceBlueprint.buildCircuit(tagged, history, want,
+          { avoid: done, freshOnly, priorities, weights });
         if (c.length) return c;
       }
-      const src = mode === 'unseen' ? list.filter(s => !done.has(s.id)) : list.slice();
-      const bag = (src.length ? src : list).slice();
+      /* The plain modes honour the tick too: "all new to me" is a promise
+         about the circuit, not about one way of building it. */
+      let src = (mode === 'unseen' || freshOnly) ? list.filter(s => !done.has(s.id)) : list.slice();
+      if (!src.length && !freshOnly) src = list.slice();
+      const bag = src.slice();
       for (let i = bag.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [bag[i], bag[j]] = [bag[j], bag[i]]; }
       return bag.slice(0, want);
     }
     function paint() {
       const p = pool();
       const mins = p.length * 15;
+      const freshLeft = OsceBlueprint.freshCount(tagged, done);
+      /* Say plainly when the tick cannot be honoured in full rather than
+         quietly handing back a shorter circuit. */
+      const short = freshOnly && p.length < want;
       sum.innerHTML = p.length
-        ? `<strong>${p.length}</strong> station${p.length === 1 ? '' : 's'} · ${hours(mins)}`
+        ? `<strong>${p.length}</strong> station${p.length === 1 ? '' : 's'} · ${hours(p.length * 15)}${
+            short ? ` <span class="bad">— only ${p.length} new station${p.length === 1 ? '' : 's'} are left</span>` : ''}`
+        : freshOnly ? '<span class="bad">You have sat every station already. Untick “all new to me” to revisit some.</span>'
         : 'Choose at least one station.';
+      freshNote.textContent = `${freshLeft} of ${tagged.length} blueprint stations are still untried.`;
+      view.querySelector('#os-freshwrap').classList.toggle('is-on', freshOnly);
       view.querySelector('#os-sim-go').disabled = !p.length;
       note.textContent = mode === 'unseen'
         ? `${list.filter(s => !done.has(s.id)).length} of ${list.length} stations are still untried.`
@@ -867,11 +1058,16 @@ const OSCE = (() => {
             falls back to a random draw. Tag them in <strong>Developer → OSCE stations</strong>.</p>`;
         } else {
           const covered = [...new Set(p.map(s => OsceBlueprint.tagOf(s)?.module).filter(Boolean))];
-          const least = [...modsWithStations].sort((a, b) => (history[a] || 0) - (history[b] || 0)).slice(0, 3);
+          const bands = {};
+          p.forEach(s => { const b = OsceBlueprint.priorityOf(s, priorities); bands[b] = (bands[b] || 0) + 1; });
+          const bandTxt = Object.keys(bands).sort((a, b) => b - a)
+            .map(b => `${bands[b]} from priority ${b}`).join(', ');
+          const heaviest = [...modsWithStations].sort((a, b) => (weights[b] || 0) - (weights[a] || 0))[0];
           bpNote.innerHTML = `<p class="muted tiny os-bp-warn">This draw spans
-            <strong>${covered.length}</strong> module${covered.length === 1 ? '' : 's'}, chosen from the ones you have
-            sat least — ${esc(least.map(m => OsceBlueprint.moduleName(modules, m)).join(', '))} first. Curated banks are
-            preferred; the common bank is the reserve when a module has nothing else.
+            <strong>${covered.length}</strong> module${covered.length === 1 ? '' : 's'}, taken from the ones you have sat
+            least. Where you are equally behind, the bigger module goes first — ${
+            esc(OsceBlueprint.moduleName(modules, heaviest))} is currently the largest slice of the blueprint.
+            Banks: ${esc(bandTxt)}.
             <em>Which modules they are is not shown, for the same reason the topics are not.</em></p>`;
         }
       } else { bpNote.innerHTML = ''; }
@@ -895,8 +1091,10 @@ const OSCE = (() => {
       const b = e.target.closest('[data-mode]'); if (!b) return;
       mode = b.dataset.mode;
       view.querySelectorAll('.os-pick-b').forEach(x => x.classList.toggle('active', x === b));
+      view.querySelector('#os-freshwrap').hidden = mode === 'pick';
       paint();
     });
+    freshBox.addEventListener('change', () => { freshOnly = freshBox.checked; paint(); });
     pickHost.addEventListener('change', e => {
       const c = e.target.closest('[data-pickst]'); if (!c) return;
       c.checked ? chosen.add(c.dataset.pickst) : chosen.delete(c.dataset.pickst);
@@ -991,6 +1189,10 @@ const OSCE = (() => {
           </div>
           <div class="os-clock" id="os-clock"><span id="os-time">${fmt(total - elapsed)}</span><i id="os-ring"></i></div>
           <div class="os-run-acts">
+            <label class="os-pdial" title="How hard the examiner pushes you for the marks you have not said yet">
+              <span class="os-pdial-l">Examiner<i id="os-pdial-v">${promptLevel()}</i></span>
+              <input type="range" id="os-pdial" min="0" max="100" step="5" value="${promptLevel()}">
+            </label>
             <button class="btn btn-ghost btn-sm" id="os-pause" hidden>⏸ Pause</button>
             <button class="btn btn-ghost btn-sm qr-danger" id="os-quit">Leave</button>
           </div>
@@ -1005,6 +1207,17 @@ const OSCE = (() => {
     const ringEl = view.querySelector('#os-ring');
     const progEl = view.querySelector('#os-prog');
     const pauseBtn = view.querySelector('#os-pause');
+
+    /* The dial is live: an examiner who is pushing too hard three questions
+       in can be turned down without leaving the station. */
+    const dial = view.querySelector('#os-pdial');
+    const dialV = view.querySelector('#os-pdial-v');
+    dial.addEventListener('input', () => {
+      setPromptLevel(Number(dial.value));
+      dialV.textContent = dial.value;
+      dial.closest('.os-pdial').classList.toggle('is-off', Number(dial.value) === 0);
+    });
+    dial.closest('.os-pdial').classList.toggle('is-off', promptLevel() === 0);
 
     view.querySelector('#os-quit').addEventListener('click', () => {
       if (!confirm('Leave this station? Your answers so far are saved — you can resume from the OSCE tab.')) return;
@@ -1100,6 +1313,15 @@ const OSCE = (() => {
             <span class="muted tiny">Worth ten seconds — a blocked microphone is much easier to fix now than four
               questions into a fifteen-minute station.</span>
           </div>
+          <div class="os-pdial-box">
+            <label class="os-pdial-head">
+              <span><strong>How hard should the examiner push?</strong></span>
+              <span class="os-pdial-num" id="os-pdial-b-v">${promptLevel()}</span>
+            </label>
+            <input type="range" id="os-pdial-b" min="0" max="100" step="5" value="${promptLevel()}">
+            <div class="os-pdial-scale"><span>Silent</span><span>Nudges</span><span>Pushes hard</span></div>
+            <p class="muted tiny" id="os-pdial-say"></p>
+          </div>
           ${canSpeak() ? `<label class="os-both">
             <input type="checkbox" id="os-both" ${examinerOnTape() ? 'checked' : ''}>
             <span><strong>Record the examiner's voice too</strong><br>
@@ -1111,6 +1333,31 @@ const OSCE = (() => {
         </div>`;
       stage.querySelector('#os-both')?.addEventListener('change', e => setExaminerOnTape(e.target.checked));
       stage.querySelector('#os-pre-go').addEventListener('click', e => preflight(stage, e.target));
+
+      /* Say what the dial will actually do, in plain words, before the
+         clock starts — a slider labelled 0 to 100 tells nobody anything. */
+      const bDial = stage.querySelector('#os-pdial-b');
+      const bNum = stage.querySelector('#os-pdial-b-v');
+      const bSay = stage.querySelector('#os-pdial-say');
+      const describe = n => {
+        if (n <= 0) return 'The examiner reads each question and then says nothing at all. Closest to a written paper.';
+        const p = promptPlan(n);
+        const secs = Math.round(p.silenceMs / 1000);
+        const pointed = p.pointedChance <= 0
+          ? 'The pushes are general — “anything else?”, “go on”.'
+          : p.pointedChance < 0.5
+            ? 'Most pushes are general; some point at the area you have left out.'
+            : 'Most pushes point at the specific area you have left out — never at the answer itself.';
+        return `After about ${secs} seconds of silence, and only while a marking point is still unsaid, the examiner
+          pushes — at most ${p.maxPerQuestion} time${p.maxPerQuestion === 1 ? '' : 's'} per question. ${pointed}`;
+      };
+      const paintDial = n => {
+        bNum.textContent = n; bSay.innerHTML = describe(n);
+        const top = view.querySelector('#os-pdial'), topV = view.querySelector('#os-pdial-v');
+        if (top) { top.value = n; topV.textContent = n; top.closest('.os-pdial').classList.toggle('is-off', n === 0); }
+      };
+      bDial.addEventListener('input', () => { setPromptLevel(Number(bDial.value)); paintDial(Number(bDial.value)); });
+      paintDial(promptLevel());
       // fetched in the background while the scenario is being read, then the
       // brief says plainly which voice the candidate is going to hear
       prefetchVoices().then(() => paintVoiceLine(stage)).catch(() => paintVoiceLine(stage));
@@ -1162,7 +1409,115 @@ const OSCE = (() => {
         if (!clip) break;                       // quota gone; the browser voice takes over
         voices.set(q.id, clip);
       }
+      prefetchNudges();
     }
+
+    /* The generic nudges, fetched once for the whole station. Six short
+       lines, spoken over and over, cost six requests for a whole fifteen
+       minutes — which is what makes the middle of the dial free. */
+    const nudges = new Map();
+    async function prefetchNudges() {
+      if (promptLevel() <= 0 || !groqOn('voice')) return;
+      for (const line of PROMPT_WORDS) {
+        if (nudges.has(line)) continue;
+        const clip = await groqVoice(line);
+        if (!clip) break;
+        nudges.set(line, clip);
+      }
+    }
+
+    /* ---------------- the probe engine ----------------
+       Armed when a question is read, disarmed the moment the candidate
+       moves on. Watches the microphone rather than the clock, and only
+       fires when there is a marking point genuinely still unsaid. */
+    const probes = (() => {
+      let timer = null, q = null, getText = null;
+      let spokenHere = 0, lastAt = 0, quietSince = 0, busy = false, everHeard = false;
+
+      function disarm() { if (timer) clearInterval(timer); timer = null; q = null; }
+
+      function armFor(question, textFn) {
+        disarm();
+        q = question; getText = textFn;
+        spokenHere = 0; lastAt = Date.now(); quietSince = 0; everHeard = false;
+        if (promptPlan(promptLevel()).off) return;
+        timer = setInterval(tick, 700);
+      }
+
+      async function tick() {
+        if (busy || !q || !running) return;
+        const plan = promptPlan(promptLevel());
+        if (plan.off || spokenHere >= plan.maxPerQuestion) return;
+        // never in the last minute — the clock is punishment enough
+        if (total - elapsed < 60) return;
+        if (Date.now() - lastAt < plan.cooldownMs) return;
+
+        const lvl = live?.level ? live.level() : -1;
+        /* A device that cannot report a level gets no probing at all rather
+           than probing blind. Interrupting someone mid-sentence is worse
+           than staying quiet, and there is no way to tell without a meter. */
+        if (lvl < 0) return;
+        if (lvl > 0.06) { everHeard = true; quietSince = 0; return; }
+        if (!everHeard) return;                 // they have not started yet
+        if (!quietSince) { quietSince = Date.now(); return; }
+        if (Date.now() - quietSince < plan.silenceMs) return;
+
+        const said = (getText && getText()) || '';
+        const missing = missingPoints(q, said);
+        if (!missing.length) { quietSince = 0; return; }   // nothing left to push for
+
+        busy = true;
+        try {
+          const pointed = Math.random() < plan.pointedChance;
+          let line = null;
+          if (pointed) line = await pointedLine(q, missing, said);
+          if (!line) line = PROMPT_WORDS[Math.floor(Math.random() * PROMPT_WORDS.length)];
+          await sayProbe(line);
+          spokenHere++; lastAt = Date.now(); quietSince = 0;
+        } catch { /* a probe that fails is a probe that did not happen */ }
+        busy = false;
+      }
+
+      /** One short push about a specific missing point. */
+      async function pointedLine(question, missing, said) {
+        try {
+          if (typeof Wallet !== 'undefined' && !(await Wallet.canSpend())) return null;
+          const token = await Backend.getAccessToken();
+          if (!token) return null;
+          const choice = chosenModel();
+          const res = await fetch(cfg().ai.apiBase, {
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+            body: JSON.stringify({ action: 'osceprobe', provider: choice.provider, model: choice.model,
+              dailyLimit: cfg().ai.dailyLimit,
+              question: String(question.prompt || '').slice(0, 400),
+              said: String(said).slice(-1200),
+              missing: missing.slice(0, 6).map(p => String(p).slice(0, 200)) })
+          });
+          if (!res.ok) return null;
+          const d = await res.json().catch(() => ({}));
+          const t = String(d.text || '').trim().replace(/^["']|["']$/g, '');
+          return t && t.length < 160 ? t : null;
+        } catch { return null; }
+      }
+
+      /** Say it, onto the tape, and show it so the deaf case still works. */
+      async function sayProbe(line) {
+        showProbe(line);
+        const clip = nudges.get(line) || (groqOn('voice') ? await groqVoice(line) : null);
+        if (clip && live?.speakClip) { hush(); if (await live.speakClip(clip)) return; }
+        speak(line, { rate: 1.0 });
+      }
+
+      function showProbe(line) {
+        const host = document.querySelector('#os-probe');
+        if (!host) return;
+        host.hidden = false;
+        host.innerHTML = `<span class="os-probe-who">Examiner</span> ${esc(line)}`;
+        host.classList.remove('is-in'); void host.offsetWidth; host.classList.add('is-in');
+      }
+
+      return { armFor, disarm, tick };
+    })();
 
     async function startCapture() {
       /* The mix is also wanted when the quota is merely resting: the real
@@ -1244,6 +1599,7 @@ const OSCE = (() => {
           ${q.reveal_before ? `<div class="os-reveal"><span>NEW INFORMATION</span><p>${esc(q.reveal_before)}</p></div>` : ''}
           ${imageStrip(q)}
           <p class="os-prompt">${esc(q.prompt)}</p>
+          <div class="os-probe" id="os-probe" hidden></div>
           <div class="os-answer">
             <div class="os-answer-head">
               <span class="os-rec" id="os-rec"><i></i> …</span>
@@ -1270,7 +1626,8 @@ const OSCE = (() => {
       tx.addEventListener('input', store);
 
       // the examiner reads the question, exactly as one would in the room
-      examinerSays(q, (q.reveal_before ? q.reveal_before + '. ' : '') + q.prompt);
+      examinerSays(q, (q.reveal_before ? q.reveal_before + '. ' : '') + q.prompt)
+        .then(() => probes.armFor(q, () => tx.innerText));
       stage.querySelector('#os-voice')?.addEventListener('click', e => {
         setVoiceOn(!voiceOn());
         e.currentTarget.classList.toggle('is-off', !voiceOn());
@@ -1283,10 +1640,10 @@ const OSCE = (() => {
          whether there is anything further, and does not tell you the answer
          was thin — see the note where the probes used to be. */
       stage.querySelector('#os-next').addEventListener('click', () => {
-        store();
+        store(); probes.disarm();
         i + 1 >= qs.length ? finish(false) : show(i + 1);
       });
-      stage.querySelector('#os-back').addEventListener('click', () => { store(); show(Math.max(0, i - 1)); });
+      stage.querySelector('#os-back').addEventListener('click', () => { store(); probes.disarm(); show(Math.max(0, i - 1)); });
     }
 
     async function finish(timedOut) {
@@ -1627,6 +1984,32 @@ const OSCE = (() => {
     /** What the recorder should listen to: the mix if there is one, else the mic. */
     const recordFrom = () => (mixDest ? mixDest.stream : media);
 
+    /* A loudness reading, so the examiner can tell talking from a pause.
+       Built on its own tiny graph rather than the mixer's, because the
+       mixer only exists when the examiner has a real voice, and the pause
+       matters either way. Returns 0..1, or -1 when it cannot tell — and a
+       caller that cannot tell must never guess that the room is silent. */
+    let lvlCtx = null, lvlNode = null, lvlBuf = null;
+    function level() {
+      if (!media) return -1;
+      try {
+        if (!lvlNode) {
+          const Ctx = window.AudioContext || window.webkitAudioContext;
+          if (!Ctx) return -1;
+          lvlCtx = lvlCtx || new Ctx();
+          const src = lvlCtx.createMediaStreamSource(media);
+          lvlNode = lvlCtx.createAnalyser();
+          lvlNode.fftSize = 512;
+          src.connect(lvlNode);
+          lvlBuf = new Uint8Array(lvlNode.frequencyBinCount);
+        }
+        lvlNode.getByteTimeDomainData(lvlBuf);
+        let peak = 0;
+        for (let i = 0; i < lvlBuf.length; i++) peak = Math.max(peak, Math.abs(lvlBuf[i] - 128));
+        return peak / 128;
+      } catch { return -1; }
+    }
+
     async function start() {
       try {
         media = await openMic();
@@ -1752,8 +2135,9 @@ const OSCE = (() => {
         mins: `${fmt(secs)} of audio · ${(blob.size / 1024 / 1024).toFixed(1)} MB` };
     }
     return { ok: () => !!rec, start, attach, pause, resume, stop, state, watchState, retry, bothVoices,
-      speakClip, mixed: () => !!mixDest,
+      speakClip, level, mixed: () => !!mixDest,
       kill: () => { clearInterval(watch); watch = null;
+        try { lvlCtx?.close(); } catch {} lvlCtx = lvlNode = null;
         try { sr && (sr._stopped = true, sr.stop()); } catch {}
         try { rec?.state !== 'inactive' && rec.stop(); } catch {}
         try { media?.getTracks().forEach(t => t.stop()); } catch {}
@@ -2299,6 +2683,8 @@ const OSCE = (() => {
 
         <div class="es-report-foot">
           <button class="btn btn-gold" id="os-print">🖨 Print / Save as PDF</button>
+          <button class="btn btn-ghost" id="os-copy"
+            title="Copy the scenario and questions as plain text — without the marking scheme and without your transcript — to paste into NotebookLM, Gemini or ChatGPT">📄 Copy the station</button>
           <a class="btn btn-ghost" href="#/osce/station/${encodeURIComponent(a.station_id)}">↺ Sit it again</a>
           <button class="btn btn-ghost btn-sm qr-danger" id="os-del">🗑 Delete this result</button>
         </div>
@@ -2337,6 +2723,15 @@ const OSCE = (() => {
     wireExplore(view, a);
     wireDeckMaker(view, a);
     view.querySelector('#os-print').addEventListener('click', () => printPicker(a));
+    /* Rebuilt from the attempt, not from the live station — the station may
+       have been edited since. What is copied is what was actually sat, and
+       the `answers` on the attempt are deliberately not consulted. */
+    view.querySelector('#os-copy').addEventListener('click', e => copyOut(stationAsText({
+      topic: a.station?.topic, scenario: a.station?.scenario,
+      station_time_min: a.station?.station_time_min, total_marks: a.station?.total_marks,
+      questions: (a.questions || []).map(q => ({ id: q.id, prompt: q.prompt, marks: q.marks,
+        reveal_before: q.reveal_before, images: q.images || [] }))
+    }), e.currentTarget, '📄 Copy the station'));
     view.querySelector('#os-del').addEventListener('click', async () => {
       if (!confirm('Delete this OSCE result?')) return;
       try { await Backend.deleteOsceAttempt(a.id); } catch {}
@@ -3368,6 +3763,7 @@ ${has('learning') && (r.keyLearning || []).length ? `<section class="blk"><h2>Ke
     micButton, groqReport, resetGroq, voiceAvailable: () => groqOn('whisper'),
     stations, bustStations, collections, bustCollections, openSessions, dropSession,
     marksOf, passOf, qsOf, toWav, wavRateFor, modelChoices, noAudioReason,
+    stationAsText, promptLevel, setPromptLevel, promptPlan, missingPoints, saidAlready,
     // exposed for tests and for the circuit page's live redraw
     markState, onMarkChange, retryMark, missedPoints, makeDeck };
 })();

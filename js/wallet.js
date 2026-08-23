@@ -259,6 +259,23 @@ const Wallet = (() => {
         </div>
 
         <div class="card" data-animate>
+          <h3 class="card-title">↔ Send credit to another user</h3>
+          <p class="muted">If a colleague is out of balance in the middle of a circuit and cannot get to a bank, you can
+            move some of yours across. It leaves your balance and arrives in theirs immediately — there is nothing to
+            approve, and no fee. Your own number is <code class="wl-uno">${esc(userNo(user))}</code>; ask them for theirs.</p>
+          <div class="wl-send">
+            <label class="wl-f"><span>Their user number</span>
+              <input type="text" id="wl-to" inputmode="numeric" maxlength="8" placeholder="e.g. 10042" autocomplete="off"></label>
+            <label class="wl-f"><span>Amount (LKR)</span>
+              <input type="number" id="wl-amt" min="1" step="1" placeholder="500"></label>
+            <label class="wl-f"><span>Note (optional)</span>
+              <input type="text" id="wl-note" maxlength="120" placeholder="for the OSCE circuit"></label>
+            <button class="btn btn-gold" id="wl-send-go" style="align-self:end">Check the name</button>
+          </div>
+          <div id="wl-send-out"></div>
+        </div>
+
+        <div class="card" data-animate>
           <div class="es-inbox-head">
             <h3 class="card-title">Where the money went</h3>
             <button class="btn btn-ghost btn-sm" id="wl-pb">📗 Full statement</button>
@@ -292,6 +309,7 @@ const Wallet = (() => {
     FX.viewIn(view);
 
     view.querySelector('#wl-bd')?.addEventListener('click', () => billingDetails(ben));
+    wireSend(view, s, user);
     view.querySelector('#wl-pb').addEventListener('click', () => passbook(s));
 
     view.querySelector('#wl-file').addEventListener('change', async e => {
@@ -310,6 +328,79 @@ const Wallet = (() => {
   }
 
   const userNo = u => String(u?.userNo || u?.user_no || (u?.id || '').replace(/\D/g, '').slice(-5) || '00001').padStart(5, '0');
+
+  /* ---------------- sending credit to another user ----------------
+     Two steps on purpose. The first resolves the number to a NAME and
+     shows it; only then does the button become one that moves money.
+     Typing 10024 for 10042 is the easiest mistake in the world to make,
+     and a transfer cannot be taken back — so the name is shown before
+     anything happens, not after.
+
+     The balance is checked on the server, not here. This page could be
+     made to say anything. */
+  function wireSend(view, s, user) {
+    const btn = view.querySelector('#wl-send-go');
+    const out = view.querySelector('#wl-send-out');
+    if (!btn) return;
+    const toEl = view.querySelector('#wl-to');
+    const amtEl = view.querySelector('#wl-amt');
+    const noteEl = view.querySelector('#wl-note');
+    let confirmed = null;                 // the number whose name is on screen
+
+    const reset = () => { confirmed = null; btn.textContent = 'Check the name'; btn.classList.remove('is-armed'); };
+    [toEl, amtEl].forEach(el => el.addEventListener('input', () => { if (confirmed) { reset(); out.innerHTML = ''; } }));
+
+    const call = async (action, extra) => {
+      const token = await Backend.getAccessToken();
+      if (!token) throw new Error('Sign in first.');
+      const res = await fetch(cfg().ai.apiBase, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+        body: JSON.stringify(Object.assign({ action, to: toEl.value }, extra))
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || `That did not work (HTTP ${res.status}).`);
+      return d;
+    };
+
+    btn.addEventListener('click', async () => {
+      const amount = Number(amtEl.value);
+      const to = String(toEl.value).replace(/\D/g, '');
+      if (!to) { out.innerHTML = '<p class="bad">Enter the number you are sending to.</p>'; return; }
+      if (!(amount > 0)) { out.innerHTML = '<p class="bad">Enter an amount.</p>'; return; }
+      /* The balance is only in the way of the SEND. Looking up whose number
+         this is costs nothing and is worth doing at any balance — being
+         told "you cannot afford it" when all you asked was "who is 10042?"
+         is an answer to a question nobody asked. The server checks the
+         balance again regardless; this is only to fail early. */
+      if (confirmed === to && amount > (s.balanceLkr || 0)) {
+        out.innerHTML = `<p class="bad">That is more than your balance of ${lkr(s.balanceLkr)}.</p>`; return;
+      }
+      btn.disabled = true;
+      try {
+        if (confirmed !== to) {
+          const q = await call('quotecredit');
+          confirmed = to;
+          btn.textContent = `Send ${lkr(amount)} to ${q.to.name}`;
+          btn.classList.add('is-armed');
+          out.innerHTML = `<p class="wl-send-who">Number <code>${esc(q.to.no)}</code> is
+            <strong>${esc(q.to.name)}</strong>. If that is the right person, press the button again to send
+            ${lkr(amount)}. <span class="muted">A transfer cannot be reversed from here.</span></p>`;
+        } else {
+          const r = await call('sendcredit', { amount, note: noteEl.value });
+          out.innerHTML = `<p class="good">✓ ${lkr(r.amount)} sent to ${esc(r.to.name)} (${esc(r.to.no)}).
+            Your balance is now ${lkr(r.balance)}.</p>`;
+          toEl.value = ''; amtEl.value = ''; noteEl.value = '';
+          reset(); bust();
+          // redraw so the passbook and the balance show the debit at once
+          setTimeout(() => renderBilling(view, user), 1400);
+        }
+      } catch (e) {
+        out.innerHTML = `<p class="bad">${esc(e.message || e)}</p>`;
+        reset();
+      }
+      btn.disabled = false;
+    });
+  }
 
   /* ---------------- dialogs ---------------- */
 

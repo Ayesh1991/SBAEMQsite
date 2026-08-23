@@ -740,6 +740,8 @@ const Backend = (() => {
         prefs: prof?.prefs || {},
         avatar: prof?.avatar_url || '',
         notifSeen: prof?.notif_seen || {},
+        // the stored, unique reference — what a transfer is addressed to
+        userNo: prof?.user_no || '',
         status: prof?.status || 'approved'
       };
     }
