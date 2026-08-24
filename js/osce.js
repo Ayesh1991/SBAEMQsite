@@ -289,6 +289,70 @@ const OSCE = (() => {
     return d?.text ? { text: d.text, model: d.model } : null;
   }
 
+  /* ================= the coaching extras =================
+
+     Marks are one thing; how you SOUNDED is another, and the second is
+     what a mock examiner tells you afterwards. These are opt-in for two
+     honest reasons: each one lengthens the prompt and so costs money, and
+     several of them are only answerable when the model has heard the
+     recording. Asking for pronunciation feedback on a typed transcript
+     would produce something confident and worthless, so those options
+     switch themselves off when there is no audio and say why. */
+
+  const COACH_KEY = 'aureum.osce.coach';
+  const COACH = [
+    { id: 'delivery', label: 'Delivery and structure',
+      note: 'Whether you led with the headline, signposted, and finished each answer instead of trailing off.',
+      audio: false },
+    { id: 'articulation', label: 'Articulation and clarity',
+      note: 'Filler words, half-sentences, thinking aloud, and whether an examiner could follow you first time.',
+      audio: true },
+    { id: 'pronunciation', label: 'Pronunciation of drug and eponym names',
+      note: 'Only the ones that cost you credibility in a viva — and how to say them.',
+      audio: true },
+    { id: 'pace', label: 'Pace, pauses and timing',
+      note: 'Rushing, dead air, and how the fifteen minutes were spent across the questions.',
+      audio: true },
+    { id: 'technique', label: 'Exam technique for the real day',
+      note: 'What to do differently in the room: how to open, how to buy thinking time, how to recover a bad start.',
+      audio: false }
+  ];
+  function coachWanted() {
+    try {
+      const v = JSON.parse(localStorage.getItem(COACH_KEY) || 'null');
+      if (Array.isArray(v)) return v;
+    } catch {}
+    return ['delivery', 'technique'];              // the two that work without audio
+  }
+  function setCoachWanted(list) { try { localStorage.setItem(COACH_KEY, JSON.stringify(list)); } catch {} }
+  /** Which of the chosen ones are actually answerable for this attempt. */
+  const coachFor = (wanted, hasAudio) =>
+    COACH.filter(c => wanted.includes(c.id) && (hasAudio || !c.audio)).map(c => c.id);
+
+  function coachPicker(hasAudio) {
+    const want = coachWanted();
+    return `<div class="os-coach">
+      <p class="os-coach-h"><strong>Ask for coaching as well as marks</strong>
+        <span class="muted tiny">Each one adds a little to the cost. ${hasAudio
+          ? 'The recording is going, so all of them can be answered.'
+          : 'Without a recording, only the two that read the transcript can be answered.'}</span></p>
+      ${COACH.map(c => {
+        const off = c.audio && !hasAudio;
+        return `<label class="os-coach-o ${off ? 'is-off' : ''}">
+          <input type="checkbox" data-coach="${c.id}" ${want.includes(c.id) && !off ? 'checked' : ''} ${off ? 'disabled' : ''}>
+          <span><strong>${esc(c.label)}</strong><br><span class="muted tiny">${esc(c.note)}${
+            off ? ' — needs the recording, so it is unavailable for this one.' : ''}</span></span>
+        </label>`;
+      }).join('')}
+    </div>`;
+  }
+  function wireCoachPicker(host) {
+    host.querySelectorAll('[data-coach]').forEach(el => el.addEventListener('change', () => {
+      const on = [...host.querySelectorAll('[data-coach]')].filter(x => x.checked).map(x => x.dataset.coach);
+      setCoachWanted(on);
+    }));
+  }
+
   /* ================= copying a station out =================
 
      The same idea as "Copy question" on an SBA, with one difference that
@@ -977,6 +1041,14 @@ const OSCE = (() => {
           <span><strong>All stations must be new to me</strong><br>
             <span class="muted tiny" id="os-freshnote"></span></span>
         </label>
+
+        <details class="dev-collapse os-simcoach" style="margin-top:14px">
+          <summary><span class="card-title">Coaching on every station in this circuit</span><span class="dc-caret">▸</span></summary>
+          <p class="muted tiny">Asked once here rather than nine times. Whatever is ticked is applied to every station
+            in the round — the ones that need the recording are simply skipped on any station where nothing was
+            captured.</p>
+          <div id="os-sim-coach"></div>
+        </details>
         <div id="os-picklist" hidden></div>
         <div id="os-bpnote"></div>
 
@@ -1095,6 +1167,11 @@ const OSCE = (() => {
       paint();
     });
     freshBox.addEventListener('change', () => { freshOnly = freshBox.checked; paint(); });
+    {
+      // a circuit is recorded, so every option is answerable
+      const ch = view.querySelector('#os-sim-coach');
+      if (ch) { ch.innerHTML = coachPicker(true); wireCoachPicker(ch); }
+    }
     pickHost.addEventListener('change', e => {
       const c = e.target.closest('[data-pickst]'); if (!c) return;
       c.checked ? chosen.add(c.dataset.pickst) : chosen.delete(c.dataset.pickst);
@@ -1282,6 +1359,13 @@ const OSCE = (() => {
        ran. */
     const voices = new Map();
     let voicesReady = false;
+    /* The generic nudges live up here for the SAME reason, and learning it
+       twice was one time too many: brief() → prefetchVoices() →
+       prefetchNudges() runs before the phase dispatch has finished, and a
+       `const` further down is still in its dead zone. The ReferenceError
+       went into the .catch() on the prefetch and the examiner simply never
+       had a word to say. */
+    const nudges = new Map();
 
     /* ---- the three phases ----
        A debrief re-entered (a circuit stepping back, a re-render) used to be
@@ -1412,10 +1496,9 @@ const OSCE = (() => {
       prefetchNudges();
     }
 
-    /* The generic nudges, fetched once for the whole station. Six short
-       lines, spoken over and over, cost six requests for a whole fifteen
-       minutes — which is what makes the middle of the dial free. */
-    const nudges = new Map();
+    /* Fetched once for the whole station: six short lines, spoken over and
+       over, cost six requests for a whole fifteen minutes — which is what
+       makes the middle of the dial free. */
     async function prefetchNudges() {
       if (promptLevel() <= 0 || !groqOn('voice')) return;
       for (const line of PROMPT_WORDS) {
@@ -1434,17 +1517,50 @@ const OSCE = (() => {
       let timer = null, q = null, getText = null;
       let spokenHere = 0, lastAt = 0, quietSince = 0, busy = false, everHeard = false;
 
-      function disarm() { if (timer) clearInterval(timer); timer = null; q = null; }
+      /* THE NOISE FLOOR.
+
+         The first version compared the microphone against a fixed 0.06 and
+         called anything below it silence. In a quiet test that works; in a
+         real room it never fires at all, because a fan, a corridor, or an
+         iPad's own gain control keeps the floor above that line for ever.
+         Twenty minutes of waiting and not one push.
+
+         So nothing is assumed about the room. The quietest readings seen so
+         far ARE the floor, and speech is what rises clearly above it. The
+         floor tracks downward quickly and upward slowly, so a door slamming
+         does not permanently deafen the examiner. */
+      let floor = null, peakSeen = 0;
+      const SPEAK_OVER = 0.045;         // how far above the floor counts as talking
+      function listen(lvl) {
+        if (lvl < 0) return null;
+        floor = floor == null ? lvl : (lvl < floor ? lvl * 0.35 + floor * 0.65 : floor * 0.995 + lvl * 0.005);
+        peakSeen = Math.max(peakSeen, lvl);
+        return lvl > floor + SPEAK_OVER;
+      }
+      /** What the strip on screen shows, so this can never fail invisibly. */
+      function status() {
+        const plan = promptPlan(promptLevel());
+        if (plan.off) return { mode: 'off' };
+        if (!q) return { mode: 'idle' };
+        if (!live?.level || live.level() < 0) return { mode: 'nometer' };
+        if (!everHeard) return { mode: 'waiting' };
+        if (spokenHere >= plan.maxPerQuestion) return { mode: 'spent' };
+        if (!quietSince) return { mode: 'listening' };
+        return { mode: 'quiet', left: Math.max(0, plan.silenceMs - (Date.now() - quietSince)) };
+      }
+
+      function disarm() { if (timer) clearInterval(timer); timer = null; q = null; paintProbeState(); }
 
       function armFor(question, textFn) {
         disarm();
         q = question; getText = textFn;
         spokenHere = 0; lastAt = Date.now(); quietSince = 0; everHeard = false;
-        if (promptPlan(promptLevel()).off) return;
-        timer = setInterval(tick, 700);
+        timer = setInterval(tick, 500);       // runs even at level 0, to paint the strip
+        paintProbeState();
       }
 
       async function tick() {
+        paintProbeState();
         if (busy || !q || !running) return;
         const plan = promptPlan(promptLevel());
         if (plan.off || spokenHere >= plan.maxPerQuestion) return;
@@ -1455,27 +1571,60 @@ const OSCE = (() => {
         const lvl = live?.level ? live.level() : -1;
         /* A device that cannot report a level gets no probing at all rather
            than probing blind. Interrupting someone mid-sentence is worse
-           than staying quiet, and there is no way to tell without a meter. */
+           than staying quiet, and there is no way to tell without a meter.
+           The strip says so rather than leaving it a mystery. */
         if (lvl < 0) return;
-        if (lvl > 0.06) { everHeard = true; quietSince = 0; return; }
-        if (!everHeard) return;                 // they have not started yet
+        const talking = listen(lvl);
+        if (talking) { everHeard = true; quietSince = 0; return; }
+        /* Nothing has been heard above the floor yet. After forty seconds
+           that is itself worth a push — someone who has not started may be
+           stuck, and a real examiner would not sit through it in silence. */
+        if (!everHeard && Date.now() - lastAt < 40000) return;
         if (!quietSince) { quietSince = Date.now(); return; }
         if (Date.now() - quietSince < plan.silenceMs) return;
 
         const said = (getText && getText()) || '';
         const missing = missingPoints(q, said);
-        if (!missing.length) { quietSince = 0; return; }   // nothing left to push for
+        /* With no live transcript there is nothing to check against, so
+           "still missing" cannot be judged — and a station is not a reason
+           to go quiet. Everything unsaid is treated as missing, which is
+           true at the start and harmless later: the push is generic. */
+        const pool = said.trim() ? missing : (q.marking_points || []);
+        if (!pool.length) { quietSince = 0; return; }
 
         busy = true;
         try {
-          const pointed = Math.random() < plan.pointedChance;
+          const pointed = said.trim() && Math.random() < plan.pointedChance;
           let line = null;
-          if (pointed) line = await pointedLine(q, missing, said);
+          if (pointed) line = await pointedLine(q, pool, said);
           if (!line) line = PROMPT_WORDS[Math.floor(Math.random() * PROMPT_WORDS.length)];
           await sayProbe(line);
           spokenHere++; lastAt = Date.now(); quietSince = 0;
         } catch { /* a probe that fails is a probe that did not happen */ }
         busy = false;
+        paintProbeState();
+      }
+
+      /* The examiner's state, on screen, always. The whole reason this went
+         unnoticed for a version is that a feature that does nothing looks
+         exactly like a feature that is switched off. */
+      function paintProbeState() {
+        const el = document.querySelector('#os-listen');
+        if (!el) return;
+        const st = status();
+        const plan = promptPlan(promptLevel());
+        const txt = {
+          off: 'Examiner silent — move the dial above zero for pushes',
+          idle: '',
+          nometer: 'This device gives no microphone level, so the examiner cannot tell when you have stopped — it will not interrupt',
+          waiting: 'Examiner listening…',
+          spent: `Examiner has pushed ${plan.maxPerQuestion} time${plan.maxPerQuestion === 1 ? '' : 's'} on this question`,
+          listening: 'Examiner listening…',
+          quiet: `Examiner waiting… ${Math.ceil((st.left || 0) / 1000)}s`
+        }[st.mode] || '';
+        el.hidden = !txt;
+        el.className = 'os-listen is-' + st.mode;
+        el.textContent = txt;
       }
 
       /** One short push about a specific missing point. */
@@ -1516,7 +1665,7 @@ const OSCE = (() => {
         host.classList.remove('is-in'); void host.offsetWidth; host.classList.add('is-in');
       }
 
-      return { armFor, disarm, tick };
+      return { armFor, disarm, tick, status, paint: paintProbeState };
     })();
 
     async function startCapture() {
@@ -1600,6 +1749,7 @@ const OSCE = (() => {
           ${imageStrip(q)}
           <p class="os-prompt">${esc(q.prompt)}</p>
           <div class="os-probe" id="os-probe" hidden></div>
+          <p class="os-listen" id="os-listen" hidden></p>
           <div class="os-answer">
             <div class="os-answer-head">
               <span class="os-rec" id="os-rec"><i></i> …</span>
@@ -1761,6 +1911,7 @@ const OSCE = (() => {
             the marks you missed and what to do about them. This is the only step that uses AI, and what it costs is
             shown before you press the button.</p>
           <div class="os-src" id="os-src"></div>
+          <div id="os-coach-box"></div>
           <div class="os-mark-acts">
             <div class="os-prov" id="os-prov"></div>
             <button class="btn btn-gold btn-lg" id="os-mark" ${spoken || rec?.blob ? '' : 'disabled'}>Mark this station</button>
@@ -2178,6 +2329,8 @@ const OSCE = (() => {
   const money = e => `$${e.usd < 0.01 ? e.usd.toFixed(4) : e.usd.toFixed(3)} · LKR ${e.lkr.toFixed(2)}`;
 
   function wireMarkControls(stage, st, ans, said, rec, session) {
+    const coachHost = stage.querySelector('#os-coach-box');
+    if (coachHost) { coachHost.innerHTML = coachPicker(!!rec?.blob); wireCoachPicker(coachHost); }
     const srcHost = stage.querySelector('#os-src');
     const provHost = stage.querySelector('#os-prov');
     const estHost = stage.querySelector('#os-est');
@@ -2395,7 +2548,9 @@ const OSCE = (() => {
             shown: (q.images || []).length
               ? (q.images.map(im => im.caption).filter(Boolean).join('; ') || 'an image')
               : '' })) },
-        answers: qsOf(st).map(q => ({ id: q.id, transcript: (ans[q.id]?.transcript || '') }))
+        answers: qsOf(st).map(q => ({ id: q.id, transcript: (ans[q.id]?.transcript || '') })),
+        // only what can honestly be answered for THIS attempt
+        coach: coachFor(coachWanted(), !!rec?.blob)
       };
       if (useAudio) {
         // a model that needs WAV gets the tape re-encoded; everything else
@@ -2441,6 +2596,21 @@ const OSCE = (() => {
       if (audioPath) { attempt.audioPath = audioPath; attempt.audioExpires = audioExpires; attempt.audioSecs = rec?.secs || null; }
       try { await Backend.saveOsceAttempt(attempt); } catch {}
       try { if (typeof Wallet !== 'undefined') Wallet.bust(); } catch {}
+
+      /* The candidate's own Drive, if they connected one. Deliberately the
+         LAST thing, deliberately not awaited, and deliberately unable to
+         affect the return: the marking is the deliverable, and an upload
+         that fails must cost the recording, never the result. */
+      if (rec?.blob && typeof Drive !== 'undefined' && Drive.on()) {
+        Drive.upload(rec.blob, Drive.nameFor(st.topic, attempt.created, rec.ext || 'webm'), {
+          description: `AUREUM OSCE — ${st.topic || ''} — ${attempt.result?.percent ?? '?'}%`,
+          properties: { attempt: attempt.id, station: st.id }
+        }).then(up => {
+          if (!up) return;
+          attempt.drive = { id: up.id, link: up.link, name: up.name };
+          Backend.saveOsceAttempt(attempt).catch(() => {});
+        }).catch(() => {});
+      }
       return attempt;
     }
   }
@@ -2530,6 +2700,32 @@ const OSCE = (() => {
       if (a >= 0 && b > a) { try { d = JSON.parse(raw.slice(a, b + 1)); } catch {} }
     }
     if (!d) throw new Error('The marker did not return readable marks. Try again, or a different model.');
+
+    /* THE POINT TEXT COMES FROM THE STATION, NOT FROM THE MODEL.
+
+       Asked to echo each marking point back, a model abbreviates: a point
+       reading "Measured between 11+0 and 13+6 weeks, CRL 45–84 mm, in the
+       mid-sagittal plane with the neck neutral" came back as "Method of
+       measurement". That is fine for saying WHICH point was missed and
+       useless for revising from — and this report is what the candidate
+       revises from.
+
+       So the model is trusted for the STATUS and the NOTE, and the wording
+       is taken from the station's own scheme, matched by position within
+       the question. Where the counts disagree the model's text is kept, so
+       nothing is ever silently mismatched. */
+    const bySrcId = {};
+    qsOf(st).forEach(q => bySrcId[String(q.id)] = q.marking_points || []);
+    (d.questions || []).forEach(qr => {
+      const src = bySrcId[String(qr.id)];
+      if (!src || !Array.isArray(qr.points)) return;
+      if (src.length !== qr.points.length) return;         // a mismatch is not a mapping
+      qr.points = qr.points.map((p, i) => Object.assign({}, p, {
+        point: src[i],                                     // the scheme's own words
+        heading: p.point && String(p.point) !== String(src[i]) ? p.point : ''
+      }));
+    });
+
     const max = d.max || marksOf(st);
     const total = d.total != null ? d.total : (d.questions || []).reduce((n, q) => n + (q.awarded || 0), 0);
     const percent = d.percent != null ? d.percent : Math.round((total / Math.max(1, max)) * 100);
@@ -2582,6 +2778,17 @@ const OSCE = (() => {
                 <p>${esc(r.structure[k])}</p></div>`).join('')}
           </div></div>` : ''}
 
+        ${r.coaching && Object.keys(r.coaching).length ? `<div class="card os-coach-out" data-animate>
+          <h3 class="card-title">🎧 The mock examiner's coaching</h3>
+          <p class="muted">Not about the marks — about how you came across, and what to do differently in the room.
+            You asked for these before the station was marked.</p>
+          ${COACH.filter(c => r.coaching[c.id]).map(c => `
+            <div class="os-coach-sec">
+              <h4>${esc(c.label)}</h4>
+              <p>${esc(r.coaching[c.id])}</p>
+            </div>`).join('')}
+        </div>` : ''}
+
         <div class="card" data-animate>
           <h3 class="card-title">Marked against the scheme</h3>
           <p class="muted tiny"><span class="es-dot cov"></span> covered · <span class="es-dot par"></span> partial ·
@@ -2602,6 +2809,7 @@ const OSCE = (() => {
                   <div class="es-point es-st-${stCls(p.status)}">
                     <span class="es-point-icon">${stIco(p.status)}</span>
                     <div class="es-point-body">
+                      ${p.heading ? `<p class="es-point-head">${esc(p.heading)}</p>` : ''}
                       <p class="es-point-text">${esc(p.point)}</p>
                       ${p.note ? `<p class="es-point-note">${esc(p.note)}</p>` : ''}
                     </div>
@@ -2671,12 +2879,14 @@ const OSCE = (() => {
         </div>
 
         <div class="card os-deckmake" data-animate>
-          <h3 class="card-title">🃏 Turn what you missed into flashcards</h3>
-          <p class="muted">A deck built only from the points this marking says you did not say — at most fifteen cards,
-            each with the figure that carries the mark and an honest way to remember it. It lands under
-            <strong>Flashcards</strong> in this tab, as its own deck for this attempt.</p>
+          <h3 class="card-title">📘 Write the study document for this case</h3>
+          <p class="muted">Not a pile of cards — one page about this station: how to recognise it, the management in
+            the order it happens with the doses and thresholds that carry the marks, what an examiner asks next, and
+            every point of the scheme marked <strong>✓ you said</strong>, <strong>~ half-said</strong> or
+            <strong>✗ you did not</strong>. It lands under <strong>Study documents</strong> in this tab, and
+            downloads as a PDF.</p>
           <div class="os-mark-acts">
-            <button class="btn btn-gold" id="os-makedeck">Make a deck from this station</button>
+            <button class="btn btn-gold" id="os-makedeck">Write the study document</button>
             <span class="dev-status" id="os-deck-msg"></span>
           </div>
         </div>
@@ -3076,7 +3286,8 @@ ${has('scheme') || has('marks') || has('said') ? `<section class="blk">
       ? `<ul class="pts${has('marks') ? '' : ' blank'}">${(qr.points || []).map(p => `<li><span class="pip ${
           has('marks') ? (/cover/i.test(p.status) ? 'cov' : /partial/i.test(p.status) ? 'par' : 'mis') : ''}">${
           has('marks') ? mark(p.status) : '☐'}</span>
-        <span>${esc(p.point)}${has('marks') && p.note ? `<span class="note">${esc(p.note)}</span>` : ''}</span></li>`).join('')}</ul>`
+        <span>${p.heading ? `<b>${esc(p.heading)}.</b> ` : ''}${esc(p.point)}${
+          has('marks') && p.note ? `<span class="note">${esc(p.note)}</span>` : ''}</span></li>`).join('')}</ul>`
       : '';
     // the picture is part of the question — a CTG station without its trace
     // is not the station
@@ -3097,6 +3308,16 @@ ${has('learning') && (r.keyLearning || []).length ? `<section class="blk"><h2>Ke
 <footer class="foot"><span>${esc(a.station?.topic || '')} — OSCE</span><span>AUREUM · printed ${esc(new Date().toLocaleDateString('en-GB', { dateStyle: 'medium' }))}</span></footer>
 </div>`;
 
+    openPrintSheet(styles, doc);
+  }
+
+
+
+  /* ---------------- mounting a printable sheet ----------------
+     Shared by the station report and the study document, because both hit
+     the same wall: iPadOS Safari ignores print() on a hidden iframe, so
+     the sheet has to be part of the page and the page itself printed. */
+  function openPrintSheet(styles, bodyHtml) {
     document.getElementById('os-printdoc')?.remove();
     document.getElementById('os-printdoc-css')?.remove();
     const css = document.createElement('style');
@@ -3106,33 +3327,30 @@ ${has('learning') && (r.keyLearning || []).length ? `<section class="blk"><h2>Ke
 
     const host = document.createElement('div');
     host.id = 'os-printdoc';
-    host.innerHTML = doc;
+    host.innerHTML = bodyHtml;
     document.body.appendChild(host);
 
+    const prevOverflow = document.documentElement.style.overflow;
     const shut = () => {
       host.remove(); css.remove();
       document.removeEventListener('keydown', onKey);
       document.documentElement.style.overflow = prevOverflow;
     };
     const onKey = e => { if (e.key === 'Escape') shut(); };
-    const prevOverflow = document.documentElement.style.overflow;
     document.documentElement.style.overflow = 'hidden';
     document.addEventListener('keydown', onKey);
-    host.querySelector('[data-pd-close]').addEventListener('click', shut);
-    host.querySelector('[data-pd-print]').addEventListener('click', () => { try { window.print(); } catch {} });
+    host.querySelector('[data-pd-close]')?.addEventListener('click', shut);
+    host.querySelector('[data-pd-print]')?.addEventListener('click', () => { try { window.print(); } catch {} });
 
     /* On a desktop browser print() blocks until the dialog is dismissed, so
-       the sheet can be cleared the moment it returns and the app is back
-       exactly as before. On iOS it does NOT: "Save as PDF" happens in a
-       share sheet raised after print() has returned, and a page that tore
-       itself down underneath would take the document with it. There the
-       sheet stays, with a Close button, until the reader is finished. */
+       the sheet clears the moment it returns and the app is back as it was.
+       On iOS it does NOT: "Save as PDF" happens in a share sheet raised
+       after print() has returned, and a page that tore itself down
+       underneath would take the document with it. There it stays, with a
+       Close button, until the reader is finished. */
     const iOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
       || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-    const go = () => {
-      try { window.print(); } catch {}
-      if (!iOS) setTimeout(shut, 250);
-    };
+    const go = () => { try { window.print(); } catch {} if (!iOS) setTimeout(shut, 250); };
     const imgs = [...host.querySelectorAll('img')];
     if (!imgs.length) { setTimeout(go, 60); return; }
     // a CTG station without its trace is not the station — wait for the pictures
@@ -3153,7 +3371,7 @@ ${has('learning') && (r.keyLearning || []).length ? `<section class="blk"><h2>Ke
         ${tab('sim', '#/osce/sim', 'Exam simulator')}
         ${tab('mine', '#/osce/mine', 'My attempts')}
         ${tab('progress', '#/osce/progress', 'Progress')}
-        ${tab('cards', '#/osce/cards', 'Flashcards')}
+        ${tab('cards', '#/osce/cards', 'Study documents')}
         ${tab('edit', '#/osce/edit', 'Station editor')}
       </div>${inner}</section>`;
   }
@@ -3270,28 +3488,29 @@ ${has('learning') && (r.keyLearning || []).length ? `<section class="blk"><h2>Ke
     const btn = view.querySelector('#os-makedeck');
     const msg = view.querySelector('#os-deck-msg');
     if (!btn) return;
-    const missed = missedPoints(a);
-    if (!missed.length) {
+    const qs = allPoints(a);
+    const n = qs.reduce((t, q) => t + q.points.length, 0);
+    const missed = qs.reduce((t, q) => t + q.points.filter(p => p.status !== 'covered').length, 0);
+    if (!n) {
       btn.disabled = true;
-      msg.innerHTML = '<span class="muted">Nothing was missed here — there is nothing to make cards from.</span>';
+      msg.innerHTML = '<span class="muted">This attempt has no marked scheme to build from.</span>';
       return;
     }
-    btn.textContent = `Make a deck from ${missed.length} missed point${missed.length === 1 ? '' : 's'}`;
-    // a deck already made for this attempt is offered rather than remade
+    msg.innerHTML = `<span class="muted">${n} marking points, ${missed} of them new to you.</span>`;
+    // a document already written for this attempt is offered rather than remade
     (async () => {
       try {
-        const have = (await Backend.listOsceDecks() || []).find(d => d.attemptId === a.id);
-        if (have) msg.innerHTML = `<a class="link" href="#/osce/cards/${esc(have.id)}">A deck of ${
-          (have.cards || []).length} cards already exists for this attempt →</a> Making another replaces it.`;
+        const have = (await Backend.listOsceDecks() || []).find(d => d.attemptId === a.id && d.doc);
+        if (have) msg.innerHTML = `<a class="link" href="#/osce/cards/${esc(have.id)}">A study document already exists for this attempt →</a> Writing another replaces it.`;
       } catch {}
     })();
     btn.addEventListener('click', async () => {
       btn.disabled = true;
       msg.innerHTML = '<span class="muted">Working…</span>';
       try {
-        const d = await makeDeck(a, t => { msg.innerHTML = `<span class="muted">${esc(t)}</span>`; });
-        msg.innerHTML = `<span class="good">✓ ${d.cards.length} cards.</span>
-          <a class="link" href="#/osce/cards/${esc(d.id)}">Open the deck →</a>`;
+        const d = await makeDoc(a, t => { msg.innerHTML = `<span class="muted">${esc(t)}</span>`; });
+        msg.innerHTML = `<span class="good">✓ ${(d.doc.sections || []).length} sections written.</span>
+          <a class="link" href="#/osce/cards/${esc(d.id)}">Open the document →</a>`;
       } catch (e) {
         msg.innerHTML = `<span class="bad">${esc(e.message || e)}</span>`;
       }
@@ -3299,153 +3518,362 @@ ${has('learning') && (r.keyLearning || []).length ? `<section class="blk"><h2>Ke
     });
   }
 
-  /* ================= flashcards from an attempt =================
-
-     A deck is made from what was MISSED, never from the topic. Cards about
-     what the candidate already said are revision of the wrong thing, and a
-     deck of fifteen half-relevant cards is worse than six sharp ones — so
-     fifteen is a ceiling the prompt is told not to fill for its own sake.
-
-     One deck per attempt, so a deck always has a date, a station and a
-     score behind it. Re-running an attempt replaces its deck rather than
-     breeding a second one. */
-
-  const MISSED_LIMIT = 40;
-
-  /** The points a marking says were missed or only partly said. */
-  function missedPoints(a) {
-    const out = [];
-    for (const qr of (a.result?.questions || [])) {
-      const q = (a.questions || []).find(x => String(x.id) === String(qr.id));
-      for (const p of (qr.points || [])) {
-        if (/cover/i.test(p.status)) continue;
-        out.push({ point: p.point, status: /partial/i.test(p.status) ? 'partly said' : 'missed',
-          prompt: q?.prompt || '', note: p.note || '' });
-      }
-    }
-    return out.slice(0, MISSED_LIMIT);
+  /* Every marking point of the attempt, with what the marking said about
+     it. This is the spine of the document: the model is told the verdict
+     and writes around it, and the page marks each point in place. */
+  function allPoints(a) {
+    return (a.result?.questions || []).map(qr => {
+      const q = (a.questions || []).find(x => String(x.id) === String(qr.id)) || {};
+      return { id: qr.id, prompt: q.prompt || '', marks: q.marks || qr.max || 0,
+        points: (qr.points || []).map(p => ({ point: p.point, status: /cover/i.test(p.status) ? 'covered'
+          : /partial/i.test(p.status) ? 'partly said' : 'missed' })) };
+    }).filter(x => x.points.length);
   }
 
-  async function makeDeck(a, onStep = () => {}) {
-    const missed = missedPoints(a);
-    if (!missed.length) throw new Error('Nothing was missed in this station, so there is nothing to make cards from.');
+  async function makeDoc(a, onStep = () => {}) {
+    const qs = allPoints(a);
+    if (!qs.length) throw new Error('This attempt has no marked scheme, so there is nothing to build from.');
     if (typeof Wallet !== 'undefined' && !(await Wallet.canSpend())) throw new Error(Wallet.blockedMessage());
     const token = await Backend.getAccessToken();
-    if (!token) throw new Error('Sign in to make a deck.');
+    if (!token) throw new Error('Sign in to make a study document.');
     const choice = chosenModel();
-    onStep(`Turning ${missed.length} missed point${missed.length === 1 ? '' : 's'} into cards…`);
+    const n = qs.reduce((t, q) => t + q.points.length, 0);
+    onStep(`Writing the page from ${n} marking points across ${qs.length} questions…`);
     const res = await fetch(cfg().ai.apiBase, {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-      body: JSON.stringify({ action: 'oscecards', provider: choice.provider, model: choice.model,
-        dailyLimit: cfg().ai.dailyLimit, max: 15,
-        station: { topic: a.station?.topic, scenario: a.station?.scenario }, missed })
+      body: JSON.stringify({ action: 'oscedoc', provider: choice.provider, model: choice.model,
+        dailyLimit: cfg().ai.dailyLimit,
+        station: { topic: a.station?.topic, scenario: a.station?.scenario }, questions: qs })
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `The cards could not be made (HTTP ${res.status}).`);
-    const cards = (data.cards || []).slice(0, 15);
-    if (!cards.length) throw new Error('The model returned no usable cards. Try again, or a different model.');
-    const deck = {
-      id: 'od-' + a.id,                      // one deck per attempt, by construction
+    if (!res.ok) throw new Error(data.error || `The document could not be written (HTTP ${res.status}).`);
+
+    /* The said/not-said marking is decided HERE, from the attempt, never by
+       the model — it is a fact about what happened and must not be open to
+       a paraphrase. The model only says which section a point belongs to. */
+    const verdict = new Map();
+    qs.forEach(q => q.points.forEach(p => verdict.set(norm(p.point), p.status)));
+    const seen = new Set();
+    const doc = data.doc;
+    doc.sections = (doc.sections || []).map(sec => ({
+      ...sec,
+      points: (sec.points || []).map(txt => {
+        const k = norm(txt);
+        seen.add(k);
+        return { point: txt, status: verdict.get(k) || matchStatus(txt, verdict) };
+      })
+    }));
+    // anything the model failed to place still belongs in the document
+    const orphans = [];
+    qs.forEach(q => q.points.forEach(p => { if (!seen.has(norm(p.point))) orphans.push(p); }));
+    if (orphans.length) doc.sections.push({ heading: 'Also on the scheme', body: '', sayThis: '', points: orphans });
+
+    const stats = { total: 0, covered: 0, partial: 0, missed: 0 };
+    doc.sections.forEach(sec => sec.points.forEach(p => {
+      stats.total++;
+      if (p.status === 'covered') stats.covered++;
+      else if (p.status === 'partly said') stats.partial++;
+      else stats.missed++;
+    }));
+
+    const rec = {
+      id: 'od-' + a.id,                       // one document per attempt, by construction
       attemptId: a.id, stationId: a.station_id,
-      title: a.station?.topic || 'OSCE station',
-      bp: a.bp || null,
-      percent: a.result?.percent ?? null,
-      from: missed.length, cards, created: Date.now(),
-      model: data.model || choice.model
+      title: doc.title || a.station?.topic || 'OSCE station',
+      station: a.station?.topic || '', scenario: a.station?.scenario || '',
+      bp: a.bp || null, percent: a.result?.percent ?? null,
+      doc, stats, created: Date.now(), model: data.model || choice.model
     };
-    await Backend.saveOsceDeck(deck);
+    await Backend.saveOsceDeck(rec);
     try { if (typeof Wallet !== 'undefined') Wallet.bust(); } catch {}
-    return deck;
+    return rec;
   }
 
-  /* ================= the decks (#/osce/cards) ================= */
+  const norm = t => String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  /* A model that reworded a point slightly should not lose its verdict.
+     Best token overlap, and only when it is convincing. */
+  function matchStatus(txt, verdict) {
+    const want = new Set(norm(txt).split(' ').filter(w => w.length > 3));
+    if (!want.size) return 'missed';
+    let best = null, bestScore = 0;
+    for (const [k, v] of verdict) {
+      const have = k.split(' ').filter(w => w.length > 3);
+      if (!have.length) continue;
+      const hit = have.filter(w => want.has(w)).length / have.length;
+      if (hit > bestScore) { bestScore = hit; best = v; }
+    }
+    return bestScore >= 0.6 ? best : 'missed';
+  }
+
+  /* ================= the study documents (#/osce/cards) =================
+
+     One page per attempt. It reads as a case — recognise it, work through
+     it in the order it happens, know the traps — with the candidate's own
+     performance marked inside it rather than listed separately. That is
+     the difference from a deck of cards: the gaps are shown IN PLACE, so
+     you see what you missed in the context you will need it.  */
+
+  const DOC_MARK = {
+    'covered':    { ico: '✓', cls: 'cov', label: 'you said this' },
+    'partly said':{ ico: '~', cls: 'par', label: 'you half-said this' },
+    'missed':     { ico: '✗', cls: 'mis', label: 'you did not say this' }
+  };
 
   async function renderDecks(view, deckId, user) {
-    view.innerHTML = shell('cards', `<div id="os-body"><p class="muted">Reading your decks…</p></div>`);
+    view.innerHTML = shell('cards', `<div id="os-body"><p class="muted">Reading your documents…</p></div>`);
     FX.viewIn(view);
     const host = view.querySelector('#os-body');
-    let decks = [];
-    try { decks = (await Backend.listOsceDecks()) || []; } catch {}
+    let docs = [];
+    try { docs = (await Backend.listOsceDecks()) || []; } catch {}
+    docs = docs.filter(d => d.doc);              // decks from the old card format are ignored
 
     if (deckId) {
-      const d = decks.find(x => x.id === deckId);
+      const d = docs.find(x => x.id === deckId);
       if (!d) { location.hash = '#/osce/cards'; return; }
-      return paintDeck(view, host, d);
+      return paintDoc(view, host, d);
     }
 
-    if (!decks.length) {
-      host.innerHTML = `<div class="card"><h3 class="card-title">No decks yet</h3>
-        <p class="muted">At the bottom of any marked station there is a button that turns the points you missed into
-          flashcards — a separate deck for each attempt, at most fifteen cards, each with the figure that carries the
-          mark and a way to remember it. They collect here.</p>
+    if (!docs.length) {
+      host.innerHTML = `<div class="card"><h3 class="card-title">No study documents yet</h3>
+        <p class="muted">At the bottom of any marked station there is a button that writes one: the whole case on a
+          single page, in the order it happens, with the marking scheme woven through it and your own answer marked
+          against every point. It is the page to read the night before.</p>
         <a class="btn btn-ghost" href="#/osce/mine">Your marked stations</a></div>`;
       return;
     }
     const modules = await OsceBlueprint.get().catch(() => []);
     host.innerHTML = `
       <header data-animate>
-        <p class="kicker">OSCE FLASHCARDS</p>
-        <h1 class="page-title">${decks.length} deck${decks.length === 1 ? '' : 's'}</h1>
-        <p class="muted">One deck per attempt, built from the marks that got away. ${
-          decks.reduce((n, d) => n + (d.cards || []).length, 0)} cards in all.</p>
+        <p class="kicker">OSCE STUDY DOCUMENTS</p>
+        <h1 class="page-title">${docs.length} document${docs.length === 1 ? '' : 's'}</h1>
+        <p class="muted">One per station you have sat. Each is the whole case, with what you said and what you did
+          not marked in place.</p>
       </header>
-      <div class="os-deck-grid" data-animate>
-        ${decks.map(d => `<a class="os-deck" href="#/osce/cards/${esc(d.id)}">
-          <span class="os-deck-n">${(d.cards || []).length}</span>
-          <strong>${esc(d.title)}</strong>
-          <em>${d.bp ? esc(OsceBlueprint.moduleName(modules, d.bp.module)) : 'unplaced'}${
-            d.percent != null ? ` · scored ${d.percent}%` : ''}</em>
-          <span class="tiny muted">${esc(new Date(d.created).toLocaleDateString('en-GB', { dateStyle: 'medium' }))} ·
-            from ${d.from} missed point${d.from === 1 ? '' : 's'}</span>
-        </a>`).join('')}
+      <div class="os-doc-grid" data-animate>
+        ${docs.map(d => {
+          const st = d.stats || {};
+          const pct = st.total ? Math.round((st.covered + st.partial * 0.5) / st.total * 100) : null;
+          return `<a class="os-doccard" href="#/osce/cards/${esc(d.id)}">
+            <strong>${esc(d.title)}</strong>
+            <em>${d.bp ? esc(OsceBlueprint.moduleName(modules, d.bp.module)) : 'unplaced'}</em>
+            ${st.total ? `<div class="os-doc-bar" title="${st.covered} said, ${st.partial} half-said, ${st.missed} missed">
+              <i class="cov" style="flex:${st.covered}"></i><i class="par" style="flex:${st.partial}"></i><i class="mis" style="flex:${st.missed}"></i>
+            </div>
+            <span class="tiny muted">${st.missed} of ${st.total} points were new to you${pct != null ? ` · ${pct}% covered` : ''}</span>` : ''}
+            <span class="tiny muted">${esc(new Date(d.created).toLocaleDateString('en-GB', { dateStyle: 'medium' }))}</span>
+          </a>`;
+        }).join('')}
       </div>`;
     FX.viewIn(view);
   }
 
-  function paintDeck(view, host, d) {
-    let i = 0, flipped = false;
+  /** The document itself. */
+  function paintDoc(view, host, d) {
+    const doc = d.doc || {};
+    const st = d.stats || {};
+    let filter = 'all';
+
+    const pointRow = p => {
+      const m = DOC_MARK[p.status] || DOC_MARK.missed;
+      return `<li class="os-dp is-${m.cls}" data-st="${m.cls}">
+        <span class="os-dp-i" title="${m.label}">${m.ico}</span>
+        <span>${esc(p.point)}</span>
+      </li>`;
+    };
+
     const draw = () => {
-      const c = d.cards[i];
       host.innerHTML = `
         <header data-animate>
-          <p class="kicker"><a class="link" href="#/osce/cards">← All decks</a></p>
-          <h1 class="page-title">${esc(d.title)}</h1>
-          <p class="muted">Card ${i + 1} of ${d.cards.length}${d.percent != null ? ` · you scored ${d.percent}% on this station` : ''}</p>
+          <p class="kicker"><a class="link" href="#/osce/cards">← All documents</a></p>
+          <h1 class="page-title">${esc(doc.title || d.title)}</h1>
+          ${doc.oneLine ? `<p class="os-doc-one">${esc(doc.oneLine)}</p>` : ''}
         </header>
-        <div class="os-card ${flipped ? 'is-back' : ''}" id="os-card" data-animate>
-          ${flipped ? `
-            <div class="os-card-back">
-              ${c.highlight ? `<p class="os-card-hi">${esc(c.highlight)}</p>` : ''}
-              <div class="os-card-body">${esc(c.back).replace(/\n/g, '<br>')}</div>
-              ${c.hook ? `<p class="os-card-hook"><strong>Hook.</strong> ${esc(c.hook)}</p>` : ''}
-            </div>`
-          : `<div class="os-card-front">
-              ${c.tag ? `<span class="os-card-tag">${esc(c.tag)}</span>` : ''}
-              <p>${esc(c.front)}</p>
-              <span class="tiny muted">Say it out loud, then turn it over.</span>
-            </div>`}
+
+        <div class="card os-doc-key" data-animate>
+          <div class="os-doc-figs">
+            <span class="os-dp-i cov">✓</span><span><strong>${st.covered || 0}</strong> you said</span>
+            <span class="os-dp-i par">~</span><span><strong>${st.partial || 0}</strong> half-said</span>
+            <span class="os-dp-i mis">✗</span><span><strong>${st.missed || 0}</strong> you did not</span>
+          </div>
+          <div class="os-doc-filters">
+            ${[['all', 'Everything'], ['mis', 'Only what I missed'], ['cov', 'Only what I said']].map(([k, l]) =>
+              `<button class="os-pick-b ${filter === k ? 'active' : ''}" data-filt="${k}">${l}</button>`).join('')}
+          </div>
         </div>
-        <div class="os-card-nav" data-animate>
-          <button class="btn btn-ghost" id="os-prev" ${i === 0 ? 'disabled' : ''}>← Back</button>
-          <button class="btn btn-gold btn-lg" id="os-flip">${flipped ? 'Hide the answer' : 'Show the answer'}</button>
-          <button class="btn btn-ghost" id="os-next" ${i >= d.cards.length - 1 ? 'disabled' : ''}>Next →</button>
+
+        ${doc.recognise ? `<div class="card" data-animate>
+          <h3 class="card-title">How you know you are in this case</h3>
+          <p>${esc(doc.recognise)}</p></div>` : ''}
+
+        <div class="os-doc-body" data-animate>
+          ${(doc.sections || []).map((sec, i) => {
+            const pts = sec.points || [];
+            const missed = pts.filter(p => p.status === 'missed').length;
+            return `<section class="card os-doc-sec" data-sec="${i}">
+              <h3 class="card-title">
+                <span class="os-doc-n">${i + 1}</span> ${esc(sec.heading || '')}
+                ${missed ? `<span class="os-doc-flag">${missed} missed</span>` : ''}
+              </h3>
+              ${sec.body ? `<p class="os-doc-teach">${esc(sec.body)}</p>` : ''}
+              ${sec.sayThis ? `<p class="os-doc-say"><span>Say it like this</span>“${esc(sec.sayThis)}”</p>` : ''}
+              ${pts.length ? `<ul class="os-dp-list">${pts.map(pointRow).join('')}</ul>` : ''}
+            </section>`;
+          }).join('')}
         </div>
+
+        ${(doc.traps || []).length ? `<div class="card" data-animate>
+          <h3 class="card-title">⚠ What loses marks here</h3>
+          <ul class="os-doc-list">${doc.traps.map(t => `<li>${esc(t)}</li>`).join('')}</ul></div>` : ''}
+
+        ${(doc.vivaQuestions || []).length ? `<div class="card" data-animate>
+          <h3 class="card-title">Where the examiner goes next</h3>
+          <p class="muted tiny">Answer this station well and these are what follow.</p>
+          <ul class="os-doc-list">${doc.vivaQuestions.map(t => `<li>${esc(t)}</li>`).join('')}</ul></div>` : ''}
+
+        ${(doc.guidelines || []).length ? `<div class="card" data-animate>
+          <h3 class="card-title">The guidance behind it</h3>
+          <ul class="os-doc-list">${doc.guidelines.map(t => `<li>${esc(t)}</li>`).join('')}</ul></div>` : ''}
+
         <div class="os-run-foot" data-animate>
+          <button class="btn btn-gold" id="os-doc-print">🖨 Download as PDF</button>
+          <button class="btn btn-ghost" id="os-doc-copy">📄 Copy as text</button>
           <a class="btn btn-ghost btn-sm" href="#/osce/result/${esc(d.attemptId)}">The station this came from</a>
-          <button class="btn btn-ghost btn-sm" id="os-deck-del">Delete this deck</button>
+          <button class="btn btn-ghost btn-sm qr-danger" id="os-doc-del">Delete</button>
         </div>`;
       FX.viewIn(view);
-      host.querySelector('#os-flip').addEventListener('click', () => { flipped = !flipped; draw(); });
-      host.querySelector('#os-card').addEventListener('click', () => { flipped = !flipped; draw(); });
-      host.querySelector('#os-prev').addEventListener('click', () => { if (i > 0) { i--; flipped = false; draw(); } });
-      host.querySelector('#os-next').addEventListener('click', () => { if (i < d.cards.length - 1) { i++; flipped = false; draw(); } });
-      host.querySelector('#os-deck-del').addEventListener('click', async () => {
-        if (!confirm('Delete this deck? The station and its report are not affected.')) return;
+      applyFilter();
+
+      host.querySelectorAll('[data-filt]').forEach(b => b.addEventListener('click', () => {
+        filter = b.dataset.filt;
+        host.querySelectorAll('[data-filt]').forEach(x => x.classList.toggle('active', x === b));
+        applyFilter();
+      }));
+      host.querySelector('#os-doc-print').addEventListener('click', () => printDoc(d));
+      host.querySelector('#os-doc-copy').addEventListener('click', e => copyOut(docAsText(d), e.currentTarget, '📄 Copy as text'));
+      host.querySelector('#os-doc-del').addEventListener('click', async () => {
+        if (!confirm('Delete this study document? The station and its report are not affected.')) return;
         try { await Backend.deleteOsceDeck(d.id); } catch {}
         location.hash = '#/osce/cards';
       });
     };
+
+    /* Filtering hides POINTS, never the teaching: "only what I missed" is
+       for revising the gaps, and a gap with its explanation removed is not
+       revision. A section whose points all disappear goes with them. */
+    function applyFilter() {
+      host.querySelectorAll('.os-doc-sec').forEach(sec => {
+        let shown = 0;
+        sec.querySelectorAll('.os-dp').forEach(li => {
+          const keep = filter === 'all' || li.dataset.st === filter
+            || (filter === 'mis' && li.dataset.st === 'par');
+          li.hidden = !keep;
+          if (keep) shown++;
+        });
+        const had = sec.querySelectorAll('.os-dp').length;
+        sec.hidden = filter !== 'all' && had > 0 && shown === 0;
+      });
+    }
     draw();
+  }
+
+  /** The document as plain text, for pasting anywhere. */
+  function docAsText(d) {
+    const doc = d.doc || {};
+    const L = [];
+    L.push(String(doc.title || d.title || '').toUpperCase());
+    if (doc.oneLine) L.push(doc.oneLine);
+    L.push('');
+    if (doc.recognise) { L.push('HOW YOU KNOW YOU ARE IN THIS CASE'); L.push(doc.recognise); L.push(''); }
+    (doc.sections || []).forEach((sec, i) => {
+      L.push(`${i + 1}. ${sec.heading || ''}`);
+      if (sec.body) L.push(sec.body);
+      if (sec.sayThis) L.push(`   Say it like this: "${sec.sayThis}"`);
+      (sec.points || []).forEach(p => {
+        const m = DOC_MARK[p.status] || DOC_MARK.missed;
+        L.push(`   [${m.ico}] ${p.point}`);
+      });
+      L.push('');
+    });
+    const list = (h, arr) => { if ((arr || []).length) { L.push(h); arr.forEach(x => L.push(' - ' + x)); L.push(''); } };
+    list('WHAT LOSES MARKS HERE', doc.traps);
+    list('WHERE THE EXAMINER GOES NEXT', doc.vivaQuestions);
+    list('THE GUIDANCE BEHIND IT', doc.guidelines);
+    L.push('✓ said · ~ half-said · ✗ not said — from your attempt on '
+      + new Date(d.created).toLocaleDateString('en-GB', { dateStyle: 'medium' }));
+    return L.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  /* Printed the same way the station report is: into the page, then the
+     page itself. A hidden iframe is ignored by iPadOS Safari. */
+  function printDoc(d) {
+    const doc = d.doc || {};
+    const st = d.stats || {};
+    const P = '#os-printdoc';
+    const styles = `
+@page { size: A4 portrait; margin: 15mm 14mm; }
+${P}, ${P} *{box-sizing:border-box}
+${P}{position:fixed;inset:0;z-index:9000;overflow:auto;background:#f1f2f6;color:#111;
+  font-family:"Helvetica Neue",Arial,sans-serif;font-size:10.5pt;line-height:1.55;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact}
+${P} .sheet{background:#fff;width:210mm;min-height:297mm;margin:0 auto 28px;padding:15mm 14mm;box-shadow:0 2px 18px rgba(0,0,0,.16)}
+${P} h1{font-family:Georgia,serif;font-size:20pt;margin:0 0 4px;color:#111}
+${P} h2{font-size:12.5pt;margin:16px 0 6px;color:#111;border-left:4px solid #0d8f7d;padding-left:9px}
+${P} .one{font-size:11pt;font-style:italic;color:#444;margin:0 0 10px}
+${P} .brand{font-size:7.5pt;letter-spacing:.22em;text-transform:uppercase;color:#7a5a10;margin:0 0 2px}
+${P} .key{display:flex;gap:16px;font-size:9pt;color:#444;border-top:1px solid #ddd;border-bottom:1px solid #ddd;
+  padding:7px 0;margin:10px 0 14px}
+${P} .sec{margin:0 0 14px;break-inside:avoid}
+${P} .teach{margin:0 0 6px}
+${P} .say{background:#f5f7f6;border-left:3px solid #0d8f7d;padding:7px 10px;margin:0 0 7px;font-style:italic}
+${P} ul.pts{list-style:none;padding:0;margin:0}
+${P} ul.pts li{display:flex;gap:7px;margin-bottom:.2em;break-inside:avoid}
+${P} .pip{width:13px;flex:0 0 13px;text-align:center;font-weight:800}
+${P} .cov{color:#0d8f7d}${P} .par{color:#a5750f}${P} .mis{color:#c62828}
+${P} .mis-row{background:#fdf4f4}
+${P} ul.plain{margin:0 0 8px;padding-left:1.2em}
+${P} .foot{margin-top:16px;padding-top:6px;border-top:1px solid #ddd;font-size:7.5pt;color:#888;display:flex;justify-content:space-between}
+${P} .os-pd-bar{position:sticky;top:0;z-index:2;display:flex;gap:10px;justify-content:center;align-items:center;
+  padding:10px;background:#1b1b22;color:#fff;font-size:11pt}
+${P} .os-pd-bar button{font:inherit;font-size:10pt;padding:7px 16px;border-radius:8px;border:0;cursor:pointer}
+${P} .os-pd-print{background:#e8b53f;color:#241d05;font-weight:700}
+${P} .os-pd-close{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.4)}
+@media print {
+  html,body{background:#fff !important;margin:0 !important;padding:0 !important;height:auto !important;overflow:visible !important}
+  body > *:not(${P}){display:none !important}
+  ${P}{position:static !important;overflow:visible !important;background:#fff !important}
+  ${P} .os-pd-bar{display:none !important}
+  ${P} .sheet{width:auto !important;min-height:0 !important;margin:0 !important;padding:0 !important;box-shadow:none !important}
+}`;
+    const pip = p => {
+      const m = DOC_MARK[p.status] || DOC_MARK.missed;
+      return `<li class="${m.cls === 'mis' ? 'mis-row' : ''}"><span class="pip ${m.cls}">${m.ico}</span><span>${esc(p.point)}</span></li>`;
+    };
+    const list = (h, arr) => (arr || []).length
+      ? `<h2>${h}</h2><ul class="plain">${arr.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '';
+    const body = `<div class="os-pd-bar">
+        <button class="os-pd-print" type="button" data-pd-print>🖨 Print / Save as PDF</button>
+        <button class="os-pd-close" type="button" data-pd-close>Close</button>
+      </div><div class="sheet">
+      <p class="brand">AUREUM · Pathway to MD</p>
+      <h1>${esc(doc.title || d.title || '')}</h1>
+      ${doc.oneLine ? `<p class="one">${esc(doc.oneLine)}</p>` : ''}
+      <div class="key"><span><b class="cov">✓</b> ${st.covered || 0} said</span>
+        <span><b class="par">~</b> ${st.partial || 0} half-said</span>
+        <span><b class="mis">✗</b> ${st.missed || 0} not said</span>
+        <span>sat ${esc(new Date(d.created).toLocaleDateString('en-GB', { dateStyle: 'medium' }))}</span></div>
+      ${doc.recognise ? `<h2>How you know you are in this case</h2><p>${esc(doc.recognise)}</p>` : ''}
+      ${(doc.sections || []).map((sec, i) => `<div class="sec">
+        <h2>${i + 1}. ${esc(sec.heading || '')}</h2>
+        ${sec.body ? `<p class="teach">${esc(sec.body)}</p>` : ''}
+        ${sec.sayThis ? `<p class="say">“${esc(sec.sayThis)}”</p>` : ''}
+        ${(sec.points || []).length ? `<ul class="pts">${sec.points.map(pip).join('')}</ul>` : ''}
+      </div>`).join('')}
+      ${list('What loses marks here', doc.traps)}
+      ${list('Where the examiner goes next', doc.vivaQuestions)}
+      ${list('The guidance behind it', doc.guidelines)}
+      <div class="foot"><span>${esc(d.station || '')}</span><span>AUREUM · ${esc(new Date().toLocaleDateString('en-GB', { dateStyle: 'medium' }))}</span></div>
+    </div>`;
+    openPrintSheet(styles, body);
   }
 
   /* ================= progress (#/osce/progress) =================
@@ -3764,6 +4192,7 @@ ${has('learning') && (r.keyLearning || []).length ? `<section class="blk"><h2>Ke
     stations, bustStations, collections, bustCollections, openSessions, dropSession,
     marksOf, passOf, qsOf, toWav, wavRateFor, modelChoices, noAudioReason,
     stationAsText, promptLevel, setPromptLevel, promptPlan, missingPoints, saidAlready,
+    makeDoc, docAsText, allPoints, coachFor, coachWanted, COACH,
     // exposed for tests and for the circuit page's live redraw
-    markState, onMarkChange, retryMark, missedPoints, makeDeck };
+    markState, onMarkChange, retryMark };
 })();

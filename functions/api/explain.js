@@ -362,6 +362,33 @@ export async function onRequest(context) {
         usage: { in: r.in, out: r.out } });
     }
 
+    /* ---- OSCE: the study document ----
+       Bigger than the card generator it replaces, and worth it: one call
+       produces the whole page, and the page is what gets read. */
+    if (action === 'oscedoc') {
+      const r = await run(buildOsceDocPrompt(body), 'osce_doc', 6000);
+      let doc = null;
+      try {
+        const t = String(r.text || '').replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+        const a = t.indexOf('{'), b = t.lastIndexOf('}');
+        doc = JSON.parse(a >= 0 && b > a ? t.slice(a, b + 1) : t);
+      } catch {}
+      if (!doc || !Array.isArray(doc.sections) || !doc.sections.length) {
+        return json({ error: 'The document came back unreadable. Try again, or a different model.' }, 502);
+      }
+      const clip = (v, n) => String(v == null ? '' : v).slice(0, n);
+      return json({ doc: {
+        title: clip(doc.title, 120), oneLine: clip(doc.oneLine, 400), recognise: clip(doc.recognise, 700),
+        sections: doc.sections.slice(0, 12).map(x => ({
+          heading: clip(x.heading, 120), body: clip(x.body, 2500), sayThis: clip(x.sayThis, 500),
+          points: (x.points || []).slice(0, 24).map(p => clip(p, 400))
+        })),
+        traps: (doc.traps || []).slice(0, 10).map(x => clip(x, 300)),
+        guidelines: (doc.guidelines || []).slice(0, 10).map(x => clip(x, 200)),
+        vivaQuestions: (doc.vivaQuestions || []).slice(0, 10).map(x => clip(x, 300))
+      }, model: r.model, usage: { in: r.in, out: r.out } });
+    }
+
     /* ---- OSCE: flashcards from what was missed ----
        Built from the marking, not from the topic: a card is only worth
        making about a point the candidate actually failed to say. */
@@ -763,6 +790,7 @@ function buildOsceMarkPrompt(body) {
     'wording is given to you — and ignore it. Credit only what the candidate contributed beyond the question ' +
     'itself.\n\n' + OSCE_CALIBRATION;
 
+  const coach = coachTail(body, false);
   const user = [
     `STATION: ${st.topic || ''} — total ${st.total_marks || 50} marks, pass mark ${st.pass_mark || ''}.`,
     `SCENARIO: ${st.scenario || ''}`,
@@ -779,13 +807,51 @@ function buildOsceMarkPrompt(body) {
       '"improvements":[{"action":"<what to do differently>","marks":0}],' +
       '"keyLearning":["<the facts to carry away>"],' +
       '"structure":{"coverage":"<did they answer what was asked>","fluency":"<pace, hesitancy, clarity>",' +
-      '"safety":"<were the safety-critical points made>"}}',
-    'Every marking point of every question must appear exactly once in its question\'s points array.',
+      '"safety":"<were the safety-critical points made>"}' + coach.shape + '}' + coach.ask,
+    'Every marking point of every question must appear exactly once in its question\'s points array,',
+    'IN THE SAME ORDER AS GIVEN. Copy the point text verbatim — do not shorten it to a heading. The app\n'
+    + 'matches your points to the scheme by position, and a candidate revises from the full wording.',
     '"share" is marks divided by the number of marking points for that question.',
     '"credit" is the marks that point earned: the full share if covered, half the share if partial, 0 if missed.',
     'awarded must equal the sum of that question\'s credits, rounded to the nearest 0.5, and total the sum of awarded.'
   ].join('\n');
   return { system, user };
+}
+
+/* The optional coaching, appended to whichever marking prompt is in use.
+   Each block is only added when the candidate asked for it, so a report
+   that nobody wanted costs nothing. The audio-only ones are filtered out
+   client-side before they get here, but the instructions say what they
+   depend on anyway — a model asked to judge pronunciation from a typed
+   transcript will invent something rather than decline. */
+const COACH_BLOCKS = {
+  delivery: 'DELIVERY AND STRUCTURE. Did they lead with the headline before the detail? Did they signpost ("three '
+    + 'things: first... second..."), or wander? Did each answer finish, or trail off? Quote one line they said that '
+    + 'was well structured and one that was not.',
+  articulation: 'ARTICULATION AND CLARITY (from the recording). Count the filler words and hedges. Note half-finished '
+    + 'sentences and thinking aloud. Say whether an examiner would have followed it first time. Be specific about '
+    + 'WHERE, not general about how they speak.',
+  pronunciation: 'PRONUNCIATION (from the recording). List ONLY the drug names, eponyms and technical terms that were '
+    + 'mispronounced badly enough to cost credibility in a viva, with the correct pronunciation written simply '
+    + '(e.g. "mifepristone = mif-eh-PRIS-tone"). If none were, say so plainly and list nothing.',
+  pace: 'PACE AND TIMING (from the recording). Rushing, dead air, and how the time was spent across the questions. '
+    + 'Say which question was given too long and which too little.',
+  technique: 'EXAM TECHNIQUE FOR THE REAL DAY. What to do differently in the room: how to open an answer, how to buy '
+    + 'thinking time without dead air, how to recover from a bad start, what to do when the answer is not known. '
+    + 'Concrete and usable tomorrow, not encouragement.'
+};
+function coachTail(body, heard) {
+  const want = (body.coach || []).filter(k => COACH_BLOCKS[k]);
+  if (!want.length) return { ask: '', shape: '' };
+  const usable = heard ? want : want.filter(k => !['articulation', 'pronunciation', 'pace'].includes(k));
+  if (!usable.length) return { ask: '', shape: '' };
+  return {
+    ask: '\n\nCOACHING — the candidate asked for this as well as the marks. Write it as an examiner speaking to a '
+      + 'candidate after a mock: direct, specific, and about THIS performance. Never generic advice that would fit '
+      + 'anybody. If something was genuinely fine, say it was fine rather than inventing a fault.\n'
+      + usable.map(k => '- ' + COACH_BLOCKS[k]).join('\n'),
+    shape: ',"coaching":{' + usable.map(k => `"${k}":"<2-4 sentences>"`).join(',') + '}'
+  };
 }
 
 /* Marking straight from the tape: transcribe AND mark in one call. */
@@ -816,6 +882,7 @@ function buildOsceAudioPrompt(body) {
     'the real room and is not a reason to mark an answer down.\n\n' +
     OSCE_CALIBRATION;
 
+  const coach = coachTail(body, true);
   const user = [
     `STATION: ${st.topic || ''} — total ${st.total_marks || 50} marks, pass mark ${st.pass_mark || ''}.`,
     `SCENARIO: ${st.scenario || ''}`,
@@ -834,8 +901,9 @@ function buildOsceAudioPrompt(body) {
       '"keyLearning":["<the facts to carry away>"],' +
       '"structure":{"coverage":"<did they answer what was asked>",' +
       '"fluency":"<pace, hesitancy, filler, clarity — you can HEAR this, so be specific>",' +
-      '"safety":"<were the safety-critical points made>"}}',
-    'Every marking point of every question must appear exactly once in that question\'s points array.',
+      '"safety":"<were the safety-critical points made>"}' + coach.shape + '}' + coach.ask,
+    'Every marking point of every question must appear exactly once in that question\'s points array,',
+    'IN THE SAME ORDER AS GIVEN, with the point text copied verbatim rather than shortened.',
     'If nothing was said for a question, set its transcript to "" and mark every point missed.',
     '"share" is marks divided by the number of marking points for that question.',
     '"credit" is the marks that point earned: the full share if covered, half the share if partial, 0 if missed.',
@@ -901,6 +969,74 @@ function buildOsceCardsPrompt(body) {
     'Return ONLY a JSON array, no prose and no code fence:',
     '[{"front":"...","back":"...","highlight":"...","hook":"...","tag":"<2-4 words naming the idea>"}]'
   ].join('\n') };
+}
+
+/* ================= the study document =================
+
+   Flashcards were the wrong shape for this. An OSCE station is not a set
+   of isolated facts — it is one clinical situation with an order to it,
+   and a card per missed point takes that apart and hands back the pieces.
+   What a candidate actually wants the night before is ONE page about this
+   case: what it was, what a full-mark answer sounds like, and — set out
+   plainly — which parts of it they already said and which they did not.
+
+   The document is therefore built around the STATION, not around the
+   misses, with the misses marked inside it. That difference is the whole
+   design: you read it as a case, and your own gaps are visible in place.
+
+   Written as structured JSON rather than prose so the page can render the
+   said/not-said marking properly, print it, and let the reader collapse
+   what they already know. */
+function buildOsceDocPrompt(body) {
+  const st = body.station || {};
+  const qs = (body.questions || []).slice(0, 20);
+  return {
+    system: PERSONA + ' You are writing the revision page a candidate will read the night before the exam, '
+      + 'about one station they have just sat.',
+    user: [
+      'Write a study document for this PGIM MD Part II (Obstetrics & Gynaecology) OSCE station.',
+      '',
+      `STATION: ${String(st.topic || '').slice(0, 160)}`,
+      `SCENARIO: ${String(st.scenario || '').slice(0, 900)}`,
+      '',
+      'For each question below you are given every marking point, and whether the candidate covered it,',
+      'partly covered it, or missed it entirely. That marking is FACT — do not re-judge it, do not soften it.',
+      '',
+      ...qs.map((q, i) => [
+        `--- Q${i + 1} (${q.marks} marks): ${String(q.prompt || '').slice(0, 300)}`,
+        ...(q.points || []).map(p => `    [${p.status}] ${String(p.point || '').slice(0, 300)}`)
+      ].join('\n')),
+      '',
+      'Return ONLY this JSON, no prose and no code fence:',
+      '{',
+      '  "title": "<the clinical subject in 3-6 words — not the station id>",',
+      '  "oneLine": "<a single sentence a candidate could say to open this station>",',
+      '  "recognise": "<2-3 sentences: how you know you are in THIS case — the features that pin it down>",',
+      '  "sections": [',
+      '    { "heading": "<the step of management, in the order it happens>",',
+      '      "body": "<the teaching for this step: 3-6 sentences at Part II depth, with the actual doses,',
+      '                thresholds, time windows and cut-offs. This is the part that must be reliable.>",',
+      '      "points": ["<the exact marking point text this section covers>"],',
+      '      "sayThis": "<one sentence in the words you would actually use out loud to an examiner>" }',
+      '  ],',
+      '  "traps": ["<the mistakes that lose marks here, one per line>"],',
+      '  "guidelines": ["<RCOG/NICE/SLCOG guidance by name and number where one applies>"],',
+      '  "vivaQuestions": ["<what an examiner asks NEXT if you answer this well>"]',
+      '}',
+      '',
+      'RULES:',
+      '- Cover EVERY marking point across the sections. Each point must appear in exactly one section\'s',
+      '  "points" array, copied verbatim, so the page can mark what was said and what was not.',
+      '- Order the sections the way the case unfolds — assessment before management, resuscitation before',
+      '  investigation. Not the order the questions happened to be asked in.',
+      '- Where a point was MISSED, the section covering it must teach it properly, not mention it.',
+      '  Where a point was covered, keep it short — they already know it.',
+      '- Numbers are the whole point. "Give magnesium sulphate" is worthless; the regimen is the answer.',
+      '- Never invent a figure. If unsure of a number, give the principle and say the figure should be checked.',
+      '- "sayThis" must sound like speech, not like a textbook. It is what they will say in the room.',
+      '- Between 4 and 9 sections. Fewer, better sections beat a long list.'
+    ].join('\n')
+  };
 }
 
 function buildOsceChatPrompt(body) {

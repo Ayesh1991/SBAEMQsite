@@ -4156,7 +4156,17 @@ body.eco-open .ap-dock { z-index: 2390; }
 
 /* ---- Explore with AI, on a station report ---- */
 .os-explore .os-ex-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 14px 0 10px; }
-.os-explore .ai-messages { max-height: 460px; }
+/* A ceiling with nothing to catch what exceeds it: the second answer simply
+   spilled out of the card and lay on top of everything below. The scroll
+   was always intended — the code sets scrollTop after every reply — the box
+   just never had anywhere to scroll. */
+.os-explore .ai-messages {
+  max-height: 460px; overflow-y: auto; overscroll-behavior: contain;
+  min-height: 0; padding-right: 4px;
+}
+.os-explore .ai-msg { min-width: 0; overflow-wrap: anywhere; }
+.os-explore .ai-msg pre { max-width: 100%; overflow-x: auto; }
+.os-explore .ai-msg table { display: block; max-width: 100%; overflow-x: auto; }
 .os-explore .ai-web-out { margin: 10px 0; }
 
 /* ---- the account and instant top-ups ---- */
@@ -4541,5 +4551,105 @@ body.eco-open .ap-dock { z-index: 2390; }
 #wl-send-go.is-armed { background: linear-gradient(135deg,#f87171,#e8b53f); color: #241d05; }
 .wl-send-who {
   margin-top: 12px; padding: 11px 13px; border-radius: 10px;
+  background: rgba(232,181,63,.08); border-left: 3px solid var(--gold, #e8b53f);
+}
+
+/* ============================================================
+   v74 — the listening strip, coaching, study documents, Drive
+   ============================================================ */
+
+/* the examiner's state, always visible */
+.os-listen {
+  margin: 6px 0 12px; font-size: .76rem; color: var(--ink-3);
+  display: flex; align-items: center; gap: 7px;
+}
+.os-listen::before {
+  content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: 0 0 7px;
+}
+.os-listen.is-listening::before, .os-listen.is-waiting::before { animation: os-pulse 1.4s ease-in-out infinite; }
+.os-listen.is-quiet { color: var(--gold, #e8b53f); }
+.os-listen.is-quiet::before { animation: os-pulse .7s ease-in-out infinite; }
+.os-listen.is-nometer { color: var(--bad, #f87171); }
+.os-listen.is-off, .os-listen.is-spent { opacity: .5; }
+
+/* the full marking point, under its heading */
+.es-point-head {
+  font-size: .68rem; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--ink-3); margin: 0 0 2px;
+}
+
+/* coaching */
+.os-coach { margin: 14px 0 4px; }
+.os-coach-h { display: flex; flex-direction: column; gap: 2px; margin: 0 0 8px; }
+.os-coach-o { display: flex; gap: 10px; align-items: flex-start; padding: 7px 2px; cursor: pointer; }
+.os-coach-o.is-off { opacity: .45; cursor: default; }
+.os-coach-o input { margin-top: 3px; }
+.os-coach-out .os-coach-sec { padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,.07); }
+.os-coach-out .os-coach-sec:last-child { border-bottom: none; }
+.os-coach-out h4 { margin: 0 0 4px; font-size: .84rem; color: var(--gold, #e8b53f); }
+.os-simcoach .os-coach { margin-top: 6px; }
+
+/* study documents */
+.os-doc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+.os-doccard {
+  display: flex; flex-direction: column; gap: 5px; padding: 16px; border-radius: 14px;
+  background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.09);
+  text-decoration: none; color: inherit; transition: transform .18s ease, border-color .18s ease;
+}
+.os-doccard:hover { transform: translateY(-2px); border-color: rgba(232,181,63,.5); }
+.os-doccard em { font-style: normal; font-size: .74rem; color: var(--ink-2); }
+.os-doc-bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: rgba(255,255,255,.08); }
+.os-doc-bar i.cov { background: var(--good, #34d399); }
+.os-doc-bar i.par { background: var(--gold, #e8b53f); }
+.os-doc-bar i.mis { background: var(--bad, #f87171); }
+.os-doc-one { font-size: 1.02rem; color: var(--ink-2); font-style: italic; }
+.os-doc-key { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; align-items: center; }
+.os-doc-figs { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: .82rem; }
+.os-doc-figs span:not(.os-dp-i) { margin-right: 10px; color: var(--ink-2); }
+.os-doc-filters { display: flex; gap: 8px; flex-wrap: wrap; }
+.os-doc-body { display: flex; flex-direction: column; gap: 14px; }
+.os-doc-sec .card-title { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.os-doc-n {
+  width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center;
+  background: rgba(232,181,63,.16); color: var(--gold, #e8b53f); font-size: .76rem; flex: 0 0 24px;
+}
+.os-doc-flag {
+  font-size: .64rem; letter-spacing: .08em; text-transform: uppercase;
+  background: rgba(248,113,113,.16); color: #f87171; padding: 2px 8px; border-radius: 999px;
+}
+.os-doc-teach { line-height: 1.68; }
+.os-doc-say {
+  margin: 10px 0; padding: 10px 13px; border-radius: 10px; font-style: italic;
+  background: rgba(94,234,212,.07); border-left: 3px solid #5eead4;
+}
+.os-doc-say span {
+  display: block; font-style: normal; font-size: .62rem; letter-spacing: .12em;
+  text-transform: uppercase; color: #5eead4; margin-bottom: 3px;
+}
+.os-dp-list { list-style: none; padding: 0; margin: 10px 0 0; }
+.os-dp { display: flex; gap: 9px; padding: 6px 0; border-top: 1px solid rgba(255,255,255,.05); }
+.os-dp-i {
+  flex: 0 0 20px; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center;
+  font-size: .72rem; font-weight: 800;
+}
+.os-dp-i.cov, .os-dp.is-cov .os-dp-i { background: rgba(52,211,153,.18); color: #34d399; }
+.os-dp-i.par, .os-dp.is-par .os-dp-i { background: rgba(232,181,63,.18); color: #e8b53f; }
+.os-dp-i.mis, .os-dp.is-mis .os-dp-i { background: rgba(248,113,113,.18); color: #f87171; }
+.os-dp.is-mis { background: rgba(248,113,113,.045); border-radius: 8px; padding-left: 6px; }
+.os-doc-list { margin: 6px 0 0; padding-left: 1.15em; }
+.os-doc-list li { margin-bottom: 6px; color: var(--ink-2); }
+
+/* the Drive badge and panel */
+.dv-badge {
+  display: inline-flex; align-items: center; gap: 6px; font-size: .64rem; letter-spacing: .08em;
+  text-transform: uppercase; padding: 3px 9px; border-radius: 999px; vertical-align: middle;
+  border: 1px solid rgba(255,255,255,.14); color: var(--ink-2);
+}
+.dv-badge i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.dv-badge.is-on { color: #34d399; border-color: rgba(52,211,153,.4); }
+.dv-badge.is-warn { color: #e8b53f; border-color: rgba(232,181,63,.5); }
+.dv-badge.is-off { opacity: .6; }
+.wl-dv-warn {
+  padding: 11px 13px; border-radius: 11px; margin: 0 0 12px;
   background: rgba(232,181,63,.08); border-left: 3px solid var(--gold, #e8b53f);
 }
