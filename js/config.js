@@ -95,6 +95,27 @@ window.AUREUM_CONFIG = {
     pdfProducer: ''              // e.g. 'iText' — pin the library the bank generates with
   },
 
+  /* Saving OSCE recordings into the candidate's OWN Google Drive.
+
+     Leave `clientId` empty and the whole feature is invisible — nothing is
+     loaded from Google, no badge appears, and the 24-hour server copy
+     behaves exactly as it always has. Fill it in and a "Connect Drive"
+     button appears in Profile.
+
+     The scope used is drive.file, which reaches ONLY files this app
+     created plus the folder the user hands over through the Picker. It can
+     never see the rest of the Drive, and it is the scope that keeps this
+     out of Google's paid security assessment.
+
+     apiKey/appId are only needed by the folder Picker. The API key is a
+     public browser key restricted by HTTP referrer, like the one already
+     used for reading the public Drive folders. */
+  driveSave: {
+    clientId: '',                    // xxxxx.apps.googleusercontent.com
+    apiKey: '',                      // browser key, referrer-restricted
+    appId: ''                        // the Cloud project NUMBER
+  },
+
   /* OSCE collections — the bins a station belongs to. The developer can add
      more from the OSCE importer; these ship with every deployment. Stations
      published before collections existed have no `collection` and are shown

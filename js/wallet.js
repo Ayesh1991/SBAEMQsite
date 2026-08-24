@@ -258,6 +258,8 @@ const Wallet = (() => {
           <div id="wl-slip"></div>
         </div>
 
+        ${(typeof Drive !== 'undefined' && Drive.configured()) ? `<div class="card" data-animate id="wl-drive"></div>` : ''}
+
         <div class="card" data-animate>
           <h3 class="card-title">↔ Send credit to another user</h3>
           <p class="muted">If a colleague is out of balance in the middle of a circuit and cannot get to a bank, you can
@@ -310,6 +312,7 @@ const Wallet = (() => {
 
     view.querySelector('#wl-bd')?.addEventListener('click', () => billingDetails(ben));
     wireSend(view, s, user);
+    wireDrive(view);
     view.querySelector('#wl-pb').addEventListener('click', () => passbook(s));
 
     view.querySelector('#wl-file').addEventListener('change', async e => {
@@ -328,6 +331,57 @@ const Wallet = (() => {
   }
 
   const userNo = u => String(u?.userNo || u?.user_no || (u?.id || '').replace(/\D/g, '').slice(-5) || '00001').padStart(5, '0');
+
+  /* ---------------- the Drive connection ----------------
+     Shown wherever the money is, because it is the same kind of fact: a
+     thing that is either working or is not, and that you need to KNOW is
+     not working rather than discover when a recording has gone. While the
+     Google app is in Testing the grant lapses after about a week, so a
+     stale connection is the normal case, not an exception. */
+  function wireDrive(view) {
+    const host = view.querySelector('#wl-drive');
+    if (!host || typeof Drive === 'undefined' || !Drive.configured()) return;
+
+    const paint = () => {
+      const st = Drive.status();
+      const body = {
+        disconnected: `<p class="muted">Your OSCE recordings are kept on the AUREUM server for 24 hours and then
+            deleted. Connect a Google Drive folder and a copy of every recording is saved there as well — yours,
+            for as long as you keep it.</p>
+          <p class="muted tiny">AUREUM can only see the folder you choose and the files it puts in it. It cannot
+            read anything else in your Drive.</p>
+          <button class="btn btn-gold" id="wl-dv-go">Connect a Drive folder</button>`,
+        stale: `<p class="wl-dv-warn">⚠ ${esc(st.label)}. Recordings are still kept on the server for 24 hours, but
+            nothing has been copied to Drive since. Google ends the permission after about a week — reconnecting
+            takes two taps.</p>
+          <button class="btn btn-gold" id="wl-dv-go">Reconnect Drive</button>
+          <button class="btn btn-ghost btn-sm" id="wl-dv-off">Turn it off</button>`,
+        connected: `<p class="good">✓ Saving to <strong>${esc(st.folder || 'your folder')}</strong>${
+            st.saved ? ` — ${st.saved} recording${st.saved === 1 ? '' : 's'} so far` : ' — nothing saved yet'}${
+            st.last ? `, last on ${esc(new Date(st.last).toLocaleDateString('en-GB', { dateStyle: 'medium' }))}` : ''}.</p>
+          <p class="muted tiny">Google ends this permission after about a week while the app is unverified. If it
+            lapses, this box says so — the recordings are not lost, they simply stop being copied.</p>
+          <button class="btn btn-ghost btn-sm" id="wl-dv-go">Choose a different folder</button>
+          <button class="btn btn-ghost btn-sm" id="wl-dv-off">Disconnect</button>`
+      }[st.code] || '';
+      host.innerHTML = `<h3 class="card-title">☁ OSCE recordings in your Drive ${Drive.badgeHtml()}</h3>${body}
+        <div class="dev-status" id="wl-dv-msg"></div>`;
+
+      host.querySelector('#wl-dv-go')?.addEventListener('click', async e => {
+        e.target.disabled = true;
+        const msg = host.querySelector('#wl-dv-msg');
+        msg.innerHTML = '<span class="muted">Waiting for Google…</span>';
+        try { await Drive.connect(); msg.innerHTML = '<span class="good">✓ Connected.</span>'; paint(); }
+        catch (err) { msg.innerHTML = `<span class="bad">${esc(err.message || err)}</span>`; e.target.disabled = false; }
+      });
+      host.querySelector('#wl-dv-off')?.addEventListener('click', () => {
+        if (!confirm('Stop saving recordings to Drive? Anything already saved stays in your folder.')) return;
+        Drive.disconnect(); paint();
+      });
+    };
+    paint();
+    Drive.onChange(() => { if (host.isConnected) paint(); });
+  }
 
   /* ---------------- sending credit to another user ----------------
      Two steps on purpose. The first resolves the number to a NAME and
