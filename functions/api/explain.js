@@ -245,6 +245,37 @@ export async function onRequest(context) {
       return json({ text: r.text, model: r.model, usage: { in: r.in, out: r.out } });
     }
 
+    /* ---- the case discussion: marking a whole long case from one tape ----
+       Thirty minutes rather than fifteen, and marked against two different
+       kinds of thing: the PHASES, which say what a complete presentation
+       contains, and the VIVA QUESTIONS, which have model answers already
+       written. The model is never asked to invent the syllabus — it is asked
+       whether what was said matches what is written down. */
+    if (action === 'casemark') {
+      const a = body.audio || {};
+      if (!a.data) return json({ error: 'No recording was sent.' }, 400);
+      if (String(a.data).length > 46_000_000) {
+        return json({ error: 'That recording is too long to send. A case beyond about 45 minutes cannot be marked in one piece.' }, 413);
+      }
+      /* 24k out, because a long case returns a verdict per phase, a verdict
+         per question with the model answer compared, and four coaching
+         blocks. This is the one call in the app that genuinely needs room. */
+      const rr = await callGeminiAudio(buildCasePrompt(body), a,
+        modernGemini(model) || 'gemini-3.1-flash-lite', env, 24000);
+      await logTokens(token, env, 'gemini', rr, 'discussion_coach');
+      return json({ text: rr.text, model: rr.model, heard: true, finish: rr.finish || '',
+        usage: { in: rr.in, out: rr.out } });
+    }
+
+    /* ---- one live examiner line, when the written bank is exhausted ----
+       Deliberately tiny: one question, no preamble, no marking. The bank is
+       asked first and this is the fallback, which is what keeps a thirty
+       minute case costing pennies rather than a conversation's worth. */
+    if (action === 'caseask') {
+      const r = await run(buildCaseAskPrompt(body), 'discussion_coach', 200);
+      return json({ text: r.text, model: r.model, usage: { in: r.in, out: r.out } });
+    }
+
     /* ---- Groq: transcription and the examiner's voice ----
        Neither of these marks anything or reasons about a case. Whisper turns
        a recording into words — which is the only way an iPad gets a
@@ -860,6 +891,137 @@ function coachTail(body, heard) {
 }
 
 /* Marking straight from the tape: transcribe AND mark in one call. */
+/* ============================================================
+   THE CASE DISCUSSION
+
+   A long case is not a longer OSCE. An OSCE has a scheme with a fixed
+   number of points and a total; a long case has a STRUCTURE that a good
+   presentation contains, and a set of viva questions with model answers.
+   Those are two different kinds of marking and they are kept apart.
+
+   The one rule that matters most: the model is never asked to invent the
+   syllabus. It is asked whether what was said matches what is already
+   written down in the case file. That is what makes a small cheap model
+   usable here — the questions and the model answers came from the real
+   exam, not from the model's recollection of it.
+   ============================================================ */
+
+const CASE_CALIBRATION = [
+  'YOU ARE A PGIM MD PART II LONG-CASE EXAMINER. Mark to that standard, not to encourage.',
+  '',
+  'THIS IS ONE CONTINUOUS RECORDING of a whole case discussion. The candidate saw the patient on the ward',
+  'and is presenting from memory. Expect: a presentation of the history, then a summary and problem list,',
+  'then a management plan, then viva questions. The phases run into each other — work out where each begins.',
+  '',
+  'TWO VOICES MAY BE AUDIBLE. The examiner\'s questions are read aloud by a synthetic voice and the microphone',
+  'may have picked them up. Anything in that voice is the QUESTION. Credit ONLY the candidate\'s own voice.',
+  'Being prompted is normal in the real room and is NEVER a reason to mark an answer down — but a point that',
+  'is audible only in the examiner\'s voice was not said by the candidate and earns nothing.',
+  '',
+  'HOW TO DECIDE EACH EXPECTED ITEM:',
+  '  covered — the substance was actually said: the figure GIVEN, the drug NAMED, the reason STATED.',
+  '  partial — the right territory without the substance, or half a multi-part item.',
+  '  missed  — not said, or said wrongly. Something adjacent is not the item.',
+  '',
+  'HOW THE MARKS FOLLOW:',
+  '  Each phase and each viva question is worth an equal share of 100. Within one, each expected item is worth',
+  '  an equal share of that. covered earns the whole share, partial half, missed nothing. Round to 0.5.',
+  '',
+  'FURTHER RULES:',
+  '  A safety-critical omission caps that section at half however much else was said — say so when you apply it.',
+  '  Anything factually wrong or unsafe scores zero for that item and is named.',
+  '  Padding, repetition and confident vagueness earn nothing. Length is not an answer.',
+  '  A candidate who was never asked a question cannot be marked down for not answering it — mark it "notAsked".'
+].join('\n');
+
+/** Marking a whole case discussion from one tape. */
+function buildCasePrompt(body) {
+  const c = body.case || {};
+  const phases = (c.phases || []).map(p => [
+    `PHASE "${p.id}" — ${p.ask || p.id} (about ${p.minutes || 5} minutes)`,
+    'A complete answer contains:',
+    ...(p.expect || []).map((x, i) => `  ${i + 1}. ${x}`)
+  ].join('\n')).join('\n\n');
+
+  const asked = new Set((body.asked || []).map(String));
+  const qs = (c.questions || []).map((q, i) => [
+    `Q${i + 1}${asked.size ? (asked.has(String(q.id ?? i)) ? ' [WAS ASKED]' : ' [was not asked aloud]') : ''}: ${q.q}`,
+    q.model ? `MODEL ANSWER: ${q.model}` : '',
+    (q.mustHit || []).length ? 'Must hit:\n' + q.mustHit.map((m, j) => `  ${j + 1}. ${m}`).join('\n') : ''
+  ].filter(Boolean).join('\n')).join('\n\n');
+
+  const system = PERSONA + ' You are marking a SPOKEN long-case discussion from the candidate\'s own recording.\n\n'
+    + CASE_CALIBRATION;
+
+  const user = [
+    `CASE: ${c.topic || ''}`,
+    `THE PATIENT: ${c.vignette || ''}`,
+    '',
+    '===== WHAT A COMPLETE PRESENTATION CONTAINS =====',
+    phases,
+    '',
+    '===== THE VIVA QUESTIONS AND THEIR MODEL ANSWERS =====',
+    qs || '(none)',
+    '',
+    'Listen to the whole recording, then return ONLY valid JSON, no prose and no code fence, exactly this shape:',
+    '{"phases":[{"id":"history","said":"<2-3 sentences: what they actually presented for this phase>",'
+      + '"awarded":0,"max":25,'
+      + '"items":[{"item":"<the expected item verbatim>","status":"covered|partial|missed",'
+      + '"note":"<one short clause: what they said, or what was missing>"}],'
+      + '"comment":"<one sentence: the verdict on this phase>"}],'
+      + '"questions":[{"n":1,"q":"<the question>","asked":true,"said":"<what they answered, or empty>",'
+      + '"awarded":0,"max":10,"status":"answered|notAsked",'
+      + '"hits":[{"point":"<the must-hit verbatim>","status":"covered|partial|missed"}],'
+      + '"versusModel":"<one or two sentences: how their answer compared with the model answer>"}],'
+      + '"total":0,"max":100,"percent":0,"pass":false,'
+      + '"examinerComment":"<4-5 sentences: the overall verdict on this discussion>",'
+      + '"strengths":["<what was genuinely good>"],'
+      + '"improvements":[{"action":"<what to do differently>","marks":0}],'
+      + '"keyLearning":["<the facts to carry away>"],'
+      + '"language":[{"said":"<the phrase as they said it>","correct":"<how it should be said>",'
+      + '"why":"<why it costs marks>"}],'
+      + '"coaching":{"structure":"<did the presentation follow a recognisable order; did they signpost>",'
+      + '"articulation":"<filler, half-sentences, thinking aloud — would an examiner follow first time>",'
+      + '"pronunciation":"<only the drug names, eponyms and terms that cost credibility, and how to say them>",'
+      + '"technique":"<what to do differently in the room: how to open, how to buy thinking time, how to recover>"}}',
+    '',
+    'THE "language" ARRAY IS IMPORTANT. You can HEAR mispronunciations, garbled phrases and word substitutions that',
+    'a typed transcript would hide. Report every one that would cost marks or confuse an examiner — a drug name said',
+    'wrongly, an eponym mangled, a phrase that came out as something else. Quote what they actually said. If they',
+    'spoke cleanly throughout, return an empty array rather than inventing faults.',
+    '',
+    'A pass is 50%. Set "pass" accordingly.'
+  ].join('\n');
+
+  return { system, user };
+}
+
+/** One live follow-up, when the written bank has run out. Short by design. */
+function buildCaseAskPrompt(body) {
+  const system = PERSONA + ' You are the examiner in a PGIM MD Part II long case, speaking aloud. '
+    + 'Return ONE short question and NOTHING else — no preamble, no quotation marks, no explanation. '
+    + 'It must be a question a real examiner would ask out loud: under twenty words, plain spoken English, '
+    + 'no lists and no sub-parts.\n\n'
+    + 'YOU MUST NEVER GIVE THE ANSWER AWAY. "What about the monitoring?" is a legitimate push. '
+    + '"You forgot magnesium sulphate" hands over the mark and is forbidden. Name an AREA, never a fact.\n'
+    + 'If the candidate has just stopped mid-thought, a simple "Go on" or "What else would you add?" is often '
+    + 'the right question — do not manufacture complexity.';
+
+  const user = [
+    `CASE: ${String(body.topic || '').slice(0, 120)}`,
+    `PHASE: ${String(body.phase || '').slice(0, 40)}`,
+    `THEY HAVE JUST SAID: ${String(body.said || '').slice(-1200) || '(nothing yet)'}`,
+    (body.missing || []).length
+      ? 'STILL UNSAID (name the AREA of one of these, never its content):\n'
+        + body.missing.slice(0, 6).map(m => '  - ' + String(m).slice(0, 200)).join('\n')
+      : 'Nothing specific is outstanding — ask them to go on, or to justify what they have just said.',
+    '',
+    'Your one question:'
+  ].join('\n');
+
+  return { system, user };
+}
+
 function buildOsceAudioPrompt(body) {
   const st = body.station || {};
   const qs = (st.questions || []).map(q => [

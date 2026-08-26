@@ -40,6 +40,14 @@
     { re: /^#\/osce\/result\/([^/]+)$/, fn: (id, u) => OSCE.renderResult(view, id, u) },
     { re: /^#\/osce\/circuit\/([^/]+)$/, fn: (sid, u) => OSCE.renderCircuit(view, sid, u) },
     { re: /^#\/osce\/progress$/, fn: (u) => OSCE.renderProgress(view, u) },
+    /* case-based discussion — gated per user; every render checks for itself
+       so a hand-typed URL is refused the same way the missing nav link is */
+    { re: /^#\/cases$/, fn: (u) => Cases.renderBank(view, u) },
+    { re: /^#\/cases\/mine$/, fn: (u) => Cases.renderMine(view, u) },
+    { re: /^#\/cases\/case\/([^/]+)$/, fn: (id, u) => Cases.renderCase(view, id, u) },
+    { re: /^#\/cases\/examine\/([^/]+)$/, fn: (id, u) => Cases.renderExamine(view, id, u) },
+    { re: /^#\/cases\/run\/([^/]+)$/, fn: (sid, u) => Cases.renderRun(view, sid, u) },
+    { re: /^#\/cases\/result\/([^/]+)$/, fn: (id, u) => Cases.renderResult(view, id, u) },
     { re: /^#\/osce\/cards$/, fn: (u) => OSCE.renderDecks(view, null, u) },
     { re: /^#\/osce\/cards\/([^/]+)$/, fn: (id, u) => OSCE.renderDecks(view, id, u) },
     { re: /^#\/billing$/, fn: (u) => Wallet.renderBilling(view, u) },
@@ -63,7 +71,7 @@
     { re: /^#\/mistakes$/, fn: renderMistakes },
     { re: /^#\/mistakes\/deck\/([^/]+)$/, fn: renderMistakeDeck },
     { re: /^#\/simulator\/result\/([^/]+)$/, fn: renderSimResult },
-    { re: /^#\/dev(?:\/(papers|cards|users|blueprint|review|ai|essays|tearoom|cpd|osce|settings))?$/, fn: renderDev }
+    { re: /^#\/dev(?:\/(papers|cards|users|blueprint|review|ai|essays|tearoom|cpd|osce|cases|settings))?$/, fn: renderDev }
   ];
   const devOnly = user => !!(user && (user.email === cfg.developer.email || sessionStorage.getItem('aureum-dev') === '1'));
 
@@ -161,6 +169,9 @@
     const nav = document.getElementById('nav');
     const isDev = user && (user.email === cfg.developer.email || sessionStorage.getItem('aureum-dev') === '1');
     const simOn = isDev || (isPaid(user) && user?.featureFlags?.simulator && user?.prefs?.simulator);
+    // the case section needs no `prefs` opt-in: it is granted one account
+    // at a time, so the grant IS the decision
+    const casesOn = typeof Cases !== 'undefined' && Cases.allowed(user);
     const fcOn = isDev || (isPaid(user) && user?.featureFlags?.flashcards && user?.prefs?.flashcards);
     nav.innerHTML = `
       <a class="brand" href="#/">
@@ -172,6 +183,7 @@
           <a href="#/dashboard" class="${location.hash === '#/dashboard' ? 'active' : ''}">Dashboard</a>
           <a href="#/library" class="${location.hash.startsWith('#/library') || location.hash.startsWith('#/paper') ? 'active' : ''}">Library</a>
           <a href="#/osce" class="${location.hash.startsWith('#/osce') ? 'active' : ''}">OSCE</a>
+          ${casesOn ? `<a href="#/cases" class="${location.hash.startsWith('#/cases') ? 'active' : ''}">Cases</a>` : ''}
           <a href="#/studio" class="${location.hash === '#/studio' ? 'active' : ''}">Studio<span class="nav-badge nav-badge-tea" id="nav-tea-badge" hidden></span></a>
           <a href="#/peer" class="${location.hash === '#/peer' ? 'active' : ''}">Peer review</a>
           ${simOn ? `<a href="#/simulator" class="${location.hash.startsWith('#/simulator') ? 'active' : ''}">Simulator</a>` : ''}

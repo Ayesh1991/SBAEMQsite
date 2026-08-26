@@ -96,10 +96,11 @@ const Billing = (() => {
     weekly_digest: 'Weekly digest', rationale_enhancer: 'Rationale enhancer',
     // personal mechanisms (what a user spends their own tokens on)
     tutor: 'AI tutor', coach: 'Mock coach', flashcards: 'AI flashcards', study_aids: 'Study aids',
-    paper_architect: 'Paper architect', osce: 'OSCE marking', topup_ocr: 'Top-up handling fee'
+    paper_architect: 'Paper architect', osce: 'OSCE marking', topup_ocr: 'Top-up handling fee',
+    discussion_coach: 'Discussion coach'
   };
   const FEATURE_ICON = { tutor: '✨', coach: '🎯', flashcards: '🃏', study_aids: '📄', paper_architect: '📐',
-    osce: '🎙', topup_ocr: '🧾',
+    osce: '🎙', topup_ocr: '🧾', discussion_coach: '🩺',
     question_tagger: '🏷', behaviour_insights: '🔬', question_auditor: '⚖️' };
   const featureLabel = f => FEATURE_LABELS[f] || String(f).replace(/_/g, ' ');
   const featureIcon = f => FEATURE_ICON[f] || '•';

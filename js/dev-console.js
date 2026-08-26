@@ -42,6 +42,7 @@ const DevConsole = (() => {
     if (section === 'tearoom') return renderTeaSection(view);
     if (section === 'essays') return renderEssaysSection(view);
     if (section === 'osce') return renderOsceSection(view);
+    if (section === 'cases') return renderCasesSection(view);
     if (section === 'settings') return renderSettingsSection(view);
     if (section === 'cpd') return renderCpdSection(view);
     return renderHub(view);
@@ -113,6 +114,12 @@ const DevConsole = (() => {
             <h3>OSCE stations</h3>
             <p>Import spoken OSCE stations (scenario, questions, marking scheme) and publish them to the OSCE tab.</p>
             <span class="dev-hub-count" id="hub-osce">…</span>
+          </a>
+          <a class="dev-hub-card" href="#/dev/cases" style="--hub-accent:linear-gradient(135deg,#f0abfc,#8b5cf6)">
+            <span class="dev-hub-ico">🩺</span>
+            <h3>Case discussions</h3>
+            <p>Import long cases (vignette, phases, viva questions with model answers) for the Case discussion tab.</p>
+            <span class="dev-hub-count" id="hub-cases">…</span>
           </a>
           <a class="dev-hub-card" href="#/dev/settings" style="--hub-accent:linear-gradient(135deg,#f4c95d,#34d399)">
             <span class="dev-hub-ico">⚙</span>
@@ -1513,7 +1520,8 @@ const DevConsole = (() => {
                 </div>
                 <div class="dev-up-block">
                   <h4>Tool approvals</h4>
-                  ${[['simulator', 'Simulator'], ['flashcards', 'Flashcards'], ['cpd', 'CPD (TOG true/false)']].map(([f, lbl]) => `
+                  ${[['simulator', 'Simulator'], ['flashcards', 'Flashcards'], ['cpd', 'CPD (TOG true/false)'],
+                     ['cases', 'Case discussion — the 30-minute long case']].map(([f, lbl]) => `
                     <label class="dev-up-flag"><label class="dev-flag"><input type="checkbox" data-uflag="${f}" data-uid="${ctx.esc(u.id)}" ${u.featureFlags?.[f] ? 'checked' : ''}><span></span></label> ${lbl}
                       <span class="tiny muted">${u.prefs?.[f] ? '· user has it ON' : '· not activated by user'}</span></label>`).join('')}
                 </div>
@@ -4172,5 +4180,233 @@ const DevConsole = (() => {
     return osceEditor(host, station, colls, onSaved);
   }
 
-  return { render, osceEditor: openOsceEditor, validateOsce };
+  /* ================= DEVELOPER · CASE DISCUSSIONS =================
+
+     A case file is a whole long case: the vignette, the phases with what a
+     complete answer to each contains, and the viva questions with their
+     model answers. It is the most valuable document in the system and the
+     most dangerous to get wrong, so nothing is published without passing
+     validation — a case with no `expect` items cannot be marked, and a
+     case with questions but no model answers marks against nothing.
+
+     Three ways in, because the JSON comes from three places in practice:
+     the shared Drive folder, a file on the iPad, or pasted straight out of
+     a chat window. */
+
+  const CASE_SCHEMA = 'aureum-case-v1';
+
+  function validateCase(d) {
+    const e = [];
+    if (!d || typeof d !== 'object') return ['That is not a JSON object.'];
+    if (!d.topic) e.push('No "topic".');
+    if (!d.vignette) e.push('No "vignette" — the patient the candidate saw.');
+    const ph = Array.isArray(d.phases) ? d.phases : [];
+    if (!ph.length) e.push('No "phases" — a case with no phases cannot be run.');
+    ph.forEach((p, i) => {
+      if (!p.id) e.push(`Phase ${i + 1} has no "id".`);
+      if (!p.ask && !p.id) e.push(`Phase ${i + 1} has nothing to ask.`);
+      /* A phase with no expectations is a phase that cannot be marked — it
+         would silently score zero out of zero and look like a pass. */
+      if (p.id !== 'viva' && !(p.expect || []).length) {
+        e.push(`Phase "${p.id || i + 1}" has no "expect" list, so nothing in it can be marked.`);
+      }
+    });
+    const qs = Array.isArray(d.questions) ? d.questions : [];
+    qs.forEach((q, i) => {
+      if (!q.q) e.push(`Question ${i + 1} has no "q".`);
+      if (!q.model) e.push(`Question ${i + 1} has no "model" answer to mark against.`);
+    });
+    if (!qs.length && ph.some(p => p.id === 'viva')) e.push('There is a viva phase but no questions to ask in it.');
+    return e;
+  }
+
+  const caseId = d => String(d.id || d.topic || 'case').toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
+
+  async function renderCasesSection(view) {
+    const { esc } = ctx;
+    view.innerHTML = `
+      <section class="page">
+        ${backLink}
+        <header data-animate>
+          <p class="kicker">DEVELOPER · CASE IMPORTER</p>
+          <h1 class="page-title">Case discussions</h1>
+          <p class="muted">Long cases in <code>${CASE_SCHEMA}</code> JSON — a vignette, the phases with what a
+            complete answer contains, and viva questions with model answers. Published cases appear in the
+            <strong>Cases</strong> tab, for the accounts that have been granted it.
+            Source folder: <code>${esc(ctx.cfg.drive.caseFolderId || '(set drive.caseFolderId)')}</code>.</p>
+        </header>
+
+        <div class="card" data-animate>
+          <h3 class="card-title">📥 Import</h3>
+          <div class="dev-inline">
+            <button class="btn btn-gold" id="cs-scan">🔍 Scan the Drive folder</button>
+            <label class="btn btn-ghost" style="cursor:pointer">📄 Choose files
+              <input type="file" id="cs-files" accept="application/json,.json" multiple hidden></label>
+          </div>
+          <details class="dev-collapse" style="margin-top:14px">
+            <summary><span class="card-title">Or paste the JSON</span><span class="dc-caret">▸</span></summary>
+            <p class="muted tiny">One case object, or an array of them.</p>
+            <textarea id="cs-paste" rows="8" class="dev-json" placeholder='{ "id": "case-...", "topic": "...", ... }'></textarea>
+            <button class="btn btn-ghost btn-sm" id="cs-paste-go">Stage it</button>
+          </details>
+          <span class="dev-status" id="cs-status"></span>
+          <div id="cs-list"></div>
+        </div>
+
+        <div class="card" data-animate>
+          <h3 class="card-title">📚 Published</h3>
+          <div id="cs-published"><p class="muted">Loading…</p></div>
+        </div>
+
+        <details class="dev-collapse card" data-animate>
+          <summary><span class="card-title">What a case file looks like</span><span class="dc-caret">▸</span></summary>
+          <pre class="dev-json-ex">${esc(CASE_EXAMPLE)}</pre>
+        </details>
+      </section>`;
+    ctx.FX?.viewIn?.(view);
+
+    view.querySelector('#cs-scan').addEventListener('click', scanCases);
+    view.querySelector('#cs-files').addEventListener('change', async e => {
+      const out = [];
+      for (const f of [...e.target.files]) {
+        try { out.push(...asCaseArray(JSON.parse(await f.text()))); }
+        catch { stageMsg(`<span class="bad">${ctx.esc(f.name)} is not valid JSON.</span>`); }
+      }
+      stageCases(out);
+      e.target.value = '';
+    });
+    view.querySelector('#cs-paste-go').addEventListener('click', () => {
+      const raw = view.querySelector('#cs-paste').value.trim();
+      if (!raw) return;
+      try { stageCases(asCaseArray(JSON.parse(raw))); }
+      catch (err) { stageMsg(`<span class="bad">That is not valid JSON — ${ctx.esc(err.message)}</span>`); }
+    });
+    await refreshCasesPublished(view);
+  }
+
+  const asCaseArray = d => Array.isArray(d) ? d : (Array.isArray(d?.cases) ? d.cases : [d]);
+  const stageMsg = html => { const el = document.getElementById('cs-status'); if (el) el.innerHTML = html; };
+
+  async function scanCases() {
+    stageMsg('Scanning…');
+    document.getElementById('cs-list').innerHTML = '';
+    let files = [];
+    try {
+      const base = ctx.cfg.drive.apiBase, fid = ctx.cfg.drive.caseFolderId;
+      if (!fid) throw new Error('No caseFolderId is set in js/config.js.');
+      const res = await fetch(`${base}?action=list&folderId=${encodeURIComponent(fid)}`, { cache: 'no-cache' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      files = data.files || [];
+    } catch (e) { stageMsg(`<span class="bad">${ctx.esc(e.message || e)}</span>`); return; }
+
+    const out = [];
+    for (const f of files) {
+      let doc = f.paper || f.deck || f.case || null;
+      if (!doc && f.id) {
+        try { const r = await fetch(`${ctx.cfg.drive.apiBase}?action=file&id=${encodeURIComponent(f.id)}`); doc = await r.json(); }
+        catch { doc = null; }
+      }
+      if (doc) out.push(...asCaseArray(doc));
+    }
+    stageMsg(`${files.length} file${files.length !== 1 ? 's' : ''} in the folder.`);
+    stageCases(out);
+  }
+
+  /** Show what was found, valid and invalid alike — a rejected case must say why. */
+  async function stageCases(docs) {
+    const list = document.getElementById('cs-list');
+    const good = [], bad = [];
+    for (const d of docs) {
+      if (!d || typeof d !== 'object') continue;
+      const errs = validateCase(d);
+      if (errs.length) bad.push({ d, errs }); else { d.id = caseId(d); good.push(d); }
+    }
+    const published = (await ctx.Backend.getCases().catch(() => [])) || [];
+    const have = new Set(published.map(p => p.id));
+
+    if (!good.length && !bad.length) { list.innerHTML = '<p class="muted">Nothing to import.</p>'; return; }
+    list.innerHTML = `
+      ${good.map((d, i) => `
+        <div class="dev-row card">
+          <div class="dev-row-head">
+            <div><p class="dev-file">🩺 ${ctx.esc(d.topic)}${have.has(d.id) ? ' <span class="muted tiny">· replaces the published one</span>' : ''}</p>
+              <p class="muted tiny">${(d.phases || []).length} phases · ${(d.questions || []).length} viva questions ·
+                ${(d.phases || []).reduce((n, p) => n + (p.expect || []).length, 0)} expected items ·
+                ${d.minutes || 30} min · <code>${ctx.esc(d.id)}</code></p></div>
+            <button class="btn btn-gold btn-sm" data-cs-pub="${i}">${have.has(d.id) ? 'Replace' : 'Publish'}</button>
+          </div><p class="dev-row-msg" data-cs-msg="${i}"></p>
+        </div>`).join('')}
+      ${bad.map(b => `
+        <div class="dev-row card">
+          <div class="dev-row-head">
+            <div><p class="dev-file">⚠️ ${ctx.esc(b.d.topic || '(no topic)')}</p>
+              <p class="muted tiny">Not imported — a case that cannot be marked would score zero out of zero and look like a pass.</p></div>
+          </div>
+          <ul class="dev-errs">${b.errs.map(x => `<li class="bad">${ctx.esc(x)}</li>`).join('')}</ul>
+        </div>`).join('')}`;
+
+    good.forEach((d, i) => document.querySelector(`[data-cs-pub="${i}"]`).addEventListener('click', async e => {
+      const msg = document.querySelector(`[data-cs-msg="${i}"]`);
+      e.target.disabled = true; msg.textContent = 'Publishing…'; msg.className = 'dev-row-msg muted';
+      try {
+        await ctx.Backend.publishCase(d);
+        if (typeof Cases !== 'undefined') Cases.bustCases();
+        msg.textContent = '✓ Published to the Cases tab.'; msg.className = 'dev-row-msg good';
+        await refreshCasesPublished(document.getElementById('view'));
+      } catch (err) { msg.textContent = err.message || String(err); msg.className = 'dev-row-msg bad'; e.target.disabled = false; }
+    }));
+  }
+
+  async function refreshCasesPublished(view) {
+    const host = (view || document).querySelector('#cs-published');
+    if (!host) return;
+    let list = [];
+    try { list = (await ctx.Backend.getCases()) || []; }
+    catch (e) { host.innerHTML = `<p class="bad">${ctx.esc(e.message || e)}</p>`; return; }
+    const hub = document.getElementById('hub-cases'); if (hub) hub.textContent = list.length;
+    if (!list.length) { host.innerHTML = '<p class="muted">No cases published yet.</p>'; return; }
+    host.innerHTML = `<table class="dev-table"><thead><tr><th>Case</th><th>Shape</th><th></th></tr></thead>
+      <tbody>${list.map(c => `<tr>
+        <td><strong>${ctx.esc(c.topic || c.id)}</strong><br><span class="muted tiny">${ctx.esc(c.id)}</span></td>
+        <td class="muted tiny">${c.phase_count || 0} phases · ${c.q_count || 0} questions · ${c.minutes || 30} min</td>
+        <td><a class="link" href="#/cases/case/${encodeURIComponent(c.id)}">Open</a>
+            <button class="link qr-danger" data-cs-del="${ctx.esc(c.id)}">Remove</button></td>
+      </tr>`).join('')}</tbody></table>`;
+    host.querySelectorAll('[data-cs-del]').forEach(b => b.addEventListener('click', async () => {
+      if (!confirm('Remove that case? Discussions already marked against it keep their reports.')) return;
+      await ctx.Backend.unpublishCase(b.dataset.csDel);
+      if (typeof Cases !== 'undefined') Cases.bustCases();
+      await refreshCasesPublished(view);
+    }));
+  }
+
+  const CASE_EXAMPLE = `{
+  "id": "case-anaemia-pregnancy",
+  "topic": "Iron deficiency anaemia in pregnancy",
+  "vignette": "26-year-old, second pregnancy, 30 weeks, Hb 8.2 g/dl on routine antenatal FBC…",
+  "minutes": 30,
+  "phases": [
+    { "id": "history", "minutes": 8, "ask": "Present your patient.",
+      "expect": ["Introduction: age, parity, POA, how the anaemia was identified",
+                 "Aetiology screen: diet, PR bleeding, worms, malabsorption, family history"] },
+    { "id": "diagnosis", "minutes": 4, "ask": "How would you investigate?",
+      "expect": ["Red cell indices: MCV, MCH, MCHC"] },
+    { "id": "management", "minutes": 10, "ask": "How would you manage her?",
+      "expect": ["Therapeutic oral iron 100-200 mg elemental daily"] },
+    { "id": "viva", "minutes": 8 }
+  ],
+  "questions": [
+    { "phase": "viva",
+      "q": "How would you differentiate iron deficiency from thalassaemia trait?",
+      "model": "Both are microcytic and hypochromic, but…",
+      "mustHit": ["IDA: MCV/MCH/MCHC all reduced, high RDW, pencil cells",
+                  "Trait: MCHC relatively preserved, target cells"],
+      "followUp": "Why check CRP alongside ferritin?" }
+  ],
+  "sources": ["RCOG/BSH guidance", "NICE NG201"]
+}`;
+
+  return { render, osceEditor: openOsceEditor, validateOsce, validateCase };
 })();
