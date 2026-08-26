@@ -904,12 +904,18 @@ const OSCE = (() => {
       view.querySelector('#os-body').innerHTML = `<p class="bad">${esc(e.message || e)}</p>`; return;
     }
     const body = view.querySelector('#os-body');
+    /* Stations that were recorded but never marked. Drawn ABOVE the marked
+       ones and before the empty state, because a queue of unsent work is
+       the most urgent thing on this page — and because "nothing sat yet"
+       would be a lie while three recordings are waiting. */
+    const queueHtml = await pendingPanel(user);
     if (!past.length) {
-      body.innerHTML = `<div class="card" data-animate>
-        <h3 class="card-title">Nothing sat yet</h3>
+      body.innerHTML = queueHtml + `<div class="card" data-animate>
+        <h3 class="card-title">Nothing marked yet</h3>
         <p class="muted">Once you have sat a station and had it marked, it appears here — the marks, the scheme point by
           point, what you said, and the recording for its first 24 hours.</p>
         <a class="btn btn-gold" href="#/osce">Go to the station bank</a></div>`;
+      wirePending(view, user);
       return;
     }
     const rows = past.slice().sort((a, b) => (b.created || 0) - (a.created || 0));
@@ -918,7 +924,7 @@ const OSCE = (() => {
     const best = {};
     rows.forEach(a => { const p = a.result?.percent; if (p != null && (best[a.station_id] == null || p > best[a.station_id])) best[a.station_id] = p; });
 
-    body.innerHTML = `
+    body.innerHTML = queueHtml + `
       <header data-animate>
         <p class="kicker">EVERY STATION YOU HAVE SAT</p>
         <h1 class="page-title">My attempts</h1>
@@ -949,6 +955,108 @@ const OSCE = (() => {
           }).join('')}</tbody>
         </table></div>
       </div>`;
+    wirePending(view, user);
+  }
+
+  /* ================= stations recorded but never marked =================
+
+     WHY THIS EXISTS
+
+     You sit a station on a ward round with one bar of signal, press Mark,
+     and the request fails. Before this, that was the end of it: an error
+     on screen, the recording alive only in a variable, and the moment the
+     tab closed the fifteen minutes were gone with it. Nothing on the site
+     remembered the station had ever been sat.
+
+     Now the tape is written to the browser's own store BEFORE the model is
+     called, so a failed marking costs a retry and never the station.
+
+     IT NEVER SENDS BY ITSELF. Sending spends credit, and credit is spent
+     by a person pressing a button — not by a background task that decided
+     the signal looked better. It says it is ready; the press is yours. */
+
+  async function pendingPanel(user) {
+    if (typeof Pending === 'undefined') return '';
+    try { Pending.setOwner(user?.email || ''); } catch {}
+    let rows = [];
+    try { rows = (await Pending.all()).filter(r => r.kind === 'osce'); } catch { return ''; }
+    if (!rows.length) return '';
+    const online = navigator.onLine !== false;
+    return `
+      <div class="card os-pendbox" data-animate>
+        <h3 class="card-title">⏳ Recorded, not yet marked <span class="os-pend-pill">${rows.length}</span></h3>
+        <p class="muted">These stations were sat and recorded, but the marking did not go through — the connection
+          was not there when you pressed. Nothing has been lost. ${online
+            ? 'You are online now, so they can be sent.'
+            : '<strong>This device is offline.</strong> They will send once you have signal.'}</p>
+        <div class="os-pend-list">
+          ${rows.map(r => `
+            <div class="os-pend-row">
+              <div>
+                <strong>${esc(r.title || r.id)}</strong>
+                <em class="muted tiny">${esc(new Date(r.at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }))}
+                  · ${fmt(r.secs || 0)}${r.blob ? ` · ${(r.blob.size / 1048576).toFixed(1)} MB` : ' · recording gone'}</em>
+                <em class="muted tiny os-pend-why">${esc(Pending.reasonLine(r))}</em>
+              </div>
+              <div class="os-pend-acts">
+                ${r.blob ? `<button class="btn btn-ghost btn-sm" data-pdl="${esc(r.id)}" title="Download the recording">⬇</button>` : ''}
+                <button class="btn btn-gold btn-sm" data-psend="${esc(r.id)}" ${online ? '' : 'disabled'}>Send for marking</button>
+                <button class="btn btn-ghost btn-sm qr-danger" data-pdel="${esc(r.id)}">Discard</button>
+              </div>
+            </div>`).join('')}
+        </div>
+        <p class="os-pend-msg" id="os-pend-msg"></p>
+      </div>`;
+  }
+
+  function wirePending(view, user) {
+    if (typeof Pending === 'undefined') return;
+    const msg = view.querySelector('#os-pend-msg');
+    const say = h => { if (msg) msg.innerHTML = h; };
+
+    view.querySelectorAll('[data-pdel]').forEach(b => b.addEventListener('click', async () => {
+      if (!confirm('Discard that recording? It cannot be recovered.')) return;
+      await Pending.drop(b.dataset.pdel);
+      renderMine(view, user);
+    }));
+
+    view.querySelectorAll('[data-pdl]').forEach(b => b.addEventListener('click', async () => {
+      const row = await Pending.get(b.dataset.pdl);
+      if (!row?.blob) return;
+      const url = URL.createObjectURL(row.blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `OSCE-${String(row.title || 'station').replace(/[^a-z0-9]+/gi, '-')}.${/mp4|aac/.test(row.mime || '') ? 'm4a' : 'webm'}`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+    }));
+
+    view.querySelectorAll('[data-psend]').forEach(b => b.addEventListener('click', async () => {
+      const row = await Pending.get(b.dataset.psend);
+      if (!row) return;
+      b.disabled = true;
+      say('<span class="muted">Loading the station…</span>');
+      try {
+        const st = await Backend.getOsceStation(row.payload.station_id);
+        if (!st) throw new Error('That station is no longer in the bank.');
+        const choice = modelChoices().find(m => m.key === row.payload.choiceKey) || chosenModel();
+        const rec = row.blob
+          ? { blob: row.blob, mime: row.mime, ext: /mp4|aac/.test(row.mime || '') ? 'm4a' : 'webm',
+              secs: row.secs || 0, bytes: row.blob.size, url: '' }
+          : null;
+        say('<span class="muted">Marking…</span>');
+        const attempt = await markCore({
+          st, ans: row.payload.answers || {}, rec, session: null, choice,
+          attemptId: row.id,
+          kept: row.payload.audioPath ? { path: row.payload.audioPath, expires: row.payload.audioExpires } : null,
+          say: t => say(`<span class="muted">${esc(t)}</span>`)
+        });
+        location.hash = '#/osce/result/' + encodeURIComponent(attempt.id);
+      } catch (e) {
+        b.disabled = false;
+        say(`<span class="bad">${esc(e.message || e)}</span>`);
+      }
+    }));
   }
 
   /* ================= the station editor (#/osce/edit[/:id]) =================
@@ -2633,7 +2741,34 @@ const OSCE = (() => {
       } catch { /* the marking is the point; the tape is a bonus */ }
     }
     meta.attemptId = id; meta.audioPath = audioPath; meta.audioExpires = audioExpires;
-    return markSend({ id, st, ans, rec, session, choice, useAudio, say, audioPath, audioExpires, token });
+
+    /* THE TAPE GOES INTO THE LOCAL QUEUE BEFORE THE MODEL IS CALLED.
+
+       The upload above is the cloud copy and it needs the network — which
+       is exactly what is missing in the ward where this fails. IndexedDB
+       needs nothing, survives the tab closing, and holds a Blob without
+       encoding it. So a station whose marking cannot go through is written
+       down here first and listed as awaiting marking, rather than existing
+       only in a variable that the next reload throws away. */
+    if (rec?.blob && typeof Pending !== 'undefined') {
+      try {
+        await Pending.put({ kind: 'osce', id, title: st.topic || st.id,
+          blob: rec.blob, mime: rec.mime, secs: rec.secs,
+          payload: { station_id: st.id, answers: ans, audioPath, audioExpires,
+            choiceKey: choice.key || '', sessionId: session?.id || null },
+          reason: 'Not sent yet.' });
+      } catch { /* no local store is not a reason to refuse the marking */ }
+    }
+
+    try {
+      const out = await markSend({ id, st, ans, rec, session, choice, useAudio, say, audioPath, audioExpires, token });
+      try { if (typeof Pending !== 'undefined') await Pending.drop(id); } catch {}
+      return out;
+    } catch (e) {
+      // it stays in the queue, and the row records why
+      try { if (typeof Pending !== 'undefined') await Pending.bumpTry(id, e.message || String(e)); } catch {}
+      throw e;
+    }
   }
 
   async function markSend({ id, st, ans, rec, session, choice, useAudio, say, audioPath, audioExpires, token }) {
@@ -4339,6 +4474,11 @@ ${P} .os-pd-close{background:transparent;color:#fff;border:1px solid rgba(255,25
     marksOf, passOf, qsOf, toWav, wavRateFor, modelChoices, noAudioReason,
     stationAsText, promptLevel, setPromptLevel, promptPlan, missingPoints, saidAlready,
     silenceWait, setSilenceWait, salvageJson,
+    /* Lent to the case-discussion section. One recorder implementation, one
+       voice path, one base64 encoder: a second copy of makeCapture would be a
+       second copy of every iPad workaround inside it, and the two would drift
+       apart on the first Safari release that changed something. */
+    makeCapture, toBase64, speak, groqVoice, voiceOn: () => groqOn('voice'), openPrintSheet,
     makeDoc, docAsText, allPoints, coachFor, coachWanted, COACH,
     // exposed for tests and for the circuit page's live redraw
     markState, onMarkChange, retryMark };

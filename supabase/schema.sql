@@ -1253,3 +1253,46 @@ create index if not exists credit_topups_transfer_idx on public.credit_topups (t
 drop policy if exists "topups own insert" on public.credit_topups;
 create policy "topups own insert" on public.credit_topups for insert
   with check (auth.uid() = user_id and status = 'pending' and amount_lkr > 0 and coalesce(kind,'topup') = 'topup');
+
+/* ============================================================
+   v76 — case-based discussion (PGIM Part II long case)
+   Re-run this file after upgrading; every statement is idempotent.
+   ============================================================ */
+
+/* ---- the case files: published by the developer, read by everyone ----
+   Same shape as osce_stations for the same reason — one document per case,
+   fetched whole only when a case is opened. */
+create table if not exists public.case_files (
+  id   text primary key,
+  meta jsonb not null,
+  created_at timestamptz not null default now()
+);
+alter table public.case_files enable row level security;
+drop policy if exists "cases read"  on public.case_files;
+drop policy if exists "cases write" on public.case_files;
+create policy "cases read" on public.case_files for select using (true);
+create policy "cases write" on public.case_files for all
+  using      (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
+  with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+
+/* ---- one candidate's discussion of one case ----
+   Written BEFORE marking as well as after: a discussion that could not be
+   marked is still a discussion that happened, and the row is what lets the
+   OSCE tab list it as awaiting marking rather than pretending it never was. */
+create table if not exists public.case_attempts (
+  id         text primary key,
+  user_id    uuid not null references auth.users(id) on delete cascade,
+  case_id    text not null,
+  payload    jsonb not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists case_attempts_user_idx on public.case_attempts (user_id, created_at desc);
+alter table public.case_attempts enable row level security;
+drop policy if exists "case attempts own" on public.case_attempts;
+create policy "case attempts own" on public.case_attempts for all
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+/* The case tape reuses the osce-audio bucket under the same uid folder
+   (`<uid>/case-<attempt>.webm`), so the existing storage policy and the
+   nightly 24-hour sweep both already cover it. Nothing to add here — this
+   note exists so the absence is deliberate rather than an oversight. */

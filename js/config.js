@@ -43,6 +43,9 @@ window.AUREUM_CONFIG = {
     osceFolderId: '1hiX96x0MzbNvCyvohBsB4tpIiHj7ZKhK',
     // TOG CPD volumes (ogr-cpd-v1). Share as "Anyone with the link — Viewer".
     cpdFolderId: '1tayp7wrVQfW8NLUsrkf0npEMknCbyn-Z',
+    // long cases for the Case discussion tab (vignette + phases + viva
+    // questions with model answers). Share as "Anyone with the link — Viewer".
+    caseFolderId: '1VoQsurCpeAHPLfHmjTziSdCSH7vB5vBl',
     apiBase: '/api/drive'
   },
 

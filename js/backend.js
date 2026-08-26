@@ -75,6 +75,37 @@ const Backend = (() => {
     // coverage map both need it, and neither should pull whole stations
     'bp', 'edited_by', 'edited_at'];
   const osceCard = m => { const o = {}; OSCE_CARD_KEYS.forEach(k => { if (m[k] != null) o[k] = m[k]; }); return o; };
+  /* ---------- Case discussions: the same card/document split ----------
+     A case carries every phase's expectations and every viva question WITH
+     its model answer. That is exactly what must not be shipped to the bank
+     page — partly for weight, and partly because the bank is browsable
+     before you sit the case and the model answers are the answers. */
+  function withCaseCounts(meta) {
+    const ph = meta.phases || [], qs = meta.questions || [];
+    return Object.assign({}, meta, {
+      phase_count: ph.length,
+      q_count: qs.length,
+      point_count: ph.reduce((n, p) => n + (p.expect || []).length, 0)
+        + qs.reduce((n, q) => n + (q.mustHit || []).length, 0),
+      minutes: Number(meta.minutes) || ph.reduce((n, p) => n + (Number(p.minutes) || 0), 0) || 30,
+      /* Searchable on the topic and the VIGNETTE only. Putting the model
+         answers in the search blob would let the bank's own search box
+         become a way to read them. */
+      search: [meta.topic, meta.vignette, (meta.sources || []).join(' ')]
+        .join(' ').toLowerCase().slice(0, 2000)
+    });
+  }
+  const CASE_CARD_KEYS = ['id', 'topic', 'vignette', 'minutes', 'phase_count', 'q_count',
+    'point_count', 'sources', 'collection', 'search', 'edited_by', 'edited_at'];
+  const caseCard = m => { const o = {}; CASE_CARD_KEYS.forEach(k => { if (m[k] != null) o[k] = m[k]; }); return o; };
+  /** A discussion row for a LIST: the score and whether it was ever marked. */
+  const caseAttemptCard = a => ({
+    id: a.id, case_id: a.case_id, created: a.created || 0,
+    topic: a.case?.topic || '', minutes: a.case?.minutes || 0,
+    status: a.status || (a.result ? 'marked' : 'unmarked'),
+    result: a.result ? { percent: a.result.percent, total: a.result.total, max: a.result.max, pass: !!a.result.pass } : null
+  });
+
   /** An attempt row for a LIST: the score, never the answers. */
   const osceAttemptCard = a => ({
     id: a.id, station_id: a.station_id, created: a.created || 0,
@@ -195,6 +226,32 @@ const Backend = (() => {
       const e = sessionEmail(); if (!e) return;
       write('oscedecks:' + e, read('oscedecks:' + e, []).filter(x => x.id !== id));
     }
+    /* ---- case discussions ----
+       A case is a whole document (vignette, phases, questions with model
+       answers), so the LIST is a card and the case itself is fetched only
+       when one is opened — the same split as the OSCE bank, and for the
+       same reason: the bank page must not download every model answer. */
+    async function getCases() { return read('cases', []).map(caseCard); }
+    async function getCase(id) { return read('cases', []).find(x => x.id === id) || null; }
+    async function publishCase(meta) {
+      const rec = withCaseCounts(meta);
+      const e = sessionEmail(); if (e) { rec.edited_by = e; rec.edited_at = Date.now(); }
+      const l = read('cases', []); const i = l.findIndex(x => x.id === rec.id);
+      if (i >= 0) l[i] = rec; else l.push(rec);
+      write('cases', l); return rec;
+    }
+    async function unpublishCase(id) { write('cases', read('cases', []).filter(x => x.id !== id)); }
+    async function listCaseAttempts() { const e = sessionEmail(); if (!e) return []; return Object.values(read('caseattempts:' + e, {})).map(caseAttemptCard); }
+    async function getCaseAttempt(id) { const e = sessionEmail(); if (!e) return null; return read('caseattempts:' + e, {})[id] || null; }
+    async function saveCaseAttempt(a) { const e = sessionEmail(); if (!e) return a; const m = read('caseattempts:' + e, {}); m[a.id] = a; write('caseattempts:' + e, m); return a; }
+    async function deleteCaseAttempt(id) { const e = sessionEmail(); if (!e) return; const m = read('caseattempts:' + e, {}); delete m[id]; write('caseattempts:' + e, m); }
+    /* Local mode has no object store. The tape stays in the browser's own
+       IndexedDB queue instead, so nothing is silently lost — it simply is
+       not in the cloud, which is true and is said on screen. */
+    async function uploadCaseAudio() { return null; }
+    async function getCaseAudioUrl() { return null; }
+    async function sweepCaseAudio() { return 0; }
+
     async function listOsceAttempts() { const e = sessionEmail(); if (!e) return []; return Object.values(read('osceattempts:' + e, {})).map(osceAttemptCard); }
     async function getOsceAttempt(id) { const e = sessionEmail(); if (!e) return null; return read('osceattempts:' + e, {})[id] || null; }
     async function saveOsceAttempt(a) { const e = sessionEmail(); if (!e) return a; const m = read('osceattempts:' + e, {}); m[a.id] = a; write('osceattempts:' + e, m); return a; }
@@ -637,6 +694,10 @@ const Backend = (() => {
       getOsceBlueprint, saveOsceBlueprint, tagOsceStations, listOsceDecks, saveOsceDeck, deleteOsceDeck,
       listOsceAttempts, getOsceAttempt,
       saveOsceAttempt, deleteOsceAttempt, uploadOsceAudio, getOsceAudioUrl, sweepOsceAudio,
+      /* case discussions — the SAME names in both backends, always */
+      getCases, getCase, publishCase, unpublishCase,
+      listCaseAttempts, getCaseAttempt, saveCaseAttempt, deleteCaseAttempt,
+      uploadCaseAudio, getCaseAudioUrl, sweepCaseAudio,
       uploadOsceImage, osceImageUrl, deleteOsceImage,
       getWalletConfig, saveWalletConfig, listMyTopUps, createTopUp, createTopUpFor,
       listAllTopUps, setTopUpStatus,
@@ -974,6 +1035,69 @@ const Backend = (() => {
     /* A list of attempts needs the score, not the answers. Selecting whole
        payloads shipped every question, every marking point and every
        transcript of every past station just to draw a row. */
+    /* ---- case discussions ---- */
+    async function getCases() {
+      await ensureClient();
+      return (await catalogue('the cases', () => sb.from('case_files').select('id,meta').order('id'))).map(r => caseCard(r.meta));
+    }
+    async function getCase(id) {
+      await ensureClient();
+      const { data, error } = await sb.from('case_files').select('meta').eq('id', id).single();
+      if (error) throw new Error(`Could not load that case: ${error.message || error.code || 'read failed'}`);
+      return data?.meta || null;
+    }
+    async function publishCase(meta) {
+      await ensureClient();
+      const rec = withCaseCounts(meta);
+      try {
+        const { data } = await sb.auth.getUser();
+        if (data?.user) { rec.edited_by = data.user.email || data.user.id; rec.edited_at = Date.now(); }
+      } catch {}
+      const { error } = await sb.from('case_files').upsert({ id: rec.id, meta: rec });
+      if (error) throw new Error(error.message || 'Could not save that case.');
+      return rec;
+    }
+    async function unpublishCase(id) { await ensureClient(); await sb.from('case_files').delete().eq('id', id); }
+
+    async function listCaseAttempts() {
+      await ensureClient(); const id = await uid(); if (!id) return [];
+      const light = 'id,case_id,created_at,topic:payload->case->>topic,status:payload->>status,'
+        + 'percent:payload->result->percent,total:payload->result->total,max:payload->result->max,pass:payload->result->pass';
+      const { data, error } = await sb.from('case_attempts').select(light).eq('user_id', id).order('created_at', { ascending: false });
+      if (error) throw new Error('Could not read your case discussions: ' + (error.message || error.code));
+      return (data || []).map(r => ({ id: r.id, case_id: r.case_id, created: new Date(r.created_at).getTime(),
+        topic: r.topic || '', status: r.status || (r.percent == null ? 'unmarked' : 'marked'),
+        result: r.percent == null ? null : { percent: r.percent, total: r.total, max: r.max, pass: !!r.pass } }));
+    }
+    async function getCaseAttempt(aid) {
+      await ensureClient(); const id = await uid(); if (!id) return null;
+      const { data } = await sb.from('case_attempts').select('id,case_id,payload,created_at').eq('id', aid).eq('user_id', id).single();
+      return data ? Object.assign({}, data.payload, { id: data.id, case_id: data.case_id, created: new Date(data.created_at).getTime() }) : null;
+    }
+    async function saveCaseAttempt(a) {
+      await ensureClient(); const id = await uid(); if (!id) throw new Error('Sign in first.');
+      const { error } = await sb.from('case_attempts').upsert({ id: a.id, user_id: id, case_id: a.case_id, payload: a });
+      if (error) throw new Error(error.message || 'Could not save the discussion.');
+      return a;
+    }
+    async function deleteCaseAttempt(aid) { await ensureClient(); const id = await uid(); if (!id) return; await sb.from('case_attempts').delete().eq('id', aid).eq('user_id', id); }
+
+    /* The case tape shares the OSCE bucket. The storage policy keys on the
+       first path segment being your own uid, so a `case-` prefix inside your
+       own folder needs no new bucket and no new policy — and the nightly
+       sweep that empties the bucket after 24 hours already covers it. */
+    async function uploadCaseAudio(attemptId, blob) {
+      await ensureClient(); const id = await uid(); if (!id) return null;
+      const ext = /mp4|aac/.test(blob.type || '') ? 'm4a' : 'webm';
+      const path = `${id}/case-${attemptId}.${ext}`;
+      const { error } = await sb.storage.from(AUDIO_BUCKET).upload(path, blob, {
+        cacheControl: '86400', upsert: true, contentType: blob.type || 'audio/webm' });
+      if (error) throw new Error('Could not store the recording: ' + (error.message || ''));
+      return { path, expires: Date.now() + AUDIO_TTL };
+    }
+    const getCaseAudioUrl = path => getOsceAudioUrl(path);
+    const sweepCaseAudio = () => sweepOsceAudio();
+
     async function listOsceAttempts() {
       await ensureClient(); const id = await uid(); if (!id) return [];
       const light = 'id,station_id,created_at,topic:payload->station->>topic,passMark:payload->station->pass_mark,' +
@@ -1836,6 +1960,10 @@ const Backend = (() => {
       getOsceBlueprint, saveOsceBlueprint, tagOsceStations, listOsceDecks, saveOsceDeck, deleteOsceDeck,
       listOsceAttempts, getOsceAttempt,
       saveOsceAttempt, deleteOsceAttempt, uploadOsceAudio, getOsceAudioUrl, sweepOsceAudio,
+      /* case discussions — the SAME names in both backends, always */
+      getCases, getCase, publishCase, unpublishCase,
+      listCaseAttempts, getCaseAttempt, saveCaseAttempt, deleteCaseAttempt,
+      uploadCaseAudio, getCaseAudioUrl, sweepCaseAudio,
       uploadOsceImage, osceImageUrl, deleteOsceImage,
       getWalletConfig, saveWalletConfig, listMyTopUps, createTopUp, createTopUpFor,
       listAllTopUps, setTopUpStatus,
