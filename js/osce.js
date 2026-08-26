@@ -845,6 +845,26 @@ const OSCE = (() => {
      exist on paper as well, and the scheme is how you recognise which one
      this is. It is also the fastest route into the editor when a point is
      wrong. */
+  /* ---------------- editing a point where you are reading it ----------------
+     A pencil on every marking point, wherever a scheme is drawn. It reads
+     and writes the WHOLE station through the normal publish path, so an
+     inline correction and an edit made in the full editor are the same
+     write — there is no second way for a station to change, and therefore
+     no second way for it to go wrong. The full editor is untouched and is
+     still where questions, marks and images are managed. */
+  const schemePencil = (qid, i) =>
+    (typeof QuickEdit === 'undefined') ? '' : QuickEdit.pencil(QuickEdit.osceRef(qid, i), 'Edit this marking point');
+
+  function wireSchemeEdit(host, stationId) {
+    if (typeof QuickEdit === 'undefined' || !stationId) return;
+    QuickEdit.attach(host, {
+      load: () => Backend.getOsceStation(stationId),
+      find: QuickEdit.osceFind,
+      save: async doc => { await Backend.publishOsceStation(doc); bustStations(); },
+      onSaved: () => bustStations()
+    });
+  }
+
   function showScheme(st) {
     document.querySelector('.os-modal')?.remove();
     const qs = qsOf(st);
@@ -870,7 +890,8 @@ const OSCE = (() => {
                 <p>${esc(q.prompt || '')}</p><span class="os-sch-m">${q.marks} marks</span></div>
               ${q.reveal_before ? `<p class="os-sch-rev"><b>Revealed first:</b> ${esc(q.reveal_before)}</p>` : ''}
               ${imageStrip(q, 'is-small')}
-              <ul class="os-sch-pts">${(q.marking_points || []).map(p => `<li>${esc(p)}</li>`).join('')}</ul>
+              <ul class="os-sch-pts">${(q.marking_points || []).map((p, pi) => `
+                <li data-qe-line><span class="qe-text">${esc(p)}</span>${schemePencil(q.id, pi)}</li>`).join('')}</ul>
             </div>`).join('')}
         </div>
         <div class="os-modal-foot">
@@ -882,8 +903,24 @@ const OSCE = (() => {
       </div>`;
     document.body.appendChild(wrap);
     wireLightbox(wrap);
-    const shut = () => { wrap.remove(); document.removeEventListener('keydown', onKey); };
-    const onKey = e => { if (e.key === 'Escape' && !document.querySelector('.os-lightbox')) shut(); };
+    wireSchemeEdit(wrap, st.id);
+    const shut = () => {
+      wrap.remove();
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('hashchange', shut);
+    };
+    /* The dialog lives on the BODY, so replacing #view does not remove it —
+       navigate away with the scheme open and it stayed floating over the
+       next page, swallowing clicks. Anything mounted outside the view has
+       to take itself down. */
+    window.addEventListener('hashchange', shut);
+    const onKey = e => {
+      // an open edit box owns Escape; the dialog only gets it when nothing
+      // smaller is open inside it
+      if (e.key !== 'Escape') return;
+      if (document.querySelector('.os-lightbox') || wrap.querySelector('.qe-input') || document.querySelector('.qe-ask')) return;
+      shut();
+    };
     wrap.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', shut));
     wrap.querySelector('.os-modal-foot a').addEventListener('click', shut);
     document.addEventListener('keydown', onKey);
@@ -3086,12 +3123,13 @@ const OSCE = (() => {
                 <span class="dc-caret">▸</span>
               </summary>
               <div class="os-qres-body">
-                <div class="es-points">${(qr.points || []).map(p => `
+                <div class="es-points">${(qr.points || []).map((p, pi) => `
                   <div class="es-point es-st-${stCls(p.status)}">
                     <span class="es-point-icon">${stIco(p.status)}</span>
                     <div class="es-point-body">
                       ${p.heading ? `<p class="es-point-head">${esc(p.heading)}</p>` : ''}
-                      <p class="es-point-text">${esc(p.point)}</p>
+                      <p class="es-point-text" data-qe-line><span class="qe-text">${esc(p.point)}</span>${
+                        schemePencil(qr.id, pi)}</p>
                       ${p.note ? `<p class="es-point-note">${esc(p.note)}</p>` : ''}
                     </div>
                   </div>`).join('')}</div>
@@ -3181,6 +3219,10 @@ const OSCE = (() => {
         </div>
       </section>`;
     FX.viewIn(view);
+    /* The report is where a wrong marking point is most often noticed —
+       you are reading the scheme line by line against what you said. So
+       the pencils are here too, writing back to the station itself. */
+    wireSchemeEdit(view, a.station_id);
     if (typeof FX !== 'undefined' && FX.scoreReveal) {
       const d = view.querySelector('#os-dial');
       if (d) { const pct = r.percent || 0;

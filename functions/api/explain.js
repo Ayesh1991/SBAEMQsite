@@ -934,6 +934,19 @@ const CASE_CALIBRATION = [
   '  A candidate who was never asked a question cannot be marked down for not answering it — mark it "notAsked".'
 ].join('\n');
 
+/** The browser's rough transcript per phase, when it managed one. */
+function heardBlock(body) {
+  const h = body.heard || {};
+  const keys = Object.keys(h).filter(k => String(h[k] || '').trim());
+  if (!keys.length) return '';
+  return ['===== THE BROWSER\'S ROUGH TRANSCRIPT, PART BY PART =====',
+    'This is the device\'s own speech recognition. It is UNRELIABLE — it mangles drug names and eponyms and',
+    'drops the ends of sentences — so NEVER mark from it and never quote it as what they said. Use it only to',
+    'find where in the recording each part begins. The audio is the record; where the two disagree, the audio wins.',
+    ...keys.map(k => `[${k}] ${String(h[k]).slice(0, 2500)}`),
+    ''].join('\n');
+}
+
 /** Marking a whole case discussion from one tape. */
 function buildCasePrompt(body) {
   const c = body.case || {};
@@ -963,6 +976,11 @@ function buildCasePrompt(body) {
     '===== THE VIVA QUESTIONS AND THEIR MODEL ANSWERS =====',
     qs || '(none)',
     '',
+    /* The browser's own recogniser, where it has one. A HINT, never the
+       record: it mangles drug names, drops the ends of sentences, and is
+       absent entirely on Safari. It is useful for one thing only — telling
+       the model where in the tape each part begins. */
+    heardBlock(body),
     'Listen to the whole recording, then return ONLY valid JSON, no prose and no code fence, exactly this shape:',
     '{"phases":[{"id":"history","said":"<2-3 sentences: what they actually presented for this phase>",'
       + '"awarded":0,"max":25,'
@@ -1005,12 +1023,21 @@ function buildCaseAskPrompt(body) {
     + 'YOU MUST NEVER GIVE THE ANSWER AWAY. "What about the monitoring?" is a legitimate push. '
     + '"You forgot magnesium sulphate" hands over the mark and is forbidden. Name an AREA, never a fact.\n'
     + 'If the candidate has just stopped mid-thought, a simple "Go on" or "What else would you add?" is often '
-    + 'the right question — do not manufacture complexity.';
+    + 'the right question — do not manufacture complexity.\n\n'
+    /* This paragraph exists because the model kept saying "Could you please
+       present the patient to me?" into the middle of a history. It was not
+       being unreasonable: the transcript it was handed was empty, so as far
+       as it could tell nothing had been said. The client no longer asks
+       without a transcript, and the instruction below closes the rest. */
+    + 'THE PRESENTATION IS ALREADY UNDER WAY. The candidate has been talking for some time; what you are given '
+    + 'below is only the tail of it. NEVER ask them to start, to present the patient, to begin, or to tell you '
+    + 'about the case — they are doing it. Your line must move them FORWARD from where they are.';
 
   const user = [
     `CASE: ${String(body.topic || '').slice(0, 120)}`,
     `PHASE: ${String(body.phase || '').slice(0, 40)}`,
-    `THEY HAVE JUST SAID: ${String(body.said || '').slice(-1200) || '(nothing yet)'}`,
+    body.underway ? 'THEY ARE MID-PRESENTATION. Do not invite them to begin.' : '',
+    `THE LAST OF WHAT THEY SAID: ${String(body.said || '').slice(-1200) || '(not transcribed on this device)'}`,
     (body.missing || []).length
       ? 'STILL UNSAID (name the AREA of one of these, never its content):\n'
         + body.missing.slice(0, 6).map(m => '  - ' + String(m).slice(0, 200)).join('\n')

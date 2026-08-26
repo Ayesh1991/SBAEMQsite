@@ -181,12 +181,13 @@
       <div class="nav-links" id="nav-links">
         ${user ? `
           <a href="#/dashboard" class="${location.hash === '#/dashboard' ? 'active' : ''}">Dashboard</a>
-          <a href="#/library" class="${location.hash.startsWith('#/library') || location.hash.startsWith('#/paper') ? 'active' : ''}">Library</a>
+          <a href="#/library" class="${location.hash.startsWith('#/library') || location.hash.startsWith('#/paper')
+            || location.hash.startsWith('#/simulator') || location.hash.startsWith('#/cards')
+            || location.hash.startsWith('#/mistakes') ? 'active' : ''}">Theory</a>
           <a href="#/osce" class="${location.hash.startsWith('#/osce') ? 'active' : ''}">OSCE</a>
           ${casesOn ? `<a href="#/cases" class="${location.hash.startsWith('#/cases') ? 'active' : ''}">Cases</a>` : ''}
           <a href="#/studio" class="${location.hash === '#/studio' ? 'active' : ''}">Studio<span class="nav-badge nav-badge-tea" id="nav-tea-badge" hidden></span></a>
           <a href="#/peer" class="${location.hash === '#/peer' ? 'active' : ''}">Peer review</a>
-          ${simOn ? `<a href="#/simulator" class="${location.hash.startsWith('#/simulator') ? 'active' : ''}">Simulator</a>` : ''}
           ${isDev ? `<a href="#/dev" class="${location.hash.startsWith('#/dev') ? 'active' : ''}">Developer<span class="nav-badge" id="nav-dev-badge" hidden></span></a>` : ''}
           <a href="#/profile" class="${location.hash === '#/profile' ? 'active' : ''}">Profile</a>
           <button class="btn btn-ghost btn-sm" id="nav-logout">Sign out</button>
@@ -743,7 +744,7 @@
             <td><a class="link" href="#/results/${a.id}">Review</a></td>
           </tr>`).join('')}</tbody>
       </table></div>` :
-      `<p class="muted">No sets yet. <a class="link" href="#/library">Open the library</a> and begin.</p>`;
+      `<p class="muted">No sets yet. <a class="link" href="#/library">Open Theory</a> and begin.</p>`;
   }
 
   function greeting() { const h = new Date().getHours(); return h < 5 ? 'Night shift' : h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'; }
@@ -773,6 +774,7 @@
     const tab = (id, href, label) => `<a class="lib-tab ${active === id ? 'active' : ''}" href="${href}">${label}</a>`;
     return `<div class="lib-subnav" data-animate>
       ${tab('bank', '#/library', 'Question bank')}
+      ${simOn ? tab('sim', '#/simulator', 'Simulator') : ''}
       ${tab('essay', '#/library/essay', 'Essay')}
       ${tab('notes', '#/library/notes', 'Notes')}
       ${cpdOn ? tab('cpd', '#/library/cpd', 'CPD') : ''}
@@ -784,6 +786,8 @@
     return `<section class="page">${librarySubnav(active, user)}${inner}</section>`;
   }
   window.__aureumLibraryShell = (active, inner) => libraryShell(active, inner);
+  // the bare sub-nav, for pages that build their own <section>
+  window.__aureumSubnav = (active, user) => librarySubnav(active, user);
 
   async function renderLibrary(user) {
     window.__aureumUser = user;
@@ -805,7 +809,7 @@
       <section class="page">
         ${librarySubnav('bank', user)}
         <header data-animate>
-          <p class="kicker">QUESTION LIBRARY</p>
+          <p class="kicker">THEORY · QUESTION BANK</p>
           <h1 class="page-title">Choose a paper</h1>
           <p class="muted">Browse the curriculum, or search a topic or paper. Each paper is marked
             <span class="chip chip-sba">SBA</span> and, where present, <span class="chip chip-emq">EMQ</span>.</p>
@@ -1128,7 +1132,7 @@
 
     view.innerHTML = `
       <section class="page narrow">
-        <a class="link muted" href="#/library" data-animate>← Library</a>
+        <a class="link muted" href="#/library" data-animate>← Theory</a>
         <header data-animate>
           <p class="kicker">${esc(path.category?.title || '')}${path.section ? ' · ' + esc(path.section.title) : ''}</p>
           <h1 class="page-title">${esc(paper.topic || meta.title)}</h1>

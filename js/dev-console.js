@@ -2602,6 +2602,14 @@ const DevConsole = (() => {
             it. The rules run first — they read the station's title, scenario and prompts against the synonyms in the
             blueprint above, and a rule you can read is a rule you can correct. Only what the rules could not place
             confidently is sent to a model, and nothing overwrites a tag you set by hand.</p>
+          <label class="dev-up-flag" style="margin:10px 0">
+            <label class="dev-flag"><input type="checkbox" id="os-tag-new" checked><span></span></label>
+            <span><strong>Only stations that have no tag yet</strong>
+              <span class="tiny muted">— on by default. Importing ten new stations should cost ten decisions, not
+              two hundred: with this ticked, everything already tagged is left completely alone and is not even
+              read. Untick it only after changing the blueprint itself, when the whole bank genuinely does need
+              re-matching.</span></span>
+          </label>
           <div class="dev-inline">
             <button class="btn btn-gold" id="os-tag-run">Match with rules</button>
             <button class="btn btn-ghost" id="os-tag-ai" disabled>Ask AI about the leftovers</button>
@@ -2824,7 +2832,21 @@ const DevConsole = (() => {
         /* The rules need the SCENARIO and the prompts, which the card does
            not carry — so the full stations are pulled once, here, rather
            than on every visit to the bank. */
-        const cards = await ctx.Backend.getOsceStations();
+        const all = await ctx.Backend.getOsceStations();
+        /* The blueprint tag travels on the CARD, so "which of these are new"
+           is answered without fetching a single station. That is the whole
+           saving: the expensive full read then runs over ten stations
+           instead of two hundred, and — more importantly — the save that
+           follows rewrites ten tags instead of overwriting every tag in the
+           bank with a fresh rule match. */
+        const newOnly = !!view.querySelector('#os-tag-new')?.checked;
+        const cards = newOnly ? all.filter(c => !c.bp || !c.bp.module) : all;
+        const skipped = all.length - cards.length;
+        if (!cards.length) {
+          msg.innerHTML = `<span class="good">Every one of the ${all.length} stations already carries a tag —
+            nothing new to match. Untick the box above to re-match the whole bank.</span>`;
+          tagRows = []; paint(); e.target.disabled = false; return;
+        }
         const full = [];
         for (const c of cards) {
           msg.textContent = `Reading the stations… ${full.length + 1} of ${cards.length}`;
@@ -2846,7 +2868,8 @@ const DevConsole = (() => {
             hay: OsceBlueprint.hayOf(st).slice(0, 600) };
         });
         const n = k => tagRows.filter(r => r.pile === k).length;
-        msg.innerHTML = `<span class="good">${n('sure')} confident · ${n('unsure')} need a decision · ${n('none')} no match · ${n('hand')} left alone.</span>`;
+        msg.innerHTML = `<span class="good">${n('sure')} confident · ${n('unsure')} need a decision · ${n('none')} no match · ${n('hand')} left alone${
+          skipped ? ` · <b>${skipped} already tagged and untouched</b>` : ''}.</span>`;
         paint();
       } catch (err) { msg.innerHTML = `<span class="bad">${esc(err.message || err)}</span>`; }
       e.target.disabled = false;
@@ -4382,6 +4405,10 @@ const DevConsole = (() => {
     }));
   }
 
+  /* The six components a PGIM Part II long case actually runs in. A file
+     may use any ids it likes and the older four-phase files still work,
+     but these are the ones the stepper labels properly, so a new case
+     should use them. */
   const CASE_EXAMPLE = `{
   "id": "case-anaemia-pregnancy",
   "topic": "Iron deficiency anaemia in pregnancy",
@@ -4391,11 +4418,20 @@ const DevConsole = (() => {
     { "id": "history", "minutes": 8, "ask": "Present your patient.",
       "expect": ["Introduction: age, parity, POA, how the anaemia was identified",
                  "Aetiology screen: diet, PR bleeding, worms, malabsorption, family history"] },
-    { "id": "diagnosis", "minutes": 4, "ask": "How would you investigate?",
-      "expect": ["Red cell indices: MCV, MCH, MCHC"] },
-    { "id": "management", "minutes": 10, "ask": "How would you manage her?",
-      "expect": ["Therapeutic oral iron 100-200 mg elemental daily"] },
-    { "id": "viva", "minutes": 8 }
+    { "id": "summary", "minutes": 2, "ask": "Summarise the history for me.",
+      "expect": ["One or two sentences: who she is, how far on, and the one problem"] },
+    { "id": "examination", "minutes": 4, "ask": "What did you find on examination?",
+      "expect": ["General: pallor, koilonychia, glossitis, pulse and BP",
+                 "Abdominal: SFH against dates, lie and presentation, fetal heart"] },
+    { "id": "problems", "minutes": 4, "ask": "Your problem list and differential diagnosis.",
+      "expect": ["Problem 1: symptomatic anaemia at 30 weeks",
+                 "Differential: iron deficiency, thalassaemia trait, chronic disease, blood loss"] },
+    { "id": "discussion", "minutes": 10,
+      "ask": "How would you investigate and manage her, and what follow-up would you arrange?",
+      "expect": ["Red cell indices: MCV, MCH, MCHC",
+                 "Therapeutic oral iron 100-200 mg elemental daily",
+                 "Postnatal: repeat Hb, continue iron 3 months after it normalises"] },
+    { "id": "viva", "minutes": 4, "ask": "Some questions to finish." }
   ],
   "questions": [
     { "phase": "viva",
