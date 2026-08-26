@@ -322,8 +322,12 @@ const Simulator = (() => {
 
   async function renderHome(view, user) {
     coachProvider = 'claude';
+    /* The simulator now lives inside Theory, so it wears the same sub-nav
+       as the question bank and the essay lab. It is the same material sat
+       a different way, and a separate top-level tab said otherwise. */
     view.innerHTML = `
       <section class="page">
+        ${(window.__aureumSubnav ? window.__aureumSubnav('sim', user) : '')}
         <header data-animate>
           <p class="kicker">ADAPTIVE SIMULATOR · DEVELOPER</p>
           <h1 class="page-title">Daily exam simulator</h1>

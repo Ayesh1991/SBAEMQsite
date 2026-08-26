@@ -70,6 +70,38 @@ const Cases = (() => {
   }
   function bustCases() { _cases = null; }
 
+  /* ---------------- the shape of a long case ----------------
+     These are the six components the PGIM Part II long case actually runs
+     in, in order. A case file may name its phases anything it likes — the
+     older four-phase files still work — but where an id matches one of
+     these it gets the proper label and short name on the stepper, so the
+     candidate always knows which component they are in. */
+  const COMPONENTS = [
+    { id: 'history', short: 'History', label: 'History', ask: 'Present your patient.', minutes: 8 },
+    { id: 'summary', short: 'Summary', label: 'Summary of the history', ask: 'Summarise the history for me.', minutes: 2 },
+    { id: 'examination', short: 'Examination', label: 'Examination', ask: 'What did you find on examination?', minutes: 4 },
+    { id: 'problems', short: 'Problems', label: 'Problem list and differential diagnosis', ask: 'Give me your problem list and your differential diagnosis.', minutes: 4 },
+    { id: 'discussion', short: 'Discussion', label: 'Investigations, management and follow-up', ask: 'How would you investigate and manage her, and what follow-up would you arrange?', minutes: 10 },
+    { id: 'viva', short: 'Viva', label: "Examiner's viva", ask: 'Some questions to finish.', minutes: 4 }
+  ];
+  const componentOf = id => COMPONENTS.find(c => c.id === String(id || '').toLowerCase()) || null;
+  /* Older files used `diagnosis` and `management`; map them onto the two
+     components they correspond to rather than leaving them unlabelled. */
+  const ALIAS = { diagnosis: 'problems', investigations: 'discussion', management: 'discussion', plan: 'discussion' };
+  const shortOf = p => {
+    const c = componentOf(p.id) || componentOf(ALIAS[String(p.id || '').toLowerCase()]);
+    return c ? c.short : (p.short || String(p.ask || p.id || '').split(/[\s,.]+/).slice(0, 2).join(' '));
+  };
+
+  /** The component you are in, always on screen. */
+  function stepperHtml(ph, at) {
+    if (!ph.length) return '';
+    return `<ol class="cs-step" aria-label="Which part of the case you are in">
+      ${ph.map((p, i) => `<li class="${i === at ? 'is-now' : i < at ? 'is-done' : ''}">
+        <i>${i < at ? '✓' : i + 1}</i><span>${esc(shortOf(p))}</span></li>`).join('')}
+    </ol>`;
+  }
+
   const minutesOf = c => Number(c.minutes) || 30;
   const phasesOf = c => c.phases || [];
   const questionsOf = c => c.questions || [];
@@ -131,6 +163,25 @@ const Cases = (() => {
     return hit / need.length >= 0.6;
   }
   const missingIn = (phase, said) => (phase?.expect || []).filter(x => !saidAlready(x, said));
+
+  /* ---------------- editing an expected item where you read it ----------------
+     Same contract as the OSCE scheme: the pencil reads and writes the whole
+     case through the normal publish path, so an inline correction and an
+     imported replacement are the same write. */
+  const pExpect = (phaseId, i) =>
+    (typeof QuickEdit === 'undefined') ? '' : QuickEdit.pencil(QuickEdit.caseRef(phaseId, i), 'Edit this expected item');
+  const pMust = (qi, i) =>
+    (typeof QuickEdit === 'undefined') ? '' : QuickEdit.pencil(QuickEdit.mustRef(qi, i), 'Edit this must-hit');
+
+  function wireCaseEdit(host, caseId) {
+    if (typeof QuickEdit === 'undefined' || !caseId) return;
+    QuickEdit.attach(host, {
+      load: () => Backend.getCase(caseId),
+      find: QuickEdit.caseFind,
+      save: async doc => { await Backend.publishCase(doc); bustCases(); },
+      onSaved: () => bustCases()
+    });
+  }
 
   /* ================= the bank page ================= */
 
@@ -288,14 +339,16 @@ const Cases = (() => {
             ${ph.map(p => (p.expect || []).length ? `
               <div class="cs-qa-block">
                 <h4>${esc(p.ask || p.id)}</h4>
-                <ul>${(p.expect || []).map(x => `<li>${esc(x)}</li>`).join('')}</ul>
+                <ul>${(p.expect || []).map((x, xi) => `
+                  <li data-qe-line><span class="qe-text">${esc(x)}</span>${pExpect(p.id, xi)}</li>`).join('')}</ul>
               </div>` : '').join('')}
             ${qs.map((q, i) => `
               <div class="cs-qa-block">
                 <h4>Q${i + 1}. ${esc(q.q || '')}</h4>
                 ${q.model ? `<p class="cs-model">${esc(q.model)}</p>` : ''}
                 ${(q.mustHit || []).length ? `<p class="cs-must"><strong>Must hit:</strong></p>
-                  <ul>${q.mustHit.map(m => `<li>${esc(m)}</li>`).join('')}</ul>` : ''}
+                  <ul>${q.mustHit.map((m, mi) => `
+                    <li data-qe-line><span class="qe-text">${esc(m)}</span>${pMust(i, mi)}</li>`).join('')}</ul>` : ''}
                 ${q.followUp ? `<p class="cs-follow"><strong>Follow-up:</strong> ${esc(q.followUp)}</p>` : ''}
               </div>`).join('')}
           </div>
@@ -304,6 +357,7 @@ const Cases = (() => {
         ${(c.sources || []).length ? `<p class="cs-src muted tiny">Sources: ${(c.sources || []).map(esc).join(' · ')}</p>` : ''}
       </section>`;
     FX.viewIn(view);
+    wireCaseEdit(view, c.id);
 
     view.querySelector('#cs-start').addEventListener('click', async () => {
       const sid = rid('cs');
@@ -344,8 +398,9 @@ const Cases = (() => {
             <h3>${esc(p.ask || p.id)} <em class="muted tiny">about ${p.minutes || 5} min</em></h3>
             <p class="muted tiny">Tick what they cover. What is left unticked at the end is what to feed back on.</p>
             <ul class="cs-tick">
-              ${(p.expect || []).map((x, i) => `<li><label>
-                <input type="checkbox" data-tick="${esc(p.id)}-${i}"><span>${esc(x)}</span></label></li>`).join('')}
+              ${(p.expect || []).map((x, i) => `<li data-qe-line><label>
+                <input type="checkbox" data-tick="${esc(p.id)}-${i}"><span class="qe-text">${esc(x)}</span></label>${
+                pExpect(p.id, i)}</li>`).join('')}
             </ul>
           </div>`).join('')}
 
@@ -355,12 +410,14 @@ const Cases = (() => {
             <details class="cs-exam-q">
               <summary><strong>Q${i + 1}.</strong> ${esc(q.q || '')}</summary>
               ${q.model ? `<p class="cs-model">${esc(q.model)}</p>` : ''}
-              ${(q.mustHit || []).length ? `<ul class="cs-must-list">${q.mustHit.map(m => `<li>${esc(m)}</li>`).join('')}</ul>` : ''}
+              ${(q.mustHit || []).length ? `<ul class="cs-must-list">${q.mustHit.map((m, mi) => `
+                <li data-qe-line><span class="qe-text">${esc(m)}</span>${pMust(i, mi)}</li>`).join('')}</ul>` : ''}
               ${q.followUp ? `<p class="cs-follow"><strong>Then ask:</strong> ${esc(q.followUp)}</p>` : ''}
             </details>`).join('')}
         </div>
       </section>`;
     FX.viewIn(view);
+    wireCaseEdit(view, c.id);
   }
 
   /* ================= the live session ================= */
@@ -469,10 +526,11 @@ const Cases = (() => {
       const p = ph[at];
       probes.disarm();
       stage.innerHTML = `
+        ${stepperHtml(ph, at)}
         <div class="cs-phase">
           <p class="cs-phase-n">Part ${at + 1} of ${ph.length} · about ${p.minutes || 5} minutes</p>
           <h2 class="cs-ask">${esc(p.ask || p.id)}</h2>
-          <div class="os-listen" id="cs-listen" hidden></div>
+          <div class="cs-hear" id="cs-hear"></div>
           <div class="os-probe" id="cs-probe" hidden></div>
           <div class="cs-note">
             <label class="muted tiny" for="cs-jot">Anything you want the marker to be sure of (optional — the
@@ -488,10 +546,79 @@ const Cases = (() => {
       jot.addEventListener('input', () => { notes[p.id] = jot.value; persist(); });
       stage.querySelector('#cs-next').addEventListener('click', () => nextPhase());
       paintNext();
-      probes.armFor(p, () => notes[p.id] || '');
+      probes.armFor(p, () => saidIn(p.id));
       phaseStarted = Date.now();
       persist();
       if (!drawer.hidden) paintDrawer();
+    }
+
+    /* ================= what the examiner can actually hear =================
+
+       THE BUG THIS FIXES
+
+       The examiner used to be handed the TYPED NOTE BOX as "what the
+       candidate has said". That box is almost always empty, so every push
+       was computed from a blank transcript: nothing said, every expected
+       item still missing, and a model told "PHASE: Present your patient /
+       THEY HAVE JUST SAID: (nothing yet)" quite reasonably replied "Could
+       you please present the patient to me?" — over and over, while the
+       candidate was in the middle of presenting the patient.
+
+       So: where the browser has a recogniser, its words are accumulated
+       per phase and THAT is what the examiner reasons about. Where it does
+       not — Safari has never shipped one, which is most iPads — the
+       examiner is told plainly that it cannot read the answer, and it
+       falls back to generic pushes rather than inventing a question from
+       an empty page. A model with nothing to read must not be asked to
+       comment on what it cannot read. */
+
+    const heard = {};                 // phase id → what the recogniser caught
+    let recogOn = false, lastWords = '';
+    const saidIn = id => [(heard[id] || ''), (notes[id] || '')].filter(Boolean).join(' ');
+
+    function onHeard(text) {
+      if (!text) return;
+      recogOn = true;
+      const id = ph[at]?.id;
+      if (!id) return;
+      heard[id] = ((heard[id] || '') + ' ' + text).trim().slice(-6000);
+      lastWords = text;
+      paintHear();
+    }
+
+    /* The indicator. Three honest states, and never a fourth that pretends:
+         · words coming in — the recogniser is working, show the last of them
+         · a level but no words — we can hear you, we cannot read you
+         · nothing at all — say so, because a dead microphone looks identical
+           to a quiet one and only one of them is fixable. */
+    let hearPaint = '';
+    function paintHear() {
+      const el = stage.querySelector('#cs-hear');
+      if (!el) return;
+      const lvl = live?.level ? live.level() : -1;
+      const st = probes.status();
+      let cls, txt, tail = '';
+      if (lvl < 0) {
+        cls = 'is-nometer';
+        txt = 'This browser gives no microphone level — the examiner will not interrupt you at all';
+      } else if (recogOn) {
+        cls = st.mode === 'quiet' ? 'is-quiet' : 'is-hearing';
+        txt = st.mode === 'quiet' ? `You have stopped — the examiner will speak in ${Math.ceil((st.left || 0) / 1000)}s`
+          : 'Hearing you';
+        tail = lastWords ? `<em class="cs-hear-w">…${esc(lastWords.slice(-90))}</em>` : '';
+      } else if (st.mode === 'quiet') {
+        cls = 'is-quiet';
+        txt = `You have stopped — the examiner will speak in ${Math.ceil((st.left || 0) / 1000)}s`;
+      } else if (st.mode === 'listening' || st.mode === 'waiting') {
+        cls = 'is-hearing';
+        txt = st.mode === 'waiting' ? 'Ready — start speaking' : 'Hearing you';
+        tail = '<em class="cs-hear-w">This browser cannot write down what you say. The recording is still the record.</em>';
+      } else { cls = 'is-idle'; txt = ''; }
+      const key = cls + txt + tail;
+      if (key === hearPaint) return;
+      hearPaint = key;
+      el.className = 'cs-hear ' + cls;
+      el.innerHTML = txt ? `<i class="cs-hear-dot"></i><span>${esc(txt)}</span>${tail}` : '';
     }
 
     let phaseStarted = Date.now();
@@ -608,6 +735,7 @@ const Cases = (() => {
 
       async function tick() {
         paint();
+        paintHear();
         if (busy || !p || !running) return;
 
         /* The phase's own clock. A part that has run its time moves on by
@@ -658,11 +786,29 @@ const Cases = (() => {
       const GENERIC = ['Go on.', 'What else would you add?', 'Anything further?',
         'Can you expand on that?', 'And?', 'Tell me more about that.'];
 
-      /** One line. The model is asked only when there is something specific to point at. */
+      /* Anything that amounts to "start presenting" is forbidden once the
+         part has begun. This is the exact line the examiner kept repeating
+         into the middle of a history, and no amount of prompt wording is
+         worth trusting on its own — a re-ask is refused here, at the last
+         possible moment, whatever the model returned. */
+      const RESTART = /\b(present (the|your|this) (patient|case)|start(ing)? (your|the) presentation|begin (your|the) presentation|tell me about (the|your) patient|introduce (the|your) patient|go ahead and present)\b/i;
+
+      /** One line. The model is asked ONLY when there is a transcript to reason about. */
       async function pushLine() {
         const said = (getText && getText()) || '';
-        const missing = missingIn(p, said);
         const generic = GENERIC[Math.floor(Math.random() * GENERIC.length)];
+
+        /* WITHOUT A TRANSCRIPT, DO NOT ASK THE MODEL.
+
+           On Safari there is no recogniser, so `said` is empty however long
+           and however well the candidate has been talking. Sending that to
+           a model is asking it to comment on a blank page, and what comes
+           back is a request to start presenting — the very thing that was
+           wrong. A generic push is honest: it says "keep going" without
+           pretending to know what was said. */
+        if (!said.trim()) return generic;
+
+        const missing = missingIn(p, said);
         if (!missing.length) return generic;
         try {
           if (typeof Wallet !== 'undefined' && !(await Wallet.canSpend())) return generic;
@@ -673,12 +819,16 @@ const Cases = (() => {
             body: JSON.stringify({ action: 'caseask', provider: 'gemini', model: cfg().ai?.geminiModel,
               dailyLimit: cfg().ai.dailyLimit,
               topic: c.topic, phase: p.ask || p.id, said: said.slice(-1200),
+              // the model is told the presentation is UNDER WAY, so it never
+              // frames its line as an invitation to begin
+              underway: true,
               missing: missing.slice(0, 6).map(x => String(x).slice(0, 200)) })
           });
           if (!res.ok) return generic;
           const d = await res.json().catch(() => ({}));
           const t = String(d.text || '').trim().replace(/^["']|["']$/g, '');
-          return (t && t.length < 170) ? t : generic;
+          if (!t || t.length >= 170) return generic;
+          return RESTART.test(t) ? generic : t;
         } catch { return generic; }
       }
 
@@ -766,6 +916,11 @@ const Cases = (() => {
     stage.querySelector('#cs-begin').addEventListener('click', async () => {
       const micHost = stage.querySelector('#cs-mic');
       live = OSCE.makeCapture(micHost, true);
+      /* Where the browser has a recogniser, its words are what the examiner
+         reasons about. Safari has never shipped one and attach() is then a
+         no-op — which is fine, and SAID so on screen, rather than leaving
+         the examiner to conclude that a silent transcript means silence. */
+      live.attach(onHeard);
       const ok = await live.start();
       if (!ok && live.state && live.state().failed) {
         micHost.insertAdjacentHTML('beforeend',
@@ -786,7 +941,7 @@ const Cases = (() => {
     });
 
     function pause() { running = false; pauseBtn.textContent = '▶ Resume'; try { live?.pause(); } catch {} probes.disarm(); }
-    function resume() { running = true; pauseBtn.textContent = '⏸ Pause'; try { live?.resume(); } catch {} if (ph[at]) probes.armFor(ph[at], () => notes[ph[at].id] || ''); }
+    function resume() { running = true; pauseBtn.textContent = '⏸ Pause'; try { live?.resume(); } catch {} if (ph[at]) probes.armFor(ph[at], () => saidIn(ph[at].id)); }
 
     /* ---- the end ---- */
     async function finish() {
@@ -800,7 +955,7 @@ const Cases = (() => {
       stopLive();
       dropSession(sid);
       await renderDebrief(view, c, {
-        id: rid('ca'), case_id: c.id, notes, asked: [...asked],
+        id: rid('ca'), case_id: c.id, notes, asked: [...asked], heard,
         elapsed, started: s.started
       }, rec, user);
     }
@@ -880,7 +1035,7 @@ const Cases = (() => {
     try {
       await Pending.put({ kind: 'case', id: base.id, title: c.topic || c.id,
         blob: rec.blob, mime: rec.mime, secs: rec.secs,
-        payload: { case_id: c.id, notes: base.notes, asked: base.asked,
+        payload: { case_id: c.id, notes: base.notes, asked: base.asked, heard: base.heard || {},
           elapsed: base.elapsed, started: base.started },
         reason: 'Not sent yet.' });
     } catch { /* a browser with no IndexedDB still gets to try the send */ }
@@ -910,6 +1065,10 @@ const Cases = (() => {
         },
         asked: base.asked || [],
         notes: base.notes || {},
+        /* What the browser wrote down, per phase. It is a HINT for the
+           marker, never the record: the tape is the record, and where the
+           browser has no recogniser this is simply absent. */
+        heard: base.heard || {},
         audio: { mime: rec.mime || 'audio/webm', data: await OSCE.toBase64(rec.blob) }
       };
       const res = await fetch(cfg().ai.apiBase, {
@@ -1119,6 +1278,8 @@ const Cases = (() => {
           </div>
         </header>
 
+        ${(a.phases || []).length ? stepperHtml(a.phases, (a.phases || []).length) : ''}
+
         ${r.examinerComment ? `<div class="cs-verdict"><h3>The examiner's verdict</h3><p>${esc(r.examinerComment)}</p></div>` : ''}
 
         ${(r.phases || []).map(p => `
@@ -1126,10 +1287,10 @@ const Cases = (() => {
             <h3>${esc(labelForPhase(a, p.id))} <span class="cs-res-mark">${p.awarded ?? 0} / ${p.max ?? 0}</span></h3>
             ${p.said ? `<p class="cs-said">“${esc(p.said)}”</p>` : ''}
             <ul class="cs-items">
-              ${(p.items || []).map(it => `
-                <li class="is-${String(it.status || 'missed').replace(/\s+/g, '-')}">
+              ${(p.items || []).map((it, ii) => `
+                <li class="is-${String(it.status || 'missed').replace(/\s+/g, '-')}" data-qe-line>
                   <span class="cs-mark">${markOf(it.status)}</span>
-                  <span><strong>${esc(it.item || '')}</strong>
+                  <span><strong class="qe-text">${esc(it.item || '')}</strong>${pExpect(p.id, ii)}
                   ${it.note ? `<em class="muted tiny">${esc(it.note)}</em>` : ''}</span>
                 </li>`).join('')}
             </ul>
@@ -1197,6 +1358,9 @@ const Cases = (() => {
       </section>`;
     FX.viewIn(view);
 
+    /* Reading the report is when a wrong expected item is noticed, so the
+       pencils are here too — writing back to the case itself. */
+    wireCaseEdit(view, a.case_id);
     view.querySelector('#cs-print')?.addEventListener('click', () => printCase(a));
     view.querySelector('#cs-audio')?.addEventListener('click', async e => {
       const host = view.querySelector('#cs-audio-host');
@@ -1287,6 +1451,7 @@ ${P} .foot{margin-top:16px;padding-top:6px;border-top:1px solid #ddd;font-size:7
 
   return {
     renderBank, renderCase, renderExamine, renderRun, renderResult, renderMine,
+    COMPONENTS, componentOf, shortOf, stepperHtml,
     allowed, cases, bustCases, waitMs, setWaitMs, saidAlready, missingIn,
     estimate, parseCase, minutesOf, phasesOf, questionsOf, expectedOf,
     openSessions, dropSession
