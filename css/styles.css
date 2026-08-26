@@ -4528,6 +4528,9 @@ body.eco-open .ap-dock { z-index: 2390; }
 .os-pdial-num { font-family: Georgia, serif; font-size: 1.4rem; color: var(--gold, #e8b53f); }
 .os-pdial-box input[type="range"] { width: 100%; accent-color: var(--gold, #e8b53f); margin: 8px 0 2px; }
 .os-pdial-scale { display: flex; justify-content: space-between; font-size: .66rem; color: var(--ink-2); }
+/* the second dial — how long a pause is a pause — separated from the first
+   by a rule, because they are two different questions wearing one panel */
+.os-wait-head { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,.09); }
 
 /* what the examiner just said */
 .os-probe {

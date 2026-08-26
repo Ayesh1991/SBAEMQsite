@@ -458,19 +458,51 @@ const OSCE = (() => {
      generic pool cannot leak anything by construction. */
 
   const PROMPT_KEY = 'aureum.osce.promptlevel';
+  /* `Number(null)` is 0, not NaN. So an untouched browser — which has no
+     stored level at all — read as "0", and 0 means SILENT. Every new
+     candidate was given an examiner that had been switched off, and the
+     default of 35 written just below could never once have been reached.
+     Read the raw string first and only then make it a number. */
   function promptLevel() {
-    try { const n = Number(localStorage.getItem(PROMPT_KEY)); return Number.isFinite(n) && n >= 0 ? Math.min(100, n) : 35; }
-    catch { return 35; }
+    try {
+      const raw = localStorage.getItem(PROMPT_KEY);
+      if (raw == null || raw === '') return 35;
+      const n = Number(raw);
+      return Number.isFinite(n) && n >= 0 ? Math.min(100, n) : 35;
+    } catch { return 35; }
   }
   function setPromptLevel(n) { try { localStorage.setItem(PROMPT_KEY, String(Math.max(0, Math.min(100, n | 0)))); } catch {} }
 
+  /* HOW LONG A PAUSE IS A PAUSE.
+
+     This used to be derived from the push dial — turn the examiner up and
+     it also grew impatient, from fourteen seconds down to five. Two
+     different things wearing one control, and the wrong one of them was
+     what actually needed adjusting.
+
+     They are separate now. The dial decides how HARD (how many pushes, how
+     pointed); this decides how LONG the examiner lets a silence run first.
+     Three seconds is the default because that is roughly the pause a real
+     examiner tolerates before helping — but someone who thinks in long
+     silences can take it to fifteen and never be interrupted. */
+  const SILENCE_KEY = 'aureum.osce.silencems';
+  const SILENCE_MIN = 1500, SILENCE_MAX = 15000, SILENCE_DEF = 3000;
+  function silenceWait() {
+    try {
+      const n = Number(localStorage.getItem(SILENCE_KEY));
+      return Number.isFinite(n) && n >= SILENCE_MIN ? Math.min(SILENCE_MAX, n) : SILENCE_DEF;
+    } catch { return SILENCE_DEF; }
+  }
+  function setSilenceWait(ms) {
+    try { localStorage.setItem(SILENCE_KEY, String(Math.max(SILENCE_MIN, Math.min(SILENCE_MAX, ms | 0)))); } catch {}
+  }
+
   /** How the dial translates into behaviour. */
   function promptPlan(level) {
-    if (level <= 0) return { off: true };
+    if (level <= 0) return { off: true, silenceMs: silenceWait() };
     return {
       off: false,
-      // 1 → ~14s of silence before a nudge; 100 → 5s
-      silenceMs: Math.round(14000 - (level / 100) * 9000),
+      silenceMs: silenceWait(),
       // at most one nudge per question at the bottom, three at the top
       maxPerQuestion: level < 34 ? 1 : level < 67 ? 2 : 3,
       // how often the nudge is about a SPECIFIC missing point
@@ -1042,7 +1074,7 @@ const OSCE = (() => {
             <span class="muted tiny" id="os-freshnote"></span></span>
         </label>
 
-        <details class="dev-collapse os-simcoach" style="margin-top:14px">
+        <details class="dev-collapse os-simcoach" style="margin-top:14px" open>
           <summary><span class="card-title">Coaching on every station in this circuit</span><span class="dc-caret">▸</span></summary>
           <p class="muted tiny">Asked once here rather than nine times. Whatever is ticked is applied to every station
             in the round — the ones that need the recording are simply skipped on any station where nothing was
@@ -1405,7 +1437,22 @@ const OSCE = (() => {
             <input type="range" id="os-pdial-b" min="0" max="100" step="5" value="${promptLevel()}">
             <div class="os-pdial-scale"><span>Silent</span><span>Nudges</span><span>Pushes hard</span></div>
             <p class="muted tiny" id="os-pdial-say"></p>
+            <label class="os-pdial-head os-wait-head">
+              <span><strong>How long a pause before it pushes?</strong></span>
+              <span class="os-pdial-num" id="os-wait-v">${(silenceWait() / 1000).toFixed(1)}s</span>
+            </label>
+            <input type="range" id="os-wait" min="${SILENCE_MIN}" max="${SILENCE_MAX}" step="500" value="${silenceWait()}">
+            <div class="os-pdial-scale"><span>1.5s — impatient</span><span>15s — lets you think</span></div>
+            <p class="muted tiny">The examiner only speaks after you have genuinely stopped. Gaps between words and
+              between sentences are not silences and never trigger it — but if you think in long pauses, move this
+              right and it will wait.</p>
           </div>
+          <details class="dev-collapse os-simcoach" open>
+            <summary><span class="card-title">Coaching as well as marks</span><span class="dc-caret">▸</span></summary>
+            <p class="muted tiny">Decided here so the debrief is one press. Change it there too if you want —
+              nothing is asked of the model until you send the station for marking.</p>
+            <div id="os-brief-coach"></div>
+          </details>
           ${canSpeak() ? `<label class="os-both">
             <input type="checkbox" id="os-both" ${examinerOnTape() ? 'checked' : ''}>
             <span><strong>Record the examiner's voice too</strong><br>
@@ -1432,8 +1479,9 @@ const OSCE = (() => {
           : p.pointedChance < 0.5
             ? 'Most pushes are general; some point at the area you have left out.'
             : 'Most pushes point at the specific area you have left out — never at the answer itself.';
-        return `After about ${secs} seconds of silence, and only while a marking point is still unsaid, the examiner
-          pushes — at most ${p.maxPerQuestion} time${p.maxPerQuestion === 1 ? '' : 's'} per question. ${pointed}`;
+        return `After ${secs} second${secs === 1 ? '' : 's'} of silence — a real stop, not the gap between two words —
+          and only while a marking point is still unsaid, the examiner pushes: at most
+          ${p.maxPerQuestion} time${p.maxPerQuestion === 1 ? '' : 's'} per question. ${pointed}`;
       };
       const paintDial = n => {
         bNum.textContent = n; bSay.innerHTML = describe(n);
@@ -1442,6 +1490,21 @@ const OSCE = (() => {
       };
       bDial.addEventListener('input', () => { setPromptLevel(Number(bDial.value)); paintDial(Number(bDial.value)); });
       paintDial(promptLevel());
+
+      const wait = stage.querySelector('#os-wait');
+      const waitV = stage.querySelector('#os-wait-v');
+      wait?.addEventListener('input', () => {
+        setSilenceWait(Number(wait.value));
+        waitV.textContent = (Number(wait.value) / 1000).toFixed(1) + 's';
+        paintDial(promptLevel());        // the sentence above quotes this number
+      });
+
+      /* The station is about to be recorded, so every option is answerable
+         — including the three that need a tape. */
+      {
+        const ch = stage.querySelector('#os-brief-coach');
+        if (ch) { ch.innerHTML = coachPicker(true); wireCoachPicker(ch); }
+      }
       // fetched in the background while the scenario is being read, then the
       // brief says plainly which voice the candidate is going to hear
       prefetchVoices().then(() => paintVoiceLine(stage)).catch(() => paintVoiceLine(stage));
@@ -1516,6 +1579,7 @@ const OSCE = (() => {
     const probes = (() => {
       let timer = null, q = null, getText = null;
       let spokenHere = 0, lastAt = 0, quietSince = 0, busy = false, everHeard = false;
+      let lastPaint = null;
 
       /* THE NOISE FLOOR.
 
@@ -1529,13 +1593,38 @@ const OSCE = (() => {
          far ARE the floor, and speech is what rises clearly above it. The
          floor tracks downward quickly and upward slowly, so a door slamming
          does not permanently deafen the examiner. */
-      let floor = null, peakSeen = 0;
+      /* AND THE TWO REASONS IT INTERRUPTED PEOPLE MID-SENTENCE.
+
+         First, the floor learned from every sample including speech. Talk
+         for forty seconds without a break and the floor climbs towards
+         your own voice, until your voice no longer clears it — and the
+         examiner, now deaf to you, decides you have stopped and cuts in.
+         The longer and better the answer, the more likely it was to be
+         interrupted, which is precisely backwards. The floor now learns
+         only from samples that are NOT speech.
+
+         Second, a single instantaneous reading was taken as the whole
+         truth. Ordinary speech dips to nothing between words and between
+         sentences; catch it in one of those gaps and it reads as silence.
+         So voice is now judged over a rolling window — if the microphone
+         has been over the line at any point in the last three-quarters of
+         a second, you are still talking. Real pauses are longer than that;
+         the gap between "obstetric" and "cholestasis" is not. */
+      let floor = null, peakSeen = 0, lastVoiceAt = 0;
       const SPEAK_OVER = 0.045;         // how far above the floor counts as talking
-      function listen(lvl) {
+      const GAP_MS = 750;               // a hole in speech shorter than this is still speech
+
+      function listen(lvl, now) {
         if (lvl < 0) return null;
-        floor = floor == null ? lvl : (lvl < floor ? lvl * 0.35 + floor * 0.65 : floor * 0.995 + lvl * 0.005);
+        now = now || Date.now();
+        const over = floor != null && lvl > floor + SPEAK_OVER;
+        if (floor == null) floor = lvl;
+        else if (lvl < floor) floor = lvl * 0.35 + floor * 0.65;      // drops fast
+        else if (!over) floor = floor * 0.995 + lvl * 0.005;          // creeps up ONLY on silence
         peakSeen = Math.max(peakSeen, lvl);
-        return lvl > floor + SPEAK_OVER;
+        if (over) lastVoiceAt = now;
+        // still counted as talking through the gaps between words
+        return lastVoiceAt > 0 && (now - lastVoiceAt) < GAP_MS;
       }
       /** What the strip on screen shows, so this can never fail invisibly. */
       function status() {
@@ -1549,13 +1638,17 @@ const OSCE = (() => {
         return { mode: 'quiet', left: Math.max(0, plan.silenceMs - (Date.now() - quietSince)) };
       }
 
-      function disarm() { if (timer) clearInterval(timer); timer = null; q = null; paintProbeState(); }
+      function disarm() { if (timer) clearInterval(timer); timer = null; q = null; lastPaint = null; paintProbeState(); }
 
       function armFor(question, textFn) {
         disarm();
         q = question; getText = textFn;
         spokenHere = 0; lastAt = Date.now(); quietSince = 0; everHeard = false;
-        timer = setInterval(tick, 500);       // runs even at level 0, to paint the strip
+        floor = null; peakSeen = 0; lastVoiceAt = 0;   // a new question is a new room
+        /* 150ms, not 500. The window that decides "still talking" is
+           three-quarters of a second wide, and sampling it twice a second
+           would mean judging a pause on one or two readings. */
+        timer = setInterval(tick, 150);       // runs even at level 0, to paint the strip
         paintProbeState();
       }
 
@@ -1568,20 +1661,24 @@ const OSCE = (() => {
         if (total - elapsed < 60) return;
         if (Date.now() - lastAt < plan.cooldownMs) return;
 
+        const now = Date.now();
         const lvl = live?.level ? live.level() : -1;
         /* A device that cannot report a level gets no probing at all rather
            than probing blind. Interrupting someone mid-sentence is worse
            than staying quiet, and there is no way to tell without a meter.
            The strip says so rather than leaving it a mystery. */
         if (lvl < 0) return;
-        const talking = listen(lvl);
+        const talking = listen(lvl, now);
         if (talking) { everHeard = true; quietSince = 0; return; }
         /* Nothing has been heard above the floor yet. After forty seconds
            that is itself worth a push — someone who has not started may be
            stuck, and a real examiner would not sit through it in silence. */
-        if (!everHeard && Date.now() - lastAt < 40000) return;
-        if (!quietSince) { quietSince = Date.now(); return; }
-        if (Date.now() - quietSince < plan.silenceMs) return;
+        if (!everHeard && now - lastAt < 40000) return;
+        /* The countdown starts from when the voice actually stopped, not
+           from when this loop noticed — otherwise the window that protects
+           the gaps between words would silently be added to every wait. */
+        if (!quietSince) { quietSince = lastVoiceAt || now; return; }
+        if (now - quietSince < plan.silenceMs) return;
 
         const said = (getText && getText()) || '';
         const missing = missingPoints(q, said);
@@ -1622,6 +1719,10 @@ const OSCE = (() => {
           listening: 'Examiner listening…',
           quiet: `Examiner waiting… ${Math.ceil((st.left || 0) / 1000)}s`
         }[st.mode] || '';
+        // the loop runs seven times a second now; only touch the DOM when
+        // the words actually change
+        if (txt === lastPaint) return;
+        lastPaint = txt;
         el.hidden = !txt;
         el.className = 'os-listen is-' + st.mode;
         el.textContent = txt;
@@ -2571,7 +2672,7 @@ const OSCE = (() => {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `Marking failed (HTTP ${res.status}).`);
-      const result = parseResult(data.text, st);
+      const result = parseResult(data.text, st, data.finish);
       // when the model listened, IT produced the transcripts — keep them
       const answers = qsOf(st).map(q => {
         const fromModel = (result.questions || []).find(x => String(x.id) === String(q.id))?.transcript;
@@ -2692,14 +2793,59 @@ const OSCE = (() => {
     return { blob: new Blob([bytes.buffer], { type: 'audio/wav' }), rate, bytes: bytes.byteLength };
   }
 
-  function parseResult(text, st) {
+  /* A marking answer that stops in the middle of an array is still worth
+     most of what it cost. This closes whatever the model left open — the
+     partial string, then the unbalanced brackets — and returns the object
+     if it parses. Anything genuinely unfinished at the end (a half-written
+     point) is dropped by the closing rather than guessed at. */
+  function salvageJson(raw) {
+    const a = raw.indexOf('{');
+    if (a < 0) return null;
+    const s = raw.slice(a);
+    let inStr = false, esc = false;
+    const stack = [];
+    let cut = 0, cutStack = null;       // the last point at which this was closable
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === '\\') esc = true;
+        else if (c === '"') inStr = false;
+        continue;
+      }
+      if (c === '"') { inStr = true; continue; }
+      if (c === '{' || c === '[') stack.push(c === '{' ? '}' : ']');
+      else if (c === '}' || c === ']') stack.pop();
+      /* A comma or a closing bracket ends a complete element. Remember
+         BOTH the position and the nesting there — closing with the stack
+         as it stands at the very end would close the wrong brackets. */
+      if (c === ',' || c === '}' || c === ']') { cut = i + 1; cutStack = stack.slice(); }
+    }
+    if (!stack.length) { try { return JSON.parse(s); } catch { return null; } }
+    if (!cut || !cutStack) return null;
+    let body = s.slice(0, cut).replace(/,\s*$/, '');
+    for (let i = cutStack.length - 1; i >= 0; i--) body += cutStack[i];
+    try { return JSON.parse(body); } catch { return null; }
+  }
+
+  function parseResult(text, st, finish) {
     let raw = String(text || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
     let d = null;
     try { d = JSON.parse(raw); } catch {
       const a = raw.indexOf('{'), b = raw.lastIndexOf('}');
       if (a >= 0 && b > a) { try { d = JSON.parse(raw.slice(a, b + 1)); } catch {} }
+      if (!d) d = salvageJson(raw);         // truncated mid-array — keep what arrived
     }
-    if (!d) throw new Error('The marker did not return readable marks. Try again, or a different model.');
+    if (!d) {
+      /* Say WHICH failure this is. "Try again" was true but useless: the
+         one cause worth acting on differently is a cut-off answer, and the
+         server now names it. */
+      throw new Error(finish === 'MAX_TOKENS'
+        ? 'The marker ran out of room before it finished. This has been given more headroom — press Mark again, and tell the developer if it repeats.'
+        : finish
+          ? `The marker stopped early (${finish}) and returned nothing usable. Try again, or a different model.`
+          : 'The marker did not return readable marks. Try again, or a different model.');
+    }
 
     /* THE POINT TEXT COMES FROM THE STATION, NOT FROM THE MODEL.
 
@@ -4192,6 +4338,7 @@ ${P} .os-pd-close{background:transparent;color:#fff;border:1px solid rgba(255,25
     stations, bustStations, collections, bustCollections, openSessions, dropSession,
     marksOf, passOf, qsOf, toWav, wavRateFor, modelChoices, noAudioReason,
     stationAsText, promptLevel, setPromptLevel, promptPlan, missingPoints, saidAlready,
+    silenceWait, setSilenceWait, salvageJson,
     makeDoc, docAsText, allPoints, coachFor, coachWanted, COACH,
     // exposed for tests and for the circuit page's live redraw
     markState, onMarkChange, retryMark };
