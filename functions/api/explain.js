@@ -224,17 +224,22 @@ export async function onRequest(context) {
         if (provider === 'gpt') {
           const fmt = /mp3|mpeg/i.test(body.audio.mime || '') ? 'mp3' : 'wav';
           const rr = await callOpenAIAudio(buildOsceAudioPrompt(body), body.audio, fmt,
-            askedGpt, env, 9000);
+            askedGpt, env, 16000);
           await logTokens(token, env, 'gpt', rr, 'osce');
           return json({ text: rr.text, model: rr.model, heard: true, usage: { in: rr.in, out: rr.out } });
         }
         if (provider === 'claude') {
           return json({ error: 'Claude cannot be sent audio — it reads text, images and PDFs only. Mark from the transcript, or choose Gemini or GPT to have the recording listened to.' }, 400);
         }
+        /* 16k, not 9k. The scheme comes back point by point with a status,
+           a note and a transcript per question, and five coaching blocks on
+           top of that; 9k was a squeeze before thinking was even accounted
+           for. Nothing is charged for headroom that is not used. */
         const rr = await callGeminiAudio(buildOsceAudioPrompt(body), body.audio,
-          modernGemini(model) || 'gemini-3.1-flash-lite', env, 9000);
+          modernGemini(model) || 'gemini-3.1-flash-lite', env, 16000);
         await logTokens(token, env, 'gemini', rr, 'osce');
-        return json({ text: rr.text, model: rr.model, heard: true, usage: { in: rr.in, out: rr.out } });
+        return json({ text: rr.text, model: rr.model, heard: true, finish: rr.finish || '',
+          usage: { in: rr.in, out: rr.out } });
       }
       const r = await run(buildOsceMarkPrompt(body), 'osce', 6000);
       return json({ text: r.text, model: r.model, usage: { in: r.in, out: r.out } });
@@ -1060,30 +1065,87 @@ function buildOsceChatPrompt(body) {
   };
 }
 
-/** One audio track + the scheme. Gemini only — it takes audio inline and is by far the cheapest at it. */
+/** One audio track + the scheme. Gemini only — it takes audio inline and is by far the cheapest at it.
+
+    WHY THIS LOOKS LIKE callGemini AND ONCE DID NOT
+
+    This path was written before the text path learned about thinking, and
+    the omission cost a run of "the marker did not return readable marks"
+    that looked for all the world like a Gemini outage. It was not.
+
+    Modern Gemini models think by default, and every hidden thinking token
+    is spent out of `maxOutputTokens` — the SAME budget the answer has to
+    come out of. A station with a long scheme and five coaching blocks
+    wants six or seven thousand tokens of JSON; when thinking took the
+    rest, Google returned HTTP 200 with `finishReason: MAX_TOKENS` and
+    either half an object or nothing at all. The client then failed to
+    parse it and blamed the model.
+
+    That also explains the shape of the failure: it struck one station and
+    not another (longer scheme), and it succeeded on the third attempt
+    (thinking length varies run to run). Nothing was wrong at Google's end.
+
+    So: thinking down to the minimum, a budget with real headroom, and a
+    single automatic retry with double the cap if the answer is still cut
+    off. And `finishReason` is returned rather than swallowed, because a
+    truncation must never again be indistinguishable from a refusal. */
 async function callGeminiAudio(prompt, audio, model, env, maxTokens) {
   if (!env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not configured on the server.');
   const key = String(env.GEMINI_API_KEY).trim();
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
-  const res = await fetch(url, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: prompt.system }] },
-      contents: [{ role: 'user', parts: [
-        { inlineData: { mimeType: audio.mime || 'audio/webm', data: audio.data } },
-        { text: prompt.user }
-      ] }],
-      generationConfig: { maxOutputTokens: maxTokens || 9000, temperature: 0.2, responseMimeType: 'application/json' }
-    })
-  });
-  if (!res.ok) {
-    let detail = ''; try { detail = (await res.json())?.error?.message || ''; } catch {}
-    throw new Error(`Could not mark the recording (HTTP ${res.status})${detail ? ': ' + detail : ''}`);
+
+  let cap = Math.max(4000, maxTokens || 16000);
+  let noThink = false;      // set when a model rejects thinkingConfig → retry bare
+  let bumped = false;       // one enlargement, not an escalating loop
+  let lastErr = 'unknown error';
+
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const gc = { maxOutputTokens: cap, temperature: 0.2, responseMimeType: 'application/json' };
+    if (!noThink) {
+      if (/^gemini-2\.5/.test(model)) gc.thinkingConfig = { thinkingBudget: 0 };
+      else if (/^gemini-3/.test(model)) gc.thinkingConfig = { thinkingLevel: 'low' };
+    }
+    let res, data;
+    try {
+      res = await fetch(url, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: prompt.system }] },
+          contents: [{ role: 'user', parts: [
+            { inlineData: { mimeType: audio.mime || 'audio/webm', data: audio.data } },
+            { text: prompt.user }
+          ] }],
+          generationConfig: gc
+        })
+      });
+      data = await res.json().catch(() => ({}));
+    } catch (e) { throw new Error('Could not reach Gemini to mark the recording: ' + (e.message || e)); }
+
+    if (!res.ok) {
+      lastErr = data?.error?.message || `HTTP ${res.status}`;
+      // the model does not know the thinking field → say it once, without
+      if (!noThink && gc.thinkingConfig && /thinking/i.test(lastErr)) { noThink = true; continue; }
+      throw new Error(`Could not mark the recording (HTTP ${res.status}): ${lastErr}`);
+    }
+
+    const cand = data?.candidates?.[0];
+    const text = (cand?.content?.parts || []).map(p => p.text || '').join('');
+    const u = data?.usageMetadata || {};
+    const finish = cand?.finishReason || '';
+    // thinking is billed as output, so it counts towards what this cost
+    const out = (u.candidatesTokenCount | 0) + (u.thoughtsTokenCount | 0);
+
+    /* Truncated: enlarge once and go again. Twice would be throwing money
+       at a prompt that is wrong rather than a budget that is small. */
+    if (finish === 'MAX_TOKENS' && !bumped) { bumped = true; cap = cap * 2; continue; }
+    if (text) return { text, model: data.modelVersion || model, in: u.promptTokenCount | 0, out, finish };
+
+    lastErr = finish
+      ? `Gemini returned no marks (${finish})`
+      : 'Gemini returned an empty response';
+    break;
   }
-  const data = await res.json();
-  const text = (data?.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
-  const u = data?.usageMetadata || {};
-  return { text, model, in: u.promptTokenCount | 0, out: u.candidatesTokenCount | 0 };
+  throw new Error(lastErr);
 }
 
 /** One audio track + the scheme, on OpenAI.
