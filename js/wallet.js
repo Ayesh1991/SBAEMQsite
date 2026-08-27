@@ -408,10 +408,19 @@ const Wallet = (() => {
         connected: `<p class="good">✓ Saving to <strong>${esc(st.folder || 'your folder')}</strong>${
             st.saved ? ` — ${st.saved} recording${st.saved === 1 ? '' : 's'} so far` : ' — nothing saved yet'}${
             st.last ? `, last on ${esc(new Date(st.last).toLocaleDateString('en-GB', { dateStyle: 'medium' }))}` : ''}.</p>
+          <p class="muted tiny">A copy is sent to Drive <strong>as soon as a station or a case is marked</strong> —
+            not at the end of the day. The separate 24-hour copy on the AUREUM server is unrelated and is what the
+            player on a report reads from.</p>
           <p class="muted tiny">Google ends this permission after about a week while the app is unverified. If it
             lapses, this box says so — the recordings are not lost, they simply stop being copied.</p>
-          <button class="btn btn-ghost btn-sm" id="wl-dv-go">Choose a different folder</button>
-          <button class="btn btn-ghost btn-sm" id="wl-dv-off">Disconnect</button>`
+          <div class="wl-dv-acts">
+            <button class="btn btn-ghost btn-sm" id="wl-dv-back">⤒ Copy the ones still on the server</button>
+            <button class="btn btn-ghost btn-sm" id="wl-dv-go">Choose a different folder</button>
+            <button class="btn btn-ghost btn-sm" id="wl-dv-off">Disconnect</button>
+          </div>
+          <p class="muted tiny">Anything marked <em>before</em> you connected was never copied — the upload happens
+            at marking time and there was nowhere to send it. Whatever is still inside its 24 hours can be picked
+            up now.</p>`
       }[st.code] || '';
       host.hidden = false;
       host.innerHTML = `<h3 class="card-title">☁ Recordings in your Drive ${Drive.badgeHtml()}</h3>${body}
@@ -427,6 +436,78 @@ const Wallet = (() => {
       host.querySelector('#wl-dv-off')?.addEventListener('click', () => {
         if (!confirm('Stop saving recordings to Drive? Anything already saved stays in your folder.')) return;
         Drive.disconnect(); paint();
+      });
+
+      /* CATCHING UP ON WHAT WAS MARKED BEFORE THE FOLDER EXISTED.
+
+         The Drive copy is made at marking time, so a station marked an hour
+         before connecting was never sent anywhere — and its tape is still
+         sitting on the server with most of its 24 hours left. Leaving that
+         to expire because of an accident of ordering is a waste of the one
+         thing that cannot be recreated.
+
+         Only attempts from the last 24 hours are even looked at, and only
+         those with a stored path and no Drive record: everything else is
+         skipped without a request. */
+      host.querySelector('#wl-dv-back')?.addEventListener('click', async e => {
+        const msg = host.querySelector('#wl-dv-msg');
+        e.target.disabled = true;
+        msg.innerHTML = '<span class="muted">Looking for recordings still on the server…</span>';
+        try {
+          const since = Date.now() - 24 * 3600e3;
+          const recent = [];
+          for (const [list, kind] of [[await Backend.listOsceAttempts().catch(() => []), 'osce'],
+                                      [await Backend.listCaseAttempts().catch(() => []), 'case']]) {
+            (list || []).forEach(r => { if ((r.created || 0) >= since) recent.push({ id: r.id, kind, topic: r.topic }); });
+          }
+          if (!recent.length) {
+            msg.innerHTML = '<span class="muted">Nothing sat in the last 24 hours — there is nothing left to pick up.</span>';
+            e.target.disabled = false; return;
+          }
+          let done = 0, skipped = 0, failed = 0;
+          for (let i = 0; i < recent.length; i++) {
+            msg.innerHTML = `<span class="muted">Checking ${i + 1} of ${recent.length}…</span>`;
+            const a = recent[i].kind === 'osce'
+              ? await Backend.getOsceAttempt(recent[i].id).catch(() => null)
+              : await Backend.getCaseAttempt(recent[i].id).catch(() => null);
+            if (!a || !a.audioPath || a.drive) { skipped++; continue; }
+            let url = null;
+            try {
+              url = recent[i].kind === 'osce'
+                ? await Backend.getOsceAudioUrl(a.audioPath)
+                : await Backend.getCaseAudioUrl(a.audioPath);
+            } catch {}
+            if (!url) { skipped++; continue; }        // already swept
+            try {
+              const blob = await (await fetch(url)).blob();
+              const label = (recent[i].kind === 'case' ? 'CASE — ' : '') + (a.station?.topic || a.case?.topic || recent[i].topic || 'Recording');
+              const ext = /mp4|aac/.test(blob.type || '') ? 'm4a' : 'webm';
+              const up = await Drive.upload(blob, Drive.nameFor(label, a.created || Date.now(), ext),
+                { description: 'AUREUM — copied up after connecting Drive' });
+              if (!up) { failed++; continue; }
+              a.drive = { id: up.id, link: up.link, name: up.name };
+              if (recent[i].kind === 'osce') await Backend.saveOsceAttempt(a).catch(() => {});
+              else await Backend.saveCaseAttempt(a).catch(() => {});
+              done++;
+            } catch { failed++; }
+          }
+          const summary = done
+            ? `<span class="good">✓ ${done} recording${done === 1 ? '' : 's'} copied to Drive.</span>`
+              + (failed ? ` <span class="bad">${failed} would not upload.</span>` : '')
+              + (skipped ? ` <span class="muted tiny">${skipped} already there or already swept.</span>` : '')
+            : `<span class="muted">Nothing to copy — ${skipped} already in Drive or past their 24 hours${
+                failed ? `, ${failed} would not upload` : ''}.</span>`;
+          /* paint() rebuilds the whole panel, message box included, so the
+             repaint has to happen BEFORE the summary is written or the
+             result of the press disappears the instant it appears. */
+          paint();
+          const fresh = host.querySelector('#wl-dv-msg');
+          if (fresh) fresh.innerHTML = summary;
+          return;                       // the button was replaced by paint()
+        } catch (err) {
+          msg.innerHTML = `<span class="bad">${esc(err.message || err)}</span>`;
+        }
+        e.target.disabled = false;
       });
     };
     paint();

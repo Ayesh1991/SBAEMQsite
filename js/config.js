@@ -119,9 +119,9 @@ window.AUREUM_CONFIG = {
      public browser key restricted by HTTP referrer, like the one already
      used for reading the public Drive folders. */
   driveSave: {
-    clientId: '379420684116-ramk8jqkanr6q8n39n5alicj0m34ggjr.apps.googleusercontent.com',                    // xxxxx.apps.googleusercontent.com
-    apiKey: 'AIzaSyCEVYDkHCE3u5-LlaXSXH2wrzhIW4upgrs',                      // browser key, referrer-restricted
-    appId: '379420684116'                        // the Cloud project NUMBER
+    clientId: '',                    // xxxxx.apps.googleusercontent.com
+    apiKey: '',                      // browser key, referrer-restricted
+    appId: ''                        // the Cloud project NUMBER
   },
 
   /* OSCE collections — the bins a station belongs to. The developer can add
