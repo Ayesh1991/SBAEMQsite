@@ -40,6 +40,8 @@
     { re: /^#\/osce\/result\/([^/]+)$/, fn: (id, u) => OSCE.renderResult(view, id, u) },
     { re: /^#\/osce\/circuit\/([^/]+)$/, fn: (sid, u) => OSCE.renderCircuit(view, sid, u) },
     { re: /^#\/osce\/progress$/, fn: (u) => OSCE.renderProgress(view, u) },
+    // marking a real person, sitting in front of you
+    { re: /^#\/osce\/mark\/([^/]+)$/, fn: (id, u) => Marksheet.render(view, id, u) },
     /* case-based discussion — gated per user; every render checks for itself
        so a hand-typed URL is refused the same way the missing nav link is */
     { re: /^#\/cases$/, fn: (u) => Cases.renderBank(view, u) },

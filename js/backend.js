@@ -126,6 +126,11 @@ const Backend = (() => {
   const osceAttemptCard = a => ({
     id: a.id, station_id: a.station_id, created: a.created || 0,
     topic: a.station?.topic || '', passMark: a.station?.pass_mark ?? null,
+    // 'manual' = marked by a person in the room. The list keeps the two
+    // apart because they are not the same evidence and averaging them
+    // together would flatter or punish whichever kind you did more of.
+    source: a.source || 'ai',
+    examiner: a.examiner?.name || '',
     result: { percent: a.result?.percent, total: a.result?.total, max: a.result?.max, pass: !!a.result?.pass }
   });
 
@@ -1159,11 +1164,13 @@ const Backend = (() => {
     async function listOsceAttempts() {
       await ensureClient(); const id = await uid(); if (!id) return [];
       const light = 'id,station_id,created_at,topic:payload->station->>topic,passMark:payload->station->pass_mark,' +
+        'source:payload->>source,examiner:payload->examiner->>name,' +
         'percent:payload->result->percent,total:payload->result->total,max:payload->result->max,pass:payload->result->pass';
       const { data, error } = await sb.from('osce_attempts').select(light).eq('user_id', id).order('created_at', { ascending: false });
       if (error) throw new Error('Could not read your OSCE attempts: ' + (error.message || error.code));
       return (data || []).map(r => ({ id: r.id, station_id: r.station_id, created: new Date(r.created_at).getTime(),
         topic: r.topic || '', passMark: r.passMark ?? null,
+        source: r.source || 'ai', examiner: r.examiner || '',
         result: { percent: r.percent, total: r.total, max: r.max, pass: !!r.pass } }));
     }
     async function getOsceAttempt(aid) {
