@@ -294,6 +294,7 @@ const TeaRoom = (() => {
   }
 
   async function init() {
+    wireSheets();
     if (!Backend.listDiscussions) return;
     await loadCfg();
     await syncSeen();
@@ -436,11 +437,65 @@ const TeaRoom = (() => {
 
   /* ---------------- wall rendering ---------------- */
 
+  /* The attempt objects behind the cards above, by key. They are held here
+     rather than serialised into a data- attribute because a whole marking
+     scheme in an HTML attribute is both enormous and one escaping mistake
+     away from being a hole. */
+  const sheetStash = {};
+  /* One listener for every sheet card anywhere — the chat repaints often
+     and per-card listeners would be rebound on every repaint. */
+  let sheetWired = false;
+  function wireSheets() {
+    if (sheetWired) return;
+    sheetWired = true;
+    document.addEventListener('click', async e => {
+      const b = e.target.closest('[data-import-sheet]');
+      if (!b) return;
+      e.preventDefault();
+      const key = b.dataset.importSheet;
+      const a = sheetStash[key];
+      const msg = document.querySelector(`[data-sheet-msg="${key}"]`);
+      if (!a) { if (msg) msg.textContent = 'That sheet is no longer in this view — reopen the chat.'; return; }
+      b.disabled = true;
+      if (msg) msg.textContent = 'Importing…';
+      try {
+        const saved = await Marksheet.importAttempt(a);
+        if (msg) msg.innerHTML = '✓ In your attempts. <a class="link" href="#/osce/result/'
+          + encodeURIComponent(saved.id) + '">Open it →</a>';
+      } catch (err) {
+        b.disabled = false;
+        if (msg) msg.textContent = err.message || String(err);
+      }
+    });
+  }
+
   function mediaHTML(media, compact) {
     const list = (media || []).filter(Boolean);
     if (!list.length) return '';
-    const imgs = list.filter(isImg), files = list.filter(m => !isImg(m));
+    /* A marked OSCE sheet arrives as an attachment on an ordinary message.
+       It is not a file to download — it is an ATTEMPT, and what you want to
+       do with it is put it in your own record. So it draws as a card with
+       one button rather than a paperclip, and the message body is written
+       to still make sense if this branch never runs. */
+    const sheets = list.filter(m => m && m.kind === 'osce-marksheet' && m.attempt);
+    const rest = list.filter(m => !(m && m.kind === 'osce-marksheet'));
+    const imgs = rest.filter(isImg), files = rest.filter(m => !isImg(m));
     return `
+      ${sheets.map((m, i) => {
+        const a = m.attempt, r = a.result || {};
+        const key = 'ms' + Math.random().toString(36).slice(2, 9);
+        sheetStash[key] = a;
+        return `<div class="tc-sheet">
+          <span class="tc-sheet-ico">📋</span>
+          <div class="tc-sheet-b">
+            <strong>${esc(a.station?.topic || 'An OSCE station')}</strong>
+            <span class="tc-sheet-s ${r.pass ? 'is-pass' : 'is-fail'}">${r.total} / ${r.max} · ${r.percent}%</span>
+            <em>Marked in person${a.examiner?.name ? ' by ' + esc(a.examiner.name) : ''}</em>
+          </div>
+          <button class="btn btn-gold btn-sm" data-import-sheet="${key}">Import</button>
+          <span class="tc-sheet-msg" data-sheet-msg="${key}"></span>
+        </div>`;
+      }).join('')}
       ${imgs.length ? `<div class="tw-media ${imgs.length > 1 ? 'is-grid' : ''}">${imgs.slice(0, 4).map((m, i) => `
         <a class="tw-shot" href="${esc(m.url)}" target="_blank" rel="noopener">
           <img src="${esc(m.url)}" alt="${esc(m.name || 'image')}" loading="lazy">

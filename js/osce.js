@@ -809,6 +809,7 @@ const OSCE = (() => {
         <div class="os-brief-acts">
           <button class="btn btn-gold btn-lg" id="os-start">▶ Start the station</button>
           <button class="btn btn-ghost" id="os-scheme">📋 Show scheme</button>
+          <button class="btn btn-ghost" id="os-hand" title="Mark somebody who is sitting in front of you, point by point">✍️ Mark by hand</button>
           <button class="btn btn-ghost" id="os-copy"
             title="Copy the scenario and the questions as plain text — WITHOUT the marking scheme — to paste into NotebookLM, Gemini or ChatGPT">📄 Copy the station</button>
           <a class="btn btn-ghost" href="#/osce/sim">Add it to a simulator session instead</a>
@@ -835,6 +836,9 @@ const OSCE = (() => {
       location.hash = '#/osce/run/' + sid;
     });
     view.querySelector('#os-scheme').addEventListener('click', () => showScheme(st));
+    view.querySelector('#os-hand')?.addEventListener('click', () => {
+      location.hash = '#/osce/mark/' + encodeURIComponent(st.id);
+    });
     view.querySelector('#os-copy').addEventListener('click', e =>
       copyOut(stationAsText(st), e.currentTarget, '📄 Copy the station'));
   }
@@ -897,6 +901,7 @@ const OSCE = (() => {
         <div class="os-modal-foot">
           ${st.edited_by ? `<span class="muted tiny">Last edited by ${esc(st.edited_by)}${
             st.edited_at ? ' on ' + esc(new Date(st.edited_at).toLocaleDateString('en-GB', { dateStyle: 'medium' })) : ''}</span>` : ''}
+          <a class="btn btn-gold btn-sm" href="#/osce/mark/${encodeURIComponent(st.id)}">✍️ Mark somebody with it</a>
           <a class="btn btn-ghost btn-sm" href="#/osce/edit/${encodeURIComponent(st.id)}">✎ Edit this scheme</a>
           <button class="btn btn-ghost btn-sm" data-close>Close</button>
         </div>
@@ -932,6 +937,23 @@ const OSCE = (() => {
      The rows are the light attempt cards — no answers, no schemes — so this
      page costs a few KB however many stations have been sat. */
 
+  /** A marksheet left open — surfaced so it is not lost behind a tab. */
+  function openSheetStrip() {
+    if (typeof Marksheet === 'undefined') return '';
+    const sheets = Marksheet.openSheets();
+    if (!sheets.length) return '';
+    return `<div class="card os-sheet-open" data-animate>
+      <h3 class="card-title">✍️ Marking in progress</h3>
+      ${sheets.map(sh => `<div class="os-sheet-row">
+        <span><strong>${esc(sh.topic || sh.station_id)}</strong>
+          <em class="muted tiny">${sh.candidate ? esc(sh.candidate) : 'no name yet'} ·
+            started ${esc(new Date(sh.started || Date.now()).toLocaleTimeString('en-GB', { timeStyle: 'short' }))}</em></span>
+        <span><a class="btn btn-gold btn-sm" href="#/osce/mark/${encodeURIComponent(sh.station_id)}">Carry on →</a>
+          <button class="btn btn-ghost btn-sm qr-danger" data-sheetdrop="${esc(sh.station_id)}">Discard</button></span>
+      </div>`).join('')}
+    </div>`;
+  }
+
   async function renderMine(view, user) {
     view.innerHTML = shell('mine', `<div id="os-body"><p class="muted">Loading your attempts…</p></div>`);
     FX.viewIn(view);
@@ -945,7 +967,7 @@ const OSCE = (() => {
        ones and before the empty state, because a queue of unsent work is
        the most urgent thing on this page — and because "nothing sat yet"
        would be a lie while three recordings are waiting. */
-    const queueHtml = await pendingPanel(user);
+    const queueHtml = openSheetStrip() + await pendingPanel(user);
     if (!past.length) {
       body.innerHTML = queueHtml + `<div class="card" data-animate>
         <h3 class="card-title">Nothing marked yet</h3>
@@ -956,6 +978,7 @@ const OSCE = (() => {
       return;
     }
     const rows = past.slice().sort((a, b) => (b.created || 0) - (a.created || 0));
+    const byHand = rows.filter(a => a.source === 'manual').length;
     const passed = rows.filter(a => a.result?.pass).length;
     const avg = Math.round(rows.reduce((s, a) => s + (a.result?.percent || 0), 0) / rows.length);
     const best = {};
@@ -974,16 +997,46 @@ const OSCE = (() => {
         <div class="os-stat"><strong>${Object.keys(best).length}</strong><span>Stations tried</span></div>
         <div class="os-stat"><strong>${passed}</strong><span>Passed</span></div>
         <div class="os-stat"><strong>${avg}%</strong><span>Average</span></div>
+        ${byHand ? `<div class="os-stat"><strong>${byHand}</strong><span>Marked in person</span></div>` : ''}
       </div>
 
-      <div class="card" data-animate>
+      ${attemptTable(rows.filter(a => a.source !== 'manual'), 'ai')}
+      ${attemptTable(rows.filter(a => a.source === 'manual'), 'manual')}`;
+    wirePending(view, user);
+  }
+
+  /* ---------------- two kinds of attempt, kept apart ----------------
+
+     A station marked by a model from a recording and a station marked by a
+     person sitting opposite you are both real, and neither is a substitute
+     for the other. Running them together in one list would make "how am I
+     doing" a question with a misleading answer — a good week of face-to-face
+     practice would look like a jump in AI performance, and a hard examiner
+     would look like a regression.
+
+     So: two tables, each labelled, each explaining what it is. Everything
+     downstream — the report, the print sheet, sitting it again — is
+     identical, because the attempt itself is the same shape. */
+  function attemptTable(rows, kind) {
+    const manual = kind === 'manual';
+    if (!rows.length) {
+      return manual ? '' : `<div class="card" data-animate><p class="muted">Nothing marked by AI yet.</p></div>`;
+    }
+    return `
+      <div class="card ${manual ? 'os-hand-card' : ''}" data-animate>
+        <h3 class="card-title">${manual ? '✍️ Marked in person' : '🎙 Marked by AI'}
+          <span class="os-tbl-n">${rows.length}</span></h3>
+        <p class="muted tiny">${manual
+          ? 'Sat face to face with somebody holding the scheme. No recording — the marks are their judgement, point by point.'
+          : 'Sat here, recorded, and marked against the scheme by a model.'}</p>
         <div class="table-scroll"><table class="table">
-          <thead><tr><th>When</th><th>Station</th><th>Score</th><th>Result</th><th></th></tr></thead>
+          <thead><tr><th>When</th><th>Station</th>${manual ? '<th>Examiner</th>' : ''}<th>Score</th><th>Result</th><th></th></tr></thead>
           <tbody>${rows.map(a => {
             const r = a.result || {};
             return `<tr>
               <td class="muted">${esc(new Date(a.created || Date.now()).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }))}</td>
               <td>${esc(a.topic || a.station_id || '')}</td>
+              ${manual ? `<td class="muted tiny">${esc(a.examiner || '—')}</td>` : ''}
               <td><strong>${r.total ?? '—'}/${r.max ?? '—'}</strong> · ${r.percent ?? '—'}%</td>
               <td>${r.pass ? '<span class="good">Pass</span>' : '<span class="bad">Below the pass mark</span>'}</td>
               <td><a class="link" href="#/osce/result/${encodeURIComponent(a.id)}">Open →</a>
@@ -992,7 +1045,6 @@ const OSCE = (() => {
           }).join('')}</tbody>
         </table></div>
       </div>`;
-    wirePending(view, user);
   }
 
   /* ================= stations recorded but never marked =================
@@ -1075,6 +1127,11 @@ const OSCE = (() => {
   }
 
   function wirePending(view, user) {
+    view.querySelectorAll('[data-sheetdrop]').forEach(b => b.addEventListener('click', () => {
+      if (!confirm('Discard that marking sheet? The ticks so far are not kept.')) return;
+      Marksheet.wipe(b.dataset.sheetdrop);
+      renderMine(view, user);
+    }));
     if (typeof Pending === 'undefined') return;
     const msg = view.querySelector('#os-pend-msg');
     const say = h => { if (msg) msg.innerHTML = h; };
@@ -3144,7 +3201,7 @@ const OSCE = (() => {
         <header class="os-res-head es-band-head-${tone}" data-animate>
           <div>
             <p class="kicker">OSCE STATION RESULT · ${esc(new Date(a.created || Date.now()).toLocaleDateString('en-GB', { dateStyle: 'medium' }))}${
-              a.heard ? ' · MARKED FROM THE RECORDING' : ''}</p>
+              a.source === 'manual' ? ' · MARKED IN PERSON' : a.heard ? ' · MARKED FROM THE RECORDING' : ''}</p>
             <h1 class="page-title">${esc(a.station?.topic || '')}</h1>
             <p class="muted">${esc(a.station?.scenario || '')}</p>
           </div>
@@ -3154,6 +3211,15 @@ const OSCE = (() => {
             <span class="muted tiny">${r.total}/${r.max} · pass mark ${a.station?.pass_mark ?? '—'}</span>
           </div>
         </header>
+
+        ${a.source === 'manual' ? `<div class="card os-hand-note" data-animate>
+          <p><strong>✍️ This one was marked by a person, not by AI.</strong>
+            ${a.examiner?.name ? `${esc(a.examiner.name)} sat opposite you with the scheme and ticked it point by point.`
+              : 'Somebody sat opposite you with the scheme and ticked it point by point.'}
+            ${a.imported ? 'It was sent to you in the chat and imported here.' : ''}</p>
+          <p class="muted tiny">There is no recording and no transcript — the marks are their judgement. Everything
+            else on this page works exactly as it does for an AI-marked station, including the printout.</p>
+        </div>` : ''}
 
         ${r.examinerComment ? `<div class="card es-examiner" data-animate>
           <div class="es-inbox-head">
