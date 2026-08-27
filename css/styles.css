@@ -5007,3 +5007,4 @@ body.eco-open .ap-dock { z-index: 2390; }
 .wl-dv-check li.is-set > span { color: #34d399; }
 .wl-dv-check li.is-missing > span { color: #f87171; }
 .wl-dv-check code { background: rgba(0,0,0,.3); padding: 1px 6px; border-radius: 5px; font-size: .82em; }
+.wl-dv-acts { display: flex; gap: 9px; flex-wrap: wrap; margin: 12px 0 8px; }

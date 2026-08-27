@@ -192,8 +192,26 @@ scroll to **Recordings in your Drive → Connect a Drive folder**.
 3. The folder picker opens. Choose an existing folder or create one
    (e.g. `AUREUM OSCE recordings`).
 
-From then on, every marked station uploads its recording there, named
-`2026-08-23 2205 — HELLP Syndrome.webm` so a year of them still sorts.
+### When the copy actually happens
+
+**As soon as a station or a case is marked** — not at the end of the day and
+not when the 24 hours run out. The two copies are independent:
+
+| | Where | How long |
+|---|---|---|
+| Server copy | Supabase storage | 24 hours, then swept nightly. This is what the player on a report reads. |
+| Drive copy | Your own folder | Yours, until you delete it. Written at marking time. |
+
+Files are named `2026-08-23 2205 — HELLP Syndrome.webm`, so a year of them
+still sorts.
+
+**Anything marked *before* you connected was never copied** — the upload
+happens at marking time and there was nowhere to send it. Whatever is still
+inside its 24 hours can be picked up with the button in the same panel:
+
+> **Copy the ones still on the server**
+
+Past 24 hours it has gone from the server and cannot be recovered.
 
 ---
 
