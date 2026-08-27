@@ -172,8 +172,18 @@ Google script is loaded and no button appears.
 
 ## Step 7 — Connect, once per person
 
-In AUREUM: **Profile → Billing & balance → OSCE recordings in your Drive →
-Connect a Drive folder**.
+In AUREUM: **Profile → Billing & balance → Open billing & top up →** then
+scroll to **Recordings in your Drive → Connect a Drive folder**.
+
+> The panel is on the billing PAGE, not the Profile summary — Profile only
+> shows the balance and the button that opens it.
+>
+> **If you cannot see the panel at all:** as the developer you now get a
+> checklist there instead, ticking off which of `clientId`, `apiKey` and
+> `appId` the *deployed* config actually has. Editing `js/config.js` on
+> your own machine changes nothing until that file is live on the site —
+> that is the usual reason step 6 looks done and nothing appears. Everyone
+> else sees no panel at all until it is configured, which is deliberate.
 
 1. Google asks you to sign in and consent.
 2. You will see **"Google hasn't verified this app"** — expected in Testing.

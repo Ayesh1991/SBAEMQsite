@@ -294,12 +294,21 @@ const Cases = (() => {
        My case discussions — discussions had ELSEWHERE, imported
      "My discussions" for the second one was the wrong word the moment the
      third existed. */
-  const tabs = at => `
-    <nav class="os-tabs">
-      <a href="#/cases" class="${at === 'bank' ? 'active' : ''}">Cases</a>
-      <a href="#/cases/mine" class="${at === 'mine' ? 'active' : ''}">My sittings</a>
-      <a href="#/cases/mine-disc" class="${at === 'mine-disc' ? 'active' : ''}">My case discussions</a>
-    </nav>`;
+  /* `.lib-subnav` / `.lib-tab`, the same bar the OSCE tab and Theory use.
+
+     v76 invented a class called `.os-tabs` for these and never wrote a rule
+     for it, so the three links rendered as bare text with no spacing and no
+     tab styling — they read as one run-on sentence. There is one tab bar in
+     this app and this is it. */
+  const tabs = at => {
+    const tab = (id, href, label) =>
+      `<a class="lib-tab ${at === id ? 'active' : ''}" href="${href}">${label}</a>`;
+    return `<div class="lib-subnav" data-animate>
+      ${tab('bank', '#/cases', 'Cases')}
+      ${tab('mine', '#/cases/mine', 'My sittings')}
+      ${tab('mine-disc', '#/cases/mine-disc', 'My case discussions')}
+    </div>`;
+  };
 
   /* ================= one case, before you sit it ================= */
 
