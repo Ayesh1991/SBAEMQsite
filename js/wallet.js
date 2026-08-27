@@ -258,7 +258,12 @@ const Wallet = (() => {
           <div id="wl-slip"></div>
         </div>
 
-        ${(typeof Drive !== 'undefined' && Drive.configured()) ? `<div class="card" data-animate id="wl-drive"></div>` : ''}
+        <!-- The box is ALWAYS in the page; wireDrive decides what goes in it,
+             including nothing. Making the container itself conditional meant
+             the developer's "why is it not set up" checklist had nowhere to
+             render — the panel was hidden twice over, and fixing only one of
+             them fixed nothing. -->
+        ${typeof Drive !== 'undefined' ? `<div class="card" data-animate id="wl-drive" hidden></div>` : ''}
 
         <div class="card" data-animate>
           <h3 class="card-title">↔ Send credit to another user</h3>
@@ -312,7 +317,7 @@ const Wallet = (() => {
 
     view.querySelector('#wl-bd')?.addEventListener('click', () => billingDetails(ben));
     wireSend(view, s, user);
-    wireDrive(view);
+    wireDrive(view, user);
     view.querySelector('#wl-pb').addEventListener('click', () => passbook(s));
 
     view.querySelector('#wl-file').addEventListener('change', async e => {
@@ -338,9 +343,53 @@ const Wallet = (() => {
      not working rather than discover when a recording has gone. While the
      Google app is in Testing the grant lapses after about a week, so a
      stale connection is the normal case, not an exception. */
-  function wireDrive(view) {
+  function wireDrive(view, user) {
     const host = view.querySelector('#wl-drive');
-    if (!host || typeof Drive === 'undefined' || !Drive.configured()) return;
+    if (!host || typeof Drive === 'undefined') return;
+
+    /* AN UNCONFIGURED FEATURE MUST NOT BE INVISIBLE TO THE PERSON
+       CONFIGURING IT.
+
+       Hiding this panel until `driveSave.clientId` is filled in is right for
+       everyone else — there is nothing they can do about it and a dead
+       button is worse than no button. It is wrong for the developer, who is
+       the one working through the Google setup and for whom "I finished
+       step 6 and the panel is not there" is indistinguishable from "the
+       feature is broken".
+
+       So the developer sees it either way, and when it is not configured it
+       says exactly which of the three values is missing. */
+    if (!Drive.configured()) {
+      const devEmail = (window.AUREUM_CONFIG || {}).developer?.email;
+      const dev = (user?.email && devEmail && user.email === devEmail)
+        || sessionStorage.getItem('aureum-dev') === '1';
+      if (!dev) return;
+      const c = (window.AUREUM_CONFIG || {}).driveSave || {};
+      const rows = [
+        ['clientId', c.clientId, 'the OAuth client ID from step 4 — ends in .apps.googleusercontent.com'],
+        ['apiKey', c.apiKey, 'the browser API key from step 5 — begins AIzaSy'],
+        ['appId', c.appId, 'the Cloud project NUMBER from step 1 — digits only']
+      ];
+      const missing = rows.filter(r => !String(r[1] || '').trim());
+      host.hidden = false;
+      host.innerHTML = `
+        <h3 class="card-title">☁ Recordings in your Drive <span class="wl-dv-off-pill">not set up</span></h3>
+        <p class="muted">Only you can see this box. Drive saving is switched off for everybody until the three
+          values from <code>docs/drive-setup.md</code> are in <code>js/config.js</code> → <code>driveSave</code>
+          <strong>and the site has been deployed with them</strong>. Editing config.js on your machine changes
+          nothing until the new file is live.</p>
+        <ul class="wl-dv-check">
+          ${rows.map(([k, v, hint]) => `<li class="${String(v || '').trim() ? 'is-set' : 'is-missing'}">
+            <span>${String(v || '').trim() ? '✓' : '✗'}</span>
+            <code>${k}</code> — ${String(v || '').trim()
+              ? '<em class="muted tiny">set</em>'
+              : `<em class="muted tiny">${esc(hint)}</em>`}</li>`).join('')}
+        </ul>
+        <p class="muted tiny">${missing.length
+          ? `${missing.length} of 3 still empty in the <strong>deployed</strong> config.`
+          : 'All three are present here — if the button still does not appear, the browser is holding an old copy of config.js. Hard-refresh, or bump the <code>?v=</code> number.'}</p>`;
+      return;
+    }
 
     const paint = () => {
       const st = Drive.status();
@@ -364,7 +413,8 @@ const Wallet = (() => {
           <button class="btn btn-ghost btn-sm" id="wl-dv-go">Choose a different folder</button>
           <button class="btn btn-ghost btn-sm" id="wl-dv-off">Disconnect</button>`
       }[st.code] || '';
-      host.innerHTML = `<h3 class="card-title">☁ OSCE recordings in your Drive ${Drive.badgeHtml()}</h3>${body}
+      host.hidden = false;
+      host.innerHTML = `<h3 class="card-title">☁ Recordings in your Drive ${Drive.badgeHtml()}</h3>${body}
         <div class="dev-status" id="wl-dv-msg"></div>`;
 
       host.querySelector('#wl-dv-go')?.addEventListener('click', async e => {

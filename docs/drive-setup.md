@@ -44,33 +44,79 @@ You already have one for the Drive question pipeline (the API key in
 - **Google Drive API**
 - **Google Picker API**
 
-## Step 3 — The OAuth consent screen
+## Step 3 — The consent screen
+
+> **Google moved this in 2025.** It used to be one wizard at *APIs &
+> Services → OAuth consent screen*. It is now a section of its own called
+> **Google Auth Platform**, split into Branding / Audience / Data access /
+> Clients. Both layouts are below — use whichever matches your screen.
+
+### 3a. If you see "Google Auth Platform" (current)
+
+Find it at **APIs & Services → OAuth consent screen** (which now redirects)
+or search the console for **Google Auth Platform**.
+
+**If it says "Google Auth Platform not configured yet", press *Get
+started*.** That short wizard asks four things:
+
+1. **App information** — App name `AUREUM`, User support email: your address.
+2. **Audience** — **External**.
+   (Internal is only offered on Google Workspace; a personal Gmail cannot
+   use it.)
+3. **Contact information** — your email address.
+4. **Finish** — tick the Google API Services User Data Policy, then
+   **Create**.
+
+Then complete the two pages the wizard does not cover:
+
+**→ Data access** (left menu)
+
+- Press **Add or remove scopes**.
+- Filter for `drive.file`, tick:
+  ```
+  https://www.googleapis.com/auth/drive.file
+  ```
+- It appears under **"Your non-sensitive scopes"** — confirm that, because
+  it is the whole reason this setup is free. Do **not** add any other Drive
+  scope; a broader one moves you into the sensitive/restricted tiers and
+  the paid assessment.
+- **Save**.
+
+**→ Audience** (left menu)
+
+- Publishing status will read **Testing**. Leave it there.
+- Under **Test users**, press **Add users** and enter the Gmail address of
+  every person who will use this — yourself first, others as they ask. Up
+  to 100.
+- **Save**.
+
+**Only addresses in that list can connect while the app is in Testing.** If
+you add a user later, they can connect immediately — no re-verification.
+
+### 3b. If you see the old single wizard (legacy projects)
 
 **APIs & Services → OAuth consent screen**
 
 1. User type: **External** → Create.
-   (Internal needs Google Workspace; a personal Gmail cannot use it.)
 2. App name: `AUREUM`. User support email: your address.
-3. App logo: optional in Testing — skip it for now.
-4. Developer contact email: your address.
-5. **Save and Continue.**
+3. App logo: optional in Testing — skip it.
+4. Developer contact email: your address. **Save and Continue.**
+5. **Scopes:** *Add or Remove Scopes* → filter `drive.file` → tick
+   `https://www.googleapis.com/auth/drive.file`. Confirm it is
+   **non-sensitive**. **Save and Continue.**
+6. **Test users:** *Add Users* → your Gmail, and anyone else's.
+   **Save and Continue.**
+7. Leave *Publishing status* as **Testing**.
 
-**Scopes step:** click *Add or Remove Scopes*, filter for `drive.file`, tick
+### What "Testing" costs you
 
-```
-https://www.googleapis.com/auth/drive.file
-```
+Nothing in money, two things in convenience:
 
-Confirm it is listed as **non-sensitive**. Do **not** add any other Drive
-scope — a broader one is what drags you into the paid assessment.
-**Save and Continue.**
-
-**Test users step:** click *Add Users* and enter the Gmail address of every
-person who will use this — yourself, and anyone who asks. Up to 100.
-**Only these addresses can connect while the app is in Testing.**
-**Save and Continue.**
-
-Leave *Publishing status* as **Testing**.
+- a **100-user cap** (you have eight, so this never bites)
+- each person's permission **expires after about seven days**, so the
+  connection is re-made weekly. The app shows an amber *Drive — reconnect*
+  badge when that happens, so it is visible rather than discovered when a
+  recording has gone.
 
 ## Step 4 — The OAuth client ID
 
@@ -126,8 +172,18 @@ Google script is loaded and no button appears.
 
 ## Step 7 — Connect, once per person
 
-In AUREUM: **Profile → Billing & balance → OSCE recordings in your Drive →
-Connect a Drive folder**.
+In AUREUM: **Profile → Billing & balance → Open billing & top up →** then
+scroll to **Recordings in your Drive → Connect a Drive folder**.
+
+> The panel is on the billing PAGE, not the Profile summary — Profile only
+> shows the balance and the button that opens it.
+>
+> **If you cannot see the panel at all:** as the developer you now get a
+> checklist there instead, ticking off which of `clientId`, `apiKey` and
+> `appId` the *deployed* config actually has. Editing `js/config.js` on
+> your own machine changes nothing until that file is live on the site —
+> that is the usual reason step 6 looks done and nothing appears. Everyone
+> else sees no panel at all until it is configured, which is deliberate.
 
 1. Google asks you to sign in and consent.
 2. You will see **"Google hasn't verified this app"** — expected in Testing.
