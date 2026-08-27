@@ -1296,3 +1296,24 @@ create policy "case attempts own" on public.case_attempts for all
    (`<uid>/case-<attempt>.webm`), so the existing storage policy and the
    nightly 24-hour sweep both already cover it. Nothing to add here — this
    note exists so the absence is deliberate rather than an oversight. */
+
+/* ============================================================
+   v78 — discussions already had elsewhere
+   Re-run this file after upgrading; every statement is idempotent.
+   ============================================================ */
+
+/* One candidate's record of a case they discussed somewhere else, imported
+   as aureum-case-v2 JSON. PRIVATE, unlike case_files: a case_file is
+   published material everyone sits, whereas this is the record of one
+   person's own conversation, including where they went wrong. */
+create table if not exists public.case_discussions (
+  id         text primary key,
+  user_id    uuid not null references auth.users(id) on delete cascade,
+  payload    jsonb not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists case_discussions_user_idx on public.case_discussions (user_id, created_at desc);
+alter table public.case_discussions enable row level security;
+drop policy if exists "case discussions own" on public.case_discussions;
+create policy "case discussions own" on public.case_discussions for all
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
