@@ -288,10 +288,17 @@ const Cases = (() => {
     FX.viewIn(view);
   }
 
+  /* Three tabs, and the names have to earn their keep:
+       Cases            — cases to sit here
+       My sittings      — what happened when you sat them here
+       My case discussions — discussions had ELSEWHERE, imported
+     "My discussions" for the second one was the wrong word the moment the
+     third existed. */
   const tabs = at => `
     <nav class="os-tabs">
       <a href="#/cases" class="${at === 'bank' ? 'active' : ''}">Cases</a>
-      <a href="#/cases/mine" class="${at === 'mine' ? 'active' : ''}">My discussions</a>
+      <a href="#/cases/mine" class="${at === 'mine' ? 'active' : ''}">My sittings</a>
+      <a href="#/cases/mine-disc" class="${at === 'mine-disc' ? 'active' : ''}">My case discussions</a>
     </nav>`;
 
   /* ================= one case, before you sit it ================= */
@@ -1451,6 +1458,7 @@ ${P} .foot{margin-top:16px;padding-top:6px;border-top:1px solid #ddd;font-size:7
 
   return {
     renderBank, renderCase, renderExamine, renderRun, renderResult, renderMine,
+    tabsHtml: tabs, notYours,
     COMPONENTS, componentOf, shortOf, stepperHtml,
     allowed, cases, bustCases, waitMs, setWaitMs, saidAlready, missingIn,
     estimate, parseCase, minutesOf, phasesOf, questionsOf, expectedOf,

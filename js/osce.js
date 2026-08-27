@@ -1012,6 +1012,34 @@ const OSCE = (() => {
      by a person pressing a button — not by a background task that decided
      the signal looked better. It says it is ready; the press is yours. */
 
+  /* THE TAPE, FROM WHEREVER IT IS STILL READABLE.
+
+     There are two copies of a recording that failed to mark: the local one
+     in the queue, and the one in storage for 24 hours. The local one is
+     tried first because it needs no network — but a Blob that will not
+     read is not a Blob, and rather than reporting "could not read the
+     recording" and stopping, the server copy is fetched instead. Two
+     copies exist precisely so that one of them can fail. */
+  async function usableTape(row, say) {
+    if (row.blob) {
+      // prove it is readable rather than assuming: this is the exact point
+      // where a dead IndexedDB Blob used to take the station down with it
+      try {
+        await row.blob.slice(0, 1).arrayBuffer();
+        return row.blob;
+      } catch { say?.('That copy could not be read — fetching the one on the server…'); }
+    }
+    const path = row.payload?.audioPath;
+    if (!path) return null;
+    try {
+      const url = await Backend.getOsceAudioUrl(path);
+      if (!url) return null;
+      const res = await fetch(url);
+      if (!res.ok) return null;
+      return await res.blob();
+    } catch { return null; }
+  }
+
   async function pendingPanel(user) {
     if (typeof Pending === 'undefined') return '';
     try { Pending.setOwner(user?.email || ''); } catch {}
@@ -1077,9 +1105,10 @@ const OSCE = (() => {
         const st = await Backend.getOsceStation(row.payload.station_id);
         if (!st) throw new Error('That station is no longer in the bank.');
         const choice = modelChoices().find(m => m.key === row.payload.choiceKey) || chosenModel();
-        const rec = row.blob
-          ? { blob: row.blob, mime: row.mime, ext: /mp4|aac/.test(row.mime || '') ? 'm4a' : 'webm',
-              secs: row.secs || 0, bytes: row.blob.size, url: '' }
+        const blob = await usableTape(row, t => say(`<span class="muted">${esc(t)}</span>`));
+        const rec = blob
+          ? { blob, mime: blob.type || row.mime, ext: /mp4|aac/.test(blob.type || row.mime || '') ? 'm4a' : 'webm',
+              secs: row.secs || 0, bytes: blob.size, url: '' }
           : null;
         say('<span class="muted">Marking…</span>');
         const attempt = await markCore({
@@ -2808,6 +2837,52 @@ const OSCE = (() => {
     }
   }
 
+  /* ---------------- posting a several-megabyte body ----------------
+
+     "Load failed" is Safari's words for a fetch that never completed, and
+     a five-megabyte upload from a ward with one bar is exactly how you get
+     one. It is not a server error and it is not a bad request — it is a
+     connection that went away mid-send, and the only sensible response to
+     that is to try it again.
+
+     Three attempts, backing off, and ONLY for the failure that a retry can
+     actually fix: a network drop or a 5xx. An HTTP 400 means the request
+     was wrong and sending it again would be wrong again, more expensively.
+
+     Nothing is charged for an attempt that never arrived — the token count
+     comes back with the response, so a request that produced no response
+     produced no bill. */
+  async function postWithRetry(url, init, say, label) {
+    const WAITS = [1500, 4000];
+    let last;
+    for (let attempt = 0; attempt <= WAITS.length; attempt++) {
+      try {
+        const res = await fetch(url, init);
+        // a 5xx is worth one more go; a 4xx never is
+        if (res.status >= 500 && attempt < WAITS.length) {
+          last = new Error(`The server was busy (HTTP ${res.status}).`);
+        } else {
+          return res;
+        }
+      } catch (e) {
+        last = e;
+        const msg = String(e?.message || e);
+        // an abort is a decision, not a fault — never retry one
+        if (/abort/i.test(msg)) throw e;
+      }
+      if (attempt < WAITS.length) {
+        const secs = Math.round(WAITS[attempt] / 1000);
+        say?.(`${label} did not go through — trying again in ${secs}s (attempt ${attempt + 2} of ${WAITS.length + 1})…`);
+        await new Promise(r => setTimeout(r, WAITS[attempt]));
+      }
+    }
+    /* Say what actually happened. "Load failed" on its own has sent people
+       looking for a bug in the marking when the wifi had dropped. */
+    throw new Error(/load failed|failed to fetch|networkerror/i.test(String(last?.message || last))
+      ? 'The connection dropped while the recording was uploading, three times over. It is saved on this device — send it again when the signal is better.'
+      : (last?.message || String(last)));
+  }
+
   async function markSend({ id, st, ans, rec, session, choice, useAudio, say, audioPath, audioExpires, token }) {
     {
       const body = {
@@ -2838,10 +2913,10 @@ const OSCE = (() => {
         body.audio = { mime, data: await toBase64(send) };
       }
       say('Marking against the scheme…');
-      const res = await fetch(cfg().ai.apiBase, {
+      const res = await postWithRetry(cfg().ai.apiBase, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
         body: JSON.stringify(body)
-      });
+      }, say, 'The marking');
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `Marking failed (HTTP ${res.status}).`);
       const result = parseResult(data.text, st, data.finish);

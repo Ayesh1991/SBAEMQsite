@@ -46,6 +46,11 @@ window.AUREUM_CONFIG = {
     // long cases for the Case discussion tab (vignette + phases + viva
     // questions with model answers). Share as "Anyone with the link — Viewer".
     caseFolderId: '1VoQsurCpeAHPLfHmjTziSdCSH7vB5vBl',
+    /* Cases already DISCUSSED elsewhere, exported as aureum-case-v2 JSON.
+       A separate folder from the one above on purpose: one holds cases to
+       sit, the other holds discussions that happened. Mixing them would
+       make "which of these have I done" unanswerable. */
+    myCaseFolderId: '1I8zVuYeNcxXoMnmUdPPal3NMdPEk_s31',
     apiBase: '/api/drive'
   },
 

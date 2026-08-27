@@ -44,6 +44,8 @@
        so a hand-typed URL is refused the same way the missing nav link is */
     { re: /^#\/cases$/, fn: (u) => Cases.renderBank(view, u) },
     { re: /^#\/cases\/mine$/, fn: (u) => Cases.renderMine(view, u) },
+    { re: /^#\/cases\/mine-disc$/, fn: (u) => Discussions.render(view, u) },
+    { re: /^#\/cases\/discussion\/([^/]+)$/, fn: (id, u) => Discussions.renderOne(view, id, u) },
     { re: /^#\/cases\/case\/([^/]+)$/, fn: (id, u) => Cases.renderCase(view, id, u) },
     { re: /^#\/cases\/examine\/([^/]+)$/, fn: (id, u) => Cases.renderExamine(view, id, u) },
     { re: /^#\/cases\/run\/([^/]+)$/, fn: (sid, u) => Cases.renderRun(view, sid, u) },

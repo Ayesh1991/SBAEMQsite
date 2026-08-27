@@ -98,6 +98,22 @@ const Backend = (() => {
   const CASE_CARD_KEYS = ['id', 'topic', 'vignette', 'minutes', 'phase_count', 'q_count',
     'point_count', 'sources', 'collection', 'search', 'edited_by', 'edited_at'];
   const caseCard = m => { const o = {}; CASE_CARD_KEYS.forEach(k => { if (m[k] != null) o[k] = m[k]; }); return o; };
+  /* A discussion CARD. The revision note and the model answers are the bulk
+     of one of these files, and the list page needs neither — it needs to
+     know they are there. */
+  const discCard = d => ({
+    id: d.id, topic: d.topic || '', created: d.created || 0,
+    discussedOn: d.discussedOn || '',
+    phase_count: (d.phases || []).length,
+    q_count: (d.questions || []).length,
+    hasRevision: !!(d.revision && Object.keys(d.revision).length),
+    hasSession: !!(d.session && Object.keys(d.session).length),
+    slips: (d.session?.language || []).length,
+    missed: (d.session?.missed || []).length,
+    verdict: String(d.session?.verdict || '').slice(0, 220),
+    search: [d.topic, d.vignette].join(' ').toLowerCase().slice(0, 1200)
+  });
+
   /** A discussion row for a LIST: the score and whether it was ever marked. */
   const caseAttemptCard = a => ({
     id: a.id, case_id: a.case_id, created: a.created || 0,
@@ -241,6 +257,24 @@ const Backend = (() => {
       write('cases', l); return rec;
     }
     async function unpublishCase(id) { write('cases', read('cases', []).filter(x => x.id !== id)); }
+    /* ---- case discussions already had elsewhere ----
+       Personal, not published: one candidate's own record of a conversation,
+       imported from their own Drive folder.
+
+       NAMED `caseNote`, NOT `discussion`. The Tea Room already owns
+       listDiscussions/getDiscussion/saveDiscussion for its message board,
+       and the second set silently shadowed the first — the importer wrote
+       rows nothing could read back, and the list came up empty with no
+       error anywhere. The same collision as `drive` vs `driveSave`, and it
+       cost the same hour. */
+    async function listCaseNotes() { const e = sessionEmail(); if (!e) return []; return Object.values(read('casenotes:' + e, {})).map(discCard); }
+    async function getCaseNote(id) { const e = sessionEmail(); if (!e) return null; return read('casenotes:' + e, {})[id] || null; }
+    async function saveCaseNote(d) {
+      const e = sessionEmail(); if (!e) return d;
+      const m = read('casenotes:' + e, {}); m[d.id] = d; write('casenotes:' + e, m); return d;
+    }
+    async function deleteCaseNote(id) { const e = sessionEmail(); if (!e) return; const m = read('casenotes:' + e, {}); delete m[id]; write('casenotes:' + e, m); }
+
     async function listCaseAttempts() { const e = sessionEmail(); if (!e) return []; return Object.values(read('caseattempts:' + e, {})).map(caseAttemptCard); }
     async function getCaseAttempt(id) { const e = sessionEmail(); if (!e) return null; return read('caseattempts:' + e, {})[id] || null; }
     async function saveCaseAttempt(a) { const e = sessionEmail(); if (!e) return a; const m = read('caseattempts:' + e, {}); m[a.id] = a; write('caseattempts:' + e, m); return a; }
@@ -698,6 +732,7 @@ const Backend = (() => {
       getCases, getCase, publishCase, unpublishCase,
       listCaseAttempts, getCaseAttempt, saveCaseAttempt, deleteCaseAttempt,
       uploadCaseAudio, getCaseAudioUrl, sweepCaseAudio,
+      listCaseNotes, getCaseNote, saveCaseNote, deleteCaseNote,
       uploadOsceImage, osceImageUrl, deleteOsceImage,
       getWalletConfig, saveWalletConfig, listMyTopUps, createTopUp, createTopUpFor,
       listAllTopUps, setTopUpStatus,
@@ -1058,6 +1093,29 @@ const Backend = (() => {
       return rec;
     }
     async function unpublishCase(id) { await ensureClient(); await sb.from('case_files').delete().eq('id', id); }
+
+    async function listCaseNotes() {
+      await ensureClient(); const id = await uid(); if (!id) return [];
+      const light = 'id,created_at,topic:payload->>topic,discussed:payload->>discussedOn,'
+        + 'phases:payload->phases,questions:payload->questions,rev:payload->revision,ses:payload->session';
+      const { data, error } = await sb.from('case_discussions').select(light).eq('user_id', id).order('created_at', { ascending: false });
+      if (error) throw new Error('Could not read your discussions: ' + (error.message || error.code));
+      return (data || []).map(r => discCard(Object.assign({ id: r.id, created: new Date(r.created_at).getTime() },
+        { topic: r.topic, discussedOn: r.discussed, phases: r.phases, questions: r.questions,
+          revision: r.rev, session: r.ses })));
+    }
+    async function getCaseNote(did) {
+      await ensureClient(); const id = await uid(); if (!id) return null;
+      const { data } = await sb.from('case_discussions').select('id,payload,created_at').eq('id', did).eq('user_id', id).single();
+      return data ? Object.assign({}, data.payload, { id: data.id, created: new Date(data.created_at).getTime() }) : null;
+    }
+    async function saveCaseNote(d) {
+      await ensureClient(); const id = await uid(); if (!id) throw new Error('Sign in first.');
+      const { error } = await sb.from('case_discussions').upsert({ id: d.id, user_id: id, payload: d });
+      if (error) throw new Error(error.message || 'Could not save that discussion.');
+      return d;
+    }
+    async function deleteCaseNote(did) { await ensureClient(); const id = await uid(); if (!id) return; await sb.from('case_discussions').delete().eq('id', did).eq('user_id', id); }
 
     async function listCaseAttempts() {
       await ensureClient(); const id = await uid(); if (!id) return [];
@@ -1964,6 +2022,7 @@ const Backend = (() => {
       getCases, getCase, publishCase, unpublishCase,
       listCaseAttempts, getCaseAttempt, saveCaseAttempt, deleteCaseAttempt,
       uploadCaseAudio, getCaseAudioUrl, sweepCaseAudio,
+      listCaseNotes, getCaseNote, saveCaseNote, deleteCaseNote,
       uploadOsceImage, osceImageUrl, deleteOsceImage,
       getWalletConfig, saveWalletConfig, listMyTopUps, createTopUp, createTopUpFor,
       listAllTopUps, setTopUpStatus,
