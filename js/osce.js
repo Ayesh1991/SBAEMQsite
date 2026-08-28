@@ -125,6 +125,26 @@ const OSCE = (() => {
      `collection` and shows as Unfiled until it is moved. */
   const COLL_KEY = 'osce-collections';
   const UNFILED = { id: '', label: 'Unfiled' };
+
+  /* MERGE, DO NOT REPLACE.
+
+     The saved list used to win outright, which was fine while config.js only
+     ever supplied a starting set. It stops being fine the moment a release
+     ships a NEW bin: the developer has already saved a list, that list has no
+     bin the release just added, and the bin simply never appears — with
+     nothing anywhere to say why. Created OSCE is exactly that case.
+
+     So the two lists are merged by id. The saved row wins on label and
+     priority, because those are the developer's edits and a release must not
+     undo them; a shipped bin the saved list has never heard of is appended.
+     Removing a bin is still possible — it is done by saving a list, and a
+     shipped bin is only re-added if it is not there under that id at all. */
+  function mergeColls(saved, shipped) {
+    const out = (saved || []).slice();
+    const have = new Set(out.map(c => c.id));
+    (shipped || []).forEach(c => { if (!have.has(c.id)) out.push(Object.assign({}, c)); });
+    return out;
+  }
   let _colls = null;
   async function collections() {
     if (_colls) return _colls;
@@ -133,10 +153,12 @@ const OSCE = (() => {
       const saved = (typeof Cache !== 'undefined')
         ? await Cache.wrap(COLL_KEY, TTL, () => Backend.getOsceCollections(), { keepIfEmptied: true })
         : await Backend.getOsceCollections();
-      _colls = (saved && saved.length) ? saved : fallback;
+      _colls = (saved && saved.length) ? mergeColls(saved, fallback) : fallback;
     } catch { _colls = fallback; }
     return _colls;
   }
+  /** The bin candidates may write into. One place, so nothing hard-codes it. */
+  const createdId = () => cfg().osce?.createdCollection || 'created';
   function bustCollections() { _colls = null; if (typeof Cache !== 'undefined') Cache.bust(COLL_KEY); }
   const collLabel = (list, id) => (list.find(c => c.id === id) || (id ? { label: id } : UNFILED)).label;
 
@@ -696,8 +718,12 @@ const OSCE = (() => {
        nobody has filed anything into is noise, so it is not drawn. */
     const counts = {};
     list.forEach(st => { const c = st.collection || ''; counts[c] = (counts[c] || 0) + 1; });
+    /* Created OSCE is the exception to "a bin nobody has filed anything into
+       is noise": it is the one bin you reach in order to PUT something in it,
+       so an empty one still has to be reachable. */
+    const madeId = createdId();
     const bins = [{ id: '*', label: 'All stations', n: list.length }].concat(
-      colls.filter(c => counts[c.id]).map(c => ({ id: c.id, label: c.label, n: counts[c.id] })),
+      colls.filter(c => counts[c.id] || c.id === madeId).map(c => ({ id: c.id, label: c.label, n: counts[c.id] || 0 })),
       counts[''] ? [{ id: '', label: UNFILED.label, n: counts[''] }] : []
     );
 
@@ -746,6 +772,8 @@ const OSCE = (() => {
           ${esc(b.label)}<i>${b.n}</i></button>`).join('')}
       </div>` : ''}
 
+      <div id="os-made"></div>
+
       <div class="os-grid" id="os-grid" data-animate>${list.map(st => card(st, bestOf[st.id], colls)).join('')}</div>
       <p class="muted" id="os-none" hidden>No station mentions that.</p>`;
 
@@ -775,6 +803,17 @@ const OSCE = (() => {
     // a remembered bin that no longer holds anything falls back to All
     let bin = bins.some(b => b.id === bankView.bin) ? bankView.bin : '*';
     body.querySelectorAll('.os-bin').forEach(x => x.classList.toggle('active', x.dataset.bin === bin));
+    /* The Created OSCE panel is drawn only while that bin is the one being
+       looked at. It is a whole card of import controls: on every other bin it
+       would be in the way, and on All stations it would be lying about where
+       the import lands. */
+    const madeHost = body.querySelector('#os-made');
+    const paintMade = () => {
+      if (typeof Created === 'undefined') { madeHost.innerHTML = ''; return; }
+      if (bin !== madeId) { Created.closePanel?.(madeHost); madeHost.innerHTML = ''; return; }
+      Created.panel(madeHost, user, () => { bustStations(); renderBank(view, user); });
+    };
+
     const run = () => {
       const terms = input.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
       clear.hidden = !terms.length;
@@ -785,7 +824,10 @@ const OSCE = (() => {
         c.hidden = !ok; if (ok) shown++;
       });
       none.hidden = shown > 0;
-      none.textContent = terms.length ? 'No station mentions that.' : 'Nothing filed here yet.';
+      none.textContent = terms.length ? 'No station mentions that.'
+        : bin === madeId ? 'No stations have been created yet — yours would be the first.'
+        : 'Nothing filed here yet.';
+      paintMade();
       restoreScroll();
     };
     input.addEventListener('input', async () => { bankView.top = 0; await loadDeep(); run(); });
@@ -828,6 +870,7 @@ const OSCE = (() => {
         </div>
         <h3>${esc(st.topic || st.id)}</h3>
         <p class="os-card-sc">${esc(st.scenario || '')}</p>
+        ${st.created_by_name ? `<p class="os-card-by">✍️ written by ${esc(st.created_by_name)}</p>` : ''}
         <div class="os-card-foot">
           <span>${n} question${n === 1 ? '' : 's'} · ${marksOf(st)} marks</span>
           <span class="os-card-go">Start →</span>
@@ -848,6 +891,9 @@ const OSCE = (() => {
       <header data-animate>
         <p class="kicker">STATION · ${minsOf(st)} MINUTES · ${marksOf(st)} MARKS</p>
         <h1 class="page-title">${esc(st.topic || '')}</h1>
+        ${st.created_by_name ? `<p class="muted os-by">✍️ Written by <strong>${esc(st.created_by_name)}</strong>${
+          st.created_on ? ' · ' + esc(new Date(st.created_on).toLocaleDateString()) : ''}${
+          st.source_meta?.origin ? ' · from ' + esc(st.source_meta.origin) : ''}</p>` : ''}
       </header>
       <div class="card os-brief" data-animate>
         <h3 class="card-title">The scenario</h3>

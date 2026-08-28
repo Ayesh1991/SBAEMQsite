@@ -1317,3 +1317,49 @@ alter table public.case_discussions enable row level security;
 drop policy if exists "case discussions own" on public.case_discussions;
 create policy "case discussions own" on public.case_discussions for all
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+
+/* ============================================================
+   v83 — the Created OSCE bank
+   Re-run this file after upgrading; every statement is idempotent.
+   ------------------------------------------------------------
+   Candidates write stations for each other and import them into
+   one bin. Nothing here creates a table: a created station is an
+   ordinary row in osce_stations whose meta.collection is
+   'created', which is exactly what makes every existing feature
+   work on it unchanged.
+
+   Insert and update were already open to any signed-in user
+   (v59). The one thing that was NOT possible is the thing this
+   bank needs: the author taking their own station back out. The
+   first version of a station is usually wrong and its author is
+   the person who finds out, and until now the only way to remove
+   it was to ask the site owner.
+
+   So delete is widened by exactly one case, and no further:
+
+     • the site owner, as before — able to remove anything;
+     • otherwise, only a row that IS in the created bin AND was
+       stamped with this user's own id when it was imported.
+
+   Both conditions are required. The second alone would let a
+   forged meta.created_by reach a curated station; the first alone
+   is what we already had. A station somebody else wrote, and every
+   station in Common bank / Pera / Galle / SLCOG / PGIM recalls,
+   stays as undeletable as it is today.
+
+   Attempts are untouched by a withdrawal — osce_attempts has no
+   foreign key to osce_stations, deliberately, so a candidate's
+   marks survive the station being taken down.
+   ============================================================ */
+
+drop policy if exists "osce stations remove" on public.osce_stations;
+
+create policy "osce stations remove" on public.osce_stations for delete
+  to authenticated using (
+    auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com'
+    or (
+      meta ->> 'collection' = 'created'
+      and meta ->> 'created_by' = auth.uid()::text
+    )
+  );

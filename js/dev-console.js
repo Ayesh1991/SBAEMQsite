@@ -2580,6 +2580,22 @@ const DevConsole = (() => {
         </div>
 
         <div class="card" data-animate>
+          <h3 class="card-title">📄 Station-writing instructions</h3>
+          <p class="muted">The markdown everyone downloads from the <strong>Created OSCE</strong> bank and hands to
+            Claude along with their PDF or past paper. Changing it here changes what they get — there is one copy,
+            not eight forwarded ones drifting apart. Saving stamps the date, which is shown beside the download
+            button so somebody who took a copy last month can see that it moved.</p>
+          <textarea id="os-guide" class="dev-json" rows="18" spellcheck="false"
+            placeholder="Loading the instructions…"></textarea>
+          <div class="dev-inline" style="margin-top:10px">
+            <button class="btn btn-gold" id="os-guide-save">💾 Publish these instructions</button>
+            <button class="btn btn-ghost" id="os-guide-reset" title="Back to the copy shipped in docs/osce-json-guide.md">↺ Shipped version</button>
+            <button class="btn btn-ghost" id="os-guide-dl">⬇ Download</button>
+            <span class="dev-status" id="os-guide-msg"></span>
+          </div>
+        </div>
+
+        <div class="card" data-animate>
           <h3 class="card-title">🗺 Exam blueprint</h3>
           <p class="muted">The thirteen modules the OSCE samples from, and the topics beneath each. The exam is nine
             stations, so there are deliberately more topics here than can appear on any one day — this is a sampling
@@ -2645,9 +2661,49 @@ const DevConsole = (() => {
     view.querySelector('#os-scan').addEventListener('click', scanOsce);
     view.querySelector('#os-paste-btn').addEventListener('click', pasteOsce);
     await wireOsceCollections(view);
+    await wireGuide(view);
     await wireBlueprint(view);
     wireTagger(view);
     await refreshOscePublished(view);
+  }
+
+  /* ---- the station-writing instructions ----
+     Editing is here and downloading is in the bank, but there is only one
+     document: created.js owns it, and this is a text box over the top. The
+     Shipped version button re-reads docs/ rather than re-typing a default
+     into this file — two copies of a 13 KB document is how they drift. */
+  async function wireGuide(view) {
+    const ta = view.querySelector('#os-guide'), msg = view.querySelector('#os-guide-msg');
+    if (!ta || typeof Created === 'undefined') return;
+    const say = (t, cls) => { if (msg) { msg.textContent = t; msg.className = 'dev-status ' + (cls || ''); } };
+
+    try {
+      const g = await Created.guide(true);
+      ta.value = g.md;
+      say(g.source === 'saved'
+        ? 'Published version' + (g.updated_at ? ' — saved ' + new Date(g.updated_at).toLocaleString() : '')
+        : 'Nobody has edited these yet — this is the copy shipped in docs/.', 'muted');
+    } catch (e) { say(e.message || String(e), 'bad'); }
+
+    view.querySelector('#os-guide-save').addEventListener('click', async e => {
+      if (!ta.value.trim()) { say('Empty — that would leave everyone with nothing to download.', 'bad'); return; }
+      e.target.disabled = true; say('Publishing…', 'muted');
+      try {
+        const g = await Created.saveGuide(ta.value, ctx.cfg.developer?.email || '');
+        say('✓ Published — this is what the Created OSCE bank now hands out (' +
+          new Date(g.updated_at).toLocaleString() + ').', 'good');
+      } catch (err) { say(err.message || String(err), 'bad'); }
+      finally { e.target.disabled = false; }
+    });
+
+    view.querySelector('#os-guide-reset').addEventListener('click', async () => {
+      say('Reading the shipped copy…', 'muted');
+      try { ta.value = await Created.shipped();
+        say('This is the shipped copy. Nothing is published until you press Publish.', 'muted');
+      } catch (err) { say(err.message || String(err), 'bad'); }
+    });
+
+    view.querySelector('#os-guide-dl').addEventListener('click', () => Created.download(ta.value));
   }
 
   /* ================================================================
