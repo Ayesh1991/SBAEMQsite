@@ -4093,6 +4093,63 @@ body.eco-open .ap-dock { z-index: 2390; }
   padding: 3px 8px; border-radius: 999px; color: var(--ink-3);
   border: 1px solid var(--hairline); background: var(--surface-2); }
 
+/* ---- Created OSCE: the bank candidates write into ----
+   The panel is only ever drawn under that one chip, so it can afford to be
+   a full explanation of the three steps rather than a row of bare buttons —
+   somebody meeting it for the first time has to learn a workflow that
+   leaves the site (write the JSON in Claude) and comes back. */
+.os-made { margin: 0 0 20px; border-color: color-mix(in srgb, var(--gold) 24%, var(--hairline)); }
+.os-made-steps { display: grid; gap: 14px; margin: 16px 0 4px; }
+@media (min-width: 900px) { .os-made-steps { grid-template-columns: repeat(3, 1fr); gap: 20px; } }
+.os-made-step { display: flex; gap: 11px; align-items: flex-start; }
+.os-made-step > div { min-width: 0; }
+.os-made-step b { display: block; font-size: .84rem; margin-bottom: 3px; }
+.os-made-step p { margin: 0 0 9px; }
+.os-made-n { flex: none; width: 23px; height: 23px; border-radius: 999px; display: grid; place-items: center;
+  font-size: .68rem; font-weight: 700; color: var(--ink);
+  background: color-mix(in srgb, var(--gold) 22%, transparent);
+  border: 1px solid color-mix(in srgb, var(--gold) 40%, transparent); }
+.os-made-acts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.os-made-ver { display: block; margin-top: 6px; }
+.os-made-paste { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--hairline); }
+.os-made-paste textarea { width: 100%; font-family: var(--mono, ui-monospace, Menlo, Consolas, monospace);
+  font-size: .74rem; line-height: 1.5; padding: 11px 13px; border-radius: 12px; resize: vertical;
+  color: var(--ink); background: var(--surface-2); border: 1px solid var(--hairline); margin-bottom: 10px; }
+.os-made-paste textarea:focus { outline: none; border-color: var(--gold); }
+.os-made-out:not(:empty) { margin-top: 14px; }
+
+/* A rejected batch has to be readable at a glance: which file, then which
+   rule, in the order somebody would fix them. */
+.os-made-bad { border-radius: 12px; padding: 12px 14px;
+  background: color-mix(in srgb, var(--bad, #d05) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--bad, #d05) 26%, transparent); }
+.os-made-bad > p { margin: 0 0 8px; }
+.os-made-err { margin-top: 9px; font-size: .78rem; }
+.os-made-err b { color: var(--ink); }
+.os-made-err ul { margin: 5px 0 0; padding-left: 19px; color: var(--ink-3); line-height: 1.6; }
+.os-made-err li { margin-bottom: 3px; }
+
+.os-made-mine { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--hairline); }
+.os-made-mine > summary { cursor: pointer; font-size: .8rem; font-weight: 600; list-style: none;
+  display: flex; align-items: center; gap: 8px; }
+.os-made-mine > summary::-webkit-details-marker { display: none; }
+.os-made-mine > summary::before { content: '▸'; font-size: .7rem; color: var(--ink-3);
+  transition: transform .18s ease; }
+.os-made-mine[open] > summary::before { transform: rotate(90deg); }
+.os-made-mine > summary i { font-style: normal; font-size: .66rem; font-weight: 700; padding: 1px 7px;
+  border-radius: 999px; background: color-mix(in srgb, var(--ink) 10%, transparent); color: var(--ink-3); }
+.os-made-rows { margin: 12px 0 8px; display: grid; gap: 8px; }
+.os-made-row { display: flex; flex-wrap: wrap; align-items: center; gap: 9px;
+  padding: 9px 12px; border-radius: 11px; background: var(--surface-2); border: 1px solid var(--hairline); }
+.os-made-rt { flex: 1 1 180px; font-size: .82rem; font-weight: 600; min-width: 0; }
+.os-made-x { color: var(--bad, #d05); }
+
+/* Who wrote it. On the card it is one quiet line; a created station without
+   a name would be indistinguishable from a curated one, which is the one
+   thing the round needs to be able to tell. */
+.os-card-by { margin: 6px 0 0; font-size: .68rem; color: var(--ink-3); }
+.os-by { margin-top: 6px; font-size: .8rem; }
+
 /* ---- a dialog: the marking scheme, and the print picker ---- */
 .os-modal { position: fixed; inset: 0; z-index: 220; display: flex; align-items: center; justify-content: center;
   padding: 4vh 16px; }

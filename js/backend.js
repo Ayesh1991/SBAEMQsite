@@ -73,7 +73,10 @@ const Backend = (() => {
     'total_marks', 'pass_mark', 'pass_mark_percent', 'q_count', 'points_count', 'image_count', 'collection',
     // the blueprint tag travels on the card: the circuit builder and the
     // coverage map both need it, and neither should pull whole stations
-    'bp', 'edited_by', 'edited_at'];
+    'bp', 'edited_by', 'edited_at',
+    // a created station is shown with its author's name on the card — the
+    // whole point of the Created OSCE bank is knowing whose station it is
+    'created_by', 'created_by_name', 'created_on'];
   const osceCard = m => { const o = {}; OSCE_CARD_KEYS.forEach(k => { if (m[k] != null) o[k] = m[k]; }); return o; };
   /* ---------- Case discussions: the same card/document split ----------
      A case carries every phase's expectations and every viva question WITH
@@ -228,6 +231,8 @@ const Backend = (() => {
     async function saveGroqConfig(c) { write('groqcfg', c); return c; }
     async function getOsceCollections() { return read('oscecollections', null); }
     async function saveOsceCollections(list) { write('oscecollections', list); return list; }
+    async function getOsceGuide() { return read('osceguide', null); }
+    async function saveOsceGuide(g) { write('osceguide', g); return g; }
     async function getOsceBlueprint() { return read('osceblueprint', null); }
     async function saveOsceBlueprint(b) { write('osceblueprint', b); return b; }
     /** Write a blueprint tag onto stations without touching anything else. */
@@ -729,7 +734,7 @@ const Backend = (() => {
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
       getOsceStations, getOsceStation, getOsceSearchIndex, publishOsceStation, unpublishOsceStation,
-      moveOsceStations, getOsceCollections, saveOsceCollections, getGroqConfig, saveGroqConfig,
+      moveOsceStations, getOsceCollections, saveOsceCollections, getOsceGuide, saveOsceGuide, getGroqConfig, saveGroqConfig,
       getOsceBlueprint, saveOsceBlueprint, tagOsceStations, listOsceDecks, saveOsceDeck, deleteOsceDeck,
       listOsceAttempts, getOsceAttempt,
       saveOsceAttempt, deleteOsceAttempt, uploadOsceAudio, getOsceAudioUrl, sweepOsceAudio,
@@ -917,7 +922,8 @@ const Backend = (() => {
       'total_marks:meta->total_marks,pass_mark:meta->pass_mark,pass_mark_percent:meta->pass_mark_percent,' +
       'q_count:meta->q_count,points_count:meta->points_count,image_count:meta->image_count,' +
       'collection:meta->>collection,bp:meta->bp,' +
-      'edited_by:meta->>edited_by,edited_at:meta->edited_at';
+      'edited_by:meta->>edited_by,edited_at:meta->edited_at,' +
+      'created_by:meta->>created_by,created_by_name:meta->>created_by_name,created_on:meta->created_on';
     let osceCardsOk = true;
     async function getOsceStations() {
       if (osceCardsOk) {
@@ -1015,6 +1021,24 @@ const Backend = (() => {
       const { data } = await sb.from('app_config').select('data').eq('id', 'osce').single();
       await sb.from('app_config').upsert({ id: 'osce', data: Object.assign({}, data?.data, { collections: list }) });
       return list;
+    }
+    /* The station-writing instructions live in the same 'osce' row. They are
+       markdown, they are what everyone downloads from the Created OSCE bank,
+       and app_config is public-read / developer-write — which is exactly the
+       rule wanted here: anybody may take a copy, only the owner may change
+       the one everybody takes. A null return means nothing has been saved and
+       the copy shipped in docs/ is the current one. */
+    async function getOsceGuide() {
+      await ensureClient();
+      const { data } = await sb.from('app_config').select('data').eq('id', 'osce').single();
+      return data?.data?.guide || null;
+    }
+    async function saveOsceGuide(g) {
+      await ensureClient();
+      const { data } = await sb.from('app_config').select('data').eq('id', 'osce').single();
+      const { error } = await sb.from('app_config').upsert({ id: 'osce', data: Object.assign({}, data?.data, { guide: g }) });
+      if (error) throw new Error(error.message || 'Could not save the instructions.');
+      return g;
     }
     /* The blueprint shares the 'osce' config row with the collections, so
        each must merge rather than overwrite — saving one used to erase the
@@ -2021,7 +2045,7 @@ const Backend = (() => {
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
       getOsceStations, getOsceStation, getOsceSearchIndex, publishOsceStation, unpublishOsceStation,
-      moveOsceStations, getOsceCollections, saveOsceCollections, getGroqConfig, saveGroqConfig,
+      moveOsceStations, getOsceCollections, saveOsceCollections, getOsceGuide, saveOsceGuide, getGroqConfig, saveGroqConfig,
       getOsceBlueprint, saveOsceBlueprint, tagOsceStations, listOsceDecks, saveOsceDeck, deleteOsceDeck,
       listOsceAttempts, getOsceAttempt,
       saveOsceAttempt, deleteOsceAttempt, uploadOsceAudio, getOsceAudioUrl, sweepOsceAudio,

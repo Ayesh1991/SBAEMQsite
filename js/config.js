@@ -136,12 +136,20 @@ window.AUREUM_CONFIG = {
        circuit merely because its best bank is empty. */
     collections: [
       { id: 'common',    label: 'Common bank',      priority: 1 },
+      { id: 'created',   label: 'Created OSCE',     priority: 3, open: true },
       { id: 'pera',      label: 'Pera OSCE',        priority: 4 },
       { id: 'galle',     label: 'Galle OSCE',       priority: 4 },
       { id: 'slcog',     label: 'SLCOG OSCE',       priority: 5 },
       { id: 'examiners', label: "Examiners' OSCE",  priority: 5 }
     ],
-    defaultCollection: 'common'
+    defaultCollection: 'common',
+
+    /* The bin candidates write into. `open: true` on a bin means two things
+       the other bins do not have: anyone signed in may import stations into
+       it from the bank itself, and the bin's chip is drawn even when it is
+       empty — an import target nobody can see is no import target at all.
+       Named here rather than hard-coded so it can be moved or renamed. */
+    createdCollection: 'created'
   },
 
   ai: {
