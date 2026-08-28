@@ -495,7 +495,8 @@ const Marksheet = (() => {
       source: 'manual'
     });
     await Backend.saveOsceAttempt(a);
-    if (typeof OSCE !== 'undefined') OSCE.bustStations?.();
+    // the attempt list is cached, and this is a write to it
+    if (typeof OSCE !== 'undefined') OSCE.bustAttempts?.();
     return a;
   }
 
@@ -505,75 +506,114 @@ const Marksheet = (() => {
     const r = a.result || {};
     const P = '.ms-print';
     const styles = `
-@page { size: A4 portrait; margin: 15mm 14mm 13mm; }
-${P} { color:#111; background:#fff; font-family:"Helvetica Neue",Arial,sans-serif; font-size:10pt; line-height:1.45; }
-${P} h1{font-family:Georgia,serif;font-size:19pt;margin:0 0 3px}
-${P} h2{font-size:12pt;margin:14px 0 5px;border-left:4px solid #333;padding-left:8px}
-${P} .top{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;
-  border-bottom:2px solid #111;padding-bottom:8px;margin-bottom:12px}
-${P} .who{font-size:10pt;margin:2px 0 0}
-${P} .who b{font-size:12pt}
-${P} .tot{text-align:right;white-space:nowrap}
-${P} .tot b{display:block;font-family:Georgia,serif;font-size:30pt;line-height:1}
-${P} .tot span{font-size:9pt}
-${P} .verdict{display:inline-block;margin-top:3px;padding:2px 10px;border:1.5px solid #111;
-  border-radius:3px;font-size:9pt;font-weight:700;text-transform:uppercase;letter-spacing:.06em}
-${P} .key{display:flex;gap:18px;font-size:8.5pt;margin:0 0 12px;padding:6px 0;
-  border-top:1px solid #ccc;border-bottom:1px solid #ccc}
-${P} .qh{display:flex;justify-content:space-between;gap:12px;align-items:baseline;margin:14px 0 4px}
-${P} .qh .qm{font-family:Georgia,serif;white-space:nowrap}
-${P} ul{list-style:none;margin:3px 0 0;padding:0}
-${P} li{display:flex;gap:8px;padding:2.5px 0;border-bottom:1px dotted #e0e0e0}
-${P} li .m{flex:0 0 15px;font-weight:700;text-align:center}
-${P} li.miss{color:#555}
-${P} li.miss .m{color:#b00}
-${P} li.part .m{color:#a06000}
-${P} .note{margin:4px 0 0;font-size:9pt;font-style:italic;color:#444}
-${P} .cmt{margin:14px 0 0;padding:9px 12px;border:1px solid #bbb;background:#fafafa}
-${P} .foot{margin-top:18px;padding-top:6px;border-top:1px solid #ccc;
-  display:flex;justify-content:space-between;font-size:7.5pt;color:#777}
-${P} .sig{margin-top:20px;display:flex;gap:40px;font-size:9pt}
-${P} .sig div{flex:1;border-top:1px solid #999;padding-top:3px}`;
+@page { size: A4 portrait; margin: 16mm 15mm 14mm; }
+/* Print-safe ink. Colour survives "Save as PDF" only with this, and a
+   marksheet whose ticks and crosses come out identically grey is not a
+   marksheet. */
+${P}, ${P} * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+${P} { color:#14161a; background:#fff;
+  font-family:"Helvetica Neue",Helvetica,Arial,sans-serif; font-size:10pt; line-height:1.42;
+  -webkit-font-smoothing:antialiased; }
 
-    const when = new Date(a.created || Date.now()).toLocaleDateString('en-GB', { dateStyle: 'medium' });
+/* masthead */
+${P} .top{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;
+  padding-bottom:9px;margin-bottom:4px;border-bottom:2.5px solid #14161a}
+${P} .eyebrow{font-size:7pt;letter-spacing:.24em;text-transform:uppercase;color:#8a6a1c;margin:0 0 4px}
+${P} h1{font-family:Georgia,"Times New Roman",serif;font-size:19pt;line-height:1.16;
+  margin:0;letter-spacing:-.01em}
+${P} .who{font-size:9.5pt;color:#3d434c;margin:6px 0 0}
+${P} .who b{font-size:11.5pt;color:#14161a}
+${P} .tot{text-align:right;white-space:nowrap;flex:0 0 auto}
+${P} .tot b{display:block;font-family:Georgia,serif;font-size:31pt;line-height:.94;letter-spacing:-.02em}
+${P} .tot .outof{display:block;font-size:8.5pt;color:#5a616b;margin-top:2px}
+${P} .verdict{display:inline-block;margin-top:6px;padding:2.5px 11px;border-radius:2px;
+  font-size:8pt;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:#fff}
+${P} .verdict.pass{background:#0d7a5f}
+${P} .verdict.fail{background:#a32b2b}
+${P} .pm{display:block;margin-top:4px;font-size:7.5pt;color:#6b7280}
+
+/* the key, stated ONCE */
+${P} .key{display:flex;gap:20px;flex-wrap:wrap;align-items:center;
+  font-size:8pt;color:#4a515b;margin:0 0 14px;padding:6px 0;border-bottom:1px solid #d8dbe0}
+${P} .key i{font-style:normal;font-weight:800;margin-right:4px}
+${P} .key .kc{color:#0d7a5f}${P} .key .kp{color:#9a6a05}${P} .key .km{color:#a32b2b}
+
+/* a question — never split across a page break */
+${P} .q{break-inside:avoid;page-break-inside:avoid;margin:0 0 13px}
+${P} .qh{display:flex;justify-content:space-between;gap:14px;align-items:baseline;
+  padding-bottom:3px;margin-bottom:5px;border-bottom:1px solid #e3e6ea}
+${P} .qh h2{font-family:Georgia,serif;font-size:11pt;font-weight:600;margin:0;line-height:1.3}
+${P} .qh .qm{font-family:Georgia,serif;font-size:10.5pt;white-space:nowrap;color:#3d434c}
+${P} .qh .qm b{font-size:13pt;color:#14161a}
+${P} ul{list-style:none;margin:0;padding:0}
+${P} li{display:flex;gap:9px;align-items:flex-start;padding:3px 0 3px 2px;
+  border-bottom:1px solid #f0f1f3}
+${P} li:last-child{border-bottom:0}
+${P} li .m{flex:0 0 14px;text-align:center;font-weight:800;font-size:10.5pt;line-height:1.35}
+${P} li .tx{flex:1}
+${P} li.cov .m{color:#0d7a5f}
+${P} li.part .m{color:#9a6a05}
+${P} li.part .tx{color:#3d434c}
+${P} li.miss .m{color:#a32b2b}
+${P} li.miss .tx{color:#5a616b}
+${P} .note{margin:5px 0 0;padding-left:23px;font-size:8.5pt;font-style:italic;color:#5a616b}
+
+${P} .cmt{break-inside:avoid;margin:16px 0 0;padding:10px 13px;
+  background:#f7f8f9;border-left:3px solid #8a6a1c}
+${P} .cmt b{display:block;font-size:7.5pt;letter-spacing:.12em;text-transform:uppercase;
+  color:#8a6a1c;margin-bottom:3px}
+${P} .sig{break-inside:avoid;margin-top:26px;display:flex;gap:44px;font-size:8pt;color:#6b7280}
+${P} .sig div{flex:1;border-top:1px solid #9aa0a8;padding-top:4px}
+${P} .foot{margin-top:16px;padding-top:6px;border-top:1px solid #d8dbe0;
+  display:flex;justify-content:space-between;font-size:7pt;color:#8b919a;letter-spacing:.04em}`;
+
+    const when = new Date(a.created || Date.now()).toLocaleDateString('en-GB',
+      { day: 'numeric', month: 'long', year: 'numeric' });
+    const cls = st => /cover/i.test(st) ? 'cov' : /part/i.test(st) ? 'part' : 'miss';
+    const ico = st => /cover/i.test(st) ? '✓' : /part/i.test(st) ? '~' : '✗';
+
     const body = `<div class="ms-print">
       <div class="top">
         <div>
-          ${plain ? '' : '<p style="font-size:7.5pt;letter-spacing:.2em;text-transform:uppercase;color:#7a5a10;margin:0 0 2px">AUREUM · Pathway to MD</p>'}
+          ${plain ? '' : '<p class="eyebrow">AUREUM · Pathway to MD</p>'}
           <h1>${esc(a.station?.topic || '')}</h1>
-          <p class="who">${a.candidate?.name ? `<b>${esc(a.candidate.name)}</b> · ` : ''}${esc(when)}${
-            a.examiner?.name && !plain ? ` · examined by ${esc(a.examiner.name)}` : ''}</p>
+          <p class="who">${a.candidate?.name ? `<b>${esc(a.candidate.name)}</b><br>` : ''}${esc(when)}${
+            a.examiner?.name ? ` · examined by ${esc(a.examiner.name)}` : ''}</p>
         </div>
         <div class="tot">
-          <b>${r.total}</b><span>out of ${r.max}${r.max ? ` · ${r.percent}%` : ''}</span>
-          <span class="verdict">${r.pass ? 'Pass' : 'Below the pass mark'}</span>
-          ${a.station?.pass_mark ? `<span style="display:block;margin-top:3px;font-size:8pt">pass mark ${a.station.pass_mark}</span>` : ''}
+          <b>${r.total}</b>
+          <span class="outof">out of ${r.max}${r.max ? ` &nbsp;·&nbsp; ${r.percent}%` : ''}</span>
+          <span class="verdict ${r.pass ? 'pass' : 'fail'}">${r.pass ? 'Pass' : 'Below the pass mark'}</span>
+          ${a.station?.pass_mark ? `<span class="pm">pass mark ${a.station.pass_mark}</span>` : ''}
         </div>
       </div>
 
-      <div class="key"><span><b>✓</b> covered</span><span><b>~</b> partly said</span>
-        <span><b>✗</b> not said</span><span>half credit for a point partly said</span></div>
+      <div class="key">
+        <span><i class="kc">✓</i>covered</span>
+        <span><i class="kp">~</i>partly said — half credit</span>
+        <span><i class="km">✗</i>not said</span>
+      </div>
 
       ${(r.questions || []).map((qr, i) => {
         const q = (a.questions || []).find(x => String(x.id) === String(qr.id)) || {};
-        return `
-        <div class="qh"><h2 style="border:0;padding:0;margin:0;font-size:11pt">Q${i + 1}. ${esc(q.prompt || '')}</h2>
-          <span class="qm"><b>${qr.awarded}</b> / ${qr.max}</span></div>
-        <ul>${(qr.points || []).map(p => {
-          const cls = /cover/i.test(p.status) ? '' : /part/i.test(p.status) ? 'part' : 'miss';
-          return `<li class="${cls}"><span class="m">${MARK[/cover/i.test(p.status) ? 'covered'
-            : /part/i.test(p.status) ? 'partial' : 'missed']}</span><span>${esc(p.point)}</span></li>`;
-        }).join('')}</ul>
-        ${qr.comment ? `<p class="note">${esc(qr.comment)}</p>` : ''}`;
+        return `<div class="q">
+          <div class="qh">
+            <h2>${i + 1}. ${esc(q.prompt || '')}</h2>
+            <span class="qm"><b>${qr.awarded}</b> / ${qr.max}</span>
+          </div>
+          <ul>${(qr.points || []).map(p => `<li class="${cls(p.status)}">
+            <span class="m">${ico(p.status)}</span><span class="tx">${esc(p.point)}</span></li>`).join('')}</ul>
+          ${qr.comment ? `<p class="note">${esc(qr.comment)}</p>` : ''}
+        </div>`;
       }).join('')}
 
-      ${r.examinerComment ? `<div class="cmt"><b>Examiner's comment.</b> ${esc(r.examinerComment)}</div>` : ''}
+      ${r.examinerComment ? `<div class="cmt"><b>Examiner's comment</b>${esc(r.examinerComment)}</div>` : ''}
 
       <div class="sig"><div>Examiner's signature</div><div>Candidate's signature</div></div>
 
       <div class="foot">
         <span>${plain ? '' : 'AUREUM · Pathway to MD'}</span>
-        <span>Marked in person · ${esc(when)}</span>
+        <span>OSCE station · marked in person · ${esc(when)}</span>
       </div>
     </div>`;
 

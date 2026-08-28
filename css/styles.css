@@ -5146,3 +5146,29 @@ body.eco-open .ap-dock { z-index: 2390; }
   .ms-pt-s { display: none; }
   .ms-modal-head { flex-direction: column; }
 }
+
+/* The print-sheet scroll lock. A CLASS, not an inline style, so it can be
+   cleared unconditionally by anything — the router does so on every
+   navigation, which is what stops a sheet left open from freezing the
+   whole site until a reload. */
+html.is-printlock, html.is-printlock body { overflow: hidden; }
+
+/* A baseline for a browser-level print of any page — someone using Safari's
+   own Print rather than a print button. It cannot make an arbitrary page
+   into a document, but it can stop it being a screenshot of a dark app:
+   white paper, black ink, and none of the floating furniture. */
+@media print {
+  html, body { background: #fff !important; color: #111 !important; }
+  #nav, .tr-launchbar, .tr-dock, .tc-dock, .fx-layer, .confetti-layer,
+  .qr-fab, .appearance-fab, .nav-burger, .os-run-bar, .ms-bar-acts { display: none !important; }
+  .card, .page { box-shadow: none !important; border-color: #ddd !important; }
+}
+
+/* the two attempt sections, foldable */
+.os-att-fold > summary { display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  cursor: pointer; list-style: none; }
+.os-att-fold > summary::-webkit-details-marker { display: none; }
+.os-att-fold > summary .card-title { margin: 0; flex: 1 1 auto; }
+.os-att-sum { font-size: .78rem; color: var(--ink-3, #8b8b96); white-space: nowrap; }
+.os-att-fold > summary .dc-caret { transition: transform .16s ease; color: var(--ink-3, #8b8b96); }
+.os-att-fold[open] > summary .dc-caret { transform: rotate(180deg); }

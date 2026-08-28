@@ -105,6 +105,11 @@
   }
 
   async function route() {
+    /* A print sheet that was navigated away from rather than closed used to
+       leave the whole document unscrollable, and nothing else could clear
+       it. Releasing on every route change means any path that forgets is
+       fixed by the next tap, whatever caused it. */
+    try { OSCE?.releaseScroll?.(); } catch {}
     Quiz.destroy();
     if (_lastHash) _scroll[_lastHash] = window.scrollY;   // save the outgoing page's position
     const hash = location.hash || '#/';
