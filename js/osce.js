@@ -50,6 +50,61 @@ const OSCE = (() => {
     return list.slice().sort((a, b) => String(a.topic || '').localeCompare(String(b.topic || '')));
   }
   function bustStations() { if (typeof Cache !== 'undefined') Cache.bust(KEY); }
+
+  /* ---------------- YOUR OWN ROWS, READ ONCE ----------------
+
+     Supabase bills egress — bytes leaving the database — and the free tier
+     is not generous. listOsceAttempts() was being called from EIGHT places:
+     the bank, a station page, My attempts, the simulator, the progress
+     page, the study documents page, twice more inside the report. Opening
+     the OSCE tab and clicking through it pulled your whole attempt history
+     five or six times in a minute, and it grows with every station you sit.
+
+     It is also the easiest thing in the app to cache correctly, because
+     there is exactly one writer: you. Nobody else can add to your attempts,
+     so the cache cannot go stale behind your back — it only has to be
+     dropped when YOU write, which is a handful of call sites rather than a
+     guess about other people.
+
+     Ten minutes, and busted on every write. */
+  const ATT_KEY = 'osce-attempts', ATT_TTL = 10 * 60 * 1000;
+  async function myAttempts() {
+    const loader = () => Backend.listOsceAttempts().then(r => r || []);
+    if (typeof Cache === 'undefined') return loader();
+    return await Cache.wrap(ATT_KEY, ATT_TTL, loader, { keepIfEmptied: true });
+  }
+  function bustAttempts() { if (typeof Cache !== 'undefined') Cache.bust(ATT_KEY); }
+
+  /* INVALIDATION THAT CANNOT BE FORGOTTEN.
+
+     Calling bustAttempts() by hand at each write site works right up until
+     somebody adds a write and does not — and the failure is silent and
+     confusing: a station you have just sat still counts as unsat, the
+     fresh-only tick offers it again, and nothing anywhere says why.
+
+     So the two writers are wrapped once, here. Any caller at all — this
+     file, the marksheet, a test, whatever gets written next year — drops
+     the cache by writing, because writing is what makes it stale. */
+  (function guardAttemptCache() {
+    if (typeof Backend === 'undefined' || Backend.__attCacheGuarded) return;
+    Backend.__attCacheGuarded = true;
+    ['saveOsceAttempt', 'deleteOsceAttempt'].forEach(fn => {
+      const real = Backend[fn];
+      if (typeof real !== 'function') return;
+      Backend[fn] = async function (...args) {
+        try { return await real.apply(Backend, args); }
+        finally { bustAttempts(); }
+      };
+    });
+  })();
+
+  const DECK_KEY = 'osce-decks';
+  async function decks() {
+    const loader = () => Backend.listOsceDecks().then(r => r || []);
+    if (typeof Cache === 'undefined') return loader();
+    return await Cache.wrap(DECK_KEY, ATT_TTL, loader, { keepIfEmptied: true });
+  }
+  function bustDecks() { if (typeof Cache !== 'undefined') Cache.bust(DECK_KEY); }
   /* The bank list holds CARDS — no questions, no marking points — so opening
      the tab costs a few KB however big the bank grows. A station's questions
      are fetched only when that station is actually opened. */
@@ -628,7 +683,7 @@ const OSCE = (() => {
     FX.viewIn(view);
     const [list, past, colls] = await Promise.all([
       stations().catch(() => []),
-      Backend.listOsceAttempts().catch(() => []),
+      myAttempts().catch(() => []),
       collections().catch(() => [])
     ]);
     // recordings older than a day are not worth storing; take them out while we are here
@@ -786,7 +841,7 @@ const OSCE = (() => {
     const st = await station(id);
     if (!st) { view.innerHTML = shell('bank', `<p class="muted">That station is no longer published. <a class="link" href="#/osce">Back</a></p>`); FX.viewIn(view); return; }
     let past = [];
-    try { past = (await Backend.listOsceAttempts()).filter(a => a.station_id === id); } catch {}
+    try { past = (await myAttempts()).filter(a => a.station_id === id); } catch {}
 
     view.innerHTML = shell('bank', `
       <a class="link muted dev-back" href="#/osce">← OSCE stations</a>
@@ -958,7 +1013,7 @@ const OSCE = (() => {
     view.innerHTML = shell('mine', `<div id="os-body"><p class="muted">Loading your attempts…</p></div>`);
     FX.viewIn(view);
     let past = [];
-    try { past = (await Backend.listOsceAttempts()) || []; }
+    try { past = (await myAttempts()) || []; }
     catch (e) {
       view.querySelector('#os-body').innerHTML = `<p class="bad">${esc(e.message || e)}</p>`; return;
     }
@@ -1017,15 +1072,28 @@ const OSCE = (() => {
      So: two tables, each labelled, each explaining what it is. Everything
      downstream — the report, the print sheet, sitting it again — is
      identical, because the attempt itself is the same shape. */
+  /* Both sections fold. Which one is open is remembered per person, because
+     somebody deep in face-to-face practice wants the hand-marked list open
+     and the AI list out of the way, and the opposite is equally true. */
+  const FOLD_KEY = 'aureum.osce.attemptfold';
+  const foldState = () => { try { return JSON.parse(localStorage.getItem(FOLD_KEY) || '{}'); } catch { return {}; } };
+  const setFold = (k, open) => { try { const f = foldState(); f[k] = !!open; localStorage.setItem(FOLD_KEY, JSON.stringify(f)); } catch {} };
+
   function attemptTable(rows, kind) {
     const manual = kind === 'manual';
     if (!rows.length) {
       return manual ? '' : `<div class="card" data-animate><p class="muted">Nothing marked by AI yet.</p></div>`;
     }
+    const f = foldState();
+    const open = f[kind] !== false;        // open unless it has been shut
     return `
-      <div class="card ${manual ? 'os-hand-card' : ''}" data-animate>
-        <h3 class="card-title">${manual ? '✍️ Marked in person' : '🎙 Marked by AI'}
-          <span class="os-tbl-n">${rows.length}</span></h3>
+      <details class="card os-att-fold ${manual ? 'os-hand-card' : ''}" data-animate data-foldkey="${kind}"${open ? ' open' : ''}>
+        <summary>
+          <h3 class="card-title">${manual ? '✍️ Marked in person' : '🎙 Marked by AI'}
+            <span class="os-tbl-n">${rows.length}</span></h3>
+          <span class="os-att-sum">${summarise(rows)}</span>
+          <span class="dc-caret">▾</span>
+        </summary>
         <p class="muted tiny">${manual
           ? 'Sat face to face with somebody holding the scheme. No recording — the marks are their judgement, point by point.'
           : 'Sat here, recorded, and marked against the scheme by a model.'}</p>
@@ -1044,7 +1112,17 @@ const OSCE = (() => {
             </tr>`;
           }).join('')}</tbody>
         </table></div>
-      </div>`;
+      </details>`;
+  }
+
+  /* The one line that has to be right when the section is shut: how many,
+     how many passed, and the average. Folding something away should not
+     mean losing sight of it. */
+  function summarise(rows) {
+    const n = rows.length;
+    const passed = rows.filter(a => a.result?.pass).length;
+    const avg = Math.round(rows.reduce((t, a) => t + (a.result?.percent || 0), 0) / Math.max(1, n));
+    return `${passed}/${n} passed · ${avg}% average`;
   }
 
   /* ================= stations recorded but never marked =================
@@ -1127,6 +1205,9 @@ const OSCE = (() => {
   }
 
   function wirePending(view, user) {
+    view.querySelectorAll('[data-foldkey]').forEach(d => d.addEventListener('toggle', () => {
+      setFold(d.dataset.foldkey, d.open);
+    }));
     view.querySelectorAll('[data-sheetdrop]').forEach(b => b.addEventListener('click', () => {
       if (!confirm('Discard that marking sheet? The ticks so far are not kept.')) return;
       Marksheet.wipe(b.dataset.sheetdrop);
@@ -1261,7 +1342,7 @@ const OSCE = (() => {
     const list = await stations().catch(() => []);   // cards only — the circuit needs names, not schemes
     const modules = await OsceBlueprint.get().catch(() => []);
     let attempts = [];
-    try { attempts = (await Backend.listOsceAttempts()) || []; } catch {}
+    try { attempts = (await myAttempts()) || []; } catch {}
     const byId = {}; list.forEach(s => byId[s.id] = s);
     const history = OsceBlueprint.historyOf(attempts, byId);
     const tagged = list.filter(s => OsceBlueprint.tagOf(s));
@@ -2999,7 +3080,7 @@ const OSCE = (() => {
       /* The tape is already up — it went before the model was called, so a
          failed marking leaves something to retry with. Record where. */
       if (audioPath) { attempt.audioPath = audioPath; attempt.audioExpires = audioExpires; attempt.audioSecs = rec?.secs || null; }
-      try { await Backend.saveOsceAttempt(attempt); } catch {}
+      try { await Backend.saveOsceAttempt(attempt); bustAttempts(); } catch {}
       try { if (typeof Wallet !== 'undefined') Wallet.bust(); } catch {}
 
       /* The candidate's own Drive, if they connected one. Deliberately the
@@ -3013,7 +3094,7 @@ const OSCE = (() => {
         }).then(up => {
           if (!up) return;
           attempt.drive = { id: up.id, link: up.link, name: up.name };
-          Backend.saveOsceAttempt(attempt).catch(() => {});
+          Backend.saveOsceAttempt(attempt).catch(() => {}); bustAttempts();
         }).catch(() => {});
       }
       return attempt;
@@ -3408,7 +3489,7 @@ const OSCE = (() => {
     }), e.currentTarget, '📄 Copy the station'));
     view.querySelector('#os-del').addEventListener('click', async () => {
       if (!confirm('Delete this OSCE result?')) return;
-      try { await Backend.deleteOsceAttempt(a.id); } catch {}
+      try { await Backend.deleteOsceAttempt(a.id); bustAttempts(); } catch {}
       location.hash = '#/osce';
     });
   }
@@ -3781,12 +3862,52 @@ ${has('learning') && (r.keyLearning || []).length ? `<section class="blk"><h2>Ke
      Shared by the station report and the study document, because both hit
      the same wall: iPadOS Safari ignores print() on a hidden iframe, so
      the sheet has to be part of the page and the page itself printed. */
+  /* Clearing the print lock. Exported and called by the router, so a lock
+     left behind by any path at all is gone by the next navigation. It also
+     wipes the old inline style, for a browser that still has one set from
+     a version before this. */
+  function releaseScroll() {
+    try {
+      document.documentElement.classList.remove('is-printlock');
+      if (document.documentElement.style.overflow === 'hidden') document.documentElement.style.overflow = '';
+      if (document.body.style.overflow === 'hidden') document.body.style.overflow = '';
+    } catch {}
+  }
+
+  /* THE RULES THAT MAKE THE PRINTER SEE ONLY THE SHEET.
+
+     These used to live inside ONE caller's style string — the OSCE report —
+     and every print written afterwards quietly lacked them. The result was
+     a PDF of the whole running application: the nav bar, the live marking
+     UI, "Tap a point to cycle it", the placeholder text in empty inputs,
+     and Safari's own URL footer. Which is what a print without a print
+     stylesheet looks like, and there was no print stylesheet.
+
+     So they belong HERE, prepended to whatever the caller asked for. A
+     caller can add to them; it cannot forget them. */
+  const PRINT_FRAME = `
+@media print {
+  html, body { background:#fff !important; color:#111 !important;
+    margin:0 !important; padding:0 !important; height:auto !important; overflow:visible !important; }
+  /* the sheet IS the document; nothing else on the page is */
+  body > *:not(#os-printdoc) { display:none !important; }
+  #os-printdoc { position:static !important; overflow:visible !important;
+    background:#fff !important; inset:auto !important; }
+  #os-printdoc .os-pd-bar { display:none !important; }
+  #os-printdoc .sheet { width:auto !important; min-height:0 !important;
+    margin:0 !important; padding:0 !important; box-shadow:none !important; }
+  /* ink on paper: never a dark theme, never a shadow, never a screen-only flourish */
+  #os-printdoc * { box-shadow:none !important; text-shadow:none !important; }
+  a[href]::after { content:"" !important; }
+}`;
+
   function openPrintSheet(styles, bodyHtml) {
+    releaseScroll();                     // never stack two locks
     document.getElementById('os-printdoc')?.remove();
     document.getElementById('os-printdoc-css')?.remove();
     const css = document.createElement('style');
     css.id = 'os-printdoc-css';
-    css.textContent = styles;
+    css.textContent = styles + '\n' + PRINT_FRAME;
     document.head.appendChild(css);
 
     const host = document.createElement('div');
@@ -3794,15 +3915,34 @@ ${has('learning') && (r.keyLearning || []).length ? `<section class="blk"><h2>Ke
     host.innerHTML = bodyHtml;
     document.body.appendChild(host);
 
-    const prevOverflow = document.documentElement.style.overflow;
+    /* THE FREEZE.
+
+       This used to lock scrolling with an inline `documentElement.style
+       .overflow = 'hidden'` and restore it in shut(). Three ways that left
+       the whole site unscrollable, permanently:
+
+         1. On iOS shut() is reachable only through the Close button — there
+            is no Escape key — so navigating away instead of closing left
+            the lock on for ever. Changing tab does not clear it, because
+            routing replaces #view and never touches <html>.
+         2. Printing twice captured 'hidden' as the value to restore, so
+            even pressing Close put it back to hidden.
+         3. Anything that threw between setting and restoring kept it.
+
+       So the lock is now a CLASS, released by three independent things:
+       shut(), leaving the page, and the router on every single navigation.
+       A lock that can only be released by the code that set it is a lock
+       that will one day not be released. */
     const shut = () => {
       host.remove(); css.remove();
       document.removeEventListener('keydown', onKey);
-      document.documentElement.style.overflow = prevOverflow;
+      window.removeEventListener('hashchange', shut);
+      releaseScroll();
     };
     const onKey = e => { if (e.key === 'Escape') shut(); };
-    document.documentElement.style.overflow = 'hidden';
+    document.documentElement.classList.add('is-printlock');
     document.addEventListener('keydown', onKey);
+    window.addEventListener('hashchange', shut);
     host.querySelector('[data-pd-close]')?.addEventListener('click', shut);
     host.querySelector('[data-pd-print]')?.addEventListener('click', () => { try { window.print(); } catch {} });
 
@@ -3964,7 +4104,7 @@ ${has('learning') && (r.keyLearning || []).length ? `<section class="blk"><h2>Ke
     // a document already written for this attempt is offered rather than remade
     (async () => {
       try {
-        const have = (await Backend.listOsceDecks() || []).find(d => d.attemptId === a.id && d.doc);
+        const have = (await decks() || []).find(d => d.attemptId === a.id && d.doc);
         if (have) msg.innerHTML = `<a class="link" href="#/osce/cards/${esc(have.id)}">A study document already exists for this attempt →</a> Writing another replaces it.`;
       } catch {}
     })();
@@ -4048,7 +4188,7 @@ ${has('learning') && (r.keyLearning || []).length ? `<section class="blk"><h2>Ke
       bp: a.bp || null, percent: a.result?.percent ?? null,
       doc, stats, created: Date.now(), model: data.model || choice.model
     };
-    await Backend.saveOsceDeck(rec);
+    await Backend.saveOsceDeck(rec); bustDecks();
     try { if (typeof Wallet !== 'undefined') Wallet.bust(); } catch {}
     return rec;
   }
@@ -4088,7 +4228,7 @@ ${has('learning') && (r.keyLearning || []).length ? `<section class="blk"><h2>Ke
     FX.viewIn(view);
     const host = view.querySelector('#os-body');
     let docs = [];
-    try { docs = (await Backend.listOsceDecks()) || []; } catch {}
+    try { docs = (await decks()) || []; } catch {}
     docs = docs.filter(d => d.doc);              // decks from the old card format are ignored
 
     if (deckId) {
@@ -4216,7 +4356,7 @@ ${has('learning') && (r.keyLearning || []).length ? `<section class="blk"><h2>Ke
       host.querySelector('#os-doc-copy').addEventListener('click', e => copyOut(docAsText(d), e.currentTarget, '📄 Copy as text'));
       host.querySelector('#os-doc-del').addEventListener('click', async () => {
         if (!confirm('Delete this study document? The station and its report are not affected.')) return;
-        try { await Backend.deleteOsceDeck(d.id); } catch {}
+        try { await Backend.deleteOsceDeck(d.id); bustDecks(); } catch {}
         location.hash = '#/osce/cards';
       });
     };
@@ -4362,7 +4502,7 @@ ${P} .os-pd-close{background:transparent;color:#fff;border:1px solid rgba(255,25
       stations().catch(() => [])
     ]);
     let list = [];
-    try { list = (await Backend.listOsceAttempts()) || []; } catch {}
+    try { list = (await myAttempts()) || []; } catch {}
     const scored = list.filter(a => a.result && a.result.percent != null);
 
     if (!scored.length) {
@@ -4574,7 +4714,7 @@ ${P} .os-pd-close{background:transparent;color:#fff;border:1px solid rgba(255,25
   /** Attempts shaped for the dashboard: newest last, with the bits charts need. */
   async function progress() {
     let list = [];
-    try { list = (await Backend.listOsceAttempts()) || []; } catch { return []; }
+    try { list = (await myAttempts()) || []; } catch { return []; }
     return list
       .filter(a => a.result && a.result.percent != null)
       .map(a => ({ id: a.id, station: a.station?.topic || a.station_id, percent: a.result.percent,
@@ -4656,12 +4796,13 @@ ${P} .os-pd-close{background:transparent;color:#fff;border:1px solid rgba(255,25
     stations, bustStations, collections, bustCollections, openSessions, dropSession,
     marksOf, passOf, qsOf, toWav, wavRateFor, modelChoices, noAudioReason,
     stationAsText, promptLevel, setPromptLevel, promptPlan, missingPoints, saidAlready,
+    myAttempts, bustAttempts, decks, bustDecks,
     silenceWait, setSilenceWait, salvageJson,
     /* Lent to the case-discussion section. One recorder implementation, one
        voice path, one base64 encoder: a second copy of makeCapture would be a
        second copy of every iPad workaround inside it, and the two would drift
        apart on the first Safari release that changed something. */
-    makeCapture, toBase64, speak, groqVoice, voiceOn: () => groqOn('voice'), openPrintSheet,
+    makeCapture, toBase64, speak, groqVoice, voiceOn: () => groqOn('voice'), openPrintSheet, releaseScroll,
     makeDoc, docAsText, allPoints, coachFor, coachWanted, COACH,
     // exposed for tests and for the circuit page's live redraw
     markState, onMarkChange, retryMark };
