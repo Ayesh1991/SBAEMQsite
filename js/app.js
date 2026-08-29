@@ -42,6 +42,10 @@
     { re: /^#\/osce\/progress$/, fn: (u) => OSCE.renderProgress(view, u) },
     // marking a real person, sitting in front of you
     { re: /^#\/osce\/mark\/([^/]+)$/, fn: (id, u) => Marksheet.render(view, id, u) },
+    /* OSCE in AI — the clock and the tape for a station sat against a chat
+       model in the other half of a split screen. Gated per user, and the
+       render checks for itself so a hand-typed URL is refused too. */
+    { re: /^#\/osce\/ai\/([^/?]+)(?:\?s=([^/]+))?$/, fn: (id, sid, u) => AiOsce.session(view, decodeURIComponent(id), u, sid ? decodeURIComponent(sid) : null) },
     /* case-based discussion — gated per user; every render checks for itself
        so a hand-typed URL is refused the same way the missing nav link is */
     { re: /^#\/cases$/, fn: (u) => Cases.renderBank(view, u) },

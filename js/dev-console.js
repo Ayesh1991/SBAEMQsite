@@ -3216,7 +3216,7 @@ const DevConsole = (() => {
   function editorSums() {
     const qs = edit.questions || [];
     const marks = qs.reduce((n, q) => n + (Number(q.marks) || 0), 0);
-    const pts = qs.reduce((n, q) => n + (q.marking_points || []).length, 0);
+    const pts = qs.reduce((n, q) => n + (q.marking_points || []).filter(x => !/^\s*#\s+/.test(String(x || ''))).length, 0);
     return { marks, pts, qs: qs.length };
   }
 
