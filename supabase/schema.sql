@@ -1363,3 +1363,101 @@ create policy "osce stations remove" on public.osce_stations for delete
       and meta ->> 'created_by' = auth.uid()::text
     )
   );
+
+
+/* ============================================================
+   v86 — Real station: a live OSCE between two people
+   Re-run this file after upgrading; every statement is idempotent.
+   ------------------------------------------------------------
+   One person holds the scheme and marks; the other sits the
+   station on their own device, in the same room or not. The
+   examiner sends the scenario, then each question, reveal and
+   image as they reach it. The candidate never receives the
+   marking points — that is the whole reason this is a push
+   rather than simply sharing the station.
+
+   ONE ROW IS THE WHOLE SESSION. Not a row per message: a live
+   station is a small object that changes often, and a candidate
+   who reloads mid-station must get back everything already sent.
+   A single jsonb row read on a poll gives that for one round
+   trip; a message table would need a query, an ordering and a
+   watermark to do the same job worse.
+
+   WHO MAY DO WHAT
+
+     • the examiner owns the row: creates it, sends into it,
+       starts and ends it;
+     • the candidate may read it, and may update it — which is
+       how accepting and leaving work.
+
+   The candidate's update right is deliberately not narrowed to
+   particular keys. Postgres row-level security gates rows, not
+   fields, and expressing "may change status but nothing else"
+   would mean a trigger comparing old and new for every key. The
+   pair are practising together by invitation; the honest limit
+   here is that a candidate can only reach a session they were
+   themselves invited to, and the marks never live in this table
+   at all — they stay in the examiner's own marksheet until the
+   attempt is written. There is nothing here worth forging.
+   ============================================================ */
+
+create table if not exists public.live_stations (
+  id           text primary key,
+  examiner_id  uuid not null references auth.users(id) on delete cascade,
+  candidate_id uuid references auth.users(id) on delete set null,
+  station_id   text not null,
+  state        jsonb not null default '{}'::jsonb,
+  updated_at   timestamptz not null default now()
+);
+create index if not exists live_stations_cand_idx on public.live_stations (candidate_id, updated_at desc);
+create index if not exists live_stations_exam_idx on public.live_stations (examiner_id, updated_at desc);
+
+alter table public.live_stations enable row level security;
+drop policy if exists "live read"   on public.live_stations;
+drop policy if exists "live add"    on public.live_stations;
+drop policy if exists "live write"  on public.live_stations;
+drop policy if exists "live remove" on public.live_stations;
+
+create policy "live read" on public.live_stations for select
+  to authenticated using (auth.uid() = examiner_id or auth.uid() = candidate_id);
+
+create policy "live add" on public.live_stations for insert
+  to authenticated with check (auth.uid() = examiner_id);
+
+create policy "live write" on public.live_stations for update
+  to authenticated using (auth.uid() = examiner_id or auth.uid() = candidate_id)
+  with check (auth.uid() = examiner_id or auth.uid() = candidate_id);
+
+create policy "live remove" on public.live_stations for delete
+  to authenticated using (auth.uid() = examiner_id);
+
+/* Realtime, where the project has it enabled. The app polls as well and
+   does not depend on this — a live station that only updated every couple
+   of seconds would still work — so a project without realtime loses
+   nothing but the immediacy. */
+do $$
+begin
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    if not exists (
+      select 1 from pg_publication_tables
+       where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'live_stations'
+    ) then
+      alter publication supabase_realtime add table public.live_stations;
+    end if;
+  end if;
+end $$;
+
+/* A finished station is of no further use to anybody: the marks live in the
+   attempt, and what was sent was only ever a way of getting the questions
+   across. Sweeping keeps the table at the size of what is happening now. */
+create or replace function public.sweep_live_stations()
+returns integer language plpgsql security definer set search_path = public as $$
+declare n integer;
+begin
+  delete from public.live_stations where updated_at < now() - interval '12 hours';
+  get diagnostics n = row_count;
+  return n;
+end;
+$$;
+revoke all on function public.sweep_live_stations() from public;
+grant execute on function public.sweep_live_stations() to authenticated;

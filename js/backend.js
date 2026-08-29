@@ -168,7 +168,16 @@ const Backend = (() => {
       const all = users();
       if (all[email]) throw new Error('An account with this email already exists. Try signing in.');
       const salt = randomSalt();
-      all[email] = { id: email, name, email, position: position || 'Registrar', salt, passHash: await sha256(salt + password), createdAt: Date.now() };
+      /* A user number, locally too. The credit transfer and now the Real
+         station both address people by number rather than by email, so a
+         local account without one cannot be invited — and local mode is
+         where the two-person flow gets tested. */
+      const dir = read('userdirectory', {});
+      const no = String(10001 + Object.keys(dir).length);
+      all[email] = { id: email, name, email, position: position || 'Registrar', userNo: no,
+        salt, passHash: await sha256(salt + password), createdAt: Date.now() };
+      dir[no] = { id: email, name };
+      write('userdirectory', dir);
       write('users', all); write('session', { email });
       return { user: publicUser(all[email]), needsConfirmation: false };
     }
@@ -244,6 +253,37 @@ const Backend = (() => {
     async function saveOsceCollections(list) { write('oscecollections', list); return list; }
     async function getOsceGuide() { return read('osceguide', null); }
     async function saveOsceGuide(g) { write('osceguide', g); return g; }
+
+    /* ---- live stations ----
+       Kept OUTSIDE the per-email namespace on purpose: a live station has
+       two people in it, and in local mode "the other person" is the same
+       browser with a different session. A per-user store would make the
+       invitation invisible to the only person who could accept it. */
+    const liveAll = () => read('livestations', {});
+    async function findUserByNo(no) {
+      const dir = read('userdirectory', {});
+      const hit = dir[String(no)];
+      return hit ? { id: hit.id, user_no: String(no), name: hit.name } : null;
+    }
+    async function createLiveStation(row) {
+      const all = liveAll(); all[row.id] = Object.assign({}, row, { updated_at: Date.now() });
+      write('livestations', all); return all[row.id];
+    }
+    async function getLiveStation(id) { return liveAll()[id] || null; }
+    async function saveLiveStation(id, patch) {
+      const all = liveAll(); if (!all[id]) return null;
+      all[id] = Object.assign({}, all[id], patch, { updated_at: Date.now() });
+      write('livestations', all); return all[id];
+    }
+    async function dropLiveStation(id) { const all = liveAll(); delete all[id]; write('livestations', all); }
+    async function myLiveStations() {
+      const e = sessionEmail(); if (!e) return [];
+      const me = read('users', {})[e]?.id || e;
+      return Object.values(liveAll())
+        .filter(r => r.examiner_id === me || r.candidate_id === me)
+        .sort((x, y) => (y.updated_at || 0) - (x.updated_at || 0));
+    }
+    function watchLiveStation() { return () => {}; }   // local mode polls; nothing to subscribe to
     async function getOsceBlueprint() { return read('osceblueprint', null); }
     async function saveOsceBlueprint(b) { write('osceblueprint', b); return b; }
     /** Write a blueprint tag onto stations without touching anything else. */
@@ -737,7 +777,7 @@ const Backend = (() => {
     /* AI (local mode has no server function — the app disables AI in local) */
     async function getAccessToken() { return null; }
 
-    function publicUser(u) { return { id: u.id, name: u.name, email: u.email, position: u.position, createdAt: u.createdAt, isDeveloper: norm(u.email) === devEmail, featureFlags: u.featureFlags || {}, prefs: u.prefs || {}, avatar: u.avatar || '', status: u.status || 'approved' }; }
+    function publicUser(u) { return { id: u.id, name: u.name, email: u.email, position: u.position, userNo: u.userNo || '', createdAt: u.createdAt, isDeveloper: norm(u.email) === devEmail, featureFlags: u.featureFlags || {}, prefs: u.prefs || {}, avatar: u.avatar || '', status: u.status || 'approved' }; }
 
     return { init, signUp, signIn, signOut, requestPasswordReset, updatePassword, onPasswordRecovery, currentUser, updateProfile,
       getRegistrationOpen, setRegistrationOpen, setUserStatus, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
@@ -746,6 +786,7 @@ const Backend = (() => {
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
       getOsceStations, getOsceStation, getOsceSearchIndex, publishOsceStation, unpublishOsceStation,
       moveOsceStations, getOsceCollections, saveOsceCollections, getOsceGuide, saveOsceGuide, getGroqConfig, saveGroqConfig,
+      findUserByNo, createLiveStation, getLiveStation, saveLiveStation, dropLiveStation, myLiveStations, watchLiveStation,
       getOsceBlueprint, saveOsceBlueprint, tagOsceStations, listOsceDecks, saveOsceDeck, deleteOsceDeck,
       listOsceAttempts, getOsceAttempt,
       saveOsceAttempt, deleteOsceAttempt, uploadOsceAudio, getOsceAudioUrl, sweepOsceAudio,
@@ -1022,6 +1063,61 @@ const Backend = (() => {
       await sb.from('app_config').upsert({ id: 'groq', data: c });
       return c;
     }
+    /* ---- live stations ---- */
+
+    /** The directory view exposes only the number and the name. */
+    async function findUserByNo(no) {
+      await ensureClient();
+      const want = String(no || '').replace(/\D/g, '');
+      if (!want) return null;
+      const { data } = await sb.from('user_directory').select('id,user_no,name');
+      /* Numbers are printed with and without leading zeros, so the match is
+         on digits — the same rule the credit transfer already uses. */
+      const hit = (data || []).find(r => String(r.user_no || '').replace(/^0+/, '') === want.replace(/^0+/, ''));
+      return hit || null;
+    }
+    async function createLiveStation(row) {
+      await ensureClient(); const id = await uid(); if (!id) throw new Error('Sign in first.');
+      const rec = { id: row.id, examiner_id: id, candidate_id: row.candidate_id || null,
+        station_id: row.station_id, state: row.state || {}, updated_at: new Date().toISOString() };
+      const { error } = await sb.from('live_stations').insert(rec);
+      if (error) throw new Error(error.message || 'Could not open the station.');
+      return rec;
+    }
+    async function getLiveStation(lid) {
+      await ensureClient();
+      const { data } = await sb.from('live_stations').select('*').eq('id', lid).single();
+      return data || null;
+    }
+    async function saveLiveStation(lid, patch) {
+      await ensureClient();
+      const row = Object.assign({}, patch, { updated_at: new Date().toISOString() });
+      const { data, error } = await sb.from('live_stations').update(row).eq('id', lid).select().single();
+      if (error) throw new Error(error.message || 'Could not update the station.');
+      return data;
+    }
+    async function dropLiveStation(lid) { await ensureClient(); await sb.from('live_stations').delete().eq('id', lid); }
+    /** Everything I am in, either side of it. RLS already limits this to me. */
+    async function myLiveStations() {
+      await ensureClient(); const id = await uid(); if (!id) return [];
+      const { data } = await sb.from('live_stations').select('*')
+        .or(`examiner_id.eq.${id},candidate_id.eq.${id}`)
+        .order('updated_at', { ascending: false }).limit(20);
+      return data || [];
+    }
+    /* Realtime where the project has it; the caller polls regardless, so
+       this only makes a live station feel immediate rather than making it
+       work. Returns an unsubscribe. */
+    function watchLiveStation(lid, fn) {
+      try {
+        const ch = sb.channel('live-' + lid)
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'live_stations', filter: 'id=eq.' + lid },
+            p => { try { fn(p.new || null); } catch {} })
+          .subscribe();
+        return () => { try { sb.removeChannel(ch); } catch {} };
+      } catch { return () => {}; }
+    }
+
     async function getOsceCollections() {
       await ensureClient();
       const { data } = await sb.from('app_config').select('data').eq('id', 'osce').single();
@@ -2059,6 +2155,7 @@ const Backend = (() => {
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
       getOsceStations, getOsceStation, getOsceSearchIndex, publishOsceStation, unpublishOsceStation,
       moveOsceStations, getOsceCollections, saveOsceCollections, getOsceGuide, saveOsceGuide, getGroqConfig, saveGroqConfig,
+      findUserByNo, createLiveStation, getLiveStation, saveLiveStation, dropLiveStation, myLiveStations, watchLiveStation,
       getOsceBlueprint, saveOsceBlueprint, tagOsceStations, listOsceDecks, saveOsceDeck, deleteOsceDeck,
       listOsceAttempts, getOsceAttempt,
       saveOsceAttempt, deleteOsceAttempt, uploadOsceAudio, getOsceAudioUrl, sweepOsceAudio,

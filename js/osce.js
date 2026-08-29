@@ -243,6 +243,25 @@ const OSCE = (() => {
   /** The points that actually carry marks. */
   const scorable = pts => (pts || []).filter(p => !isHeading(p));
 
+  /* MATCHING A MARKING BACK TO ITS QUESTION.
+
+     Station ids come from whatever JSON built the station — plain numbers
+     from one importer, "Q1" strings from another — and a marking that came
+     back from somewhere else uses whichever it happened to see. An exact
+     lookup therefore misses silently, and the report draws four questions
+     with no question on them, which is what a real Claude-marked station
+     looked like.
+
+     So: compare loosely, and fall back to position. Position is a genuine
+     fallback here rather than a guess, because a marking lists the
+     questions in the order it was asked them. */
+  const qKey = v => String(v == null ? '' : v).trim().toLowerCase().replace(/^q[\s._-]*/, '');
+  function questionFor(list, id, index) {
+    const l = list || [];
+    const want = qKey(id);
+    return (want && l.find(q => qKey(q.id) === want)) || l[index] || {};
+  }
+
   const ptCount = st => st.points_count != null ? st.points_count : qsOf(st).reduce((n, q) => n + scorable(q.marking_points).length, 0);
   const marksOf = st => st.total_marks || qsOf(st).reduce((n, q) => n + (q.marks || 0), 0) || 50;
   const passOf = st => st.pass_mark != null ? st.pass_mark
@@ -3614,7 +3633,7 @@ const OSCE = (() => {
           <p class="muted tiny"><span class="es-dot cov"></span> covered · <span class="es-dot par"></span> partial ·
             <span class="es-dot mis"></span> missed. Every point the scheme carries, and whether you said it.</p>
           ${(r.questions || []).map((qr, i) => {
-            const q = qById[String(qr.id)] || {};
+            const q = questionFor(a.questions, qr.id, i);
             const pct = qr.max ? Math.round((qr.awarded / qr.max) * 100) : 0;
             return `
             <details class="os-qres" ${i === 0 ? 'open' : ''}>
@@ -4103,7 +4122,7 @@ ${has('perf') && r.structure ? `<section class="blk"><h2>How you performed</h2>
 ${has('scheme') || has('marks') || has('said') ? `<section class="blk">
   <h2>${has('marks') ? 'Marked against the scheme' : 'The marking scheme'}</h2>
   ${(r.questions || []).map((qr, i) => {
-    const q = qById[String(qr.id)] || {};
+    const q = questionFor(a.questions, qr.id, i);
     /* Without the marking chosen this is a blank scheme: the points are
        listed with an empty box instead of a tick, so the same station can be
        sat again on paper and marked by hand. */
@@ -4283,6 +4302,7 @@ ${has('learning') && (r.keyLearning || []).length ? `<section class="blk"><h2>Ke
       <div class="lib-subnav" data-animate>
         ${tab('bank', '#/osce', 'Station bank')}
         ${tab('sim', '#/osce/sim', 'Exam simulator')}
+        ${tab('real', '#/osce/real', 'Real station')}
         ${tab('mine', '#/osce/mine', 'My attempts')}
         ${tab('progress', '#/osce/progress', 'Progress')}
         ${tab('cards', '#/osce/cards', 'Study documents')}
@@ -5118,7 +5138,7 @@ ${P} .os-pd-close{background:transparent;color:#fff;border:1px solid rgba(255,25
     renderCircuit, renderProgress, renderDecks,
     micButton, groqReport, resetGroq, voiceAvailable: () => groqOn('whisper'),
     stations, bustStations, collections, bustCollections, openSessions, dropSession,
-    marksOf, passOf, qsOf, minsOf, imagesOf, isHeading, headText, scorable, toWav, wavRateFor, modelChoices, noAudioReason,
+    marksOf, passOf, qsOf, minsOf, imagesOf, isHeading, headText, scorable, questionFor, toWav, wavRateFor, modelChoices, noAudioReason,
     stationAsText, promptLevel, setPromptLevel, promptPlan, missingPoints, saidAlready,
     myAttempts, bustAttempts, decks, bustDecks,
     silenceWait, setSilenceWait, salvageJson,
@@ -5129,5 +5149,5 @@ ${P} .os-pd-close{background:transparent;color:#fff;border:1px solid rgba(255,25
     makeCapture, toBase64, speak, groqVoice, voiceOn: () => groqOn('voice'), openPrintSheet, releaseScroll,
     makeDoc, docAsText, allPoints, coachFor, coachWanted, COACH,
     // exposed for tests and for the circuit page's live redraw
-    markState, onMarkChange, retryMark, __parseResult: parseResult };
+    markState, onMarkChange, retryMark, shell, __parseResult: parseResult };
 })();

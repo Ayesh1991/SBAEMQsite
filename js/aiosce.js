@@ -188,7 +188,8 @@ fenced code block, valid JSON, nothing after it.
     "total": 0, "max": ${OSCE.marksOf(st)}, "percent": 0, "pass": false,
     "examinerComment": "Two or three sentences, as an examiner would write them.",
     "questions": [
-      { "id": "Q1", "awarded": 0, "max": 0,
+      { "id": "Q1", "prompt": "the question, copied from the station block",
+        "awarded": 0, "max": 0,
         "transcript": "What the candidate actually said, in brief.",
         "comment": "Your comment on this answer.",
         "points": [
@@ -208,6 +209,10 @@ fenced code block, valid JSON, nothing after it.
 
 RULES FOR THE JSON
 
+· "id" AND "prompt" on every question. The id alone is not enough — a
+  station whose questions are numbered 1,2,3 cannot be matched to a marking
+  that calls them Q1,Q2,Q3, and the report then shows bare question numbers
+  with no questions on them.
 · One object per marking point, for EVERY point in the scheme, in scheme order.
 · "point" must be the scheme's own wording, not a paraphrase.
 · "awarded" per question must sum to "total", and "max" per question to the
@@ -347,7 +352,8 @@ valid JSON, nothing after it. This is what AUREUM imports.
     "total": 0, "max": 100, "percent": 0, "pass": false,
     "examinerComment": "Two or three sentences, as an examiner would write them.",
     "questions": [
-      { "id": "Q1", "awarded": 0, "max": 0,
+      { "id": "Q1", "prompt": "the question, copied from the station block",
+        "awarded": 0, "max": 0,
         "transcript": "What the candidate actually said, in brief.",
         "comment": "Your comment on this answer.",
         "points": [
@@ -368,6 +374,11 @@ valid JSON, nothing after it. This is what AUREUM imports.
 
 ### Rules for the JSON
 
+- Every question carries both \`id\` **and** \`prompt\`, the prompt copied
+  from the station block. The id alone is not enough: a station whose
+  questions are numbered 1, 2, 3 cannot be matched to a marking that calls
+  them Q1, Q2, Q3, and the report then shows bare question numbers with no
+  questions on them.
 - One object per marking point, for **every** point in the scheme, in
   scheme order. Include the ones that were missed — those are the ones
   worth revising from.
@@ -812,6 +823,26 @@ average mean nothing.
     return e;
   }
 
+  /* The report matches a marking to a question loosely (OSCE.questionFor),
+     but it can only show a prompt that exists somewhere. If the model named
+     its questions and the station's ids do not line up, take the model's
+     wording rather than leaving the report blank. */
+  function mergeQuestions(stationQs, markedQs) {
+    const out = (stationQs || []).map(q => Object.assign({}, q));
+    (markedQs || []).forEach((mq, i) => {
+      const q = OSCE.questionFor(out, mq.id, i);
+      if (!q || !Object.keys(q).length) return;
+      if (!String(q.prompt || '').trim() && String(mq.prompt || mq.q || '').trim()) q.prompt = mq.prompt || mq.q;
+    });
+    /* A marking with MORE questions than the station knows about still has
+       to be readable, so the extras are carried as questions of their own. */
+    (markedQs || []).forEach((mq, i) => {
+      if (i < out.length) return;
+      out.push({ id: mq.id, prompt: mq.prompt || mq.q || '', marks: mq.max || 0, marking_points: [] });
+    });
+    return out;
+  }
+
   function toAttempt(d, st, user, audio, id) {
     const r = d.result || {};
     const num = v => Number(v) || 0;
@@ -823,7 +854,10 @@ average mean nothing.
       station: { topic: st.topic, scenario: st.scenario,
         total_marks: OSCE.marksOf(st), pass_mark: OSCE.passOf(st) },
       bp: (typeof OsceBlueprint !== 'undefined') ? (OsceBlueprint.tagOf(st) || null) : null,
-      questions: OSCE.qsOf(st),
+      /* The station's own questions, but with any prompt the marking supplied
+         filled in where the station has none to offer — a verdict that named
+         its questions should never produce a report that cannot. */
+      questions: mergeQuestions(OSCE.qsOf(st), r.questions),
       answers: (r.questions || []).map(q => ({ id: q.id, transcript: q.transcript || '' })),
       created: Date.now(),
       /* Not 'ai': that word already means our own marker, and the billing

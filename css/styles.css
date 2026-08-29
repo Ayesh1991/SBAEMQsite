@@ -5438,3 +5438,71 @@ html.is-printlock, html.is-printlock body { overflow: hidden; }
 .ai-note ol { margin: 8px 0 0; padding-left: 20px; }
 .ai-note li { margin-bottom: 6px; }
 .ai-bring { border-color: color-mix(in srgb, #c96442 26%, var(--hairline)); }
+
+
+/* ============================================================
+   REAL STATION — one person marking, one person sitting
+   ============================================================ */
+
+/* The examiner's strip, above the sheet. Quiet until somebody is invited:
+   a face-to-face round needs none of this and it must not be in the way. */
+.ms-live { margin: 0 0 14px; }
+.ms-live-invite { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end;
+  padding: 11px 14px; border-radius: 13px; border: 1px dashed var(--hairline); background: var(--surface-2); }
+.ms-live-invite .wl-f { flex: 1 1 260px; margin: 0; }
+.ms-live-invite > .muted { flex-basis: 100%; }
+.ms-live-bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+  padding: 11px 14px; border-radius: 13px;
+  background: color-mix(in srgb, var(--teal, #0d8f7d) 10%, var(--surface-2));
+  border: 1px solid color-mix(in srgb, var(--teal, #0d8f7d) 32%, var(--hairline)); }
+.ms-live.is-running .ms-live-bar { background: color-mix(in srgb, var(--gold) 12%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--gold) 38%, var(--hairline)); }
+.ms-live-who { flex: 1 1 200px; min-width: 0; }
+.ms-live-who b { display: block; font-size: .9rem; }
+.ms-live-who i { font-style: normal; font-size: .72rem; color: var(--ink-3); }
+.ms-live-clock { font-family: Georgia, serif; font-size: 1.5rem; font-variant-numeric: tabular-nums; }
+.ms-live-clock.is-out { color: var(--bad, #f87171); }
+.ms-live-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+.ms-live + .ms-live p, .ms-live p { margin: 7px 2px 0; }
+
+/* Send. Small, beside the thing it sends, and unmistakable once pressed. */
+.ms-send { font-size: .7rem !important; padding: 4px 10px !important; }
+.ms-send.is-sent { color: var(--good, #34d399); border-color: var(--good, #34d399); }
+.ms-send-row { margin: 0 0 10px; }
+.ms-reveal .ms-send { margin-top: 7px; }
+.ms-q-imgs figure .ms-send { margin-top: 6px; }
+
+/* The candidate's screen. Deliberately bare — a clock and what has
+   arrived. Nothing to press but Leave. */
+.rs-invites { display: grid; gap: 10px; margin-top: 12px; }
+.rs-invite { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;
+  padding: 13px 15px; border-radius: 13px; background: var(--surface-2); border: 1px solid var(--hairline); }
+.rs-invite b { font-size: .92rem; }
+.rs-invite p { margin: 3px 0 0; }
+.rs-invite-acts { display: flex; gap: 8px; }
+.rs-live { text-align: center; }
+.rs-clock { font-family: Georgia, serif; font-size: clamp(3rem, 13vw, 5.5rem); line-height: 1;
+  font-variant-numeric: tabular-nums; letter-spacing: -.03em; margin: 4px 0 10px; }
+.rs-clock.is-low { color: var(--gold); }
+.rs-clock.is-out { color: var(--bad, #f87171); }
+.rs-wait { display: flex; gap: 7px; justify-content: center; margin: 24px 0 14px; }
+.rs-wait i { width: 9px; height: 9px; border-radius: 99px; background: var(--ink-3);
+  animation: rs-pulse 1.3s ease-in-out infinite; }
+.rs-wait i:nth-child(2) { animation-delay: .18s; }
+.rs-wait i:nth-child(3) { animation-delay: .36s; }
+@keyframes rs-pulse { 0%, 100% { opacity: .25; transform: scale(.8); } 50% { opacity: 1; transform: scale(1); } }
+
+.rs-feed { display: grid; gap: 11px; margin-top: 12px; }
+.rs-it { padding: 12px 15px; border-radius: 13px; background: var(--surface-2);
+  border-left: 3px solid var(--hairline); }
+.rs-it b { display: block; font-size: .62rem; letter-spacing: .13em; text-transform: uppercase;
+  color: var(--ink-3); margin-bottom: 5px; }
+.rs-it p { margin: 0; font-size: .95rem; line-height: 1.6; }
+.rs-it.is-scen { border-left-color: var(--teal, #0d8f7d); }
+.rs-it.is-scen b { color: var(--teal, #0d8f7d); }
+.rs-it.is-q { border-left-color: var(--gold); background: color-mix(in srgb, var(--gold) 8%, var(--surface-2)); }
+.rs-it.is-q b { color: var(--gold); }
+.rs-it.is-q p { font-size: 1.05rem; font-weight: 500; }
+.rs-it.is-rev { border-left-color: #c96442; }
+.rs-it.is-rev b { color: #c96442; }
+.rs-it.is-img img { width: 100%; max-width: 460px; border-radius: 10px; margin-top: 4px; }
