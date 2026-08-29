@@ -4471,6 +4471,7 @@ body.eco-open .ap-dock { z-index: 2390; }
 .os-circ-pct { font-weight: 700; font-size: .95rem; }
 .os-circ-pct.is-pass { color: var(--good, #34d399); }
 .os-circ-pct.is-fail { color: var(--bad, #f87171); }
+.os-circ-pct.is-part { color: var(--gold); font-size: .78rem; }
 .os-circ-err { color: var(--bad, #f87171); font-size: .78rem; }
 .os-circ-wait { font-size: .78rem; color: var(--ink-2); display: inline-flex; align-items: center; gap: 6px; }
 .os-circ-wait i {
@@ -5210,6 +5211,51 @@ body.eco-open .ap-dock { z-index: 2390; }
    whole site until a reload. */
 html.is-printlock, html.is-printlock body { overflow: hidden; }
 
+/* THE PRINT SHEET'S ON-SCREEN LAYOUT — and why it is here and not in the
+   callers' style strings.
+
+   The lock above stops the PAGE scrolling while a sheet is up. That is only
+   safe if the sheet is itself a scrollable overlay. Two callers styled it as
+   one; three did not, and for those the sheet was a block in normal flow,
+   longer than the screen, under a page that could no longer scroll. On iOS,
+   where the sheet stays up after print() returns so the share sheet has a
+   document to work with, the result was a permanently frozen page.
+
+   So the frame is defined once, here, and a caller may only add to it. */
+#os-printdoc {
+  position: fixed; inset: 0; z-index: 9000;
+  overflow: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+  background: #f1f2f6; color: #111;
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  -webkit-print-color-adjust: exact; print-color-adjust: exact;
+}
+#os-printdoc, #os-printdoc * { box-sizing: border-box; }
+/* The way out. Sticky, so it is reachable however far down the reader is —
+   on a nine-station report that matters. */
+#os-printdoc .os-pd-bar {
+  position: sticky; top: 0; z-index: 2;
+  display: flex; gap: 10px; justify-content: center; align-items: center;
+  padding: 9px; background: #e7e9ef; border-bottom: 1px solid #c9ccd6;
+}
+#os-printdoc .os-pd-bar button {
+  font: inherit; font-size: 10pt; padding: 7px 16px; border-radius: 8px;
+  border: 0; cursor: pointer; background: #14161a; color: #fff;
+}
+#os-printdoc .os-pd-bar button[data-pd-close] { background: #fff; color: #14161a; border: 1px solid #c9ccd6; }
+/* A sheet whose caller styles nothing still lands on paper-shaped white.
+   The attribute selector catches .ms-print, .cs-print, .dc-print and any
+   future *-print root without this file having to learn each new one. Same
+   specificity as a caller's own `#os-printdoc .sheet`, and earlier in the
+   cascade, so a caller that DOES style its sheet still wins. */
+#os-printdoc > .sheet, #os-printdoc > [class$="-print"] {
+  background: #fff; width: 210mm; min-height: 297mm;
+  margin: 18px auto 28px; padding: 16mm 15mm; box-shadow: 0 2px 18px rgba(0, 0, 0, .16);
+}
+@media (max-width: 820px) {
+  #os-printdoc > .sheet, #os-printdoc > [class$="-print"] {
+    width: auto; margin: 12px; padding: 14px; min-height: 0; }
+}
+
 /* A baseline for a browser-level print of any page — someone using Safari's
    own Print rather than a print button. It cannot make an arbitrary page
    into a document, but it can stop it being a screenshot of a dark app:
@@ -5229,3 +5275,146 @@ html.is-printlock, html.is-printlock body { overflow: hidden; }
 .os-att-sum { font-size: .78rem; color: var(--ink-3, #8b8b96); white-space: nowrap; }
 .os-att-fold > summary .dc-caret { transition: transform .16s ease; color: var(--ink-3, #8b8b96); }
 .os-att-fold[open] > summary .dc-caret { transform: rotate(180deg); }
+
+
+/* A part-marked attempt. Amber, not red: nothing went wrong with the
+   candidate, something went wrong with the marker, and the two must not
+   look alike. */
+.os-part-note { border-color: color-mix(in srgb, var(--gold) 34%, var(--hairline));
+  background: color-mix(in srgb, var(--gold) 7%, transparent); }
+.os-part-note p { margin: 0 0 8px; }
+.os-part-acts { margin-top: 4px; }
+
+
+/* ---- the brief on the mark-by-hand sheet ----
+   Open on arrival, shut with one tap once it has been read out. It sits
+   above the questions because that is the order the examiner works in. */
+.ms-brief { margin: 0 0 14px; border: 1px solid var(--hairline); border-radius: 14px;
+  background: var(--surface-2); overflow: hidden; }
+.ms-brief > summary { cursor: pointer; list-style: none; padding: 12px 15px;
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; font-weight: 600; font-size: .86rem; }
+.ms-brief > summary::-webkit-details-marker { display: none; }
+.ms-brief > summary::before { content: '▸'; font-size: .7rem; color: var(--ink-3); transition: transform .18s ease; }
+.ms-brief[open] > summary::before { transform: rotate(90deg); }
+.ms-brief > summary i { font-style: normal; font-size: .7rem; font-weight: 500; color: var(--ink-3); margin-left: auto; }
+.ms-brief-body { padding: 0 15px 14px; }
+.ms-scenario { margin: 0; font-size: .92rem; line-height: 1.65; color: var(--ink); }
+.ms-brief-imgs, .ms-q-imgs { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 0; }
+.ms-brief-imgs figure, .ms-q-imgs figure { margin: 0; max-width: 320px; }
+.ms-brief-imgs img, .ms-q-imgs img { width: 100%; border-radius: 10px; border: 1px solid var(--hairline); }
+.ms-brief-imgs figcaption, .ms-q-imgs figcaption { font-size: .68rem; color: var(--ink-3); margin-top: 4px; }
+
+/* Information revealed part-way through — a scan result, a complication.
+   Said BEFORE the question, so it is drawn before it. */
+.ms-reveal { margin: 0 0 10px; padding: 9px 12px; border-radius: 10px;
+  background: color-mix(in srgb, var(--teal, #0d8f7d) 10%, transparent);
+  border-left: 3px solid var(--teal, #0d8f7d); }
+.ms-reveal b { display: block; font-size: .62rem; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--teal, #0d8f7d); margin-bottom: 3px; }
+.ms-reveal p { margin: 0; font-size: .85rem; line-height: 1.55; }
+
+
+/* ---- structural controls in the scheme dialog ----
+   Hidden until the row is hovered or focused on a pointer device, always
+   visible on touch: an iPad has no hover, and controls that only appear on
+   something an iPad cannot do are controls that do not exist. */
+.os-sch-ops { display: inline-flex; gap: 2px; margin-left: 6px; vertical-align: middle; opacity: 0; transition: opacity .14s ease; }
+.os-sch-pts li:hover .os-sch-ops, .os-sch-pts li:focus-within .os-sch-ops { opacity: 1; }
+@media (hover: none) { .os-sch-ops { opacity: .55; } }
+.os-sch-op { border: 1px solid var(--hairline); background: var(--surface-2); color: var(--ink-3);
+  border-radius: 6px; font-size: .68rem; line-height: 1; padding: 3px 6px; cursor: pointer; }
+.os-sch-op:hover { color: var(--ink); border-color: var(--teal); }
+.os-sch-op.is-x:hover, .os-sch-op.is-sure { color: var(--bad, #f87171); border-color: var(--bad, #f87171); }
+.os-sch-op.is-sure { opacity: 1; }
+
+/* A section heading inside a scheme. It carries no marks, so it must not
+   look like a point that happens to be unticked. */
+.os-sch-head { list-style: none; margin: 14px 0 4px !important; padding: 0 !important; border: 0 !important; }
+.os-sch-head .qe-text { font-size: .68rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--gold); }
+.os-sch-head::before { content: none !important; }
+.os-sch-add { list-style: none; display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px !important;
+  padding: 0 !important; border: 0 !important; }
+.os-sch-add::before { content: none !important; }
+
+
+/* A section heading inside the tick-sheet. Not tappable, not a point. */
+.ms-pt-head { list-style: none; margin: 14px 0 5px; padding: 0; font-size: .64rem; font-weight: 700;
+  letter-spacing: .13em; text-transform: uppercase; color: var(--gold); }
+
+
+/* ============================================================
+   OSCE IN AI
+   ============================================================ */
+
+/* The button. The three marks sit inside it so it reads as "one of these
+   will examine you" rather than as another copy button. */
+.btn-ai { display: inline-flex; align-items: center; gap: 9px; }
+.ai-marks { display: inline-flex; align-items: center; }
+.ai-marks svg { width: 15px; height: 15px; margin-left: -5px; opacity: .85; }
+.ai-marks svg:first-child { margin-left: 0; color: #c96442; opacity: 1; }
+.ai-mark svg { width: 26px; height: 26px; }
+.ai-pick-b[data-model="claude"] .ai-mark { color: #c96442; }
+.ai-pick-b[data-model="gemini"] .ai-mark { color: #4285f4; }
+
+/* the dialog */
+.ai-modal { position: fixed; inset: 0; z-index: 8000; display: grid; place-items: center; padding: 18px; }
+.ai-modal-back { position: absolute; inset: 0; background: rgba(0,0,0,.62); backdrop-filter: blur(3px); }
+.ai-modal-box { position: relative; width: min(680px, 100%); max-height: 88vh; overflow: auto;
+  background: var(--surface); border: 1px solid var(--hairline); border-radius: 18px;
+  box-shadow: 0 24px 70px rgba(0,0,0,.5); }
+.ai-modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px;
+  padding: 18px 20px 10px; }
+.ai-modal-head h3 { margin: 2px 0 0; font-family: Georgia, serif; font-size: 1.15rem; }
+.ai-modal-body { padding: 0 20px 16px; }
+.ai-modal-foot { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;
+  padding: 14px 20px; border-top: 1px solid var(--hairline); background: var(--surface-2); }
+
+.ai-pick { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; margin: 14px 0 6px; }
+.ai-pick-b { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 13px 8px;
+  border-radius: 13px; border: 1px solid var(--hairline); background: var(--surface-2);
+  color: var(--ink-3); cursor: pointer; font: inherit; }
+.ai-pick-b b { font-size: .85rem; color: var(--ink); }
+.ai-pick-b.active { border-color: var(--gold); background: color-mix(in srgb, var(--gold) 10%, var(--surface-2)); }
+
+.ai-lvl { display: block; margin: 16px 0 6px; }
+.ai-lvl > span:first-child { display: block; font-size: .82rem; margin-bottom: 6px; }
+.ai-lvl > span:first-child b { color: var(--gold); font-size: 1rem; }
+.ai-lvl input[type=range] { width: 100%; accent-color: var(--gold); }
+.ai-lvl > span:last-child { display: block; margin-top: 7px; line-height: 1.55; }
+.ai-acts { display: flex; flex-wrap: wrap; gap: 9px; margin: 16px 0 8px; }
+.ai-msg:not(:empty) { margin-top: 10px; font-size: .82rem; }
+.ai-fallback { width: 100%; margin-top: 8px; font-size: .7rem; font-family: ui-monospace, Menlo, monospace;
+  padding: 9px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink); }
+
+/* the session screen — a clock, a light, one button, and nothing to look at */
+.ai-clock-card { text-align: center; }
+.ai-clock { font-family: Georgia, serif; font-size: clamp(3.2rem, 14vw, 6rem); line-height: 1;
+  letter-spacing: -.03em; font-variant-numeric: tabular-nums; margin: 6px 0 14px; }
+.ai-clock.is-low { color: var(--gold); }
+.ai-clock.is-out { color: var(--bad, #f87171); }
+.ai-bar { height: 5px; border-radius: 99px; background: var(--surface-2); overflow: hidden; margin-bottom: 16px; }
+.ai-bar i { display: block; height: 100%; background: var(--gold); transition: width 1s linear; }
+.ai-run-acts { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin: 12px 0 10px; }
+.ai-mic:not(:empty) { margin: 8px 0; }
+.ai-audio { width: 100%; margin: 8px 0; }
+.ai-imp-acts, .ai-imp-files { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.ai-imp-box { margin: 10px 0; }
+.ai-imp-box textarea { width: 100%; font-family: ui-monospace, Menlo, monospace; font-size: .72rem;
+  padding: 10px 12px; border-radius: 12px; resize: vertical; margin-bottom: 9px;
+  background: var(--surface-2); border: 1px solid var(--hairline); color: var(--ink); }
+.os-run-ai { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 14px 0 4px; }
+.os-end-note { flex-basis: 100%; margin: 8px 0 0; }
+
+/* Marked by Claude — its own tint, so three categories are three colours
+   rather than three headings that have to be read. */
+.os-claude-card { border-color: color-mix(in srgb, #c96442 30%, var(--hairline)); }
+.os-claude-note { border-color: color-mix(in srgb, #c96442 34%, var(--hairline));
+  background: color-mix(in srgb, #c96442 7%, transparent); }
+.os-claude-note p { margin: 0 0 8px; }
+.warn { color: var(--gold); }
+
+@media (max-width: 560px) {
+  .ai-pick { grid-template-columns: 1fr; }
+  .ai-pick-b { flex-direction: row; justify-content: flex-start; gap: 10px; }
+}

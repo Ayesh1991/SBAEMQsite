@@ -244,5 +244,98 @@ const QuickEdit = (() => {
     return null;
   }
 
-  return { attach, pencil, osceRef, caseRef, mustRef, osceFind, caseFind };
+  /* ================================================================
+     STRUCTURE — adding, removing and moving points.
+
+     `attach` above rewrites the TEXT of a line that already exists. That
+     was the whole of the inline editor, and it stopped exactly where an
+     examiner actually needs it: a scheme with a point missing, or with
+     sixty points and no sections, could only be fixed by leaving for the
+     full editor and losing your place.
+
+     These operate on the ARRAY rather than on one slot, so they need a
+     different hook from `find` — `list`, which hands back the array and
+     the index the ref points at.
+
+     Every one of them re-reads the document, changes it, saves it, and
+     asks the caller to REDRAW. None of them patches the DOM: adding or
+     removing a point renumbers every point after it, and every pencil on
+     screen carries its number. Patching in place is how you end up
+     editing point five and saving point six.
+     ================================================================ */
+
+  function attachOps(host, api, opts) {
+    if (!host || !api?.load || !api?.save) return () => {};
+    const list = api.list || defaultList;
+    const redraw = opts?.redraw || (() => {});
+
+    const onClick = async e => {
+      const add = e.target.closest('[data-qe-add]');
+      const del = e.target.closest('[data-qe-del]');
+      const mov = e.target.closest('[data-qe-move]');
+      const btn = add || del || mov;
+      if (!btn || !host.contains(btn)) return;
+      e.preventDefault(); e.stopPropagation();
+      if (api.can && !api.can()) return;
+      if (btn.disabled) return;
+
+      /* Removing is the only one that cannot be undone by doing it again,
+         so it is the only one that asks. Adding and moving are their own
+         undo. */
+      if (del && btn.dataset.sure !== '1') {
+        btn.dataset.sure = '1'; btn.classList.add('is-sure'); btn.textContent = '✕?';
+        btn.title = 'Tap again to remove this point';
+        setTimeout(() => { if (btn.dataset.sure === '1') {
+          btn.dataset.sure = ''; btn.classList.remove('is-sure'); btn.textContent = '✕';
+          btn.title = 'Remove'; } }, 4000);
+        return;
+      }
+
+      const was = btn.textContent;
+      btn.disabled = true; btn.textContent = '…';
+      try {
+        const doc = await api.load();
+        if (add) {
+          const [qid, kind] = String(add.dataset.qeAdd).split('|');
+          const slot = list(doc, 'q:' + qid + ':0');
+          if (!slot) throw new Error('That question could not be found.');
+          slot.arr.push(kind === 'head' ? '# New section' : 'New marking point');
+        } else if (del) {
+          const [dq, di] = String(del.dataset.qeDel).split('|');
+          const slot = list(doc, 'q:' + dq + ':' + di);
+          if (!slot) throw new Error('That point could not be found.');
+          if (slot.arr.length <= 1) throw new Error('A question needs at least one marking point.');
+          slot.arr.splice(slot.i, 1);
+        } else {
+          const [qid, idx, dir] = String(mov.dataset.qeMove).split('|');
+          const slot = list(doc, 'q:' + qid + ':' + idx);
+          if (!slot) throw new Error('That point could not be found.');
+          const to = slot.i + Number(dir);
+          if (to < 0 || to >= slot.arr.length) { btn.disabled = false; btn.textContent = was; return; }
+          const [x] = slot.arr.splice(slot.i, 1);
+          slot.arr.splice(to, 0, x);
+        }
+        await api.save(doc);
+        try { api.onSaved?.(); } catch {}
+        await redraw();
+      } catch (err) {
+        btn.disabled = false; btn.textContent = was;
+        flash(btn.closest('li') || btn.parentElement || btn, err.message || String(err), true);
+      }
+    };
+    host.addEventListener('click', onClick);
+    return () => host.removeEventListener('click', onClick);
+  }
+
+  /** The array a `q:<id>:<i>` ref lives in, and where in it. */
+  function defaultList(station, ref) {
+    const [kind, qid, idx] = String(ref).split(':');
+    if (kind !== 'q') return null;
+    const q = (station.questions || []).find(x => String(x.id) === String(qid));
+    if (!q) return null;
+    if (!Array.isArray(q.marking_points)) q.marking_points = [];
+    return { arr: q.marking_points, i: Number(idx), q };
+  }
+
+  return { attach, attachOps, pencil, osceRef, caseRef, mustRef, osceFind, caseFind, defaultList };
 })();

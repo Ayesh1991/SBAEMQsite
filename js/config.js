@@ -51,6 +51,12 @@ window.AUREUM_CONFIG = {
        sit, the other holds discussions that happened. Mixing them would
        make "which of these have I done" unanswerable. */
     myCaseFolderId: '1I8zVuYeNcxXoMnmUdPPal3NMdPEk_s31',
+    /* Where the JSON verdicts from an "OSCE in AI" session are dropped, to
+       be imported into Marked by Claude. A third folder rather than a
+       shared one: these are one person's own results, not published
+       material, and mixing them with the case folders would make the
+       importers fight over the same files. */
+    claudeMarkFolderId: '1qYyBSFeG5ChQFzVn_TTADTWAwWoTuoF9',
     apiBase: '/api/drive'
   },
 

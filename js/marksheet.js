@@ -88,12 +88,19 @@ const Marksheet = (() => {
      list without a footnote: each point is an equal share of its
      question's marks, covered earns the share, partly earns half, and the
      result is rounded to the nearest half mark. */
+  /* Headings are skipped but their POSITIONS are kept: the ticks are stored
+     by index into the full marking_points array, so counting must skip a
+     heading without renumbering what comes after it. */
+  const head = p => (typeof OSCE !== 'undefined' && OSCE.isHeading) ? OSCE.isHeading(p) : false;
+
   function scoreQuestion(q, marks) {
-    const pts = q.marking_points || [];
-    if (!pts.length) return { awarded: 0, max: Number(q.marks) || 0, share: 0 };
+    const all = q.marking_points || [];
+    const n = all.reduce((c, p) => c + (head(p) ? 0 : 1), 0);
+    if (!n) return { awarded: 0, max: Number(q.marks) || 0, share: 0 };
     const max = Number(q.marks) || 0;
-    const share = max / pts.length;
-    const got = pts.reduce((n, _, i) => n + share * CREDIT[(marks[String(q.id)] || [])[i] || ''], 0);
+    const share = max / n;
+    const mine = marks[String(q.id)] || [];
+    const got = all.reduce((acc, p, i) => head(p) ? acc : acc + share * CREDIT[mine[i] || ''], 0);
     return { awarded: Math.round(got * 2) / 2, max, share };
   }
   function scoreAll(qs, marks) {
@@ -105,7 +112,8 @@ const Marksheet = (() => {
   /** How much of the scheme has been looked at — not how well it went. */
   function progress(qs, marks) {
     let done = 0, all = 0;
-    qs.forEach(q => (q.marking_points || []).forEach((_, i) => {
+    qs.forEach(q => (q.marking_points || []).forEach((p, i) => {
+      if (head(p)) return;
       all++; if (((marks[String(q.id)] || [])[i] || '')) done++;
     }));
     return { done, all };
@@ -155,6 +163,28 @@ const Marksheet = (() => {
           <b class="is-partial">~ partly</b> → <b class="is-missed">✗ missed</b> → unmarked.
           The total does itself. Everything is saved on this device as you go.</p>
 
+        <!-- THE EXAMINER IS ALSO THE PERSON READING THE STATION OUT.
+
+             This page had the scheme and nothing else — no scenario, no
+             reveals, no pictures. Which means whoever was marking had to
+             hold the case in their head or keep a second device open on
+             the station page, while ticking with one thumb. The brief
+             belongs on the same screen as the ticks. It opens by default,
+             because it is read first and collapsed straight after. -->
+        <details class="ms-brief" id="ms-brief" open>
+          <summary><span>📋 The brief — read this to the candidate</span><i>${
+            OSCE.minsOf(st)} min · ${qs.length} questions · ${
+            OSCE.marksOf(st)} marks · pass ${passMark}</i></summary>
+          <div class="ms-brief-body">
+            <p class="ms-scenario">${esc(st.scenario || 'This station has no scenario recorded.')}</p>
+            ${OSCE.imagesOf(st).length ? `<div class="ms-brief-imgs">${OSCE.imagesOf(st).map(im => `
+              <figure><img src="${esc(im.url)}" alt="${esc(im.caption || 'Image for this station')}" loading="lazy">
+                ${im.caption ? `<figcaption>${esc(im.caption)}</figcaption>` : ''}</figure>`).join('')}</div>` : ''}
+            ${st.reading_time_min ? `<p class="muted tiny">Reading time ${st.reading_time_min} minute${
+              st.reading_time_min === 1 ? '' : 's'} before the questions start.</p>` : ''}
+          </div>
+        </details>
+
         <div id="ms-qs"></div>
 
         <div class="ms-foot">
@@ -192,7 +222,8 @@ const Marksheet = (() => {
         const s = scoreQuestion(q, sheet.marks);
         const pts = q.marking_points || [];
         const mine = sheet.marks[String(q.id)] || [];
-        const done = pts.length && pts.every((_, i) => mine[i]);
+        const real = pts.filter(x => !head(x));
+        const done = real.length && pts.every((p, i) => head(p) || mine[i]);
         return `
           <div class="ms-q ${done ? 'is-done' : ''}" data-q="${esc(String(q.id))}">
             <button class="ms-q-h" data-fold="${esc(String(q.id))}">
@@ -202,11 +233,19 @@ const Marksheet = (() => {
               <span class="ms-q-c">${done ? '✓' : '▾'}</span>
             </button>
             <div class="ms-q-body">
-              <p class="ms-share muted tiny">${pts.length} point${pts.length === 1 ? '' : 's'} ·
+              ${q.reveal_before ? `<div class="ms-reveal">
+                <b>Tell them this first</b>
+                <p>${esc(q.reveal_before)}</p>
+              </div>` : ''}
+              ${OSCE.imagesOf(q).length ? `<div class="ms-q-imgs">${OSCE.imagesOf(q).map(im => `
+                <figure><img src="${esc(im.url)}" alt="${esc(im.caption || 'Image for this question')}" loading="lazy">
+                  ${im.caption ? `<figcaption>${esc(im.caption)}</figcaption>` : ''}</figure>`).join('')}</div>` : ''}
+              <p class="ms-share muted tiny">${real.length} point${real.length === 1 ? '' : 's'} ·
                 each worth ${Math.round(s.share * 100) / 100} mark${s.share === 1 ? '' : 's'} ·
                 half for partly said</p>
               <ul class="ms-pts">
                 ${pts.map((p, i) => {
+                  if (head(p)) return `<li class="ms-pt-head">${esc(OSCE.headText(p) || '')}</li>`;
                   const stt = mine[i] || '';
                   return `<li class="ms-pt is-${stt || 'none'}" data-pt="${esc(String(q.id))}|${i}">
                     <span class="ms-pt-b">${MARK[stt] || '○'}</span>
@@ -252,7 +291,7 @@ const Marksheet = (() => {
       if (all) {
         const [qid, want] = all.dataset.all.split('|');
         const q = qs.find(x => String(x.id) === qid);
-        sheet.marks[qid] = (q.marking_points || []).map(() => want);
+        sheet.marks[qid] = (q.marking_points || []).map(p => head(p) ? '' : want);
         save(sheet);
         paintQs();
         return;
@@ -325,9 +364,12 @@ const Marksheet = (() => {
             id: q.id, awarded: sc.awarded, max: sc.max, share: sc.share,
             transcript: '',
             comment: sheet.notes[String(q.id)] || '',
-            points: (q.marking_points || []).map((p, i) => ({
+            /* Headings are scaffolding for the examiner, not marks. They
+               are dropped here so the report and the printout list points
+               that were actually judged. */
+            points: (q.marking_points || []).map((p, i) => head(p) ? null : ({
               point: p, status: mine[i] || 'missed', credit: CREDIT[mine[i] || ''] * sc.share, note: ''
-            }))
+            })).filter(Boolean)
           };
         }),
         strengths: [], improvements: [], keyLearning: []
@@ -558,6 +600,15 @@ ${P} li.miss .m{color:#a32b2b}
 ${P} li.miss .tx{color:#5a616b}
 ${P} .note{margin:5px 0 0;padding-left:23px;font-size:8.5pt;font-style:italic;color:#5a616b}
 
+/* The scenario. A marksheet the candidate takes home is revised from
+   weeks later, by which time "Q3: what would you do next" means nothing
+   without the case it belonged to. */
+${P} .scen{break-inside:avoid;margin:10px 0 2px;padding:9px 12px;background:#f7f8f9;
+  border-left:3px solid #0d7a5f}
+${P} .scen b{display:block;font-size:7.5pt;letter-spacing:.12em;text-transform:uppercase;
+  color:#0d7a5f;margin-bottom:3px}
+${P} .scen p{margin:0;font-size:9.5pt;line-height:1.45;color:#3d434c}
+
 ${P} .cmt{break-inside:avoid;margin:16px 0 0;padding:10px 13px;
   background:#f7f8f9;border-left:3px solid #8a6a1c}
 ${P} .cmt b{display:block;font-size:7.5pt;letter-spacing:.12em;text-transform:uppercase;
@@ -587,6 +638,11 @@ ${P} .foot{margin-top:16px;padding-top:6px;border-top:1px solid #d8dbe0;
           ${a.station?.pass_mark ? `<span class="pm">pass mark ${a.station.pass_mark}</span>` : ''}
         </div>
       </div>
+
+      ${a.station?.scenario ? `<div class="scen">
+        <b>The station</b>
+        <p>${esc(a.station.scenario)}</p>
+      </div>` : ''}
 
       <div class="key">
         <span><i class="kc">✓</i>covered</span>

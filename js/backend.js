@@ -61,7 +61,10 @@ const Backend = (() => {
     const qs = meta.questions || [];
     return Object.assign({}, meta, {
       q_count: qs.length,
-      points_count: qs.reduce((n, q) => n + (q.marking_points || []).length, 0),
+      /* Section headings ("# History") carry no marks, so they are not
+         points. Counting them would make the bank overstate every scheme
+         that uses them. */
+      points_count: qs.reduce((n, q) => n + (q.marking_points || []).filter(p => !/^\s*#\s+/.test(String(p || ''))).length, 0),
       // the FILES live in storage; this is only so the bank can show a badge
       image_count: qs.reduce((n, q) => n + (q.images || []).length, 0),
       // one lowercased blob so the bank can be searched without the structure
@@ -134,7 +137,15 @@ const Backend = (() => {
     // together would flatter or punish whichever kind you did more of.
     source: a.source || 'ai',
     examiner: a.examiner?.name || '',
-    result: { percent: a.result?.percent, total: a.result?.total, max: a.result?.max, pass: !!a.result?.pass }
+    /* `partial` travels on the card, small as it is, because without it the
+       list cannot tell a genuine 55% from a marking that was cut off at
+       four questions of eight — and printing the second as the first is
+       exactly the fault this release fixed on the report page. `pass` is
+       carried through rather than coerced for the same reason: a partial
+       has no verdict, and !!null would silently make it a fail. */
+    result: { percent: a.result?.percent, total: a.result?.total, max: a.result?.max,
+      pass: a.result?.pass == null ? a.result?.pass : !!a.result.pass,
+      partial: a.result?.partial || null }
   });
 
   /* ================= LOCAL BACKEND ================= */
@@ -1189,13 +1200,15 @@ const Backend = (() => {
       await ensureClient(); const id = await uid(); if (!id) return [];
       const light = 'id,station_id,created_at,topic:payload->station->>topic,passMark:payload->station->pass_mark,' +
         'source:payload->>source,examiner:payload->examiner->>name,' +
-        'percent:payload->result->percent,total:payload->result->total,max:payload->result->max,pass:payload->result->pass';
+        'percent:payload->result->percent,total:payload->result->total,max:payload->result->max,pass:payload->result->pass,' +
+        'partial:payload->result->partial';
       const { data, error } = await sb.from('osce_attempts').select(light).eq('user_id', id).order('created_at', { ascending: false });
       if (error) throw new Error('Could not read your OSCE attempts: ' + (error.message || error.code));
       return (data || []).map(r => ({ id: r.id, station_id: r.station_id, created: new Date(r.created_at).getTime(),
         topic: r.topic || '', passMark: r.passMark ?? null,
         source: r.source || 'ai', examiner: r.examiner || '',
-        result: { percent: r.percent, total: r.total, max: r.max, pass: !!r.pass } }));
+        result: { percent: r.percent, total: r.total, max: r.max,
+          pass: r.pass == null ? null : !!r.pass, partial: r.partial || null } }));
     }
     async function getOsceAttempt(aid) {
       await ensureClient(); const id = await uid(); if (!id) return null;

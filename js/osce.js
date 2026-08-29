@@ -219,7 +219,31 @@ const OSCE = (() => {
 
   const qsOf = st => st.questions || [];
   const qCount = st => st.q_count != null ? st.q_count : qsOf(st).length;
-  const ptCount = st => st.points_count != null ? st.points_count : qsOf(st).reduce((n, q) => n + (q.marking_points || []).length, 0);
+  /* ---------------- headings inside a scheme ----------------
+
+     A long scheme wants sections — "History", "Investigations",
+     "Counselling" — and an examiner asked for them. The temptation is to
+     give marking_points a richer shape, an array of objects with a type.
+     That would touch the manual sheet, the AI prompt, the report, the
+     print, the importer and every station already stored, and would break
+     the last of those.
+
+     So a heading is a marking point whose text begins with "# ". It stays
+     a string in the same array, every existing station keeps working, and
+     the only rule anything has to learn is this one:
+
+       A HEADING IS NEVER WORTH MARKS.
+
+     Which matters, because the marks for a question are divided equally
+     between its points — a heading that counted would quietly take a
+     share of the marks away from the real ones. */
+  const HEAD_RE = /^\s*#\s+/;
+  const isHeading = p => HEAD_RE.test(String(p == null ? '' : p));
+  const headText = p => String(p == null ? '' : p).replace(HEAD_RE, '').trim();
+  /** The points that actually carry marks. */
+  const scorable = pts => (pts || []).filter(p => !isHeading(p));
+
+  const ptCount = st => st.points_count != null ? st.points_count : qsOf(st).reduce((n, q) => n + scorable(q.marking_points).length, 0);
   const marksOf = st => st.total_marks || qsOf(st).reduce((n, q) => n + (q.marks || 0), 0) || 50;
   const passOf = st => st.pass_mark != null ? st.pass_mark
     : Math.round(marksOf(st) * ((st.pass_mark_percent || 70) / 100));
@@ -618,7 +642,7 @@ const OSCE = (() => {
   }
   /** The points of one question that have not been covered yet. */
   function missingPoints(q, transcript) {
-    return (q.marking_points || []).filter(p => !saidAlready(p, transcript));
+    return scorable(q.marking_points).filter(p => !saidAlready(p, transcript));
   }
 
   const BOTH_KEY = 'aureum.osce.bothvoices';
@@ -913,6 +937,7 @@ const OSCE = (() => {
           <button class="btn btn-ghost" id="os-hand" title="Mark somebody who is sitting in front of you, point by point">✍️ Mark by hand</button>
           <button class="btn btn-ghost" id="os-copy"
             title="Copy the scenario and the questions as plain text — WITHOUT the marking scheme — to paste into NotebookLM, Gemini or ChatGPT">📄 Copy the station</button>
+          ${typeof AiOsce !== 'undefined' && AiOsce.allowed(user) ? AiOsce.buttonHtml() : ''}
           <a class="btn btn-ghost" href="#/osce/sim">Add it to a simulator session instead</a>
         </div>
         <p class="muted tiny">Most of these stations exist on paper too — open the scheme if you want to check this is
@@ -942,6 +967,7 @@ const OSCE = (() => {
     });
     view.querySelector('#os-copy').addEventListener('click', e =>
       copyOut(stationAsText(st), e.currentTarget, '📄 Copy the station'));
+    view.querySelector('#os-aiosce')?.addEventListener('click', () => AiOsce.openDialog(st));
   }
 
   /* ---------------- the scheme, in a dialog ----------------
@@ -960,13 +986,40 @@ const OSCE = (() => {
   const schemePencil = (qid, i) =>
     (typeof QuickEdit === 'undefined') ? '' : QuickEdit.pencil(QuickEdit.osceRef(qid, i), 'Edit this marking point');
 
+  /* Move and remove. Rewriting a line was the only thing possible before —
+     which is fine until the scheme is missing a point, and then you had to
+     leave for the full editor and lose your place in the dialog. */
+  const schemeOps = (qid, i) => (typeof QuickEdit === 'undefined') ? '' : `
+    <span class="os-sch-ops">
+      <button class="os-sch-op" data-qe-move="${esc(String(qid))}|${i}|-1" title="Move up" aria-label="Move up">↑</button>
+      <button class="os-sch-op" data-qe-move="${esc(String(qid))}|${i}|1" title="Move down" aria-label="Move down">↓</button>
+      <button class="os-sch-op is-x" data-qe-del="${esc(String(qid))}|${i}" title="Remove" aria-label="Remove">✕</button>
+    </span>`;
+
   function wireSchemeEdit(host, stationId) {
     if (typeof QuickEdit === 'undefined' || !stationId) return;
-    QuickEdit.attach(host, {
+    const api = {
       load: () => Backend.getOsceStation(stationId),
       find: QuickEdit.osceFind,
       save: async doc => { await Backend.publishOsceStation(doc); bustStations(); },
       onSaved: () => bustStations()
+    };
+    QuickEdit.attach(host, api);
+    /* Adding, removing and moving CHANGE THE INDICES of every point after
+       the one touched, and every pencil on screen carries an index. So the
+       list is rebuilt from the saved station rather than patched in place —
+       patching is how you end up editing point 5 and saving point 6.
+
+       Only the scheme dialog draws these controls, so redrawing it is the
+       whole of the job. */
+    QuickEdit.attachOps(host, api, {
+      redraw: async () => {
+        fullCache.delete(stationId);
+        const open = document.querySelector('.os-modal');
+        if (!open) return;
+        const st = await station(stationId);
+        if (st) { open.remove(); showScheme(st); }
+      }
     });
   }
 
@@ -995,8 +1048,15 @@ const OSCE = (() => {
                 <p>${esc(q.prompt || '')}</p><span class="os-sch-m">${q.marks} marks</span></div>
               ${q.reveal_before ? `<p class="os-sch-rev"><b>Revealed first:</b> ${esc(q.reveal_before)}</p>` : ''}
               ${imageStrip(q, 'is-small')}
-              <ul class="os-sch-pts">${(q.marking_points || []).map((p, pi) => `
-                <li data-qe-line><span class="qe-text">${esc(p)}</span>${schemePencil(q.id, pi)}</li>`).join('')}</ul>
+              <ul class="os-sch-pts">${(q.marking_points || []).map((p, pi) => isHeading(p)
+                ? `<li class="os-sch-head" data-qe-line><span class="qe-text">${esc(headText(p) || 'Untitled section')}</span>${
+                    schemePencil(q.id, pi)}${schemeOps(q.id, pi)}</li>`
+                : `<li data-qe-line><span class="qe-text">${esc(p)}</span>${schemePencil(q.id, pi)}${schemeOps(q.id, pi)}</li>`).join('')}
+                <li class="os-sch-add">
+                  <button class="btn btn-ghost btn-sm" data-qe-add="${esc(String(q.id))}|point">＋ marking point</button>
+                  <button class="btn btn-ghost btn-sm" data-qe-add="${esc(String(q.id))}|head">＋ section heading</button>
+                </li>
+              </ul>
             </div>`).join('')}
         </div>
         <div class="os-modal-foot">
@@ -1080,8 +1140,10 @@ const OSCE = (() => {
     }
     const rows = past.slice().sort((a, b) => (b.created || 0) - (a.created || 0));
     const byHand = rows.filter(a => a.source === 'manual').length;
-    const passed = rows.filter(a => a.result?.pass).length;
-    const avg = Math.round(rows.reduce((s, a) => s + (a.result?.percent || 0), 0) / rows.length);
+    const byClaude = rows.filter(a => a.source === 'claude').length;
+    const full = rows.filter(a => !a.result?.partial);
+    const passed = full.filter(a => a.result?.pass).length;
+    const avg = full.length ? Math.round(full.reduce((s, a) => s + (a.result?.percent || 0), 0) / full.length) : 0;
     const best = {};
     rows.forEach(a => { const p = a.result?.percent; if (p != null && (best[a.station_id] == null || p > best[a.station_id])) best[a.station_id] = p; });
 
@@ -1099,10 +1161,12 @@ const OSCE = (() => {
         <div class="os-stat"><strong>${passed}</strong><span>Passed</span></div>
         <div class="os-stat"><strong>${avg}%</strong><span>Average</span></div>
         ${byHand ? `<div class="os-stat"><strong>${byHand}</strong><span>Marked in person</span></div>` : ''}
+        ${byClaude ? `<div class="os-stat"><strong>${byClaude}</strong><span>Marked by Claude</span></div>` : ''}
       </div>
 
-      ${attemptTable(rows.filter(a => a.source !== 'manual'), 'ai')}
-      ${attemptTable(rows.filter(a => a.source === 'manual'), 'manual')}`;
+      ${attemptTable(rows.filter(a => a.source !== 'manual' && a.source !== 'claude'), 'ai')}
+      ${attemptTable(rows.filter(a => a.source === 'manual'), 'manual')}
+      ${attemptTable(rows.filter(a => a.source === 'claude'), 'claude')}`;
     wirePending(view, user);
   }
 
@@ -1125,24 +1189,41 @@ const OSCE = (() => {
   const foldState = () => { try { return JSON.parse(localStorage.getItem(FOLD_KEY) || '{}'); } catch { return {}; } };
   const setFold = (k, open) => { try { const f = foldState(); f[k] = !!open; localStorage.setItem(FOLD_KEY, JSON.stringify(f)); } catch {} };
 
+  /* Three kinds now, and each is a different thing being measured:
+
+       ai      — sat here, recorded, marked by our marker from the tape
+       manual  — sat opposite a person holding the scheme
+       claude  — sat against a chat model that examined AND marked it
+
+     Keeping them apart is not tidiness. Averaged together, "how am I doing"
+     stops meaning anything: a week of hard face-to-face marking reads as a
+     collapse, and a generous AI examiner reads as progress. */
+  const KINDS = {
+    ai:     { icon: '🎙', label: 'Marked by AI',
+              note: 'Sat here, recorded, and marked against the scheme by a model.' },
+    manual: { icon: '✍️', label: 'Marked in person',
+              note: 'Sat face to face with somebody holding the scheme. No recording — the marks are their judgement, point by point.' },
+    claude: { icon: '✦', label: 'Marked by Claude',
+              note: 'Examined out loud by a chat model on the other half of the screen, then marked by it against the same scheme. The recording is ours; the marking is its.' }
+  };
+
   function attemptTable(rows, kind) {
     const manual = kind === 'manual';
+    const K = KINDS[kind] || KINDS.ai;
     if (!rows.length) {
-      return manual ? '' : `<div class="card" data-animate><p class="muted">Nothing marked by AI yet.</p></div>`;
+      return kind === 'ai' ? `<div class="card" data-animate><p class="muted">Nothing marked by AI yet.</p></div>` : '';
     }
     const f = foldState();
     const open = f[kind] !== false;        // open unless it has been shut
     return `
-      <details class="card os-att-fold ${manual ? 'os-hand-card' : ''}" data-animate data-foldkey="${kind}"${open ? ' open' : ''}>
+      <details class="card os-att-fold ${manual ? 'os-hand-card' : ''} ${kind === 'claude' ? 'os-claude-card' : ''}" data-animate data-foldkey="${kind}"${open ? ' open' : ''}>
         <summary>
-          <h3 class="card-title">${manual ? '✍️ Marked in person' : '🎙 Marked by AI'}
+          <h3 class="card-title">${K.icon} ${K.label}
             <span class="os-tbl-n">${rows.length}</span></h3>
           <span class="os-att-sum">${summarise(rows)}</span>
           <span class="dc-caret">▾</span>
         </summary>
-        <p class="muted tiny">${manual
-          ? 'Sat face to face with somebody holding the scheme. No recording — the marks are their judgement, point by point.'
-          : 'Sat here, recorded, and marked against the scheme by a model.'}</p>
+        <p class="muted tiny">${K.note}</p>
         <div class="table-scroll"><table class="table">
           <thead><tr><th>When</th><th>Station</th>${manual ? '<th>Examiner</th>' : ''}<th>Score</th><th>Result</th><th></th></tr></thead>
           <tbody>${rows.map(a => {
@@ -1152,7 +1233,8 @@ const OSCE = (() => {
               <td>${esc(a.topic || a.station_id || '')}</td>
               ${manual ? `<td class="muted tiny">${esc(a.examiner || '—')}</td>` : ''}
               <td><strong>${r.total ?? '—'}/${r.max ?? '—'}</strong> · ${r.percent ?? '—'}%</td>
-              <td>${r.pass ? '<span class="good">Pass</span>' : '<span class="bad">Below the pass mark</span>'}</td>
+              <td>${r.partial ? `<span class="warn">Part-marked · ${r.partial.marked}/${r.partial.of} questions</span>`
+                : r.pass ? '<span class="good">Pass</span>' : '<span class="bad">Below the pass mark</span>'}</td>
               <td><a class="link" href="#/osce/result/${encodeURIComponent(a.id)}">Open →</a>
                   <a class="link" href="#/osce/station/${encodeURIComponent(a.station_id)}">Sit again</a></td>
             </tr>`;
@@ -1166,9 +1248,15 @@ const OSCE = (() => {
      mean losing sight of it. */
   function summarise(rows) {
     const n = rows.length;
-    const passed = rows.filter(a => a.result?.pass).length;
-    const avg = Math.round(rows.reduce((t, a) => t + (a.result?.percent || 0), 0) / Math.max(1, n));
-    return `${passed}/${n} passed · ${avg}% average`;
+    /* A part-marked attempt has no verdict and a percentage out of a
+       different denominator, so it is counted in neither figure — and said
+       separately rather than quietly dropped. */
+    const full = rows.filter(a => !a.result?.partial);
+    const part = n - full.length;
+    const passed = full.filter(a => a.result?.pass).length;
+    const avg = Math.round(full.reduce((t, a) => t + (a.result?.percent || 0), 0) / Math.max(1, full.length));
+    if (!full.length) return `${n} part-marked`;
+    return `${passed}/${full.length} passed · ${avg}% average${part ? ` · ${part} part-marked` : ''}`;
   }
 
   /* ================= stations recorded but never marked =================
@@ -2044,7 +2132,7 @@ const OSCE = (() => {
            "still missing" cannot be judged — and a station is not a reason
            to go quiet. Everything unsaid is treated as missing, which is
            true at the start and harmless later: the push is generic. */
-        const pool = said.trim() ? missing : (q.marking_points || []);
+        const pool = said.trim() ? missing : scorable(q.marking_points);
         if (!pool.length) { quietSince = 0; return; }
 
         busy = true;
@@ -2301,7 +2389,7 @@ const OSCE = (() => {
       host.hidden = false;
       host.innerHTML = `<div class="ai-loading sm"><span></span><span></span><span></span></div>
         <p class="muted tiny">Transcribing the recording — this browser did not, so it is being done properly.</p>`;
-      const hint = qs.flatMap(q => (q.marking_points || [])).join(' ').slice(0, 700);
+      const hint = qs.flatMap(q => scorable(q.marking_points)).join(' ').slice(0, 700);
       let out = null;
       try { out = await groqTranscribe(rec.blob, hint); } catch {}
       if (!out?.text) {
@@ -2380,10 +2468,19 @@ const OSCE = (() => {
           <div id="os-mark-out"></div>
         </div>`}
 
+        ${typeof AiOsce !== 'undefined' && AiOsce.allowed(user) ? `<div class="os-run-ai">
+          <button class="btn btn-ghost btn-sm" id="os-runai">✦ Sit this one against a chat model instead</button>
+          <span class="muted tiny">Hands you the prompt for this station and starts its own clock. The circuit waits.</span>
+        </div>` : ''}
+
         <div class="os-run-foot">
           ${s.circuit
             ? (s.at + 1 < s.stations.length
-                ? `<button class="btn btn-primary btn-lg" id="os-nextst">Next station (${s.at + 2} of ${s.stations.length}) →</button>`
+                ? `<button class="btn btn-primary btn-lg" id="os-nextst">Next station (${s.at + 2} of ${s.stations.length}) →</button>
+                   <button class="btn btn-ghost" id="os-endst">End the round here</button>
+                   <p class="muted tiny os-end-note">Nine planned and you have to leave after two: this marks the
+                     ${s.at + 1} station${s.at === 0 ? '' : 's'} you have sat and takes you to the results. The rest are
+                     recorded as not sat, so they are not counted against you and are still fresh next time.</p>`
                 : `<button class="btn btn-gold btn-lg" id="os-nextst">Finish the circuit and see the results →</button>`)
             : `<a class="btn btn-ghost" href="#/osce">Back to the stations</a>`}
         </div>`;
@@ -2394,7 +2491,7 @@ const OSCE = (() => {
         });
         // dictate a correction rather than typing it on a tablet keyboard
         const q = qs.find(x => String(x.id) === el.dataset.eq);
-        const mic = micButton(el, { hint: (q?.marking_points || []).join(' ').slice(0, 400), maxSecs: 120 });
+        const mic = micButton(el, { hint: scorable(q?.marking_points).join(' ').slice(0, 400), maxSecs: 120 });
         if (mic) el.parentNode.insertBefore(mic, el.nextSibling);
       });
       transcribeIfWorthIt(stage, rec);
@@ -2404,18 +2501,28 @@ const OSCE = (() => {
          it: the tape and the transcript join the queue, and the clock for the
          next station starts while the last one is being marked. The results
          are collected at the end, where the candidate has time to read them. */
-      stage.querySelector('#os-nextst')?.addEventListener('click', async ev => {
-        ev.target.disabled = true;
-        const last = s.at + 1 >= s.stations.length;
+      /* Handing this station over — queue its tape for marking, or record
+         that there was nothing to mark. Shared by "Next station" and by
+         "End the round here", because a round ended early must still mark
+         the station you were in the middle of. */
+      const handOver = () => {
         const already = loadMarks(sid)[st.id];
-        const worthMarking = spoken || rec?.blob;
-        if (!already && worthMarking) {
+        if (already) return;
+        if (spoken || rec?.blob) {
           saveMark(sid, st.id, { status: 'queued', at: Date.now() });
           queueMark({ sid, st, ans: Object.assign({}, ans), rec, session: { elapsed },
             choice: chosenModel(), attemptId: 'oa-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5) });
-        } else if (!already) {
+        } else {
           saveMark(sid, st.id, { status: 'skipped', message: 'Nothing was captured for this station.', at: Date.now() });
         }
+      };
+
+      stage.querySelector('#os-runai')?.addEventListener('click', () => AiOsce.openDialog(st, { sid }));
+
+      stage.querySelector('#os-nextst')?.addEventListener('click', async ev => {
+        ev.target.disabled = true;
+        const last = s.at + 1 >= s.stations.length;
+        handOver();
         if (last) {
           s.phase = 'circuit'; await saveSession(s); stopLive();
           location.hash = '#/osce/circuit/' + sid;
@@ -2423,6 +2530,40 @@ const OSCE = (() => {
         }
         s.at += 1; s.qi = 0; s.elapsed = 0; s.phase = 'brief';
         await saveSession(s); stopLive(); renderRun(view, sid, user);
+      });
+
+      /* LEAVING EARLY.
+
+         A round is nine stations because that is the exam, not because
+         nine is how much time anybody reliably has. Before this the only
+         ways out were to sit all nine or to walk away — and walking away
+         left the station you were in unmarked, since the tape is only
+         handed to the marker when you press Next.
+
+         So this hands the current station over exactly as Next does, then
+         writes `notSat` against the ones never reached. notSat is not
+         `skipped`: skipped means you were there and there was nothing to
+         mark, notSat means you never arrived. The circuit page counts
+         neither against the mean, and the fresh-stations tick still
+         offers a not-sat station next time, which is the whole point. */
+      stage.querySelector('#os-endst')?.addEventListener('click', async ev => {
+        const b = ev.currentTarget;
+        if (b.dataset.sure !== '1') {
+          b.dataset.sure = '1';
+          b.textContent = `End here? ${s.stations.length - s.at - 1} station${s.stations.length - s.at - 1 === 1 ? '' : 's'} will not be sat — tap again`;
+          setTimeout(() => { if (b.dataset.sure === '1') { b.dataset.sure = ''; b.textContent = 'End the round here'; } }, 5000);
+          return;
+        }
+        b.disabled = true; b.textContent = 'Finishing…';
+        handOver();
+        const marks = loadMarks(sid);
+        s.stations.slice(s.at + 1).forEach(id => {
+          if (!marks[id]) saveMark(sid, id, { status: 'notSat', at: Date.now() });
+        });
+        s.endedEarly = { at: Date.now(), sat: s.at + 1, of: s.stations.length };
+        s.phase = 'circuit';
+        await saveSession(s); stopLive();
+        location.hash = '#/osce/circuit/' + sid;
       });
     }
   }
@@ -2844,7 +2985,7 @@ const OSCE = (() => {
     btn.disabled = true;
     out.innerHTML = `<div class="ai-loading"><span></span><span></span><span></span></div>
       <p class="muted tiny">${useAudio ? 'Listening to the recording and marking' : 'Marking'} ${qsOf(st).length} answers against
-        ${qsOf(st).reduce((n, q) => n + (q.marking_points || []).length, 0)} marking points…</p>`;
+        ${qsOf(st).reduce((n, q) => n + scorable(q.marking_points).length, 0)} marking points…</p>`;
     try {
       const attempt = await markCore({ st, ans, rec, session, choice,
         say: t => { const n = out.querySelector('.os-mark-step'); if (n) n.textContent = t;
@@ -2908,7 +3049,8 @@ const OSCE = (() => {
         const attempt = await markCore({ st: job.st, ans: job.ans, rec: job.rec, session: job.session,
           choice: job.choice, attemptId: job.attemptId, meta });
         saveMark(job.sid, job.st.id, { status: 'done', attemptId: attempt.id,
-          percent: attempt.result?.percent ?? null, pass: !!attempt.result?.pass, at: Date.now() });
+          percent: attempt.result?.percent ?? null, pass: !!attempt.result?.pass,
+          partial: attempt.result?.partial || null, at: Date.now() });
       } catch (e) {
         /* A failure is recorded, never swallowed. The tape went up before
            the model was called, so `retryMark` has something to send. */
@@ -2955,7 +3097,8 @@ const OSCE = (() => {
       // already stored: do not upload the same tape a second time
       kept: rec && entry.audioPath ? { path: entry.audioPath, expires: entry.audioExpires } : null });
     saveMark(sid, stationId, { status: 'done', attemptId: attempt.id,
-      percent: attempt.result?.percent ?? null, pass: !!attempt.result?.pass, at: Date.now() });
+      percent: attempt.result?.percent ?? null, pass: !!attempt.result?.pass,
+      partial: attempt.result?.partial || null, at: Date.now() });
     markPing();
     return attempt;
   }
@@ -3076,7 +3219,7 @@ const OSCE = (() => {
           // the model does not need to read the trace to know whether the
           // candidate described it — but it does need to know one was on screen
           questions: qsOf(st).map(q => ({ id: q.id, prompt: q.prompt, marks: q.marks,
-            marking_points: q.marking_points || [],
+            marking_points: scorable(q.marking_points),   // a heading is context, not a point to mark
             shown: (q.images || []).length
               ? (q.images.map(im => im.caption).filter(Boolean).join('; ') || 'an image')
               : '' })) },
@@ -3292,7 +3435,7 @@ const OSCE = (() => {
        the question. Where the counts disagree the model's text is kept, so
        nothing is ever silently mismatched. */
     const bySrcId = {};
-    qsOf(st).forEach(q => bySrcId[String(q.id)] = q.marking_points || []);
+    qsOf(st).forEach(q => bySrcId[String(q.id)] = scorable(q.marking_points));
     (d.questions || []).forEach(qr => {
       const src = bySrcId[String(qr.id)];
       if (!src || !Array.isArray(qr.points)) return;
@@ -3303,10 +3446,54 @@ const OSCE = (() => {
       }));
     });
 
-    const max = d.max || marksOf(st);
-    const total = d.total != null ? d.total : (d.questions || []).reduce((n, q) => n + (q.awarded || 0), 0);
-    const percent = d.percent != null ? d.percent : Math.round((total / Math.max(1, max)) * 100);
-    return Object.assign(d, { max, total, percent, pass: d.pass != null ? d.pass : total >= passOf(st) });
+    /* A TRUNCATED MARKING IS NOT A LOW SCORE.
+
+       This is the fault behind "8 questions, only 4 marked, 44/100".
+       salvageJson keeps whatever questions arrived before the model ran
+       out of room — but total, max and percent are written at the END of
+       the JSON, so a salvaged object has the questions and none of the
+       totals. The old code then summed four questions against the
+       station's full 100 and printed 44%: a number that looks like a
+       result, reads like a fail, and is neither. Nothing about it said
+       four questions had never been looked at.
+
+       Quitting a circuit had nothing to do with it — the marking of one
+       station does not know the round exists.
+
+       So: count what actually came back. If questions are missing, the
+       attempt is PARTIAL — scored over the marks that were really
+       marked, flagged, and offered to be marked again. A partial is never
+       given a pass/fail, because passing 44 of 52 marks that happen to be
+       the easy half is not a pass and not a fail either. */
+    const want = qsOf(st);
+    const got = (d.questions || []).length;
+    const short = want.length && got < want.length;
+
+    const markedMax = (d.questions || []).reduce((n, q) => n + (Number(q.max) || 0), 0);
+    const max = short ? (markedMax || marksOf(st)) : (d.max || marksOf(st));
+    const total = (!short && d.total != null)
+      ? d.total
+      : (d.questions || []).reduce((n, q) => n + (q.awarded || 0), 0);
+    const percent = (!short && d.percent != null)
+      ? d.percent
+      : Math.round((total / Math.max(1, max)) * 100);
+
+    const out = Object.assign(d, { max, total, percent });
+    if (short) {
+      const seen = new Set((d.questions || []).map(q => String(q.id)));
+      out.partial = {
+        marked: got, of: want.length,
+        missing: want.filter(q => !seen.has(String(q.id))).map(q => q.prompt || String(q.id)),
+        why: finish === 'MAX_TOKENS'
+          ? 'The marker ran out of room part-way through.'
+          : finish ? `The marker stopped early (${finish}).`
+          : 'The marker\u2019s answer was cut off part-way through.'
+      };
+      out.pass = null;                    // no verdict on half a station
+    } else {
+      out.pass = d.pass != null ? d.pass : total >= passOf(st);
+    }
+    return out;
   }
 
   /* ================= the result (#/osce/result/:id) ================= */
@@ -3316,7 +3503,9 @@ const OSCE = (() => {
     try { a = await Backend.getOsceAttempt(id); } catch {}
     if (!a) { view.innerHTML = shell('bank', `<p class="muted">That result is no longer stored. <a class="link" href="#/osce">Back to OSCE</a></p>`); FX.viewIn(view); return; }
     const r = a.result || {};
-    const tone = r.percent >= 70 ? 'dist' : r.percent >= 60 ? 'pass' : r.percent >= 50 ? 'border' : 'fail';
+    const part = r.partial || null;
+    const tone = part ? 'border'
+      : r.percent >= 70 ? 'dist' : r.percent >= 60 ? 'pass' : r.percent >= 50 ? 'border' : 'fail';
     const stCls = s => /cover/i.test(s) ? 'cov' : /partial/i.test(s) ? 'par' : 'mis';
     const stIco = s => /cover/i.test(s) ? '✓' : /partial/i.test(s) ? '~' : '✗';
     const qById = {}; (a.questions || []).forEach(q => qById[String(q.id)] = q);
@@ -3334,10 +3523,33 @@ const OSCE = (() => {
           </div>
           <div class="os-res-score">
             <div class="es-dial" id="os-dial" data-pct="${r.percent || 0}"><span>${r.percent != null ? r.percent + '%' : '—'}</span></div>
-            <span class="es-fb-band es-band-${tone} big">${r.pass ? 'Pass' : 'Below the pass mark'}</span>
-            <span class="muted tiny">${r.total}/${r.max} · pass mark ${a.station?.pass_mark ?? '—'}</span>
+            <span class="es-fb-band es-band-${tone} big">${part ? 'Part-marked' : r.pass ? 'Pass' : 'Below the pass mark'}</span>
+            <span class="muted tiny">${part
+              ? `${r.total}/${r.max} of the ${part.marked} question${part.marked === 1 ? '' : 's'} that were marked`
+              : `${r.total}/${r.max} · pass mark ${a.station?.pass_mark ?? '—'}`}</span>
           </div>
         </header>
+
+        ${part ? `<div class="card os-part-note" data-animate>
+          <p><strong>⚠️ Only ${part.marked} of the ${part.of} questions were marked.</strong>
+            ${esc(part.why)} The percentage above is out of the ${r.max} marks that were actually looked at,
+            not out of the station's ${a.station?.total_marks ?? '—'} — and there is deliberately no pass or fail
+            here, because half a station is neither.</p>
+          ${part.missing?.length ? `<p class="muted tiny">Never reached:
+            ${part.missing.map(m => esc(String(m).slice(0, 90))).join(' · ')}</p>` : ''}
+          <p class="muted tiny">The recording is untouched, so marking it again costs only the marking.</p>
+          <div class="os-part-acts">
+            <a class="btn btn-gold btn-sm" href="#/osce/station/${encodeURIComponent(a.station_id || '')}">Mark it again</a>
+          </div>
+        </div>` : ''}
+
+        ${a.source === 'claude' ? `<div class="card os-claude-note" data-animate>
+          <p><strong>✦ This one was examined and marked by a chat model.</strong>
+            You sat it out loud against ${esc(a.examiner?.name || 'Claude')} on the other half of the screen; AUREUM
+            held the clock and the recording, and this is the marking it gave back against the same scheme.</p>
+          <p class="muted tiny">It is kept apart from the AI-marked attempts because a different examiner asked the
+            questions — mixing the two would make the average mean nothing.</p>
+        </div>` : ''}
 
         ${a.source === 'manual' ? `<div class="card os-hand-note" data-animate>
           <p><strong>✍️ This one was marked by a person, not by AI.</strong>
@@ -3940,7 +4152,7 @@ ${has('learning') && (r.keyLearning || []).length ? `<section class="blk"><h2>Ke
   #os-printdoc { position:static !important; overflow:visible !important;
     background:#fff !important; inset:auto !important; }
   #os-printdoc .os-pd-bar { display:none !important; }
-  #os-printdoc .sheet { width:auto !important; min-height:0 !important;
+  #os-printdoc .sheet, #os-printdoc [class$="-print"] { width:auto !important; min-height:0 !important;
     margin:0 !important; padding:0 !important; box-shadow:none !important; }
   /* ink on paper: never a dark theme, never a shadow, never a screen-only flourish */
   #os-printdoc * { box-shadow:none !important; text-shadow:none !important; }
@@ -3959,6 +4171,36 @@ ${has('learning') && (r.keyLearning || []).length ? `<section class="blk"><h2>Ke
     const host = document.createElement('div');
     host.id = 'os-printdoc';
     host.innerHTML = bodyHtml;
+
+    /* THE SECOND HALF OF THE FREEZE, AND THE ONE v82 MISSED.
+
+       v82 made the scroll lock releasable. It did not ask what the sheet
+       ITSELF looks like on screen, and that turned out to be the actual
+       fault: the two callers inside this file style `#os-printdoc` as a
+       fixed, scrollable overlay, but marksheet.js, cases.js and
+       discussions.js scope their CSS under their own class and never
+       position the host at all. For those three the sheet was a plain
+       block in the document flow, taller than the screen, while <html>
+       and <body> were overflow:hidden — so the page could not scroll, the
+       sheet could not scroll, and on iOS, where the sheet deliberately
+       stays up after print() returns, there was no Close button either
+       because none of the three emits one.
+
+       That is a frozen page, exactly as reported, and it was reachable
+       from the mark-by-hand PDF — which is the print most likely to be
+       used right after a round.
+
+       The layout now lives in styles.css under #os-printdoc, and the
+       close bar is added here when the caller did not provide one. Same
+       rule as PRINT_FRAME: a caller may add to the frame, it cannot
+       forget it. */
+    if (!host.querySelector('[data-pd-close]')) {
+      const bar = document.createElement('div');
+      bar.className = 'os-pd-bar';
+      bar.innerHTML = `<button type="button" data-pd-print>🖨 Print / Save as PDF</button>
+        <button type="button" data-pd-close>✕ Close</button>`;
+      host.prepend(bar);
+    }
     document.body.appendChild(host);
 
     /* THE FREEZE.
@@ -4050,22 +4292,33 @@ ${has('learning') && (r.keyLearning || []).length ? `<section class="blk"><h2>Ke
       const done = rows.filter(r => r.m.status === 'done');
       const failed = rows.filter(r => r.m.status === 'error');
       const waiting = rows.filter(r => r.m.status === 'queued');
-      const scored = done.filter(r => r.m.percent != null);
+      /* A part-marked station must not drag the round's mean down — its
+         percentage is out of a different denominator entirely. */
+      const scored = done.filter(r => r.m.percent != null && !r.m.partial);
+      const parts = done.filter(r => r.m.partial);
       const mean = scored.length ? Math.round(scored.reduce((n, r) => n + r.m.percent, 0) / scored.length) : null;
       const passed = done.filter(r => r.m.pass).length;
 
+      const early = cur.endedEarly || null;
+      const notSat = rows.filter(r => r.m.status === 'notSat');
+
       view.innerHTML = shell('sim', `
         <header data-animate>
-          <p class="kicker">CIRCUIT COMPLETE</p>
-          <h1 class="page-title">${cur.stations.length} stations</h1>
+          <p class="kicker">${early ? 'ROUND ENDED EARLY' : 'CIRCUIT COMPLETE'}</p>
+          <h1 class="page-title">${early
+            ? `${early.sat} of ${early.of} stations`
+            : `${cur.stations.length} stations`}</h1>
           <p class="muted">${waiting.length
             ? `Marking is still running — <strong>${waiting.length}</strong> to go. You can leave this page; it carries on.`
-            : 'Every station has been through the marker.'}</p>
+            : early
+              ? `You ended the round after ${early.sat}. Those ${early.sat} are marked in full below; the other ${
+                  notSat.length} were never sat and are not counted against you.`
+              : 'Every station has been through the marker.'}</p>
         </header>
 
         ${scored.length ? `<div class="card os-circ-sum" data-animate>
           <div class="os-circ-figs">
-            <div class="os-circ-fig"><b>${mean}%</b><span>mean across ${scored.length} station${scored.length === 1 ? '' : 's'}</span></div>
+            <div class="os-circ-fig"><b>${mean}%</b><span>mean across the ${scored.length} station${scored.length === 1 ? '' : 's'} that were marked in full</span></div>
             <div class="os-circ-fig"><b>${passed}/${scored.length}</b><span>at or above the pass mark</span></div>
           </div>
           ${Charts && scored.length > 1 ? `<div class="os-circ-bars">${scored.map(r => `
@@ -4084,9 +4337,12 @@ ${has('learning') && (r.keyLearning || []).length ? `<section class="blk"><h2>Ke
               const tag = OsceBlueprint.tagOf(r.st);
               const where = tag ? `${OsceBlueprint.moduleName(modules, tag.module)} · ${OsceBlueprint.topicName(modules, tag.module, tag.topic)}` : 'not on the blueprint';
               const badge = r.m.status === 'done'
-                ? `<span class="os-circ-pct ${r.m.pass ? 'is-pass' : 'is-fail'}">${r.m.percent != null ? r.m.percent + '%' : 'marked'}</span>`
+                ? (r.m.partial
+                  ? `<span class="os-circ-pct is-part" title="Only ${r.m.partial.marked} of ${r.m.partial.of} questions were marked">part-marked</span>`
+                  : `<span class="os-circ-pct ${r.m.pass ? 'is-pass' : 'is-fail'}">${r.m.percent != null ? r.m.percent + '%' : 'marked'}</span>`)
                 : r.m.status === 'queued' ? `<span class="os-circ-wait"><i></i> marking…</span>`
                 : r.m.status === 'error' ? `<span class="os-circ-err">could not be marked</span>`
+                : r.m.status === 'notSat' ? `<span class="muted tiny">not sat — still fresh</span>`
                 : `<span class="muted tiny">not marked</span>`;
               return `<div class="os-circ-row" data-st="${esc(r.id)}">
                 <span class="os-circ-n">${r.i + 1}</span>
@@ -4840,7 +5096,7 @@ ${P} .os-pd-close{background:transparent;color:#fff;border:1px solid rgba(255,25
     renderCircuit, renderProgress, renderDecks,
     micButton, groqReport, resetGroq, voiceAvailable: () => groqOn('whisper'),
     stations, bustStations, collections, bustCollections, openSessions, dropSession,
-    marksOf, passOf, qsOf, toWav, wavRateFor, modelChoices, noAudioReason,
+    marksOf, passOf, qsOf, minsOf, imagesOf, isHeading, headText, scorable, toWav, wavRateFor, modelChoices, noAudioReason,
     stationAsText, promptLevel, setPromptLevel, promptPlan, missingPoints, saidAlready,
     myAttempts, bustAttempts, decks, bustDecks,
     silenceWait, setSilenceWait, salvageJson,
@@ -4851,5 +5107,5 @@ ${P} .os-pd-close{background:transparent;color:#fff;border:1px solid rgba(255,25
     makeCapture, toBase64, speak, groqVoice, voiceOn: () => groqOn('voice'), openPrintSheet, releaseScroll,
     makeDoc, docAsText, allPoints, coachFor, coachWanted, COACH,
     // exposed for tests and for the circuit page's live redraw
-    markState, onMarkChange, retryMark };
+    markState, onMarkChange, retryMark, __parseResult: parseResult };
 })();
