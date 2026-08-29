@@ -1134,8 +1134,13 @@ const OSCE = (() => {
         <h3 class="card-title">Nothing marked yet</h3>
         <p class="muted">Once you have sat a station and had it marked, it appears here — the marks, the scheme point by
           point, what you said, and the recording for its first 24 hours.</p>
-        <a class="btn btn-gold" href="#/osce">Go to the station bank</a></div>`;
+        <a class="btn btn-gold" href="#/osce">Go to the station bank</a></div>
+        <div id="os-bring"></div>`;
       wirePending(view, user);
+      /* The importer belongs on the EMPTY page most of all: somebody
+         holding their first Claude-marked JSON has nothing else here, and
+         returning early used to leave them with no route at all. */
+      try { AiOsce?.attemptsPanel?.(body.querySelector('#os-bring'), user, () => renderMine(view, user)); } catch {}
       return;
     }
     const rows = past.slice().sort((a, b) => (b.created || 0) - (a.created || 0));
@@ -1166,8 +1171,13 @@ const OSCE = (() => {
 
       ${attemptTable(rows.filter(a => a.source !== 'manual' && a.source !== 'claude'), 'ai')}
       ${attemptTable(rows.filter(a => a.source === 'manual'), 'manual')}
-      ${attemptTable(rows.filter(a => a.source === 'claude'), 'claude')}`;
+      ${attemptTable(rows.filter(a => a.source === 'claude'), 'claude')}
+      <div id="os-bring"></div>`;
     wirePending(view, user);
+    /* The way back in for an OSCE sat against a chat model. It lives here
+       rather than only on the session screen, because the JSON often arrives
+       a day later, in a file, from a session whose recording never started. */
+    try { AiOsce?.attemptsPanel?.(body.querySelector('#os-bring'), user, () => renderMine(view, user)); } catch {}
   }
 
   /* ---------------- two kinds of attempt, kept apart ----------------
@@ -2779,7 +2789,7 @@ const OSCE = (() => {
               : `The microphone could not be started (${name}). Tap “Turn the microphone back on” to try again.`;
         say('⚠ ' + failed, 'is-warn');
         ping();
-        return;
+        return false;
       }
       mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/aac']
         .find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
@@ -2824,6 +2834,18 @@ const OSCE = (() => {
         } catch { sr = null; }
       }
       say(sr ? '🎙 Listening — speak normally.' : '🎙 Recording. This browser has no live transcription, so type your answers as you go (the audio is still saved).', sr ? 'is-on' : 'is-warn');
+      /* SAY WHETHER IT WORKED.
+
+         This used to return undefined on success and undefined on failure,
+         the failure path merely returning early. Every caller therefore had
+         to ask `live.state().failed` instead, and a caller that trusted the
+         return value — as the OSCE-in-AI screen did — treated a perfectly
+         open microphone as a refusal and never started its clock.
+
+         A function whose success is indistinguishable from its failure is a
+         trap for the next caller. It now returns a boolean, and the callers
+         that check `.failed` as well are unaffected. */
+      return !failed;
     }
     function attach(fn) { onText = fn; }
     function watchState(fn) { onState = fn; last = ''; ping(); }

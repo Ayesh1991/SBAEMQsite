@@ -5268,13 +5268,13 @@ html.is-printlock, html.is-printlock body { overflow: hidden; }
 }
 
 /* the two attempt sections, foldable */
-.os-att-fold > summary { display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+.os-att-fold > summary, .ai-bring > summary { display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
   cursor: pointer; list-style: none; }
-.os-att-fold > summary::-webkit-details-marker { display: none; }
-.os-att-fold > summary .card-title { margin: 0; flex: 1 1 auto; }
-.os-att-sum { font-size: .78rem; color: var(--ink-3, #8b8b96); white-space: nowrap; }
-.os-att-fold > summary .dc-caret { transition: transform .16s ease; color: var(--ink-3, #8b8b96); }
-.os-att-fold[open] > summary .dc-caret { transform: rotate(180deg); }
+.os-att-fold > summary::-webkit-details-marker, .ai-bring > summary::-webkit-details-marker { display: none; }
+.os-att-fold > summary .card-title, .ai-bring > summary .card-title { margin: 0; flex: 1 1 auto; }
+.os-att-sum, .ai-bring-sum { font-size: .78rem; color: var(--ink-3, #8b8b96); white-space: nowrap; }
+.os-att-fold > summary .dc-caret, .ai-bring > summary .dc-caret { transition: transform .16s ease; color: var(--ink-3, #8b8b96); }
+.os-att-fold[open] > summary .dc-caret, .ai-bring[open] > summary .dc-caret { transform: rotate(180deg); }
 
 
 /* A part-marked attempt. Amber, not red: nothing went wrong with the
@@ -5418,3 +5418,23 @@ html.is-printlock, html.is-printlock body { overflow: hidden; }
   .ai-pick { grid-template-columns: 1fr; }
   .ai-pick-b { flex-direction: row; justify-content: flex-start; gap: 10px; }
 }
+
+
+/* The microphone-busy notice. Amber and factual: nothing has gone wrong
+   with the session, the platform simply will not give two apps one
+   microphone. */
+.ai-nomic { text-align: left; margin: 12px 0; padding: 12px 14px; border-radius: 12px;
+  background: color-mix(in srgb, var(--gold) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--gold) 30%, var(--hairline)); }
+.ai-nomic b { display: block; margin-bottom: 6px; font-size: .86rem; }
+.ai-nomic p { margin: 0 0 6px; font-size: .8rem; line-height: 1.55; }
+.ai-note { text-align: left; margin: 12px auto 0; max-width: 620px; }
+.ai-note > summary { cursor: pointer; font-size: .76rem; color: var(--ink-3); list-style: none;
+  display: inline-flex; align-items: center; gap: 6px; }
+.ai-note > summary::-webkit-details-marker { display: none; }
+.ai-note > summary::before { content: '▸'; transition: transform .18s ease; }
+.ai-note[open] > summary::before { transform: rotate(90deg); }
+.ai-note p, .ai-note li { font-size: .78rem; line-height: 1.6; color: var(--ink-3); }
+.ai-note ol { margin: 8px 0 0; padding-left: 20px; }
+.ai-note li { margin-bottom: 6px; }
+.ai-bring { border-color: color-mix(in srgb, #c96442 26%, var(--hairline)); }
