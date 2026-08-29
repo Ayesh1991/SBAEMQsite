@@ -217,12 +217,43 @@ RULES FOR THE JSON
   status is "missed" and the marks reflect it.`;
   }
 
+  /* THE BLOCK HAS TO PROVE IT ARRIVED.
+
+     The first run of this failed in the worst possible way: the station
+     block did not reach the conversation the model was examining from, the
+     model invented eight plausible generic questions instead — history,
+     examination, investigations — and only admitted it had no marking
+     scheme fifteen minutes later, when it was asked to mark.
+
+     A paste that silently does not land is going to happen again: voice
+     mode, a new chat, a scrolled-past message. It cannot be prevented from
+     here. What CAN be done is make it obvious in five seconds instead of
+     fifteen minutes — so the examiner must open by saying back the topic,
+     the number of questions and the total marks. If those words do not
+     come, the paste did not land, and you have lost nothing.
+
+     The block is also self-contained: its own header, its own BEGIN, and
+     the rule about inventing questions repeated inside it. Pasting it
+     alone into a bare chat has to work, because that is what somebody in a
+     hurry will do. */
   function stationBlock(st) {
     const qs = OSCE.qsOf(st);
-    return `THE STATION
+    return `═══ AUREUM OSCE STATION — read this whole block before you say anything ═══
+
+THIS BLOCK IS THE EXAMINATION. Everything you ask must come from it.
+
+Before you begin, say exactly this and nothing more, so the candidate knows
+you received it:
+
+  "I have the station: ${st.topic || ''} — ${qs.length} questions, ${OSCE.marksOf(st)} marks. Ready when you are."
+
+If you cannot see the questions below, DO NOT invent any. Say "I have not
+received the station block" and stop. Fifteen minutes of invented questions
+is worse than none.
 
 TOPIC: ${st.topic || ''}
 TIME: ${OSCE.minsOf(st)} minutes · ${OSCE.marksOf(st)} marks · pass mark ${OSCE.passOf(st)}
+QUESTIONS: ${qs.length}
 
 SCENARIO (read this out loud, word for word)
 ${st.scenario || ''}
@@ -240,7 +271,13 @@ ${qs.map((q, i) => {
         '  MARKING POINTS (yours alone — never read these out):',
         ...pts.map((p, j) => `    ${j + 1}. ${p}`)
       ].filter(Boolean).join('\n');
-    }).join('\n\n')}`;
+    }).join('\n\n')}
+
+═══ END OF THE STATION — ${qs.length} questions, ${OSCE.marksOf(st)} marks ═══
+
+Ask those ${qs.length} questions, in that order, and no others. Do not add a
+question about history, examination or investigations unless one is written
+above. Say nothing evaluative until the candidate calls time.`;
   }
 
   /** The whole thing, for pasting into a fresh chat. */
@@ -252,18 +289,24 @@ ${qs.map((q, i) => {
       '',
       jsonBlock(st),
       '',
-      `BEGIN NOW. Say only: "This is a ${OSCE.minsOf(st)}-minute station. I will read you the scenario."`,
-      `Then read the scenario and wait. Nothing else before that.`
+      `BEGIN NOW. Say back the station line above so the candidate knows you have it, then read the`,
+      `scenario out loud, then wait. Nothing else before that.`
     ].join('\n');
   }
 
   /** The rules alone, as a project instruction file — the station is pasted per run. */
   function buildInstructions(level) {
+    const folder = cfg().drive?.claudeMarkFolderId
+      ? `https://drive.google.com/drive/folders/${cfg().drive.claudeMarkFolderId}`
+      : '';
     return `# AUREUM — PGIM Part II OSCE examiner
 
-Paste this into the **instructions** of a Claude project (or a custom GPT /
-Gem). Then, for each station, paste only the station block that AUREUM gives
-you and the examination begins.
+Paste this whole document into the **instructions** of a Claude project (or
+a custom GPT, or a Gem). Then, for each station, paste only the STATION
+block that AUREUM gives you, and the examination begins.
+
+This file is self-contained: the rules, the JSON schema and where the file
+goes are all here. You should not need anything else.
 
 ---
 
@@ -271,20 +314,93 @@ ${rulesBlock(level)}
 
 ---
 
-## The station
+## The station block
 
-Each run begins with the candidate pasting a block headed **THE STATION**,
-containing the topic, the time, the scenario, the questions in order, any
-information to be revealed part-way, and the marking points for your eyes
-only. Everything above applies to it unchanged.
+Each run begins with the candidate pasting a block headed
+\`═══ AUREUM OSCE STATION ═══\`, containing the topic, the time, the
+scenario, the questions in order, any information to be revealed part-way,
+and the marking points — which are yours alone and are never read out.
+
+**Confirm you have it before you start.** Open by saying back the station
+line the block gives you: the topic, the number of questions and the total
+marks. If no station block has arrived, say
+"I have not received the station block" and stop. **Never invent questions
+to fill the gap** — fifteen minutes of plausible invented questions is far
+worse than a session that stops in the first ten seconds, because it is
+only discovered at the very end.
+
+---
 
 ## The JSON at the end
 
-After the teaching, produce one JSON file in a single fenced code block,
-following the schema \`aureum-osce-claude-v1\` exactly as given in the
-station block. It is imported back into AUREUM and kept beside the
-candidate's other attempts, so the marking-point wording must be the
-scheme's own and the marks must add up.
+After the teaching, produce ONE JSON file in a single fenced code block,
+valid JSON, nothing after it. This is what AUREUM imports.
+
+\`\`\`json
+{
+  "schema": "aureum-osce-claude-v1",
+  "station_id": "the id given in the station block",
+  "topic": "the topic given in the station block",
+  "sat_on": "YYYY-MM-DD",
+  "examiner": "Claude",
+  "result": {
+    "total": 0, "max": 100, "percent": 0, "pass": false,
+    "examinerComment": "Two or three sentences, as an examiner would write them.",
+    "questions": [
+      { "id": "Q1", "awarded": 0, "max": 0,
+        "transcript": "What the candidate actually said, in brief.",
+        "comment": "Your comment on this answer.",
+        "points": [
+          { "point": "the marking point, copied exactly from the scheme",
+            "status": "covered | partial | missed",
+            "note": "what they said about it, or what was missing" }
+        ] }
+    ],
+    "strengths": ["specific, quoting them"],
+    "improvements": [{ "action": "what to do differently", "marks": 0 }],
+    "keyLearning": ["the facts to take away"],
+    "teaching": [{ "heading": "topic", "body": "the explanation you gave" }],
+    "language": [{ "said": "what they said", "correct": "what to say", "why": "why" }],
+    "coaching": { "structure": "", "articulation": "", "pronunciation": "", "technique": "" }
+  }
+}
+\`\`\`
+
+### Rules for the JSON
+
+- One object per marking point, for **every** point in the scheme, in
+  scheme order. Include the ones that were missed — those are the ones
+  worth revising from.
+- \`point\` must be the scheme's own wording, not a paraphrase. AUREUM
+  matches on it.
+- \`station_id\` and \`max\` must be copied from the station block. A
+  verdict whose \`station_id\` does not match is refused on import, which
+  is deliberate — it would otherwise attach itself silently to the wrong
+  station.
+- The per-question \`awarded\` must sum to \`total\`, and the per-question
+  \`max\` to the station's total marks.
+- \`percent\` is round(total ÷ max × 100).
+- Never leave a marks field null. A missed point is status \`missed\` with
+  the marks to match, not an omission.
+
+---
+
+## Where the file goes
+
+Two ways back into AUREUM, and either is fine:
+
+1. **Paste it.** Open **OSCE → My attempts → Bring back an AI-marked
+   station**, and paste the JSON block. Quickest, and needs no Drive.
+2. **Drop the file in Drive.**${folder ? `
+
+   ${folder}
+
+   Then use **Scan the Drive folder** on the same panel.` : ' Then use **Scan the Drive folder** on the same panel.'}
+
+Either way it lands in **Marked by Claude** beside the stations marked by
+AUREUM's own marker and the ones marked in person — the three are kept
+apart on purpose, because averaging different examiners together makes the
+average mean nothing.
 `;
   }
 
@@ -433,7 +549,7 @@ scheme's own and the marks must add up.
     if (!st) { view.innerHTML = `<section class="page"><p class="muted">That station is not here. <a class="link" href="#/osce">Back</a></p></section>`; return; }
 
     const total = OSCE.minsOf(st) * 60;
-    let left = total, running = false, timer = null, live = null, tape = null;
+    let left = total, running = false, timer = null, live = null, tape = null, recFailed = false;
 
     view.innerHTML = `
       <section class="page ai-run">
@@ -447,14 +563,39 @@ scheme's own and the marks must add up.
           <div class="ai-clock" id="ai-clock">${fmt(total)}</div>
           <div class="ai-bar"><i id="ai-bar" style="width:0%"></i></div>
           <div id="ai-mic" class="ai-mic"></div>
+
+          <div class="ai-nomic" id="ai-nomic" hidden>
+            <b>The microphone is busy — the clock is running anyway.</b>
+            <p>iPadOS gives the microphone to <strong>one app at a time</strong>. If the model's voice mode has it,
+              AUREUM cannot also record, and taking it would cut the examination off mid-sentence. Nothing is lost:
+              the model is the examiner <em>and</em> the marker, so its verdict does not depend on our tape.</p>
+            <p class="muted tiny">If you want the audio as well, either turn on <strong>iPad screen recording</strong>
+              from Control Centre before you start — it captures both voices in one file — or record on a second
+              device. Either way you can attach the file below when you finish.</p>
+          </div>
+
           <div class="ai-run-acts">
             <button class="btn btn-gold btn-lg" id="ai-start">● Start the clock and record</button>
             <button class="btn btn-ghost" id="ai-pause" hidden>⏸ Pause</button>
             <button class="btn btn-primary" id="ai-stop" hidden>■ Stop — fifteen minutes over</button>
           </div>
-          <p class="muted tiny" id="ai-tip">Paste the prompt into the model first and start its voice mode. Then press
-            start here — the recording and the clock begin together. When the clock reaches zero, say
-            <strong>“fifteen minutes over”</strong> out loud so the examiner switches to teaching.</p>
+          <p class="muted tiny" id="ai-tip">Paste the station into the model first and start its voice mode. Then
+            press start here. When the clock reaches zero, say <strong>“fifteen minutes over”</strong> out loud so the
+            examiner switches to teaching.</p>
+
+          <details class="ai-note">
+            <summary>About recording on one iPad</summary>
+            <p>iPadOS gives the microphone to one app at a time, so if the model's voice mode is running, AUREUM
+              usually cannot record as well — and it must not fight for it, because losing the microphone mid-answer
+              would end the examination. <strong>The clock always runs.</strong> Three ways to keep the audio too:</p>
+            <ol>
+              <li><strong>Screen recording</strong> — start it from Control Centre before you begin. It captures the
+                model's voice and yours in one file. Attach it here when you finish.</li>
+              <li><strong>A second device</strong> — a phone recording the room, attached here afterwards.</li>
+              <li><strong>No audio at all</strong> — perfectly reasonable here. The model examined you and marks you;
+                the tape was only ever for <em>our</em> marker.</li>
+            </ol>
+          </details>
         </div>
 
         <div id="ai-after"></div>
@@ -475,21 +616,49 @@ scheme's own and the marks must add up.
       barEl.style.width = Math.min(100, ((total - left) / total) * 100) + '%';
     }
 
+    /* THE CLOCK DOES NOT DEPEND ON THE MICROPHONE.
+
+       The first version started the recorder and returned early unless it
+       said it had worked — and makeCapture.start() returned undefined on
+       success, so it ALWAYS returned early. The microphone opened, the
+       strip said "Listening", and the countdown never moved.
+
+       That bug is fixed (start() now answers truthfully), but the shape
+       was wrong underneath it too. On this screen the recording is the
+       optional half: the model is the examiner AND the marker, so it has
+       the whole conversation whatever we capture. The clock is the half
+       that cannot fail, because it is the only thing telling you when to
+       call time.
+
+       So the clock starts first and unconditionally. The microphone is
+       then attempted, and whatever it says is reported beside the clock —
+       never in front of it. */
     startB.addEventListener('click', async () => {
-      startB.disabled = true; startB.textContent = 'Opening the microphone…';
+      startB.disabled = true;
+      running = true;
+      startB.hidden = true; pauseB.hidden = false; stopB.hidden = false;
+      view.querySelector('#ai-tip').innerHTML =
+        'The clock is running. Switch to the other app and answer out loud — this half only has to stay open.';
+      paint();
+
       /* wantMix: the model is talking through the iPad speaker, so the tape
          only carries the examiner if echo cancellation can be relaxed. It
          is a preference — a tape of one voice still marks. */
       live = OSCE.makeCapture(view.querySelector('#ai-mic'), true);
-      const ok = await live.start();
+      let ok = false;
+      try { ok = await live.start(); } catch { ok = false; }
       if (!ok) {
-        startB.disabled = false; startB.textContent = '● Start the clock and record';
-        return;
+        /* iPadOS gives the microphone to ONE app. If the model's voice mode
+           has it, we cannot also have it — and taking it would break the
+           examination, which is the more important of the two. So this is
+           stated as a fact of the platform rather than as our failure, with
+           the ways round it. */
+        recFailed = true;
+        view.querySelector('#ai-nomic').hidden = false;
+        try { live.stop(); } catch {}
+        live = null;
       }
-      running = true;
-      startB.hidden = true; pauseB.hidden = false; stopB.hidden = false;
-      view.querySelector('#ai-tip').innerHTML =
-        'Recording. Switch to the other app and answer out loud — this half only has to stay open.';
+
       timer = setInterval(() => {
         if (!running) return;
         left--;
@@ -499,12 +668,12 @@ scheme's own and the marks must add up.
         if (left === 0) {
           clockEl.classList.add('is-out');
           view.querySelector('#ai-tip').innerHTML =
-            '<strong>Time. Say “fifteen minutes over” out loud now.</strong> Keep recording through the feedback — that is the part you will want to hear again.';
+            '<strong>Time. Say “fifteen minutes over” out loud now.</strong>' + (recFailed ? ''
+              : ' Keep recording through the feedback — that is the part you will want to hear again.');
           try { navigator.vibrate?.([200, 100, 200]); } catch {}
         }
         if (left <= -20 * 60) finish();      // a session nobody stopped
       }, 1000);
-      paint();
     });
 
     pauseB.addEventListener('click', () => {
@@ -561,14 +730,21 @@ scheme's own and the marks must add up.
     }
     host.innerHTML = `
       <div class="card" data-animate>
-        <h3 class="card-title">${tape?.blob ? '✓ The session is recorded' : 'Nothing was recorded'}</h3>
+        <h3 class="card-title">${tape?.blob ? '✓ The session is recorded' : 'No recording from this device'}</h3>
         ${tape?.blob ? `<audio controls src="${esc(tape.url)}" class="ai-audio"></audio>
           <p class="muted tiny">${stored ? 'Kept on the server for 24 hours' : 'Kept in this browser only — the upload did not go through'}${
             typeof Drive !== 'undefined' && Drive.on() ? ', and copied to your Drive folder' : ''}.
             ${tape.bothVoices === false ? 'Only your voice is on it — this device would not let go of echo cancellation.' : ''}</p>
           <p><a class="btn btn-ghost btn-sm" href="${esc(tape.url)}" download="${esc((st.topic || 'osce').replace(/[^\w -]/g, '')) }.${esc(tape.ext || 'webm')}">⬇ Download the audio</a></p>`
-          : `<p class="muted">The microphone never started, so there is no tape. The model's own marking can still be
-             imported below — it does not need the audio.</p>`}
+          : `<p class="muted">The microphone was not available — almost always because the model's voice mode had it.
+             That costs you nothing here: the model examined you and marks you.</p>
+           <p class="muted tiny">If you made a screen recording, or recorded on another device, attach it and it is
+             kept beside this session exactly as one made here would be.</p>
+           <div class="ai-imp-acts">
+             <button class="btn btn-ghost btn-sm" id="ai-attach">🎧 Attach a recording</button>
+             <input type="file" id="ai-attach-in" accept="audio/*,video/*" hidden>
+             <span id="ai-attach-msg" class="muted tiny"></span>
+           </div>`}
       </div>
 
       <div class="card" data-animate>
@@ -577,7 +753,31 @@ scheme's own and the marks must add up.
           folder and scan — and it becomes an attempt like any other, in <strong>Marked by Claude</strong>.</p>
         <div id="ai-import"></div>
       </div>`;
-    importPanel(host.querySelector('#ai-import'), st, user, sid, { id: attemptId, audio: stored });
+    /* A file from Control Centre's screen recording, or from a phone. It
+       goes to exactly the same two places as a tape made here, so nothing
+       downstream can tell the difference — including the AI marker. */
+    const attach = host.querySelector('#ai-attach');
+    if (attach) {
+      const inp = host.querySelector('#ai-attach-in');
+      const amsg = host.querySelector('#ai-attach-msg');
+      attach.addEventListener('click', () => inp.click());
+      inp.addEventListener('change', async () => {
+        const f = (inp.files || [])[0]; inp.value = '';
+        if (!f) return;
+        attach.disabled = true; amsg.textContent = 'Storing…';
+        try {
+          stored = await Backend.uploadOsceAudio(attemptId, f);
+          if (typeof Drive !== 'undefined' && Drive.on()) {
+            try { await Drive.upload(f, Drive.nameFor('AI OSCE — ' + (st.topic || ''), Date.now(),
+              (f.name.split('.').pop() || 'm4a')), {}); } catch {}
+          }
+          amsg.innerHTML = `<span class="good">✓ ${esc(f.name)} kept for 24 hours${
+            typeof Drive !== 'undefined' && Drive.on() ? ', and copied to Drive' : ''}.</span>`;
+        } catch (err) { amsg.innerHTML = `<span class="bad">${esc(err.message || err)}</span>`; attach.disabled = false; }
+      });
+    }
+
+    importPanel(host.querySelector('#ai-import'), st, user, sid, { id: attemptId, get audio() { return stored; } });
   }
 
   /* ================= marked by Claude =================
@@ -668,16 +868,37 @@ scheme's own and the marks must add up.
       let d;
       try { d = typeof raw === 'string' ? JSON.parse(stripFence(raw)) : raw; }
       catch (err) { say(`<p class="bad">${esc(where)}: that is not valid JSON — ${esc(err.message || err)}</p>`); return; }
-      const errs = validate(d, st);
+
+      /* Opened from a station, the station is known and a verdict for a
+         different one is refused. Opened from My attempts it is not, so the
+         JSON's own station_id is looked up — which is also what makes the
+         check meaningful there: a verdict naming a station that is not in
+         the bank is a verdict nothing can be scored against. */
+      let target = st;
+      if (!target) {
+        const wanted = String(d?.station_id || '').trim();
+        if (!wanted) { say(`<p class="bad">This JSON has no "station_id", so there is nothing to attach it to.</p>`); return; }
+        try { target = await Backend.getOsceStation(wanted); } catch {}
+        if (!target) {
+          say(`<p class="bad">No station in the bank has the id <code>${esc(wanted)}</code>.
+            The examiner may have altered it — it must be copied from the station block exactly.</p>`); return;
+        }
+      }
+
+      const errs = validate(d, target);
       if (errs.length) { say(`<div class="os-made-bad"><p class="bad"><b>Not imported.</b></p>
         <ul>${errs.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>`); return; }
       say('<p class="muted">Keeping it…</p>');
       try {
-        const a = toAttempt(d, st, user, ctx?.audio, ctx?.id);
+        const a = toAttempt(d, target, user, ctx?.audio, ctx?.id);
         await Backend.saveOsceAttempt(a);
         OSCE.bustAttempts?.();
-        say(`<p class="good">✓ Kept — ${a.result.total}/${a.result.max} (${a.result.percent}%).
-          <a class="link" href="#/osce/result/${encodeURIComponent(a.id)}">Open the report →</a></p>`);
+        say(`<p class="good">✓ Kept — <strong>${esc(target.topic || '')}</strong>, ${a.result.total}/${a.result.max}
+          (${a.result.percent}%). <a class="link" href="#/osce/result/${encodeURIComponent(a.id)}">Open the report →</a></p>`);
+        /* The refresh waits. Redrawing the page immediately takes this
+           message down with it, and the message is the only place the score
+           and the link to the report appear. */
+        if (ctx?.onSaved) setTimeout(() => { try { ctx.onSaved(a); } catch {} }, 2500);
       } catch (err) { say(`<p class="bad">${esc(err.message || err)}</p>`); }
     }
 
@@ -723,9 +944,44 @@ scheme's own and the marks must add up.
     return (a >= 0 && b > a) ? t.slice(a, b + 1) : t;
   }
 
+  /* ---------------- the way back in, at any time ----------------
+
+     The importer used to exist only on the session screen, immediately
+     after a recording finished. So a session whose microphone never opened
+     had no route at all, and neither did coming back the next day with the
+     JSON in a file. That is the same class of mistake as hiding the Created
+     OSCE chip while its bin was empty: the panel you need is the one you
+     reach in order to PUT something in.
+
+     It is drawn on My attempts, always, whether or not anything has been
+     imported yet — which also answers "where is the Marked by Claude
+     section", since an empty section is not drawn. */
+  function attemptsPanel(host, user, onSaved) {
+    if (!host || !allowed(user)) return;
+    const folder = cfg().drive?.claudeMarkFolderId
+      ? `https://drive.google.com/drive/folders/${cfg().drive.claudeMarkFolderId}` : '';
+    host.innerHTML = `
+      <!-- NOT .os-att-fold: that class means "a section of attempts", and the
+           attempts page counts them. Borrowing it for styling made the
+           importer look like a fourth category. -->
+      <details class="card ai-bring" data-animate>
+        <summary>
+          <h3 class="card-title">✦ Bring back an AI-marked station</h3>
+          <span class="ai-bring-sum">paste · file · Drive</span>
+          <span class="dc-caret">▾</span>
+        </summary>
+        <p class="muted tiny">The JSON an examining model prints at the end of an
+          <strong>OSCE in AI</strong> session. It is checked against the station it names, and lands in
+          <strong>Marked by Claude</strong> below.${folder ? ` Drive folder:
+          <a class="link" href="${esc(folder)}" target="_blank" rel="noopener">the marked-JSON folder</a>.` : ''}</p>
+        <div id="ai-att-imp"></div>
+      </details>`;
+    importPanel(host.querySelector('#ai-att-imp'), null, user, null, { onSaved });
+  }
+
   return {
     allowed, buttonHtml, openDialog, buildPrompt, buildInstructions,
     stationBlock, rulesBlock, jsonBlock, levelOf, setLevel, levelText, LOGOS, MODELS,
-    session, validate, toAttempt, importPanel, stripFence, SCHEMA
+    session, validate, toAttempt, importPanel, attemptsPanel, stripFence, SCHEMA
   };
 })();
