@@ -83,7 +83,7 @@ const Created = (() => {
   let _guide = null;                 // { md, updated_at, by, source }
 
   async function shipped() {
-    const r = await fetch(GUIDE_FILE + '?v=86', { cache: 'no-cache' });
+    const r = await fetch(GUIDE_FILE + '?v=87', { cache: 'no-cache' });
     if (!r.ok) throw new Error('The shipped instructions could not be read (' + r.status + ').');
     return await r.text();
   }

@@ -5506,3 +5506,48 @@ html.is-printlock, html.is-printlock body { overflow: hidden; }
 .rs-it.is-rev { border-left-color: #c96442; }
 .rs-it.is-rev b { color: #c96442; }
 .rs-it.is-img img { width: 100%; max-width: 460px; border-radius: 10px; margin-top: 4px; }
+
+
+/* OSCE in AI, offered from the circuit brief as an alternative to the
+   built-in examiner rather than as a competing primary action. */
+.os-brief-ai { display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+  margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--hairline); }
+.os-brief-ai .muted { flex: 1 1 260px; }
+
+/* The examiner's after-the-questions row. */
+.ms-live-after { display: flex; flex-wrap: wrap; gap: 9px; align-items: center; margin-top: 9px; }
+.ms-live-after .muted { flex: 1 1 240px; }
+.ms-share-opt.is-live { border-color: color-mix(in srgb, var(--gold) 38%, var(--hairline));
+  background: color-mix(in srgb, var(--gold) 7%, transparent); }
+
+/* The marked sheet as the candidate sees it: everything, nothing tappable. */
+.rs-it.is-sheet { border-left-color: var(--gold); }
+.rs-it.is-sheet > b { color: var(--gold); }
+.rs-sheet-top { margin: 0 0 4px; font-size: 1rem; }
+.rs-sheet-top strong { font-family: Georgia, serif; font-size: 1.5rem; }
+.rs-sheet-top span { margin-left: 8px; font-size: .8rem; font-weight: 600; }
+.rs-sq { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--hairline); }
+.rs-sq-h { display: flex; gap: 9px; align-items: baseline; }
+.rs-sq-h span { font-size: .66rem; font-weight: 700; color: var(--gold); }
+.rs-sq-h p { flex: 1; margin: 0; font-size: .85rem; }
+.rs-sq-h b { font-family: Georgia, serif; white-space: nowrap; }
+.rs-sq ul { list-style: none; margin: 7px 0 0; padding: 0; }
+.rs-sq li { display: flex; gap: 8px; align-items: flex-start; padding: 3px 0; font-size: .82rem; }
+.rs-sq li i { font-style: normal; font-weight: 800; width: 14px; text-align: center; }
+.rs-sq li.is-covered i { color: var(--good, #34d399); }
+.rs-sq li.is-partial i { color: var(--gold); }
+.rs-sq li.is-partial span { color: var(--ink-3); }
+.rs-sq li.is-missed i { color: var(--bad, #f87171); }
+.rs-sq li.is-missed span { color: var(--ink-3); }
+.rs-sq-c { margin: 6px 0 0; font-size: .78rem; font-style: italic; color: var(--ink-3); }
+.rs-sq-c.is-final { margin-top: 12px; padding: 9px 12px; border-radius: 10px; font-style: normal;
+  background: var(--surface); }
+.rs-sq-c.is-final b { display: block; font-size: .6rem; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--gold); margin-bottom: 3px; }
+
+.rs-it.is-res { border-left-color: var(--good, #34d399);
+  background: color-mix(in srgb, var(--good, #34d399) 8%, var(--surface-2)); }
+.rs-it.is-res > b { color: var(--good, #34d399); }
+.rs-res-score { margin: 0 0 6px; }
+.rs-res-score strong { font-family: Georgia, serif; font-size: 1.6rem; }
+.rs-keep-msg { display: inline-block; margin-left: 9px; font-size: .78rem; }
