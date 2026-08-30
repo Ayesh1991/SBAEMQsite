@@ -152,6 +152,12 @@ const Marksheet = (() => {
           </div>
         </div>
 
+        <!-- The live half. Drawn always, collapsed to a single row until a
+             candidate is invited: examining somebody in the room needs no
+             session, and a control bar for a feature you are not using is
+             in the way of the one you are. -->
+        <div id="ms-live"></div>
+
         <div class="ms-who">
           <label class="wl-f"><span>Who are you marking?</span>
             <input type="text" id="ms-name" placeholder="Their name" value="${esc(sheet.candidate)}" autocomplete="off"></label>
@@ -177,6 +183,8 @@ const Marksheet = (() => {
             OSCE.marksOf(st)} marks · pass ${passMark}</i></summary>
           <div class="ms-brief-body">
             <p class="ms-scenario">${esc(st.scenario || 'This station has no scenario recorded.')}</p>
+            <div class="ms-send-row"><button class="btn btn-ghost btn-sm ms-send" data-send="scenario"
+              title="Send the scenario to the candidate's screen">➤ Send the scenario</button></div>
             ${OSCE.imagesOf(st).length ? `<div class="ms-brief-imgs">${OSCE.imagesOf(st).map(im => `
               <figure><img src="${esc(im.url)}" alt="${esc(im.caption || 'Image for this station')}" loading="lazy">
                 ${im.caption ? `<figcaption>${esc(im.caption)}</figcaption>` : ''}</figure>`).join('')}</div>` : ''}
@@ -236,10 +244,17 @@ const Marksheet = (() => {
               ${q.reveal_before ? `<div class="ms-reveal">
                 <b>Tell them this first</b>
                 <p>${esc(q.reveal_before)}</p>
+                <button class="btn btn-ghost btn-sm ms-send" data-send="reveal|${esc(String(q.id))}|${qi + 1}"
+                  title="Send this to the candidate">➤ Send</button>
               </div>` : ''}
-              ${OSCE.imagesOf(q).length ? `<div class="ms-q-imgs">${OSCE.imagesOf(q).map(im => `
+              ${OSCE.imagesOf(q).length ? `<div class="ms-q-imgs">${OSCE.imagesOf(q).map((im, ii) => `
                 <figure><img src="${esc(im.url)}" alt="${esc(im.caption || 'Image for this question')}" loading="lazy">
-                  ${im.caption ? `<figcaption>${esc(im.caption)}</figcaption>` : ''}</figure>`).join('')}</div>` : ''}
+                  ${im.caption ? `<figcaption>${esc(im.caption)}</figcaption>` : ''}
+                  <button class="btn btn-ghost btn-sm ms-send" data-send="image|${esc(String(q.id))}|${qi + 1}|${ii}"
+                    title="Send this picture to the candidate">➤ Send</button></figure>`).join('')}</div>` : ''}
+              <div class="ms-send-row"><button class="btn btn-ghost btn-sm ms-send"
+                data-send="question|${esc(String(q.id))}|${qi + 1}"
+                title="Send this question to the candidate's screen">➤ Send question ${qi + 1}</button></div>
               <p class="ms-share muted tiny">${real.length} point${real.length === 1 ? '' : 's'} ·
                 each worth ${Math.round(s.share * 100) / 100} mark${s.share === 1 ? '' : 's'} ·
                 half for partly said</p>
@@ -331,6 +346,172 @@ const Marksheet = (() => {
     });
 
     paintQs();
+    wireLive(view, st, qs, user);
+  }
+
+  /* ================= the live half =================
+
+     Everything here is additive. A station marked with the candidate
+     sitting opposite you needs none of it, so nothing is created until
+     somebody is actually invited — and every Send is a no-op when there is
+     no session, rather than an error, because reaching for Send by habit
+     during a face-to-face round should cost nothing. */
+
+  const LIVE_KEY = st => 'aureum.marksheet.live:' + st;
+  const liveId = st => { try { return localStorage.getItem(LIVE_KEY(st)) || ''; } catch { return ''; } };
+  const setLive = (st, id) => { try { id ? localStorage.setItem(LIVE_KEY(st), id) : localStorage.removeItem(LIVE_KEY(st)); } catch {} };
+
+  function wireLive(view, st, qs, user) {
+    const host = view.querySelector('#ms-live');
+    if (!host || typeof RealStation === 'undefined') return;
+
+    let row = null, off = null, tick = null;
+
+    const stop = () => { try { off?.(); } catch {} off = null; clearInterval(tick); tick = null; };
+
+    const paint = () => {
+      const s = row?.state || null;
+      const status = s?.status || '';
+      const running = status === RealStation.S.RUNNING;
+
+      host.innerHTML = `
+        <div class="ms-live ${status ? 'is-' + status : ''}">
+          ${!row ? `
+            <div class="ms-live-invite">
+              <label class="wl-f"><span>Sitting it on their own device — their user number</span>
+                <input type="text" id="ms-live-no" inputmode="numeric" placeholder="e.g. 10042" autocomplete="off"></label>
+              <button class="btn btn-gold btn-sm" id="ms-live-go">Invite</button>
+              <span class="muted tiny">Leave this empty if they are sitting opposite you — everything else works
+                exactly as it does now.</span>
+            </div>`
+          : `
+            <div class="ms-live-bar">
+              <span class="ms-live-who">
+                <b>${esc(s.candidateName || 'The candidate')}</b>
+                <i>${status === RealStation.S.INVITED ? 'invited — waiting for them to accept'
+                  : status === RealStation.S.ACCEPTED ? '✓ invitation granted'
+                  : running ? 'sitting the station' : esc(status)}</i>
+              </span>
+              ${running ? `<span class="ms-live-clock" id="ms-live-clock">${RealStation.clock(RealStation.secondsLeft(s))}</span>` : ''}
+              <span class="ms-live-acts">
+                ${status === RealStation.S.ACCEPTED ? `<button class="btn btn-gold btn-sm" id="ms-live-start">▶ Start — 15 minutes on both screens</button>` : ''}
+                ${running ? `<button class="btn btn-ghost btn-sm" id="ms-live-stop">■ End the station</button>` : ''}
+                <button class="btn btn-ghost btn-sm" id="ms-live-drop">Cancel</button>
+              </span>
+            </div>
+            ${status === RealStation.S.INVITED ? `<p class="muted tiny">They see a card saying
+              <strong>OSCE by ${esc(s.examinerName || '')}</strong> under OSCE → Real station.</p>` : ''}
+            ${running ? `<p class="muted tiny">Use <strong>➤ Send</strong> beside the scenario, a question, a reveal or
+              a picture to put it on their screen. The marking points are never sent.</p>` : ''}`}
+        </div>`;
+
+      host.querySelector('#ms-live-go')?.addEventListener('click', invite);
+      host.querySelector('#ms-live-no')?.addEventListener('keydown', e => { if (e.key === 'Enter') invite(); });
+      host.querySelector('#ms-live-start')?.addEventListener('click', async e => {
+        e.currentTarget.disabled = true;
+        try { row = await RealStation.start(row); paint(); } catch (err) { warn(err); }
+      });
+      host.querySelector('#ms-live-stop')?.addEventListener('click', async e => {
+        e.currentTarget.disabled = true;
+        try { row = await RealStation.finish(row); } catch {}
+        stop(); setLive(st.id, ''); row = null; paint();
+      });
+      host.querySelector('#ms-live-drop')?.addEventListener('click', async () => {
+        try { await Backend.dropLiveStation(row.id); } catch {}
+        stop(); setLive(st.id, ''); row = null; paint();
+      });
+
+      /* One second ticks the clock only; the row itself is re-read on the
+         poll. Both sides derive the number from the same start instant, so
+         they cannot drift apart. */
+      clearInterval(tick); tick = null;
+      if (running) tick = setInterval(() => {
+        const el = host.querySelector('#ms-live-clock');
+        if (!el || !row?.state) return;
+        const left = RealStation.secondsLeft(row.state);
+        el.textContent = RealStation.clock(left);
+        el.classList.toggle('is-out', left <= 0);
+      }, 1000);
+    };
+
+    /* Into the strip, not after it: an error that lands outside the box it
+       belongs to reads as a page-level failure rather than "that number is
+       not one of ours". */
+    const warn = err => (host.querySelector('.ms-live') || host)
+      .insertAdjacentHTML('beforeend', `<p class="bad tiny">${esc(err.message || err)}</p>`);
+
+    async function invite() {
+      const inp = host.querySelector('#ms-live-no');
+      const no = String(inp.value || '').replace(/\D/g, '');
+      if (!no) { warn(new Error('Enter their user number first.')); return; }
+      const b = host.querySelector('#ms-live-go'); b.disabled = true; b.textContent = 'Looking…';
+      try {
+        const who = await Backend.findUserByNo(no);
+        if (!who) throw new Error(`Nobody has the number ${no}.`);
+        if (who.id === user?.id) throw new Error('That is your own number.');
+        row = await RealStation.open({ station: st, user, candidate: who });
+        setLive(st.id, row.id);
+        listen();
+        paint();
+      } catch (err) { b.disabled = false; b.textContent = 'Invite'; warn(err); }
+    }
+
+    function listen() {
+      stop();
+      if (!row) return;
+      off = RealStation.follow(row.id, r => {
+        row = r;
+        if (!RealStation.live(r.state?.status)) { stop(); setLive(st.id, ''); row = null; }
+        paint();
+      });
+    }
+
+    /* Sending. Built from RealStation.sendable, which is a whitelist — the
+       marking points are not omitted here, they are never in the payload
+       to begin with. */
+    view.addEventListener('click', async e => {
+      const b = e.target.closest('.ms-send'); if (!b) return;
+      e.preventDefault();
+      /* Remember the label BEFORE overwriting it, on every path. The first
+         version only stored it on the path that succeeded, so a button
+         pressed with nobody sitting the station came back as a generic
+         "Send" and never regained the words that said what it sends. */
+      const was = b.dataset.was || b.textContent;
+      b.dataset.was = was;
+      if (!row || row.state?.status !== RealStation.S.RUNNING) {
+        b.textContent = '➤ nobody is sitting it';
+        setTimeout(() => { b.textContent = was; }, 1800);
+        return;
+      }
+      const [kind, qid, n, ii] = String(b.dataset.send).split('|');
+      const q = qs.find(x => String(x.id) === String(qid)) || null;
+      b.disabled = true;
+      try {
+        const extra = kind === 'scenario' ? { text: st.scenario || '' }
+          : kind === 'image' ? Object.assign({ n: Number(n) }, OSCE.imagesOf(q)[Number(ii)] || {})
+          : { n: Number(n) };
+        row = await RealStation.send(row, RealStation.sendable(kind, q, extra));
+        b.textContent = '✓ sent'; b.classList.add('is-sent');
+      } catch (err) { b.textContent = 'not sent'; warn(err); }
+      finally { setTimeout(() => { b.disabled = false; b.textContent = was; b.classList.remove('is-sent'); }, 2000); }
+    });
+
+    /* Coming back to a sheet whose station is still live picks it up again
+       rather than orphaning it — the same session, the same clock. */
+    (async () => {
+      const id = liveId(st.id);
+      if (!id) { paint(); return; }
+      try {
+        const r = await Backend.getLiveStation(id);
+        if (r && RealStation.live(r.state?.status)) { row = r; listen(); }
+        else setLive(st.id, '');
+      } catch { setLive(st.id, ''); }
+      paint();
+    })();
+
+    window.addEventListener('hashchange', function bye() {
+      window.removeEventListener('hashchange', bye); stop();
+    });
   }
 
   /* ================= turning a sheet into an attempt =================
@@ -485,6 +666,15 @@ const Marksheet = (() => {
     wrap.querySelector('#ms-next').addEventListener('click', () => {
       if (!confirm(`Clear the sheet and start on the next candidate?\n\n${sheet.candidate || 'This one'} scored ${r.total}/${r.max}. Make sure you have sent or printed it — it is not kept once cleared.`)) return;
       wipe(st.id);
+      /* Release the live session as well: the next candidate is a new
+         invitation, and the one who has just finished has to be free to
+         accept somebody else's. */
+      (async () => {
+        const id = liveId(st.id);
+        if (!id) return;
+        try { const r = await Backend.getLiveStation(id); if (r) await RealStation.finish(r); } catch {}
+        setLive(st.id, '');
+      })();
       shut();
       /* Straight back into a fresh sheet on the same station. The whole
          point of the rotation is that the next person is already waiting. */
