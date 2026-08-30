@@ -393,18 +393,49 @@ const Wallet = (() => {
 
     const paint = () => {
       const st = Drive.status();
+      /* THE MISSED ONES, COUNTED.
+         Until v90 a recording that could not be copied left no trace at
+         all, so a folder that had quietly stopped filling looked exactly
+         like a fortnight with no stations in it. Every miss now leaves a
+         row, and the ones still inside their 24 hours can be fetched
+         back off the server and sent up. */
+      const waiting = Drive.pending();
+      const savable = Drive.recoverable();
+      const missBox = waiting.length ? `
+        <div class="wl-dv-miss">
+          <p><strong>${waiting.length} recording${waiting.length === 1 ? '' : 's'} did not reach Drive.</strong>
+            ${savable.length
+              ? `${savable.length} ${savable.length === 1 ? 'is' : 'are'} still on the server and can be copied up now.`
+              : 'All of them are past their 24 hours on the server, so there is nothing left to copy.'}</p>
+          <ul class="wl-dv-misslist">${waiting.slice(-6).reverse().map(x => {
+            const alive = savable.some(y => y.id === x.id);
+            return `<li class="${alive ? 'is-live' : 'is-gone'}">
+              <span>${esc(x.topic || 'Recording')}</span>
+              <em class="muted tiny">${esc(new Date(x.when || Date.now()).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }))}
+                — ${alive ? 'recoverable' : 'past its 24 hours'}${x.why ? ' · ' + esc(x.why) : ''}</em></li>`;
+          }).join('')}</ul>
+          ${waiting.length > 6 ? `<p class="muted tiny">…and ${waiting.length - 6} older.</p>` : ''}
+          <div class="wl-dv-acts">
+            ${savable.length && st.code === 'connected'
+              ? `<button class="btn btn-gold btn-sm" id="wl-dv-drain">⤒ Copy these ${savable.length} up now</button>` : ''}
+            <button class="btn btn-ghost btn-sm" id="wl-dv-clear">Clear the list</button>
+          </div>
+        </div>` : '';
       const body = {
         disconnected: `<p class="muted">Your OSCE recordings are kept on the AUREUM server for 24 hours and then
             deleted. Connect a Google Drive folder and a copy of every recording is saved there as well — yours,
             for as long as you keep it.</p>
           <p class="muted tiny">AUREUM can only see the folder you choose and the files it puts in it. It cannot
             read anything else in your Drive.</p>
-          <button class="btn btn-gold" id="wl-dv-go">Connect a Drive folder</button>`,
+          <button class="btn btn-gold" id="wl-dv-go">Connect a Drive folder</button>
+          ${missBox}`,
         stale: `<p class="wl-dv-warn">⚠ ${esc(st.label)}. Recordings are still kept on the server for 24 hours, but
             nothing has been copied to Drive since. Google ends the permission after about a week — reconnecting
             takes two taps.</p>
+          ${st.error ? `<p class="muted tiny">Google said: ${esc(st.error)}</p>` : ''}
           <button class="btn btn-gold" id="wl-dv-go">Reconnect Drive</button>
-          <button class="btn btn-ghost btn-sm" id="wl-dv-off">Turn it off</button>`,
+          <button class="btn btn-ghost btn-sm" id="wl-dv-off">Turn it off</button>
+          ${missBox}`,
         connected: `<p class="good">✓ Saving to <strong>${esc(st.folder || 'your folder')}</strong>${
             st.saved ? ` — ${st.saved} recording${st.saved === 1 ? '' : 's'} so far` : ' — nothing saved yet'}${
             st.last ? `, last on ${esc(new Date(st.last).toLocaleDateString('en-GB', { dateStyle: 'medium' }))}` : ''}.</p>
@@ -420,22 +451,87 @@ const Wallet = (() => {
           </div>
           <p class="muted tiny">Anything marked <em>before</em> you connected was never copied — the upload happens
             at marking time and there was nowhere to send it. Whatever is still inside its 24 hours can be picked
-            up now.</p>`
+            up now.</p>
+          ${missBox}`
       }[st.code] || '';
       host.hidden = false;
       host.innerHTML = `<h3 class="card-title">☁ Recordings in your Drive ${Drive.badgeHtml()}</h3>${body}
         <div class="dev-status" id="wl-dv-msg"></div>`;
 
+      /* SENDING UP WHAT THE OUTBOX REMEMBERS.
+         The row holds the server path, not the tape, so this fetches the
+         24-hour copy back and puts it in Drive. A row whose copy has been
+         swept is dropped rather than kept forever promising a rescue that
+         can no longer happen. */
+      async function drainOutbox(say) {
+        const rows = Drive.recoverable();
+        if (!rows.length) return { done: 0, gone: 0, failed: 0 };
+        let done = 0, gone = 0, failed = 0;
+        for (let i = 0; i < rows.length; i++) {
+          say?.(`Copying ${i + 1} of ${rows.length}…`);
+          const r = rows[i];
+          let url = null;
+          try {
+            url = r.kind === 'case' ? await Backend.getCaseAudioUrl(r.path) : await Backend.getOsceAudioUrl(r.path);
+          } catch {}
+          if (!url) { Drive.forget(r.id); gone++; continue; }
+          try {
+            const blob = await (await fetch(url)).blob();
+            const ext = /mp4|aac/.test(blob.type || '') ? 'm4a' : 'webm';
+            const label = (r.kind === 'case' ? 'CASE — ' : '') + (r.topic || 'Recording');
+            const up = await Drive.upload(blob, Drive.nameFor(label, r.when || Date.now(), ext),
+              { description: 'AUREUM — copied up from the outbox' });
+            if (!up) { failed++; continue; }
+            Drive.forget(r.id);
+            done++;
+          } catch { failed++; }
+        }
+        return { done, gone, failed };
+      }
+
       host.querySelector('#wl-dv-go')?.addEventListener('click', async e => {
         e.target.disabled = true;
         const msg = host.querySelector('#wl-dv-msg');
         msg.innerHTML = '<span class="muted">Waiting for Google…</span>';
-        try { await Drive.connect(); msg.innerHTML = '<span class="good">✓ Connected.</span>'; paint(); }
+        try {
+          await Drive.connect();
+          /* Reconnecting is the moment the waiting tapes become sendable,
+             and asking the user to find a second button for it is how
+             they get missed. */
+          let tail = '';
+          if (Drive.recoverable().length) {
+            msg.innerHTML = '<span class="muted">Connected — copying up the ones that were waiting…</span>';
+            const r = await drainOutbox(t => { msg.innerHTML = `<span class="muted">${esc(t)}</span>`; });
+            tail = r.done ? ` ${r.done} waiting recording${r.done === 1 ? '' : 's'} copied up.` : '';
+            if (r.failed) tail += ` ${r.failed} would not upload.`;
+          }
+          paint();
+          const fresh = host.querySelector('#wl-dv-msg');
+          if (fresh) fresh.innerHTML = `<span class="good">✓ Connected.${esc(tail)}</span>`;
+        }
         catch (err) { msg.innerHTML = `<span class="bad">${esc(err.message || err)}</span>`; e.target.disabled = false; }
       });
       host.querySelector('#wl-dv-off')?.addEventListener('click', () => {
         if (!confirm('Stop saving recordings to Drive? Anything already saved stays in your folder.')) return;
         Drive.disconnect(); paint();
+      });
+      host.querySelector('#wl-dv-drain')?.addEventListener('click', async e => {
+        e.target.disabled = true;
+        const msg = host.querySelector('#wl-dv-msg');
+        const r = await drainOutbox(t => { msg.innerHTML = `<span class="muted">${esc(t)}</span>`; });
+        paint();
+        const fresh = host.querySelector('#wl-dv-msg');
+        if (fresh) {
+          fresh.innerHTML = r.done
+            ? `<span class="good">✓ ${r.done} copied to Drive.</span>${r.failed ? ` <span class="bad">${r.failed} would not upload.</span>` : ''}${
+                r.gone ? ` <span class="muted tiny">${r.gone} had already been swept.</span>` : ''}`
+            : `<span class="muted">Nothing could be copied${r.gone ? ` — ${r.gone} past their 24 hours` : ''}${
+                r.failed ? `, ${r.failed} refused` : ''}.</span>`;
+        }
+      });
+      host.querySelector('#wl-dv-clear')?.addEventListener('click', () => {
+        if (!confirm('Forget the list of recordings that did not reach Drive? The recordings themselves are not affected.')) return;
+        Drive.forgetAll(); paint();
       });
 
       /* CATCHING UP ON WHAT WAS MARKED BEFORE THE FOLDER EXISTED.
