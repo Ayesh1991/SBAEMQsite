@@ -65,6 +65,28 @@ const RealStation = (() => {
       qid: String(q?.id ?? ''), n: extra?.n || 0,
       url: extra?.url || '', caption: extra?.caption || ''
     });
+
+    /* AFTERWARDS, THE SCHEME IS THE POINT.
+
+       During the station the marking points must never cross. Once it is
+       over the opposite is true: the candidate cannot learn anything from
+       "you scored 62" and learns everything from seeing which points were
+       covered, half-said and never reached, while the examiner talks
+       through them. So the same information that was withheld for fifteen
+       minutes is handed over deliberately at the end.
+
+       Read-only on their side. Not because a candidate re-ticking their
+       own sheet would corrupt anything — the marks live in the examiner's
+       device and in the attempt — but because a sheet you can change is a
+       sheet you argue with rather than read. */
+    if (kind === 'marksheet') return Object.assign(base, {
+      total: extra?.total ?? 0, max: extra?.max ?? 0, percent: extra?.percent ?? 0,
+      pass: !!extra?.pass, comment: extra?.comment || '',
+      questions: extra?.questions || []
+    });
+    /* The finished attempt, for them to keep. Sent whole because that is
+       what My attempts stores — the same object the chat carries today. */
+    if (kind === 'result') return Object.assign(base, { attempt: extra?.attempt || null });
     return base;
   }
 
@@ -154,6 +176,18 @@ const RealStation = (() => {
 
     if (active) { return sitting(view, body, active, user); }
 
+    /* THE INVITATION HAS TO ARRIVE ON ITS OWN.
+
+       The first version drew this list once. So an invitation sent while
+       the candidate was already looking at the page never appeared, and
+       the only way to see it was to reload — which nobody thinks to do,
+       because the page is already open and showing "nothing waiting".
+
+       The station itself polls once it is running; the LIST has to poll
+       too, for the same reason and with the same cheapness: it is a
+       handful of small rows, and only while this tab is open. */
+    watchInbox(view, user, rows);
+
     body.innerHTML = `
       <header data-animate>
         <p class="kicker">SAT WITH SOMEBODY ELSE EXAMINING</p>
@@ -209,6 +243,33 @@ const RealStation = (() => {
     });
   }
 
+  /* Watching for an invitation while the page is open. Redraws only when
+     the set of live sessions actually changes, so a candidate reading the
+     page is not fighting a redraw every few seconds. */
+  let inboxTimer = null;
+  function watchInbox(view, user, rows) {
+    clearInterval(inboxTimer);
+    const key = list => JSON.stringify((list || [])
+      .filter(r => live(r.state?.status))
+      .map(r => r.id + ':' + r.state?.status).sort());
+    let last = key(rows);
+    inboxTimer = setInterval(async () => {
+      /* Stop the moment this is no longer the page being looked at —
+         a timer that outlives its view is a redraw into somebody else's. */
+      if (!document.body.contains(view) || !location.hash.startsWith('#/osce/real')) {
+        clearInterval(inboxTimer); inboxTimer = null; return;
+      }
+      let fresh = [];
+      try { fresh = await Backend.myLiveStations(); } catch { return; }
+      const k = key(fresh);
+      if (k === last) return;
+      last = k;
+      clearInterval(inboxTimer); inboxTimer = null;
+      render(view, user);
+      try { navigator.vibrate?.(120); } catch {}
+    }, POLL_MS);
+  }
+
   /* ---------------- the candidate, mid-station ----------------
      Deliberately bare: a clock, and what has been sent, newest last so it
      reads downwards like a conversation. Nothing to press except Leave,
@@ -243,6 +304,25 @@ const RealStation = (() => {
             : `<p class="muted">Nothing yet. The scenario arrives first.</p>`}
         </div>`;
 
+      /* Keeping the result. It becomes an ordinary manual attempt through
+         the same importer the chat uses, so nothing downstream learns that
+         a second delivery route exists. */
+      body.querySelectorAll('[data-keep]').forEach(b => b.addEventListener('click', async e => {
+        const at = e.currentTarget.dataset.keep;
+        const msg = body.querySelector(`[data-keepmsg="${CSS.escape(at)}"]`);
+        const it = (cur.state?.sent || []).find(x => String(x.at) === String(at));
+        if (!it?.attempt) { msg.innerHTML = '<span class="bad">Nothing to keep.</span>'; return; }
+        e.currentTarget.disabled = true; msg.textContent = 'Keeping…';
+        try {
+          const a = await Marksheet.importAttempt(it.attempt);
+          msg.innerHTML = `<span class="good">✓ In your attempts —
+            <a class="link" href="#/osce/result/${encodeURIComponent(a.id)}">open it</a></span>`;
+        } catch (err) {
+          e.currentTarget.disabled = false;
+          msg.innerHTML = `<span class="bad">${esc(err.message || err)}</span>`;
+        }
+      }));
+
       body.querySelector('#rs-leave').addEventListener('click', async e => {
         const b = e.currentTarget;
         if (b.dataset.sure !== '1') {
@@ -263,9 +343,42 @@ const RealStation = (() => {
       if (it.kind === 'image') return `<div class="rs-it is-img"><b>Look at this</b>
         <img src="${esc(it.url)}" alt="${esc(it.caption || 'Image sent by the examiner')}" loading="lazy">
         ${it.caption ? `<p class="muted tiny">${esc(it.caption)}</p>` : ''}</div>`;
+      if (it.kind === 'marksheet') return sheetHtml(it);
+      if (it.kind === 'result') return `<div class="rs-it is-res">
+        <b>Your marks</b>
+        <p class="rs-res-score"><strong>${it.attempt?.result?.total ?? '—'}</strong> of
+          ${it.attempt?.result?.max ?? '—'} · ${it.attempt?.result?.percent ?? '—'}%</p>
+        <p class="muted tiny">Keep it and it joins <strong>Marked in person</strong> under My attempts, with the
+          scheme point by point and the printout.</p>
+        <button class="btn btn-gold btn-sm" data-keep="${esc(String(it.at))}">Keep it in my attempts</button>
+        <span class="rs-keep-msg" data-keepmsg="${esc(String(it.at))}"></span>
+      </div>`;
       return `<div class="rs-it is-q"><b>Question ${it.n || ''}${it.marks ? ` · ${it.marks} marks` : ''}</b>
         <p>${esc(it.text || '')}</p></div>`;
     };
+
+    clearInterval(inboxTimer); inboxTimer = null;    // the station supersedes the inbox
+    /* The marksheet, as they see it: every point with what it earned, and
+       nothing to press. `data-*` attributes and click handlers are simply
+       absent rather than disabled — a control that exists and refuses is a
+       control somebody keeps pressing. */
+    const MARK = { covered: '✓', partial: '~', missed: '✗' };
+    const sheetHtml = it => `<div class="rs-it is-sheet">
+      <b>The marking sheet</b>
+      <p class="rs-sheet-top"><strong>${it.total}</strong> of ${it.max} · ${it.percent}%
+        <span class="${it.pass ? 'good' : 'bad'}">${it.pass ? 'Pass' : 'Below the pass mark'}</span></p>
+      <p class="muted tiny">Read it while they talk it through. It cannot be changed here — the marks are theirs.</p>
+      ${(it.questions || []).map((q, i) => `
+        <div class="rs-sq">
+          <div class="rs-sq-h"><span>Q${i + 1}</span><p>${esc(q.prompt || '')}</p>
+            <b>${q.awarded}/${q.max}</b></div>
+          <ul>${(q.points || []).map(p => `
+            <li class="is-${esc(p.status || 'missed')}"><i>${MARK[p.status] || '○'}</i>
+              <span>${esc(p.point || '')}</span></li>`).join('')}</ul>
+          ${q.comment ? `<p class="rs-sq-c">${esc(q.comment)}</p>` : ''}
+        </div>`).join('')}
+      ${it.comment ? `<div class="rs-sq-c is-final"><b>The examiner's comment</b>${esc(it.comment)}</div>` : ''}
+    </div>`;
 
     const stop = () => { clearInterval(timer); timer = null; try { off?.(); } catch {} off = null; };
 

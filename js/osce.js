@@ -1936,7 +1936,13 @@ const OSCE = (() => {
                 recorded. Nothing said in the examiner's voice can earn you marks either way.</span></span>
           </label>` : ''}
           <button class="btn btn-gold btn-lg" id="os-go">${resuming ? '▶ Resume the station' : "▶ I've read it — start"}</button>
+          ${typeof AiOsce !== 'undefined' && AiOsce.allowed(user) ? `<div class="os-brief-ai">
+            ${AiOsce.buttonHtml()}
+            <span class="muted tiny">Sit this one against a chat model instead — the same station, the same fifteen
+              minutes, examined and marked on the other half of the screen. The circuit waits where it is.</span>
+          </div>` : ''}
         </div>`;
+      stage.querySelector('#os-aiosce')?.addEventListener('click', () => AiOsce.openDialog(st, { sid }));
       stage.querySelector('#os-both')?.addEventListener('change', e => setExaminerOnTape(e.target.checked));
       stage.querySelector('#os-pre-go').addEventListener('click', e => preflight(stage, e.target));
 

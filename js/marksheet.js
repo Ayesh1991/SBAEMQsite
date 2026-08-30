@@ -357,6 +357,8 @@ const Marksheet = (() => {
      no session, rather than an error, because reaching for Send by habit
      during a face-to-face round should cost nothing. */
 
+  /* The live row, reachable from the finish modal without another read. */
+  const liveRow = {};
   const LIVE_KEY = st => 'aureum.marksheet.live:' + st;
   const liveId = st => { try { return localStorage.getItem(LIVE_KEY(st)) || ''; } catch { return ''; } };
   const setLive = (st, id) => { try { id ? localStorage.setItem(LIVE_KEY(st), id) : localStorage.removeItem(LIVE_KEY(st)); } catch {} };
@@ -402,7 +404,12 @@ const Marksheet = (() => {
             ${status === RealStation.S.INVITED ? `<p class="muted tiny">They see a card saying
               <strong>OSCE by ${esc(s.examinerName || '')}</strong> under OSCE → Real station.</p>` : ''}
             ${running ? `<p class="muted tiny">Use <strong>➤ Send</strong> beside the scenario, a question, a reveal or
-              a picture to put it on their screen. The marking points are never sent.</p>` : ''}`}
+              a picture to put it on their screen. The marking points are never sent.</p>
+              <div class="ms-live-after">
+                <button class="btn btn-ghost btn-sm" id="ms-live-sheet">📋 Send them the marked sheet</button>
+                <span class="muted tiny">For the debrief — every point with what it earned, read-only on their side.
+                  Send it when the questions are done.</span>
+              </div>` : ''}`}
         </div>`;
 
       host.querySelector('#ms-live-go')?.addEventListener('click', invite);
@@ -415,6 +422,15 @@ const Marksheet = (() => {
         e.currentTarget.disabled = true;
         try { row = await RealStation.finish(row); } catch {}
         stop(); setLive(st.id, ''); row = null; paint();
+      });
+      host.querySelector('#ms-live-sheet')?.addEventListener('click', async e => {
+        const b = e.currentTarget, was = b.textContent;
+        b.disabled = true; b.textContent = 'Sending…';
+        try {
+          row = await RealStation.send(row, RealStation.sendable('marksheet', null, sheetPayload()));
+          b.textContent = '✓ they have it';
+        } catch (err) { b.textContent = was; warn(err); }
+        finally { setTimeout(() => { b.disabled = false; b.textContent = was; }, 2200); }
       });
       host.querySelector('#ms-live-drop')?.addEventListener('click', async () => {
         try { await Backend.dropLiveStation(row.id); } catch {}
@@ -437,6 +453,30 @@ const Marksheet = (() => {
     /* Into the strip, not after it: an error that lands outside the box it
        belongs to reads as a page-level failure rather than "that number is
        not one of ours". */
+    /* Built from the SAME scoring the examiner is looking at, not from a
+       second copy of the arithmetic. Headings are dropped, because they
+       carry no marks and a candidate reading a debrief does not need the
+       examiner's scaffolding. */
+    function sheetPayload() {
+      const sheet = load(st.id) || { marks: {}, notes: {}, comment: '' };
+      const s = scoreAll(qs, sheet.marks);
+      return {
+        total: s.total, max: s.max, percent: s.percent, pass: s.total >= OSCE.passOf(st),
+        comment: sheet.comment || '',
+        questions: qs.map(q => {
+          const sc = scoreQuestion(q, sheet.marks);
+          const mine = sheet.marks[String(q.id)] || [];
+          return { prompt: q.prompt || '', awarded: sc.awarded, max: sc.max,
+            comment: sheet.notes[String(q.id)] || '',
+            points: (q.marking_points || []).map((p, i) => head(p) ? null
+              : { point: p, status: mine[i] || 'missed' }).filter(Boolean) };
+        })
+      };
+    }
+    /* The finish modal needs the row to offer "send it down the station".
+       Handed over rather than re-fetched: it is the same session. */
+    liveRow[st.id] = () => row;
+
     const warn = err => (host.querySelector('.ms-live') || host)
       .insertAdjacentHTML('beforeend', `<p class="bad tiny">${esc(err.message || err)}</p>`);
 
@@ -581,9 +621,18 @@ const Marksheet = (() => {
         </div>
 
         <p class="muted">Send it to them so it lands in their own <strong>My attempts</strong>, or make a PDF for
-          somebody who is not on AUREUM. You can do both.</p>
+          somebody who is not on AUREUM. You can do all of these.</p>
 
         <div class="ms-share">
+          ${liveRow[st.id]?.() ? `<div class="ms-share-opt is-live">
+            <h4>📡 Straight down the station</h4>
+            <p class="muted tiny">They are still connected. It appears on their screen at once, with a button that
+              puts it in their attempts — no chat, no waiting, and it works while you are still sitting together
+              going through it.</p>
+            <button class="btn btn-gold" id="ms-live-send">📡 Send it to ${esc(liveRow[st.id]().state?.candidateName || 'them')}</button>
+            <p class="ms-msg" id="ms-live-send-msg"></p>
+          </div>` : ''}
+
           <div class="ms-share-opt">
             <h4>💬 Send it in the chat</h4>
             <p class="muted tiny">Goes to one person as a private message. They import it in one tap and it sits in
@@ -661,6 +710,24 @@ const Marksheet = (() => {
         }
       });
     })();
+
+    /* ---- straight down the live station ----
+       A third route, not a replacement: the chat still works, the PDF
+       still works, and a candidate who has already left is reached by
+       whichever of those you prefer. */
+    wrap.querySelector('#ms-live-send')?.addEventListener('click', async e => {
+      const b = e.currentTarget, msg = wrap.querySelector('#ms-live-send-msg');
+      const row = liveRow[st.id]?.();
+      if (!row) { msg.innerHTML = '<span class="bad">That station has closed.</span>'; return; }
+      b.disabled = true; msg.textContent = 'Sending…';
+      try {
+        await RealStation.send(row, RealStation.sendable('result', null, { attempt }));
+        msg.innerHTML = '<span class="good">✓ On their screen. They tap once to keep it.</span>';
+      } catch (err) {
+        b.disabled = false;
+        msg.innerHTML = `<span class="bad">${esc(err.message || err)}</span>`;
+      }
+    });
 
     /* ---- the rotation ---- */
     wrap.querySelector('#ms-next').addEventListener('click', () => {
