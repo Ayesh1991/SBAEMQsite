@@ -758,6 +758,24 @@ average mean nothing.
            </div>`}
       </div>
 
+      ${tape?.blob ? `<div class="card os-markbox" data-animate>
+        <h3 class="card-title">✨ Have AUREUM mark it as well</h3>
+        <p class="muted">The model that examined you will mark it in its own words, and that verdict is the better
+          teaching. This is the <em>other</em> reading: our marker, listening to the same tape, scoring against the
+          same scheme in the same way as every station you sit here — so the two are directly comparable and the
+          numbers sit on one scale.</p>
+        <p class="muted tiny">It lands in <strong>Marked by AI</strong>. The model's own verdict lands in
+          <strong>Marked by Claude</strong>. Neither replaces the other; that is the point.</p>
+        <div class="os-src" id="os-src"></div>
+        <div id="os-coach-box"></div>
+        <div class="os-mark-acts">
+          <div class="os-prov" id="os-prov"></div>
+          <button class="btn btn-gold btn-lg" id="os-mark">Mark this station</button>
+        </div>
+        <p class="os-est" id="os-est"></p>
+        <div id="os-mark-out"></div>
+      </div>` : ''}
+
       <div class="card" data-animate>
         <h3 class="card-title">Bring the marking back</h3>
         <p class="muted">The examiner ends by printing a JSON block. Paste it here — or drop the file in your Drive
@@ -786,6 +804,30 @@ average mean nothing.
             typeof Drive !== 'undefined' && Drive.on() ? ', and copied to Drive' : ''}.</span>`;
         } catch (err) { amsg.innerHTML = `<span class="bad">${esc(err.message || err)}</span>`; attach.disabled = false; }
       });
+    }
+
+    /* THE SAME MARKING PATH, NOT A SECOND ONE.
+
+       wireMarkControls draws the source toggle, the model list with its
+       prices, the coaching picker and the running cost estimate, and its
+       button calls the same markCore every station here uses — the same
+       upload, the same pending queue, the same retry, the same attempt
+       shape. Reproducing any of that would be reproducing every fix made
+       to it since v63.
+
+       `ans` is empty and that is correct: this tape is one unbroken
+       fifteen minutes with no per-question segmentation, which is exactly
+       the case audio marking already handles — the model listens and
+       works out who said what. */
+    if (tape?.blob && host.querySelector('#os-mark')) {
+      const rec = Object.assign({}, tape, { secs: tape.secs || Math.round((tape.size || 0) / 3000) });
+      const ans = {};
+      /* [] not '':  is the recogniser's list of {id,t}. Nothing was
+         transcribed here — the model listens to the tape instead. */
+      OSCE.wireMarkControls(host, st, ans, [], rec,
+        { elapsed: OSCE.minsOf(st) * 60, aiExaminer: true },
+        /* already uploaded by keep() — do not send it twice */
+        stored ? { path: stored.path, expires: stored.expires } : null);
     }
 
     importPanel(host.querySelector('#ai-import'), st, user, sid, { id: attemptId, get audio() { return stored; } });
@@ -897,6 +939,7 @@ average mean nothing.
     const out = host.querySelector('#ai-imp-out');
     const box = host.querySelector('#ai-imp-box');
     const say = h => { out.innerHTML = h; };
+    let drivePicked = [];
 
     async function take(raw, where) {
       let d;
@@ -948,23 +991,52 @@ average mean nothing.
       if (f) await take(await f.text(), f.name);
     });
 
+    /* THE FOLDER WAS NEVER EMPTY.
+
+       /api/drive returns each file as { key, id, title, folder, owner,
+       counts, paper } — the NAME is `title`. This filtered on `f.name`,
+       which is undefined on every row, so every file was thrown away and
+       the panel reported an empty folder while two files sat in it.
+
+       The server already lists only .json and, for a small folder, inlines
+       the parsed content as `paper` — so there is usually nothing left to
+       fetch. An error from the server is shown as an error rather than as
+       "no files", which is the other half of why this was hard to see. */
     host.querySelector('#ai-imp-scan')?.addEventListener('click', async e => {
       const b = e.currentTarget; b.disabled = true; say('<p class="muted">Reading the folder…</p>');
       try {
         const fid = cfg().drive.claudeMarkFolderId;
         const res = await fetch(`${cfg().drive.apiBase}?action=list&folderId=${encodeURIComponent(fid)}`, { cache: 'no-cache' });
         const list = await res.json();
-        const files = (list.files || []).filter(f => /\.json$/i.test(f.name || ''));
-        if (!files.length) { say('<p class="muted">No JSON files in that folder yet.</p>'); return; }
-        say(`<div class="ai-imp-files">${files.map((f, i) =>
-          `<button class="btn btn-ghost btn-sm" data-fid="${esc(f.id)}">${esc(f.name)}</button>`).join('')}</div>`);
-        out.addEventListener('click', async ev => {
-          const fb = ev.target.closest('[data-fid]'); if (!fb) return;
-          const r = await fetch(`${cfg().drive.apiBase}?action=file&id=${encodeURIComponent(fb.dataset.fid)}`);
-          await take(await r.text(), fb.textContent);
-        });
+        if (list.error) { say(`<p class="bad">Drive said: ${esc(list.error)}</p>`); return; }
+        const files = list.files || [];
+        if (!files.length) {
+          say(`<p class="muted">Nothing in that folder yet. It must also be shared as
+            <strong>Anyone with the link — Viewer</strong>, or the server cannot see inside it.</p>`);
+          return;
+        }
+        drivePicked = files;
+        say(`<p class="muted tiny">${files.length} file${files.length === 1 ? '' : 's'} — pick one:</p>
+          <div class="ai-imp-files">${files.map((f, i) =>
+            `<button class="btn btn-ghost btn-sm" data-fidx="${i}">${esc(f.title || f.id)}</button>`).join('')}</div>`);
       } catch (err) { say(`<p class="bad">${esc(err.message || err)}</p>`); }
       finally { b.disabled = false; }
+    });
+
+    /* Delegated once, on the panel — binding inside the scan handler added
+       a fresh listener on every scan, so the third scan imported three
+       times. */
+    out.addEventListener('click', async ev => {
+      const fb = ev.target.closest('[data-fidx]'); if (!fb) return;
+      const f = drivePicked[Number(fb.dataset.fidx)];
+      if (!f) return;
+      const was = fb.textContent; fb.disabled = true; fb.textContent = 'Reading…';
+      try {
+        if (f.paper) { await take(f.paper, f.title || f.id); return; }
+        const r = await fetch(`${cfg().drive.apiBase}?action=file&id=${encodeURIComponent(f.id)}`);
+        await take(await r.text(), f.title || f.id);
+      } catch (err) { say(`<p class="bad">${esc(err.message || err)}</p>`); }
+      finally { fb.disabled = false; fb.textContent = was; }
     });
   }
 

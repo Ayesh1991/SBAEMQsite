@@ -2963,7 +2963,12 @@ const OSCE = (() => {
   function estimate(st, said, rec, choice) {
     const schemeWords = qsOf(st).reduce((n, q) =>
       n + (q.prompt + ' ' + (q.marking_points || []).join(' ')).split(/\s+/).length, 0);
-    const spokenWords = said.reduce((n, x) => n + x.t.split(/\s+/).filter(Boolean).length, 0);
+    /* `said` is the list of {id,t} the recogniser produced, NOT a string —
+       a name that reads like text and is not. Accept either, because the
+       next caller will make the same assumption I did. */
+    const spokenWords = Array.isArray(said)
+      ? said.reduce((n, x) => n + String(x?.t || '').split(/\s+/).filter(Boolean).length, 0)
+      : String(said || '').split(/\s+/).filter(Boolean).length;
     const useAudio = effectiveSource(rec, choice) === 'audio';
     const inTok = useAudio
       ? Math.round((rec.secs || 900) * 32) + Math.round(schemeWords * 1.3) + 400
@@ -2975,7 +2980,11 @@ const OSCE = (() => {
   }
   const money = e => `$${e.usd < 0.01 ? e.usd.toFixed(4) : e.usd.toFixed(3)} · LKR ${e.lkr.toFixed(2)}`;
 
-  function wireMarkControls(stage, st, ans, said, rec, session) {
+  /* `kept` — a tape ALREADY uploaded, so markCore reuses the stored path
+     instead of sending several megabytes a second time. The station runner
+     never has one (it records and marks in one go); OSCE in AI always does,
+     because it stores the recording the moment the session ends. */
+  function wireMarkControls(stage, st, ans, said, rec, session, kept) {
     const coachHost = stage.querySelector('#os-coach-box');
     if (coachHost) { coachHost.innerHTML = coachPicker(!!rec?.blob); wireCoachPicker(coachHost); }
     const srcHost = stage.querySelector('#os-src');
@@ -3022,10 +3031,10 @@ const OSCE = (() => {
       provHost.querySelector('#os-model-sel').addEventListener('change', ev => { setModel(ev.target.value); paint(); });
     };
     paint();
-    stage.querySelector('#os-mark')?.addEventListener('click', e => mark(e.target, st, ans, rec, session));
+    stage.querySelector('#os-mark')?.addEventListener('click', e => mark(e.target, st, ans, rec, session, kept));
   }
 
-  async function mark(btn, st, ans, rec, session) {
+  async function mark(btn, st, ans, rec, session, kept) {
     const out = document.querySelector('#os-mark-out');
     const choice = chosenModel();
     const useAudio = effectiveSource(rec, choice) === 'audio';
@@ -3034,7 +3043,7 @@ const OSCE = (() => {
       <p class="muted tiny">${useAudio ? 'Listening to the recording and marking' : 'Marking'} ${qsOf(st).length} answers against
         ${qsOf(st).reduce((n, q) => n + scorable(q.marking_points).length, 0)} marking points…</p>`;
     try {
-      const attempt = await markCore({ st, ans, rec, session, choice,
+      const attempt = await markCore({ st, ans, rec, session, choice, kept,
         say: t => { const n = out.querySelector('.os-mark-step'); if (n) n.textContent = t;
           else out.insertAdjacentHTML('beforeend', `<p class="muted tiny os-mark-step">${esc(t)}</p>`); } });
       out.innerHTML = '';
@@ -5155,5 +5164,11 @@ ${P} .os-pd-close{background:transparent;color:#fff;border:1px solid rgba(255,25
     makeCapture, toBase64, speak, groqVoice, voiceOn: () => groqOn('voice'), openPrintSheet, releaseScroll,
     makeDoc, docAsText, allPoints, coachFor, coachWanted, COACH,
     // exposed for tests and for the circuit page's live redraw
-    markState, onMarkChange, retryMark, shell, __parseResult: parseResult };
+    markState, onMarkChange, retryMark, shell,
+    /* Lent to OSCE in AI so a tape recorded there is marked by exactly the
+       same path as one recorded here — the same model picker, the same
+       cost estimate, the same upload, the same pending queue. A second
+       copy of this would be a second copy of every one of those. */
+    wireMarkControls, effectiveSource, chosenModel,
+    __parseResult: parseResult };
 })();
