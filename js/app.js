@@ -143,7 +143,13 @@
     view.className = 'view';
     _lastHash = hash;
     try {
-      const args = (hash.match(match.re) || []).slice(1).map(decodeURIComponent);
+      /* A capture group that did not participate is `undefined`, and
+         decodeURIComponent(undefined) is the STRING "undefined" — which is
+         truthy, and which an optional parameter then treats as a value.
+         Optional groups are rare enough that this went unnoticed until a
+         route grew one. */
+      const args = (hash.match(match.re) || []).slice(1)
+        .map(x => (x === undefined ? undefined : decodeURIComponent(x)));
       await match.fn(...args, user);
     } catch (err) {
       view.innerHTML = `<section class="page narrow" data-animate>

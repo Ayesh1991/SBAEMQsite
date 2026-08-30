@@ -564,11 +564,41 @@ average mean nothing.
 
     view.innerHTML = `
       <section class="page ai-run">
-        <a class="link muted dev-back" href="#/osce/station/${encodeURIComponent(st.id)}">← Leave without recording</a>
+        <a class="link muted dev-back" href="${sid ? '#/osce/run/' + encodeURIComponent(sid) : '#/osce/station/' + encodeURIComponent(st.id)}">← Leave without recording</a>
         <header data-animate>
-          <p class="kicker">OSCE IN AI · ${OSCE.minsOf(st)} MINUTES · ${OSCE.marksOf(st)} MARKS</p>
-          <h1 class="page-title">${esc(st.topic || '')}</h1>
+          <p class="kicker">OSCE IN AI · ${OSCE.minsOf(st)} MINUTES · ${OSCE.marksOf(st)} MARKS${
+            sid ? ' · IN A CIRCUIT' : ''}</p>
+          <!-- NO TOPIC.
+
+               A station's title is the answer to its first question, and in
+               a circuit it is a spoiler the runner deliberately withholds
+               until the end. It was printed here in letters an inch high.
+               The scenario is what a candidate is actually given, so the
+               scenario is what this page leads with. -->
+          <h1 class="page-title ai-scen">${esc(st.scenario || 'This station has no scenario recorded.')}</h1>
         </header>
+
+        <!-- The questions, without their marking points.
+
+             The model is examining from a block pasted into another app,
+             and the failure that costs a whole fifteen minutes is that it
+             never received it and invented eight plausible questions
+             instead. Having the real list on this half turns that into
+             something noticed in seconds. It is what the examiner asks,
+             never what earns marks — the scheme is not here. -->
+        <details class="card ai-qs" id="ai-qs" open>
+          <summary><span>📋 The ${OSCE.qsOf(st).length} questions this station really has</span>
+            <i>check the examiner against them</i></summary>
+          <ol class="ai-qs-list">
+            ${OSCE.qsOf(st).map(q => `<li>
+              ${q.reveal_before ? `<em class="ai-qs-rev">First: ${esc(q.reveal_before)}</em>` : ''}
+              <span>${esc(q.prompt || '')}</span>
+              <b>${Number(q.marks) || 0}</b>
+            </li>`).join('')}
+          </ol>
+          <p class="muted tiny">If it asks something that is not on this list, it never received the station —
+            paste the block again rather than sitting fifteen minutes of invented questions.</p>
+        </details>
 
         <div class="card ai-clock-card" data-animate>
           <div class="ai-clock" id="ai-clock">${fmt(total)}</div>
@@ -776,6 +806,16 @@ average mean nothing.
         <div id="os-mark-out"></div>
       </div>` : ''}
 
+      ${sid ? `<div class="card ai-circ" data-animate id="ai-circ">
+        <h3 class="card-title">↩ The circuit is waiting</h3>
+        <p class="muted">This station was sat outside the runner, so the circuit does not know it is over until you
+          say so. Bring the marking back first if you want it scored — then carry on.</p>
+        <div class="ai-circ-acts">
+          <button class="btn btn-gold" id="ai-circ-next">Next station →</button>
+          <span class="muted tiny" id="ai-circ-msg"></span>
+        </div>
+      </div>` : ''}
+
       <div class="card" data-animate>
         <h3 class="card-title">Bring the marking back</h3>
         <p class="muted">The examiner ends by printing a JSON block. Paste it here — or drop the file in your Drive
@@ -828,9 +868,37 @@ average mean nothing.
         { elapsed: OSCE.minsOf(st) * 60, aiExaminer: true },
         /* already uploaded by keep() — do not send it twice */
         stored ? { path: stored.path, expires: stored.expires } : null);
+
     }
 
-    importPanel(host.querySelector('#ai-import'), st, user, sid, { id: attemptId, get audio() { return stored; } });
+    /* Back into the circuit. The attempt — from either marker — is handed
+       over so the station is SCORED in the circuit rather than merely
+       marked as sat; whichever arrives first wins, and if neither does the
+       circuit still moves on and says the station was not scored. */
+    let scored = null;
+    if (sid) noteCircuit(sid, st.id);
+    const circB = host.querySelector('#ai-circ-next');
+    if (circB) {
+      const msg = host.querySelector('#ai-circ-msg');
+      circB.addEventListener('click', async () => {
+        circB.disabled = true; circB.textContent = 'Moving on…';
+        try {
+          const r = await OSCE.circuitNext(sid, st.id, scored);
+          if (!r) { msg.textContent = 'That circuit is no longer stored.'; circB.disabled = false; return; }
+          clearCircuit();
+          location.hash = r.hash;
+        } catch (err) {
+          circB.disabled = false; circB.textContent = 'Next station →';
+          msg.textContent = err.message || String(err);
+        }
+      });
+    }
+
+    importPanel(host.querySelector('#ai-import'), st, user, sid, {
+      id: attemptId,
+      get audio() { return stored; },
+      onSaved: a => { scored = a; markCircuitScored(host, a); }
+    });
   }
 
   /* ================= marked by Claude =================
@@ -917,6 +985,37 @@ average mean nothing.
         pass: r.pass != null ? !!r.pass : total >= OSCE.passOf(st)
       })
     };
+  }
+
+  /* WHERE THE CIRCUIT IS WAITING.
+
+     Our own marker navigates straight to the report the moment it
+     finishes, so the circuit card on this page is gone before it can be
+     pressed. Rather than intercepting the write — which would leave a
+     wrapper on Backend for the rest of the session — the pending
+     hand-over is written down here, and the report page picks it up. One
+     small fact in one place, read by whichever page the reader ends up on.
+
+     Cleared when it is used, and when a different circuit starts. */
+  const PEND_KEY = 'aureum.osce.aicircuit';
+  function noteCircuit(sid, stationId) {
+    try { localStorage.setItem(PEND_KEY, JSON.stringify({ sid, stationId, at: Date.now() })); } catch {}
+  }
+  function pendingCircuit(stationId) {
+    try {
+      const p = JSON.parse(localStorage.getItem(PEND_KEY) || 'null');
+      if (!p || (stationId && p.stationId !== stationId)) return null;
+      /* A circuit nobody came back to within the day is not a circuit. */
+      if (Date.now() - (p.at || 0) > 24 * 3600 * 1000) { clearCircuit(); return null; }
+      return p;
+    } catch { return null; }
+  }
+  function clearCircuit() { try { localStorage.removeItem(PEND_KEY); } catch {} }
+
+  /* Say, on the circuit card, that there is now something to score with. */
+  function markCircuitScored(host, a) {
+    const msg = host.querySelector('#ai-circ-msg');
+    if (msg) msg.innerHTML = `<span class="good">✓ ${a.result?.percent ?? '—'}% will be carried into the circuit.</span>`;
   }
 
   function importPanel(host, st, user, sid, ctx) {
@@ -1040,6 +1139,34 @@ average mean nothing.
     });
   }
 
+  /* The same offer, on the report page — because our own marker takes you
+     straight there and the circuit card never gets pressed. */
+  function resumeStrip(host, attempt) {
+    if (!host || !attempt) return;
+    const p = pendingCircuit(attempt.station_id);
+    if (!p) return;
+    host.innerHTML = `
+      <div class="card ai-circ" data-animate>
+        <h3 class="card-title">↩ The circuit is waiting</h3>
+        <p class="muted">You sat this one against a chat model, so the circuit stopped where it was. This result is
+          carried across with you.</p>
+        <div class="ai-circ-acts">
+          <button class="btn btn-gold" id="ai-res-next">Next station →</button>
+          <button class="btn btn-ghost btn-sm" id="ai-res-drop">Not now</button>
+          <span class="muted tiny" id="ai-res-msg"></span>
+        </div>
+      </div>`;
+    host.querySelector('#ai-res-next').addEventListener('click', async e => {
+      e.currentTarget.disabled = true; e.currentTarget.textContent = 'Moving on…';
+      try {
+        const r = await OSCE.circuitNext(p.sid, p.stationId, attempt);
+        clearCircuit();
+        location.hash = r ? r.hash : '#/osce/sim';
+      } catch (err) { host.querySelector('#ai-res-msg').textContent = err.message || String(err); }
+    });
+    host.querySelector('#ai-res-drop').addEventListener('click', () => { clearCircuit(); host.innerHTML = ''; });
+  }
+
   /* Models fence their JSON. Taking the first fenced block, or failing that
      the first {...}, saves the reader from trimming it by hand on an iPad. */
   function stripFence(raw) {
@@ -1088,6 +1215,7 @@ average mean nothing.
   return {
     allowed, buttonHtml, openDialog, buildPrompt, buildInstructions,
     stationBlock, rulesBlock, jsonBlock, levelOf, setLevel, levelText, LOGOS, MODELS,
-    session, validate, toAttempt, importPanel, attemptsPanel, stripFence, SCHEMA
+    session, validate, toAttempt, importPanel, attemptsPanel, stripFence, SCHEMA,
+    noteCircuit, pendingCircuit, clearCircuit, resumeStrip
   };
 })();

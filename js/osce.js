@@ -3586,6 +3586,8 @@ const OSCE = (() => {
           </div>
         </header>
 
+        <div id="os-res-circ"></div>
+
         ${part ? `<div class="card os-part-note" data-animate>
           <p><strong>⚠️ Only ${part.marked} of the ${part.of} questions were marked.</strong>
             ${esc(part.why)} The percentage above is out of the ${r.max} marks that were actually looked at,
@@ -3759,6 +3761,10 @@ const OSCE = (() => {
        you are reading the scheme line by line against what you said. So
        the pencils are here too, writing back to the station itself. */
     wireSchemeEdit(view, a.station_id);
+    /* A station sat against a chat model out of a circuit leaves the
+       circuit stopped where it was; this is the way back on, offered on
+       whichever page the reader actually lands on. */
+    try { AiOsce?.resumeStrip?.(view.querySelector('#os-res-circ'), a); } catch {}
     if (typeof FX !== 'undefined' && FX.scoreReveal) {
       const d = view.querySelector('#os-dial');
       if (d) { const pct = r.percent || 0;
@@ -4308,6 +4314,50 @@ ${has('learning') && (r.keyLearning || []).length ? `<section class="blk"><h2>Ke
     setTimeout(() => { if (left > 0) { left = 0; go(); } }, 4000);
   }
 
+  /* ---------------- handing a circuit station over from elsewhere ----------------
+
+     A station sat through OSCE in AI is sat OUTSIDE the runner: the clock,
+     the tape and the marking all happen on another screen. The circuit
+     still has to be told, or it sits on that station for ever with no way
+     to reach station two — which is exactly what happened.
+
+     So this is the same hand-over the Next button does, reduced to its
+     two facts: record what became of this station, and move the session
+     on. It returns where to go next so the caller does not have to know
+     how a circuit is addressed. */
+  async function circuitNext(sid, stationId, attempt) {
+    const s = await loadSession(sid);
+    if (!s || !s.circuit) return null;
+    const i = s.stations.indexOf(stationId);
+    if (i >= 0 && !loadMarks(sid)[stationId]) {
+      saveMark(sid, stationId, attempt
+        ? { status: 'done', attemptId: attempt.id, percent: attempt.result?.percent ?? null,
+            pass: !!attempt.result?.pass, partial: attempt.result?.partial || null,
+            elsewhere: true, at: Date.now() }
+        /* Sat, but nothing came back to score. Not `skipped` — that means
+           there was nothing to mark; this one was marked somewhere else
+           and the verdict has not been brought home yet. */
+        : { status: 'elsewhere', message: 'Sat against a chat model — import its marking to score it.', at: Date.now() });
+    }
+    /* WHERE WE ARE IS THE STATION, NOT THE SESSION'S POINTER.
+
+       Taking `s.at` as the position let the two disagree — a station handed
+       over from further along the circuit than the runner had reached
+       advanced `at` past the last index, and the runner then had no station
+       to draw and bounced to the bank. The station being handed over is the
+       position; the pointer only stands in when the station is not in this
+       circuit at all. */
+    const here = i >= 0 ? i : s.at;
+    if (here + 1 >= s.stations.length) {
+      s.at = here; s.phase = 'circuit';
+      await saveSession(s);
+      return { last: true, hash: '#/osce/circuit/' + sid };
+    }
+    s.at = here + 1; s.qi = 0; s.elapsed = 0; s.phase = 'brief';
+    await saveSession(s);
+    return { last: false, hash: '#/osce/run/' + sid, at: s.at, of: s.stations.length };
+  }
+
   /* ---------------- shell ---------------- */
 
   function shell(active, inner) {
@@ -4399,6 +4449,7 @@ ${has('learning') && (r.keyLearning || []).length ? `<section class="blk"><h2>Ke
                   : `<span class="os-circ-pct ${r.m.pass ? 'is-pass' : 'is-fail'}">${r.m.percent != null ? r.m.percent + '%' : 'marked'}</span>`)
                 : r.m.status === 'queued' ? `<span class="os-circ-wait"><i></i> marking…</span>`
                 : r.m.status === 'error' ? `<span class="os-circ-err">could not be marked</span>`
+                : r.m.status === 'elsewhere' ? `<span class="os-circ-else">sat against a chat model — not scored</span>`
                 : r.m.status === 'notSat' ? `<span class="muted tiny">not sat — still fresh</span>`
                 : `<span class="muted tiny">not marked</span>`;
               return `<div class="os-circ-row" data-st="${esc(r.id)}">
@@ -5164,7 +5215,7 @@ ${P} .os-pd-close{background:transparent;color:#fff;border:1px solid rgba(255,25
     makeCapture, toBase64, speak, groqVoice, voiceOn: () => groqOn('voice'), openPrintSheet, releaseScroll,
     makeDoc, docAsText, allPoints, coachFor, coachWanted, COACH,
     // exposed for tests and for the circuit page's live redraw
-    markState, onMarkChange, retryMark, shell,
+    markState, onMarkChange, retryMark, shell, circuitNext,
     /* Lent to OSCE in AI so a tape recorded there is marked by exactly the
        same path as one recorded here — the same model picker, the same
        cost estimate, the same upload, the same pending queue. A second
