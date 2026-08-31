@@ -200,18 +200,50 @@ not when the 24 hours run out. The two copies are independent:
 | | Where | How long |
 |---|---|---|
 | Server copy | Supabase storage | 24 hours, then swept nightly. This is what the player on a report reads. |
-| Drive copy | Your own folder | Yours, until you delete it. Written at marking time. |
+| Drive copy | Your own folder | Yours, until you delete it. Written the moment the recording is made. |
 
 Files are named `2026-08-23 2205 — HELLP Syndrome.webm`, so a year of them
 still sorts.
 
-**Anything marked *before* you connected was never copied** — the upload
-happens at marking time and there was nowhere to send it. Whatever is still
-inside its 24 hours can be picked up with the button in the same panel:
+**Anything marked *before* you connected was never copied** — there was
+nowhere to send it. Whatever is still inside its 24 hours can be picked up
+with the button in the same panel:
 
 > **Copy the ones still on the server**
 
 Past 24 hours it has gone from the server and cannot be recovered.
+
+### The copy is made at TAPE time, not at marking time
+
+This changed in v90 and it matters. It used to happen after the marking came
+back, which meant three whole categories of recording never reached Drive at
+all: a station marked by hand, a station whose marking failed, and a station
+queued to be marked later. The tape now goes to Drive the moment it exists,
+before the model is even called.
+
+### The waiting list
+
+When a recording cannot be copied — the grant has lapsed, the connection
+dropped, Google refused it — it is written to a list rather than dropped in
+silence. The billing panel then says, in as many words:
+
+> **3 recordings did not reach Drive.** 2 are still on the server and can be
+> copied up now.
+
+Each row names the station, when it was sat, why it did not go, and whether
+it is still recoverable. **Reconnecting copies the recoverable ones up
+automatically** — there is no second button to find.
+
+This list is the whole point of the change. Before it, a folder that had
+quietly stopped filling looked exactly like a fortnight with no stations in
+it, and the first anyone knew was noticing the folder was short.
+
+### Checked before the clock starts
+
+The station brief and the OSCE-in-AI screen ask Google, silently, whether the
+grant is still alive — *before* any recording is made. If it has lapsed, an
+amber warning appears there and then, when the fix costs two taps and no
+recording. Discovering the same thing at upload time costs a tape.
 
 ---
 

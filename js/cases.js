@@ -1065,6 +1065,18 @@ const Cases = (() => {
       if (up) { audioPath = up.path; audioExpires = up.expires; }
     } catch { /* the marking matters more than the copy */ }
 
+    /* The Drive copy goes at TAPE time, not after the marking — a case
+       whose marking fails used to reach the 24-hour sweep without ever
+       having been offered to Drive. Not awaited; a miss is written to
+       the outbox by `deposit` rather than vanishing. */
+    let driveJob = null;
+    if (typeof Drive !== 'undefined' && Drive.configured()) {
+      driveJob = Drive.deposit(rec.blob, Drive.nameFor('CASE — ' + (c.topic || ''), Date.now(), rec.ext),
+        { description: 'AUREUM case discussion', properties: { attempt: base.id, case: c.id } },
+        { kind: 'case', id: base.id, topic: c.topic || '', path: audioPath, when: Date.now() }
+      ).catch(() => null);
+    }
+
     /* 3. Mark. */
     try {
       if (typeof Wallet !== 'undefined' && !(await Wallet.canSpend())) {
@@ -1110,13 +1122,15 @@ const Cases = (() => {
       try { if (typeof Wallet !== 'undefined') Wallet.bust(); } catch {}
       try { await Pending.drop(base.id); } catch {}
 
-      /* The Drive copy, last and never awaited — the report is already safe. */
-      try {
-        if (typeof Drive !== 'undefined' && Drive.on()) {
-          Drive.upload(rec.blob, Drive.nameFor('CASE — ' + (c.topic || ''), Date.now(), rec.ext),
-            { description: 'AUREUM case discussion' });
-        }
-      } catch {}
+      /* Where the Drive copy landed, written down once it has. Started
+         above at tape time; the report never waits for it. */
+      if (driveJob) {
+        driveJob.then(up => {
+          if (!up) return;
+          attempt.drive = { id: up.id, link: up.link, name: up.name };
+          Backend.saveCaseAttempt(attempt).catch(() => {});
+        }).catch(() => {});
+      }
 
       location.hash = '#/cases/result/' + encodeURIComponent(attempt.id);
     } catch (e) {

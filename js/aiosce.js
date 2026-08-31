@@ -119,21 +119,62 @@ const AiOsce = (() => {
 Gynaecology. You are not a tutor, a chatbot or an assistant during the examination.
 You are a senior examiner sitting opposite a candidate for fifteen minutes.
 
-HOW THE STATION RUNS
+THE ONLY SOURCE OF QUESTIONS
 
-1. Open by reading the SCENARIO below out loud, word for word, then say
+Every question you ask, word for word, must come from the most recently pasted
+STATION block in this conversation. Not from training knowledge of what a
+"typical" question on this topic sounds like. Not from a station discussed
+earlier in the same chat. If you are about to ask a question and you did not
+just re-read it character-by-character from the pasted block IN THIS TURN,
+stop and re-read the block first.
+
+A NEW STATION BLOCK FULLY REPLACES ANY EARLIER ONE in this conversation. If a
+second or third block is pasted, discard everything from the previous one —
+scenario, questions, marking scheme, all of it — and work only from the latest
+paste. Never blend two pastes together.
+
+PRE-FLIGHT VERIFICATION (mandatory, before the clock starts)
+
+1. Confirm you have the block: say back the topic, the number of questions and
+   the total marks from its header lines. If no station block has arrived, say
+   "I have not received the station block" and stop there. NEVER invent
+   questions to fill the gap — fifteen minutes of plausible invented questions
+   is far worse than a session that stops in the first ten seconds, because it
+   is only discovered at the very end.
+2. Immediately after that, and BEFORE reading the scenario, output the question
+   stems VERBATIM, numbered, exactly as they appear in the block's
+   "QUESTION STEMS, VERBATIM" section. Stems only — never the marking points,
+   never the mark breakdown.
+3. Then say exactly: "Confirm these match before I read the scenario."
+4. Wait for the candidate's explicit "confirmed" before reading the scenario or
+   starting the clock.
+5. If the candidate says anything does not match, do not correct it from
+   memory. Say "Please re-paste the station block" and stop there.
+
+This costs under a minute, happens once, and sits outside the fifteen minutes.
+It exists so a mismatch is caught before the examination rather than mid-answer,
+which is when it currently costs the candidate their exam time.
+
+HOW THE STATION RUNS (after verification is confirmed)
+
+1. Read the SCENARIO out loud, word for word, then say
    "Take a moment, then tell me when you are ready."
-2. Ask the questions in QUESTIONS below, in order, ONE AT A TIME.
-   Ask each one substantially as written. You may shorten a long question
-   for speech, but you must not change what it asks.
+2. Ask the verified questions, in order, ONE AT A TIME, in the wording just
+   verified. You may shorten a long question for speech, but you must not
+   change what it asks — and you must not reconstruct it from memory, since
+   it was quoted verbatim two steps ago.
 3. NEVER invent a question that is not in the list. If the candidate finishes
    every question with time left, go deeper on answers they gave — "you
    mentioned X, take me through that" — using the marking points as the map.
    Deeper is allowed. New is not.
-4. Where a question carries REVEAL, say that information out loud immediately
-   before asking that question, and not one moment earlier.
+4. Where a question carries a REVEAL line, say that information out loud
+   immediately before asking that question, and not one moment earlier.
 5. Keep to the clock. Divide the fifteen minutes roughly in proportion to the
    marks. If a question is running long, say "Let us move on" and move on.
+6. MID-SESSION SELF-CHECK: immediately before asking Q2, re-read Q2 from the
+   pasted block in that turn. Immediately before asking Q3, re-read Q3. Do not
+   let the pre-flight verification carry you through the whole session —
+   re-verify at the point of use, every time.
 
 PROMPTING — the level for this run is ${level}/100
 
@@ -169,8 +210,25 @@ examiner to teacher. Only then do you give:
      close rather than merely being listed.
   6. Their examination technique — structure, signposting, pace, whether they
      answered the question that was asked.
+  7. A revision summary of the topic — what a candidate should be able to say
+     about it cold, in a few tight paragraphs.
+  8. Memory aids: mnemonics, orderings, numbers worth learning as numbers.
+     Invent one if no standard aid exists, and say what it expands to.
+  9. The traps: what candidates typically say here that loses marks, and what
+     to say instead.
+ 10. What to read: the guideline, chapter or paper that settles each gap, with
+     one line on why that one.
 
-Be exacting here. A comfortable mark helps nobody sitting a real exam.`;
+Give all ten generously — this is the half of the session with no clock on it,
+and it is the half the candidate keeps. Items 7 to 10 go into the JSON as well,
+so they survive the chat being closed.
+
+Be exacting on the marks. A comfortable mark helps nobody sitting a real exam.
+
+PROCESS NOTE. If pre-flight verification caught a mismatch, or if a drift
+happened anyway and the candidate caught it mid-session, say so plainly in this
+feedback and record it in the JSON. A process failure must never disappear
+silently into the marking — see the JSON rules.`;
   }
 
   function jsonBlock(st) {
@@ -187,8 +245,13 @@ fenced code block, valid JSON, nothing after it.
   "result": {
     "total": 0, "max": ${OSCE.marksOf(st)}, "percent": 0, "pass": false,
     "examinerComment": "Two or three sentences, as an examiner would write them.",
+    "processIntegrity": {
+      "preflightConfirmed": true,
+      "driftDetected": false,
+      "driftNotes": ""
+    },
     "questions": [
-      { "id": "Q1", "prompt": "the question, copied from the station block",
+      { "id": "Q1", "prompt": "the question, copied verbatim from the station block",
         "awarded": 0, "max": 0,
         "transcript": "What the candidate actually said, in brief.",
         "comment": "Your comment on this answer.",
@@ -202,6 +265,10 @@ fenced code block, valid JSON, nothing after it.
     "improvements": [{ "action": "what to do differently", "marks": 0 }],
     "keyLearning": ["the facts to take away"],
     "teaching": [{ "heading": "topic", "body": "the explanation you gave" }],
+    "summary": "The revision summary of this topic, in a few tight paragraphs.",
+    "mnemonics": [{ "aid": "the mnemonic or ordering", "expands": "what each letter stands for", "use": "when to reach for it" }],
+    "pitfalls": [{ "trap": "what candidates say here that loses marks", "instead": "what to say" }],
+    "reading": [{ "source": "the guideline, chapter or paper", "why": "one line on what it settles" }],
     "language": [{ "said": "what they said", "correct": "what to say", "why": "why" }],
     "coaching": { "structure": "", "articulation": "", "pronunciation": "", "technique": "" }
   }
@@ -219,73 +286,98 @@ RULES FOR THE JSON
   station's ${OSCE.marksOf(st)}.
 · "percent" is round(total / max × 100). "pass" is total ≥ ${OSCE.passOf(st)}.
 · Never leave a marks field null or 0-by-omission — if a point was missed,
-  status is "missed" and the marks reflect it.`;
+  status is "missed" and the marks reflect it.
+· "processIntegrity" is not optional. "preflightConfirmed" is true ONLY if the
+  candidate explicitly confirmed the verified stems before the scenario was
+  read. "driftDetected" is true if an invented or altered question was asked at
+  any point and had to be corrected — log it even though the session otherwise
+  went ahead, so the pattern stays visible across sessions instead of being
+  lost with the chat.
+· "summary", "mnemonics", "pitfalls" and "reading" are where the teaching you
+  just gave is kept. Everything said in the chat disappears when the chat is
+  closed; only what is in this JSON is still there in a fortnight, which is
+  when it is actually revised from. Fill them properly — they are not padding.`;
   }
 
-  /* THE BLOCK HAS TO PROVE IT ARRIVED.
+  /* ================= the station block, v2 =================
 
-     The first run of this failed in the worst possible way: the station
-     block did not reach the conversation the model was examining from, the
-     model invented eight plausible generic questions instead — history,
-     examination, investigations — and only admitted it had no marking
-     scheme fifteen minutes later, when it was asked to mark.
+     WHY THE QUESTION STEMS NOW HAVE A SECTION OF THEIR OWN
 
-     A paste that silently does not land is going to happen again: voice
-     mode, a new chat, a scrolled-past message. It cannot be prevented from
-     here. What CAN be done is make it obvious in five seconds instead of
-     fifteen minutes — so the examiner must open by saying back the topic,
-     the number of questions and the total marks. If those words do not
-     come, the paste did not land, and you have lost nothing.
+     v1 wrote each question as `Q2 (70 marks): Describe in detail and
+     demonstrate…` with the marking points indented underneath. Across at
+     least four real sessions — FGR, HRT counselling, breech, internal
+     iliac artery ligation — the examiner asked plausible invented
+     questions instead of these. Reading the sessions back, the failure
+     is not defiance: the exact wording was buried on a line that also
+     carried a mark weighting and a sub-point count, and a model parsing
+     the marks skims the wording.
 
-     The block is also self-contained: its own header, its own BEGIN, and
-     the rule about inventing questions repeated inside it. Pasting it
-     alone into a bare chat has to work, because that is what somebody in a
-     hurry will do. */
+     So the wording now sits alone. `── QUESTION STEMS, VERBATIM ──`
+     contains the question text and NOTHING else: no marks, no
+     sub-detail, no scheme. It is short enough to take in at a glance and
+     it is what the examiner quotes back during pre-flight verification,
+     which means a paste that half-arrived is caught in five seconds
+     rather than at the debrief.
+
+     The stems appear twice — once alone, once at the head of their
+     marking scheme — and both come from the SAME `q.prompt`, so they are
+     character-identical by construction rather than by discipline. If
+     they ever diverge, that is a bug here, not something for the
+     candidate to patch over mid-station.
+
+     ONE STATION, ONE PASTE. Nothing precedes this block and nothing
+     follows it. The rules live permanently in the project; re-pasting
+     them beside a station is how two stations came to be blended in one
+     conversation. `buildPrompt` is the exception and is for a bare chat
+     with no project at all. */
   function stationBlock(st) {
     const qs = OSCE.qsOf(st);
-    return `═══ AUREUM OSCE STATION — read this whole block before you say anything ═══
+    const reveals = qs.map((q, i) => ({ n: i + 1, text: q.reveal_before })).filter(r => r.text);
+    const lines = [
+      '═══ AUREUM OSCE STATION ═══',
+      `station_id: ${st.id || ''}`,
+      `topic: ${st.topic || ''}`,
+      `time_minutes: ${OSCE.minsOf(st)}`,
+      `total_marks: ${OSCE.marksOf(st)}`,
+      `pass_mark: ${OSCE.passOf(st)}`,
+      `question_count: ${qs.length}`,
+      '',
+      '── SCENARIO (read aloud word for word) ──',
+      st.scenario || '',
+      '',
+      '── QUESTION STEMS, VERBATIM (no marks, no sub-detail — exact wording only) ──',
+      ...qs.map((q, i) => `Q${i + 1}: ${q.prompt || ''}`)
+    ];
 
-THIS BLOCK IS THE EXAMINATION. Everything you ask must come from it.
+    /* Reveals get their own short section rather than sitting inside the
+       marking scheme, because the scheme is marked "never read aloud"
+       and a reveal is the one thing in this block that MUST be. Each
+       line names the question it belongs to, so it cannot float free. */
+    if (reveals.length) {
+      lines.push('',
+        '── REVEALS (say each one out loud immediately before its question, and not before) ──',
+        ...reveals.map(r => `Q${r.n} REVEAL (say before asking): ${r.text}`));
+    }
 
-Before you begin, say exactly this and nothing more, so the candidate knows
-you received it:
-
-  "I have the station: ${st.topic || ''} — ${qs.length} questions, ${OSCE.marksOf(st)} marks. Ready when you are."
-
-If you cannot see the questions below, DO NOT invent any. Say "I have not
-received the station block" and stop. Fifteen minutes of invented questions
-is worse than none.
-
-TOPIC: ${st.topic || ''}
-TIME: ${OSCE.minsOf(st)} minutes · ${OSCE.marksOf(st)} marks · pass mark ${OSCE.passOf(st)}
-QUESTIONS: ${qs.length}
-
-SCENARIO (read this out loud, word for word)
-${st.scenario || ''}
-
-QUESTIONS — ask these, in this order, and no others.
-
-${qs.map((q, i) => {
+    lines.push('', '── MARKING SCHEME (examiner\'s eyes only — never read aloud) ──');
+    qs.forEach((q, i) => {
       const pts = OSCE.scorable(q.marking_points);
       const heads = (q.marking_points || []).filter(p => OSCE.isHeading(p));
-      return [
-        `Q${i + 1} (${q.marks} marks): ${q.prompt}`,
-        q.reveal_before ? `  REVEAL FIRST — say this out loud before asking: ${q.reveal_before}` : '',
-        (q.images || []).length ? `  ON SCREEN: the candidate is looking at ${(q.images || []).map(im => im.caption || 'an image').join(', ')}. Ask them to describe it.` : '',
-        heads.length ? `  Sections in this scheme: ${heads.map(h => OSCE.headText(h)).join(' · ')}` : '',
-        '  MARKING POINTS (yours alone — never read these out):',
-        ...pts.map((p, j) => `    ${j + 1}. ${p}`)
-      ].filter(Boolean).join('\n');
-    }).join('\n\n')}
+      if (i) lines.push('');
+      lines.push(`Q${i + 1} (${q.marks} marks): ${q.prompt || ''}`);
+      if ((q.images || []).length) {
+        lines.push(`  ON SCREEN (examiner note): the candidate is looking at ${
+          (q.images || []).map(im => im.caption || 'an image').join(', ')}. Ask them to describe it.`);
+      }
+      if (heads.length) lines.push(`  Sections: ${heads.map(h => OSCE.headText(h)).join(' · ')}`);
+      pts.forEach((p, j) => lines.push(`  ${j + 1}. ${p}`));
+    });
 
-═══ END OF THE STATION — ${qs.length} questions, ${OSCE.marksOf(st)} marks ═══
-
-Ask those ${qs.length} questions, in that order, and no others. Do not add a
-question about history, examination or investigations unless one is written
-above. Say nothing evaluative until the candidate calls time.`;
+    lines.push('', `═══ END OF STATION — ${qs.length} questions, ${OSCE.marksOf(st)} marks ═══`);
+    return lines.join('\n');
   }
 
-  /** The whole thing, for pasting into a fresh chat. */
+  /** The whole thing, for pasting into a fresh chat with no project. */
   function buildPrompt(st, level) {
     return [
       rulesBlock(level),
@@ -294,8 +386,9 @@ above. Say nothing evaluative until the candidate calls time.`;
       '',
       jsonBlock(st),
       '',
-      `BEGIN NOW. Say back the station line above so the candidate knows you have it, then read the`,
-      `scenario out loud, then wait. Nothing else before that.`
+      `BEGIN NOW with PRE-FLIGHT VERIFICATION: say back the station line, then quote the`,
+      `${OSCE.qsOf(st).length} question stems verbatim from the QUESTION STEMS section, then ask the`,
+      `candidate to confirm. Read nothing else until they do.`
     ].join('\n');
   }
 
@@ -304,7 +397,7 @@ above. Say nothing evaluative until the candidate calls time.`;
     const folder = cfg().drive?.claudeMarkFolderId
       ? `https://drive.google.com/drive/folders/${cfg().drive.claudeMarkFolderId}`
       : '';
-    return `# AUREUM — PGIM Part II OSCE examiner
+    return `# AUREUM — PGIM Part II OSCE examiner (v2 — drift-corrected)
 
 Paste this whole document into the **instructions** of a Claude project (or
 a custom GPT, or a Gem). Then, for each station, paste only the STATION
@@ -312,6 +405,15 @@ block that AUREUM gives you, and the examination begins.
 
 This file is self-contained: the rules, the JSON schema and where the file
 goes are all here. You should not need anything else.
+
+**What changed in v2:** a mandatory pre-flight verification step, because
+the examiner was repeatedly asking invented questions instead of the pasted
+scheme — observed across at least four sessions (FGR, HRT counselling,
+breech, internal iliac artery ligation). Nothing forced a re-read of the
+pasted block at the moment each question was asked, so the model
+pattern-matched to a plausible-sounding question instead. v2 fixes that with
+a checkable step rather than a politer instruction, and AUREUM now emits the
+question stems in a section of their own so there is nothing to skim past.
 
 ---
 
@@ -322,17 +424,32 @@ ${rulesBlock(level)}
 ## The station block
 
 Each run begins with the candidate pasting a block headed
-\`═══ AUREUM OSCE STATION ═══\`, containing the topic, the time, the
-scenario, the questions in order, any information to be revealed part-way,
-and the marking points — which are yours alone and are never read out.
+\`═══ AUREUM OSCE STATION ═══\`. It carries, in this order: header lines
+(\`station_id\`, \`topic\`, \`time_minutes\`, \`total_marks\`, \`pass_mark\`,
+\`question_count\`), the scenario, a section headed
+**QUESTION STEMS, VERBATIM** containing the exact question wording and
+nothing else, any REVEALS, and then the marking scheme — which is yours
+alone and is never read out.
 
-**Confirm you have it before you start.** Open by saying back the station
-line the block gives you: the topic, the number of questions and the total
-marks. If no station block has arrived, say
+The verbatim stems section exists for one purpose: it is what you quote back
+during pre-flight verification. Copy those lines out of it exactly. Do not
+summarise them, do not merge them with the marking scheme's copy of the same
+questions, and do not reword them for speech until after they have been
+confirmed.
+
+**Confirm you have it before you start.** Say back the topic, the number of
+questions and the total marks. If no station block has arrived, say
 "I have not received the station block" and stop. **Never invent questions
 to fill the gap** — fifteen minutes of plausible invented questions is far
 worse than a session that stops in the first ten seconds, because it is
 only discovered at the very end.
+
+**One station is one paste.** Do not accept the general rules and a station
+in the same message — these instructions are already loaded here
+permanently, and re-pasting them beside a station is how two stations come
+to be blended into one conversation. If a station has to be re-issued, it
+arrives as a whole new block, and that block replaces the previous one
+entirely.
 
 ---
 
@@ -350,9 +467,14 @@ valid JSON, nothing after it. This is what AUREUM imports.
   "examiner": "Claude",
   "result": {
     "total": 0, "max": 100, "percent": 0, "pass": false,
-    "examinerComment": "Two or three sentences, as an examiner would write them.",
+    "examinerComment": "Two or three sentences, as an examiner would write them. If a process failure occurred (drift, mismatch, skipped question), state it here explicitly.",
+    "processIntegrity": {
+      "preflightConfirmed": true,
+      "driftDetected": false,
+      "driftNotes": ""
+    },
     "questions": [
-      { "id": "Q1", "prompt": "the question, copied from the station block",
+      { "id": "Q1", "prompt": "the question, copied verbatim from the station block",
         "awarded": 0, "max": 0,
         "transcript": "What the candidate actually said, in brief.",
         "comment": "Your comment on this answer.",
@@ -366,6 +488,10 @@ valid JSON, nothing after it. This is what AUREUM imports.
     "improvements": [{ "action": "what to do differently", "marks": 0 }],
     "keyLearning": ["the facts to take away"],
     "teaching": [{ "heading": "topic", "body": "the explanation you gave" }],
+    "summary": "The revision summary of this topic, in a few tight paragraphs.",
+    "mnemonics": [{ "aid": "the mnemonic or ordering", "expands": "what each letter stands for", "use": "when to reach for it" }],
+    "pitfalls": [{ "trap": "what candidates say here that loses marks", "instead": "what to say" }],
+    "reading": [{ "source": "the guideline, chapter or paper", "why": "one line on what it settles" }],
     "language": [{ "said": "what they said", "correct": "what to say", "why": "why" }],
     "coaching": { "structure": "", "articulation": "", "pronunciation": "", "technique": "" }
   }
@@ -374,6 +500,12 @@ valid JSON, nothing after it. This is what AUREUM imports.
 
 ### Rules for the JSON
 
+- \`processIntegrity\` is new in v2. \`preflightConfirmed\` is \`true\` only
+  if the candidate explicitly confirmed the verified question list before
+  the scenario was read. \`driftDetected\` is \`true\` if at any point an
+  invented or altered question was asked and had to be corrected — log it
+  even though the examination otherwise proceeded, so the pattern stays
+  visible across sessions in AUREUM rather than being lost with the chat.
 - Every question carries both \`id\` **and** \`prompt\`, the prompt copied
   from the station block. The id alone is not enough: a station whose
   questions are numbered 1, 2, 3 cannot be matched to a marking that calls
@@ -393,6 +525,27 @@ valid JSON, nothing after it. This is what AUREUM imports.
 - \`percent\` is round(total ÷ max × 100).
 - Never leave a marks field null. A missed point is status \`missed\` with
   the marks to match, not an omission.
+
+### The teaching fields are the point of the whole exercise
+
+\`summary\`, \`mnemonics\`, \`pitfalls\` and \`reading\` are where everything
+you explained after the clock stopped is kept. Everything said in the chat
+disappears when the chat is closed; only what is in this JSON is still there
+in a fortnight, which is when it is actually revised from. So:
+
+- **\`summary\`** — what a candidate should be able to say about this topic
+  cold. Not a recap of their answer; the topic itself, properly.
+- **\`mnemonics\`** — the memory aids, orderings and numbers worth learning
+  as numbers. If no standard aid exists, make one and say what it expands
+  to. This is the part candidates ask for most and the part that is most
+  often lost.
+- **\`pitfalls\`** — the things candidates typically say here that lose
+  marks, each paired with what to say instead.
+- **\`reading\`** — the guideline, chapter or paper that settles each gap,
+  with one line on why that one. Name it precisely enough to find.
+
+Fill them generously. They are not padding, and they cost the candidate
+nothing but the paste.
 
 ---
 
@@ -466,9 +619,13 @@ average mean nothing.
             <button class="btn btn-ghost" id="ai-md">⬇ Project instructions (.md)</button>
             <button class="btn btn-ghost" id="ai-station">📄 Station block only</button>
           </div>
-          <p class="muted tiny">Use <strong>Copy the prompt</strong> for a one-off chat. Use the
-            <strong>.md</strong> once, in a Claude project's instructions, and then only the
-            <strong>station block</strong> each time — it is far shorter, so the conversation has more room.</p>
+          <p class="muted tiny">Use <strong>Copy the prompt</strong> for a one-off chat with no project. Otherwise put
+            the <strong>.md</strong> into a Claude project's instructions once, and from then on paste only the
+            <strong>station block</strong> — on its own, as the whole message, with nothing before or after it.</p>
+          <p class="muted tiny">The block now carries the question wording in a section of its own, and the examiner
+            reads those lines back to you before the clock starts. If what it reads back is not what is on the
+            station, the paste did not land — re-paste the whole block rather than correcting it, and never let two
+            stations share one conversation.</p>
           <div id="ai-msg" class="ai-msg"></div>
         </div>
 
@@ -509,7 +666,14 @@ average mean nothing.
       catch { say('This browser would not let the page copy. Long-press the prompt in the box that just opened.', 'bad'); showFallback(wrap, text); }
     };
     wrap.querySelector('#ai-copy').addEventListener('click', () => copy(buildPrompt(st, lvl), 'The whole prompt'));
-    wrap.querySelector('#ai-station').addEventListener('click', () => copy(stationBlock(st) + '\n\n' + jsonBlock(st), 'The station block'));
+    /* THE BLOCK ALONE — nothing appended.
+       This used to copy the station block plus the JSON schema. The
+       schema is already in the project's instructions, and pasting it
+       again beside a station is one of the two things that produced the
+       blending the v2 format exists to stop: every extra paragraph in
+       the message is another chance for an earlier station's questions
+       to be the ones the model reaches for. One station, one paste. */
+    wrap.querySelector('#ai-station').addEventListener('click', () => copy(stationBlock(st), 'The station block'));
     wrap.querySelector('#ai-md').addEventListener('click', () => {
       const md = buildInstructions(lvl);
       const url = URL.createObjectURL(new Blob([md], { type: 'text/markdown;charset=utf-8' }));
@@ -615,6 +779,8 @@ average mean nothing.
               device. Either way you can attach the file below when you finish.</p>
           </div>
 
+          <div id="ai-drive"></div>
+
           <div class="ai-run-acts">
             <button class="btn btn-gold btn-lg" id="ai-start">● Start the clock and record</button>
             <button class="btn btn-ghost" id="ai-pause" hidden>⏸ Pause</button>
@@ -649,6 +815,17 @@ average mean nothing.
     const pauseB = view.querySelector('#ai-pause');
     const stopB = view.querySelector('#ai-stop');
     const after = view.querySelector('#ai-after');
+
+    /* Checked before the clock starts, for the same reason as on the
+       station brief: a Drive that has lapsed costs two taps to fix now
+       and a recording to fix later. */
+    const dvBox = view.querySelector('#ai-drive');
+    if (dvBox && typeof Drive !== 'undefined') {
+      const paintDv = () => { if (dvBox.isConnected) dvBox.innerHTML = Drive.warnHtml('before'); };
+      paintDv();
+      Drive.onChange(paintDv);
+      Drive.probe();
+    }
 
     function paint() {
       clockEl.textContent = fmt(left);
@@ -763,10 +940,17 @@ average mean nothing.
        from it — the tape and the attempt it belongs to have to agree on a
        name before either exists. */
     const attemptId = rid('oc');
+    let toDrive = null;
     if (tape?.blob) {
       try { stored = await Backend.uploadOsceAudio(attemptId, tape.blob); } catch {}
-      if (typeof Drive !== 'undefined' && Drive.on()) {
-        try { await Drive.upload(tape.blob, Drive.nameFor('AI OSCE — ' + (st.topic || ''), Date.now(), tape.ext || 'webm'), {}); } catch {}
+      /* `deposit`, not `upload`: it records a miss in the outbox instead
+         of swallowing it, which is how several of these sessions came to
+         be recorded and never copied without anyone being told. */
+      if (typeof Drive !== 'undefined') {
+        toDrive = await Drive.deposit(tape.blob,
+          Drive.nameFor('AI OSCE — ' + (st.topic || ''), Date.now(), tape.ext || 'webm'),
+          { description: `AUREUM OSCE in AI — ${st.topic || ''}`, properties: { attempt: attemptId, station: st.id } },
+          { kind: 'osce', id: attemptId, topic: st.topic || '', path: stored?.path || '', when: Date.now() });
       }
     }
     host.innerHTML = `
@@ -774,8 +958,9 @@ average mean nothing.
         <h3 class="card-title">${tape?.blob ? '✓ The session is recorded' : 'No recording from this device'}</h3>
         ${tape?.blob ? `<audio controls src="${esc(tape.url)}" class="ai-audio"></audio>
           <p class="muted tiny">${stored ? 'Kept on the server for 24 hours' : 'Kept in this browser only — the upload did not go through'}${
-            typeof Drive !== 'undefined' && Drive.on() ? ', and copied to your Drive folder' : ''}.
+            toDrive ? ', and copied to your Drive folder' : ''}.
             ${tape.bothVoices === false ? 'Only your voice is on it — this device would not let go of echo cancellation.' : ''}</p>
+          ${toDrive ? '' : (typeof Drive !== 'undefined' ? Drive.warnHtml('after') : '')}
           <p><a class="btn btn-ghost btn-sm" href="${esc(tape.url)}" download="${esc((st.topic || 'osce').replace(/[^\w -]/g, '')) }.${esc(tape.ext || 'webm')}">⬇ Download the audio</a></p>`
           : `<p class="muted">The microphone was not available — almost always because the model's voice mode had it.
              That costs you nothing here: the model examined you and marks you.</p>
@@ -836,12 +1021,16 @@ average mean nothing.
         attach.disabled = true; amsg.textContent = 'Storing…';
         try {
           stored = await Backend.uploadOsceAudio(attemptId, f);
-          if (typeof Drive !== 'undefined' && Drive.on()) {
-            try { await Drive.upload(f, Drive.nameFor('AI OSCE — ' + (st.topic || ''), Date.now(),
-              (f.name.split('.').pop() || 'm4a')), {}); } catch {}
+          let up = null;
+          if (typeof Drive !== 'undefined') {
+            up = await Drive.deposit(f, Drive.nameFor('AI OSCE — ' + (st.topic || ''), Date.now(),
+              (f.name.split('.').pop() || 'm4a')),
+              { description: `AUREUM OSCE in AI — ${st.topic || ''}` },
+              { kind: 'osce', id: attemptId, topic: st.topic || '', path: stored?.path || '', when: Date.now() });
           }
           amsg.innerHTML = `<span class="good">✓ ${esc(f.name)} kept for 24 hours${
-            typeof Drive !== 'undefined' && Drive.on() ? ', and copied to Drive' : ''}.</span>`;
+            up ? ', and copied to Drive' : ''}.</span>`
+            + (up || typeof Drive === 'undefined' ? '' : Drive.warnHtml('after'));
         } catch (err) { amsg.innerHTML = `<span class="bad">${esc(err.message || err)}</span>`; attach.disabled = false; }
       });
     }

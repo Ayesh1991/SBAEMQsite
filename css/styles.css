@@ -4715,6 +4715,32 @@ body.eco-open .ap-dock { z-index: 2390; }
   background: rgba(232,181,63,.08); border-left: 3px solid var(--gold, #e8b53f);
 }
 
+/* THE ALARM, wherever a recording is made.
+   Amber when the grant has lapsed — something WAS working and stopped,
+   which is the case worth interrupting for. Quiet grey when Drive was
+   never connected, because that is a choice, not a fault, and shouting
+   about it before every station would train people to ignore it. */
+.dv-warn {
+  margin: 12px 0; padding: 11px 13px; border-radius: 11px;
+  background: rgba(255,255,255,.03); border-left: 3px solid rgba(255,255,255,.16);
+}
+.dv-warn.is-stale { background: rgba(232,181,63,.09); border-left-color: var(--gold, #e8b53f); }
+.dv-warn p { margin: 0 0 4px; }
+.dv-warn p.tiny { color: var(--ink-2); font-size: .78rem; line-height: 1.5; }
+.dv-warn .btn { margin-top: 6px; }
+
+.wl-dv-miss { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,.08); }
+.wl-dv-miss > p { margin: 0 0 8px; }
+.wl-dv-misslist { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 6px; }
+.wl-dv-misslist li {
+  padding: 7px 10px; border-radius: 9px; background: rgba(255,255,255,.03);
+  border-left: 3px solid rgba(255,255,255,.14);
+}
+.wl-dv-misslist li.is-live { border-left-color: #34d399; }
+.wl-dv-misslist li.is-gone { border-left-color: rgba(248,113,113,.55); opacity: .72; }
+.wl-dv-misslist li span { display: block; font-weight: 600; }
+.wl-dv-misslist li em { display: block; font-style: normal; }
+
 /* ============================================================
    CASE-BASED DISCUSSION
    Deliberately close to the OSCE styling — it is the same exam and the
@@ -5413,6 +5439,37 @@ html.is-printlock, html.is-printlock body { overflow: hidden; }
   background: color-mix(in srgb, #c96442 7%, transparent); }
 .os-claude-note p { margin: 0 0 8px; }
 .warn { color: var(--gold); }
+
+/* The examiner owning up to its own process. Red, because a marking made
+   partly against questions the scheme never asked is not a marking to
+   read at face value — but the attempt is kept, because the answers
+   given to the real questions still stand. */
+.os-drift { border-color: color-mix(in srgb, #f87171 40%, var(--hairline));
+  background: color-mix(in srgb, #f87171 7%, transparent); }
+.os-drift p { margin: 0 0 8px; }
+.os-drift-list { margin: 0 0 8px; padding-left: 1.15em; color: var(--ink-2); }
+.os-drift-list li { margin-bottom: 5px; }
+
+/* THE TEACHING KEPT.
+   Styled as reading, not as marking — wider measure, no ticks, no
+   colour-coding of right and wrong. This half of the report is revised
+   from weeks later, when the marks no longer matter. */
+.es-summary p { max-width: 68ch; }
+.es-mnem-list { display: grid; gap: 10px; }
+.es-mnem-i { padding: 10px 13px; border-radius: 11px; background: rgba(255,255,255,.03);
+  border-left: 3px solid var(--gold, #e8b53f); }
+.es-mnem-aid { margin: 0 0 3px; font-weight: 700; letter-spacing: .02em; }
+.es-mnem-x { margin: 0 0 3px; color: var(--ink-2); }
+.es-pit-list { display: grid; gap: 10px; }
+.es-pit-i { padding: 10px 13px; border-radius: 11px; background: rgba(255,255,255,.03); }
+.es-pit-t, .es-pit-s { margin: 0; display: flex; gap: 8px; align-items: baseline; }
+.es-pit-t span { color: #f87171; font-weight: 800; }
+.es-pit-s { margin-top: 5px; color: var(--ink-2); }
+.es-pit-s span { color: #34d399; font-weight: 800; }
+.es-read-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.es-read-list li { padding-left: 20px; position: relative; }
+.es-read-list li::before { content: '📄'; position: absolute; left: 0; font-size: .8em; }
+.es-read-list li span { display: block; }
 
 @media (max-width: 560px) {
   .ai-pick { grid-template-columns: 1fr; }

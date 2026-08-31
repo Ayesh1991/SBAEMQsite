@@ -1935,6 +1935,7 @@ const OSCE = (() => {
                 up, so the tape sounds like the real room. Turn it off, or wear headphones, and only your own voice is
                 recorded. Nothing said in the examiner's voice can earn you marks either way.</span></span>
           </label>` : ''}
+          <div id="os-brief-drive"></div>
           <button class="btn btn-gold btn-lg" id="os-go">${resuming ? '▶ Resume the station' : "▶ I've read it — start"}</button>
           ${typeof AiOsce !== 'undefined' && AiOsce.allowed(user) ? `<div class="os-brief-ai">
             ${AiOsce.buttonHtml()}
@@ -1944,6 +1945,19 @@ const OSCE = (() => {
         </div>`;
       stage.querySelector('#os-aiosce')?.addEventListener('click', () => AiOsce.openDialog(st, { sid }));
       stage.querySelector('#os-both')?.addEventListener('change', e => setExaminerOnTape(e.target.checked));
+
+      /* THE ONE MOMENT WHEN A LAPSED DRIVE COSTS NOTHING TO FIX.
+         Probed here rather than at the upload, because here the fix is
+         two taps and the tape does not exist yet. Repainted on change so
+         reconnecting in another tab clears the warning without a
+         reload. */
+      const dvBox = stage.querySelector('#os-brief-drive');
+      if (dvBox && typeof Drive !== 'undefined') {
+        const paintDv = () => { if (dvBox.isConnected) dvBox.innerHTML = Drive.warnHtml('before'); };
+        paintDv();
+        Drive.onChange(paintDv);
+        Drive.probe();
+      }
       stage.querySelector('#os-pre-go').addEventListener('click', e => preflight(stage, e.target));
 
       /* Say what the dial will actually do, in plain words, before the
@@ -2797,6 +2811,12 @@ const OSCE = (() => {
     }
 
     async function start() {
+      /* Ask Google whether the grant is still alive, NOW, while the tape
+         does not yet exist. A lapsed permission found here is a prompt;
+         found at upload time it is a lost recording. Never awaited — the
+         clock does not wait for Drive — and never throws, so it cannot
+         stand between a candidate and their microphone. */
+      try { if (typeof Drive !== 'undefined') Drive.probe(); } catch {}
       try {
         media = await openMic();
       } catch (e) {
@@ -3191,6 +3211,24 @@ const OSCE = (() => {
     }
     meta.attemptId = id; meta.audioPath = audioPath; meta.audioExpires = audioExpires;
 
+    /* THE DRIVE COPY GOES NOW, NOT AFTER THE MARKING.
+       It used to sit at the end of markSend, which meant it only ever
+       happened when the model came back — so a station marked by hand,
+       a marking that failed, and a station queued for later all reached
+       the sweep without ever being offered to Drive. The tape exists at
+       THIS line and its journey should not depend on what happens to it
+       afterwards. `deposit` also writes an outbox row when it cannot go,
+       which is what turns "the folder stopped filling" into a number.
+       Not awaited: a slow Drive must not delay the marking. */
+    let driveJob = null;
+    if (rec?.blob && typeof Drive !== 'undefined' && Drive.configured()) {
+      driveJob = Drive.deposit(rec.blob, Drive.nameFor(st.topic, Date.now(), rec.ext || 'webm'),
+        { description: `AUREUM OSCE — ${st.topic || ''}`, properties: { attempt: id, station: st.id } },
+        { kind: 'osce', id, topic: st.topic || '', path: audioPath, when: Date.now() }
+      ).catch(() => null);
+      meta.driveJob = driveJob;
+    }
+
     /* THE TAPE GOES INTO THE LOCAL QUEUE BEFORE THE MODEL IS CALLED.
 
        The upload above is the cloud copy and it needs the network — which
@@ -3210,7 +3248,7 @@ const OSCE = (() => {
     }
 
     try {
-      const out = await markSend({ id, st, ans, rec, session, choice, useAudio, say, audioPath, audioExpires, token });
+      const out = await markSend({ id, st, ans, rec, session, choice, useAudio, say, audioPath, audioExpires, token, driveJob });
       try { if (typeof Pending !== 'undefined') await Pending.drop(id); } catch {}
       return out;
     } catch (e) {
@@ -3266,7 +3304,7 @@ const OSCE = (() => {
       : (last?.message || String(last)));
   }
 
-  async function markSend({ id, st, ans, rec, session, choice, useAudio, say, audioPath, audioExpires, token }) {
+  async function markSend({ id, st, ans, rec, session, choice, useAudio, say, audioPath, audioExpires, token, driveJob }) {
     {
       const body = {
         action: 'osce', provider: choice.provider, model: choice.model, dailyLimit: cfg().ai.dailyLimit,
@@ -3328,15 +3366,12 @@ const OSCE = (() => {
       try { await Backend.saveOsceAttempt(attempt); bustAttempts(); } catch {}
       try { if (typeof Wallet !== 'undefined') Wallet.bust(); } catch {}
 
-      /* The candidate's own Drive, if they connected one. Deliberately the
-         LAST thing, deliberately not awaited, and deliberately unable to
-         affect the return: the marking is the deliverable, and an upload
-         that fails must cost the recording, never the result. */
-      if (rec?.blob && typeof Drive !== 'undefined' && Drive.on()) {
-        Drive.upload(rec.blob, Drive.nameFor(st.topic, attempt.created, rec.ext || 'webm'), {
-          description: `AUREUM OSCE — ${st.topic || ''} — ${attempt.result?.percent ?? '?'}%`,
-          properties: { attempt: attempt.id, station: st.id }
-        }).then(up => {
+      /* The Drive copy was started at tape time, before the model was
+         called — see markCore. All that is left is to write down where
+         it went, once it has, without ever making the result wait for
+         it. A miss is already recorded in the outbox by `deposit`. */
+      if (driveJob) {
+        driveJob.then(up => {
           if (!up) return;
           attempt.drive = { id: up.id, link: up.link, name: up.name };
           Backend.saveOsceAttempt(attempt).catch(() => {}); bustAttempts();
@@ -3618,6 +3653,32 @@ const OSCE = (() => {
             else on this page works exactly as it does for an AI-marked station, including the printout.</p>
         </div>` : ''}
 
+        ${(() => {
+          /* WHAT THE EXAMINER ADMITS ABOUT ITSELF.
+             A chat model that asked an invented question and was pulled
+             back mid-station still produces a clean-looking marking, and
+             the mark is then partly against questions the scheme never
+             asked. That has to be on the report — not so the attempt is
+             thrown away, but so a percentage is read for what it is, and
+             so a repeated drift is visible across sessions instead of
+             being re-discovered every time. */
+          const pi = r.processIntegrity;
+          if (!pi || (pi.preflightConfirmed !== false && !pi.driftDetected)) return '';
+          return `<div class="card os-drift" data-animate>
+            <p><strong>⚠️ The examiner reported a problem with its own process.</strong></p>
+            <ul class="os-drift-list">
+              ${pi.preflightConfirmed === false
+                ? '<li>The question list was <strong>never confirmed</strong> before the station began, so nothing checked that the model had the real questions.</li>' : ''}
+              ${pi.driftDetected
+                ? '<li>A question was <strong>asked that is not in the scheme</strong>, and had to be corrected during the station.</li>' : ''}
+            </ul>
+            ${pi.driftNotes ? `<p class="muted tiny">${esc(pi.driftNotes)}</p>` : ''}
+            <p class="muted tiny">Read the marks with that in mind. Re-paste the station block as a single whole
+              message next time — a block pasted in pieces, or a second station in the same conversation, is what
+              causes this.</p>
+          </div>`;
+        })()}
+
         ${r.examinerComment ? `<div class="card es-examiner" data-animate>
           <div class="es-inbox-head">
             <h3 class="card-title">👨‍⚖️ Examiner's verdict</h3>
@@ -3695,10 +3756,60 @@ const OSCE = (() => {
           <h3 class="card-title">🔑 Key learning points</h3>
           <ol class="es-klp-list">${r.keyLearning.map((k, i) => `<li class="${i === 0 ? 'top' : ''}">${esc(k)}</li>`).join('')}</ol></div>` : ''}
 
+        ${/* THE TEACHING THAT USED TO DIE WITH THE CHAT.
+              A chat model gives away far more after the clock stops than
+              the marks: the topic summarised properly, the mnemonic it
+              invented, the trap everyone falls into, the guideline that
+              settles it. All of that lived in a conversation window that
+              was closed by the evening. These four sections are the same
+              content, kept — and because they are ordinary fields on an
+              ordinary attempt, the printout, the study document and the
+              search all get them for free. */ ''}
+        ${String(r.summary || '').trim() ? `<div class="card es-summary" data-animate>
+          <h3 class="card-title">📖 The topic, properly</h3>
+          <p class="muted tiny">Not a recap of your answer — what you should be able to say about this cold.</p>
+          ${String(r.summary).split(/\n{2,}/).filter(p => p.trim()).map(p => `<p>${esc(p.trim())}</p>`).join('')}
+        </div>` : ''}
+
+        ${(r.mnemonics || []).length ? `<div class="card es-mnem" data-animate>
+          <h3 class="card-title">🧠 Ways to remember it</h3>
+          <div class="es-mnem-list">${r.mnemonics.map(m => {
+            const aid = typeof m === 'string' ? m : (m.aid || '');
+            const exp = typeof m === 'string' ? '' : (m.expands || '');
+            const use = typeof m === 'string' ? '' : (m.use || '');
+            return `<div class="es-mnem-i">
+              <p class="es-mnem-aid">${esc(aid)}</p>
+              ${exp ? `<p class="es-mnem-x">${esc(exp)}</p>` : ''}
+              ${use ? `<p class="muted tiny">${esc(use)}</p>` : ''}
+            </div>`;
+          }).join('')}</div></div>` : ''}
+
+        ${(r.pitfalls || []).length ? `<div class="card es-pit" data-animate>
+          <h3 class="card-title">🪤 What loses marks here</h3>
+          <div class="es-pit-list">${r.pitfalls.map(p => {
+            const trap = typeof p === 'string' ? p : (p.trap || '');
+            const instead = typeof p === 'string' ? '' : (p.instead || '');
+            return `<div class="es-pit-i">
+              <p class="es-pit-t"><span>✗</span> ${esc(trap)}</p>
+              ${instead ? `<p class="es-pit-s"><span>✓</span> ${esc(instead)}</p>` : ''}
+            </div>`;
+          }).join('')}</div></div>` : ''}
+
+        ${(r.reading || []).length ? `<div class="card es-read" data-animate>
+          <h3 class="card-title">📚 Where to settle it</h3>
+          <ul class="es-read-list">${r.reading.map(x => {
+            const src = typeof x === 'string' ? x : (x.source || '');
+            const why = typeof x === 'string' ? '' : (x.why || '');
+            return `<li><strong>${esc(src)}</strong>${why ? `<span class="muted tiny">${esc(why)}</span>` : ''}</li>`;
+          }).join('')}</ul></div>` : ''}
+
         ${a.audioPath ? `<div class="card os-audio" data-animate>
           <h3 class="card-title">🎧 Your recording</h3>
           <p class="muted" id="os-au-note">Loading the recording…</p>
           <div id="os-au"></div>
+          ${a.drive ? `<p class="muted tiny">☁ A copy is in your Drive folder —
+            <a href="${esc(a.drive.link)}" target="_blank" rel="noopener">open it</a>.</p>`
+            : (typeof Drive !== 'undefined' ? Drive.warnHtml('after') : '')}
         </div>` : ''}
 
         ${a.cost ? `<div class="card os-cost" data-animate>
@@ -3984,13 +4095,17 @@ const OSCE = (() => {
     { id: 'said',     label: 'What you said — the transcript, under each question' },
     { id: 'improve',  label: 'What to do first' },
     { id: 'good',     label: 'What was good' },
-    { id: 'learning', label: 'Key learning points' }
+    { id: 'learning', label: 'Key learning points' },
+    { id: 'teach',    label: 'The teaching — the topic, mnemonics, pitfalls and what to read' }
   ];
   const PRINT_PRESETS = {
     full:   { label: '📋 The whole report', pick: PRINT_SECTIONS.map(s => s.id) },
     marked: { label: '✍️ Marking only', pick: ['cover', 'verdict', 'scheme', 'marks', 'improve'] },
     blank:  { label: '📄 Blank scheme to practise against', pick: ['scheme'] },
-    spoken: { label: '🎙 Scheme with what I said', pick: ['cover', 'scheme', 'marks', 'said'] }
+    spoken: { label: '🎙 Scheme with what I said', pick: ['cover', 'scheme', 'marks', 'said'] },
+    /* A revision sheet with no marks on it at all — this is the one that
+       goes in the folder and is read on the bus a fortnight later. */
+    revise: { label: '📚 Revision sheet — the teaching, no marks', pick: ['cover', 'learning', 'teach'] }
   };
   const PRINT_KEY = 'aureum.osce.print';
 
@@ -4170,6 +4285,19 @@ ${has('improve') && (r.improvements || []).length ? `<section class="blk"><h2>Wh
   `<li>${esc(typeof x === 'string' ? x : x.action)}${x.marks ? ` <strong>(+${x.marks} marks)</strong>` : ''}</li>`).join('')}</ol></section>` : ''}
 ${has('good') && (r.strengths || []).length ? `<section class="blk"><h2>What was good</h2><ul>${r.strengths.map(x => `<li>${esc(x)}</li>`).join('')}</ul></section>` : ''}
 ${has('learning') && (r.keyLearning || []).length ? `<section class="blk"><h2>Key learning points</h2><ol>${r.keyLearning.map(x => `<li>${esc(x)}</li>`).join('')}</ol></section>` : ''}
+${has('teach') && String(r.summary || '').trim() ? `<section class="blk"><h2>The topic, properly</h2>${
+  String(r.summary).split(/\n{2,}/).filter(p => p.trim()).map(p => `<p>${esc(p.trim())}</p>`).join('')}</section>` : ''}
+${has('teach') && (r.mnemonics || []).length ? `<section class="blk"><h2>Ways to remember it</h2><ul>${
+  r.mnemonics.map(m => typeof m === 'string' ? `<li>${esc(m)}</li>`
+    : `<li><strong>${esc(m.aid || '')}</strong>${m.expands ? ` — ${esc(m.expands)}` : ''}${
+        m.use ? `<span class="note">${esc(m.use)}</span>` : ''}</li>`).join('')}</ul></section>` : ''}
+${has('teach') && (r.pitfalls || []).length ? `<section class="blk"><h2>What loses marks here</h2><ul>${
+  r.pitfalls.map(p => typeof p === 'string' ? `<li>${esc(p)}</li>`
+    : `<li><span class="mis">✗</span> ${esc(p.trap || '')}${
+        p.instead ? `<span class="note"><span class="cov">✓</span> ${esc(p.instead)}</span>` : ''}</li>`).join('')}</ul></section>` : ''}
+${has('teach') && (r.reading || []).length ? `<section class="blk"><h2>Where to settle it</h2><ul>${
+  r.reading.map(x => typeof x === 'string' ? `<li>${esc(x)}</li>`
+    : `<li><strong>${esc(x.source || '')}</strong>${x.why ? `<span class="note">${esc(x.why)}</span>` : ''}</li>`).join('')}</ul></section>` : ''}
 <footer class="foot"><span>${esc(a.station?.topic || '')} — OSCE</span><span>AUREUM · printed ${esc(new Date().toLocaleDateString('en-GB', { dateStyle: 'medium' }))}</span></footer>
 </div>`;
 
@@ -5216,6 +5344,7 @@ ${P} .os-pd-close{background:transparent;color:#fff;border:1px solid rgba(255,25
     makeDoc, docAsText, allPoints, coachFor, coachWanted, COACH,
     // exposed for tests and for the circuit page's live redraw
     markState, onMarkChange, retryMark, shell, circuitNext,
+    printResult, __printPresets: PRINT_PRESETS,
     /* Lent to OSCE in AI so a tape recorded there is marked by exactly the
        same path as one recorded here — the same model picker, the same
        cost estimate, the same upload, the same pending queue. A second
