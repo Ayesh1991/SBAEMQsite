@@ -30,7 +30,11 @@
     { re: /^#\/library\/essay\/feedback\/([^/]+)$/, fn: (code, u) => Essay.renderFeedback(view, code, u) },
     { re: /^#\/library\/essay\/([^/]+)\/write\/(\d+)$/, fn: (id, qi, u) => Essay.renderWrite(view, id, qi, u) },
     { re: /^#\/library\/essay\/([^/]+)$/, fn: (id, u) => Essay.renderPaper(view, id, u) },
-    { re: /^#\/osce$/, fn: (u) => OSCE.renderBank(view, u) },
+    /* `#/osce` and `#/osce?bp=<module>`. The query is optional and the
+       group is allowed to not participate — a route that only matched the
+       bare hash sent "Find a station in it" to the dashboard, because no
+       pattern matched and the router fell through to its default. */
+    { re: /^#\/osce(?:\?bp=([^&]*))?$/, fn: (bp, u) => OSCE.renderBank(view, u, { bp: bp || '' }) },
     { re: /^#\/osce\/sim$/, fn: (u) => OSCE.renderSim(view, u) },
     { re: /^#\/osce\/mine$/, fn: (u) => OSCE.renderMine(view, u) },
     { re: /^#\/osce\/edit$/, fn: (u) => OSCE.renderEdit(view, null, u) },

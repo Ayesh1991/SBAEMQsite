@@ -143,6 +143,13 @@ const Backend = (() => {
        exactly the fault this release fixed on the report page. `pass` is
        carried through rather than coerced for the same reason: a partial
        has no verdict, and !!null would silently make it a fail. */
+    /* ONE PERFORMANCE, TWO MARKERS.
+       A live station that was recorded can be marked by the examiner in
+       the room AND by AUREUM, from the same tape. Both attempts carry the
+       same `sitting`, and the side-by-side reads it to say so — without
+       it the page cannot tell one performance marked twice from two
+       separate sittings, which mean quite different things. */
+    sitting: a.sitting || null,
     result: { percent: a.result?.percent, total: a.result?.total, max: a.result?.max,
       pass: a.result?.pass == null ? a.result?.pass : !!a.result.pass,
       partial: a.result?.partial || null }
