@@ -123,11 +123,22 @@ window.AUREUM_CONFIG = {
 
      apiKey/appId are only needed by the folder Picker. The API key is a
      public browser key restricted by HTTP referrer, like the one already
-     used for reading the public Drive folders. */
+     used for reading the public Drive folders.
+
+     THESE THREE ARE PUBLIC BROWSER CREDENTIALS AND BELONG IN THE FILE.
+
+     They were being blanked on every release and pasted back by hand,
+     which is how a deployment went out with Drive silently switched off.
+     A client ID and a referrer-restricted browser key are handed to every
+     visitor by the page itself; they identify the project, they do not
+     authorise anything. The secrets — GEMINI_API_KEY, ANTHROPIC_API_KEY,
+     OPENAI_API_KEY, GROQ_API_KEY, SUPABASE_SERVICE_KEY, PASS_KEY — live
+     only as Cloudflare environment variables and are never in this repo.
+     Do not move any of those here to match. */
   driveSave: {
-    clientId: '',                    // xxxxx.apps.googleusercontent.com
-    apiKey: '',                      // browser key, referrer-restricted
-    appId: ''                        // the Cloud project NUMBER
+    clientId: '379420684116-ramk8jqkanr6q8n39n5alicj0m34ggjr.apps.googleusercontent.com',
+    apiKey: 'AIzaSyCEVYDkHCE3u5-LlaXSXH2wrzhIW4upgrs',   // browser key, referrer-restricted
+    appId: '379420684116'                                 // the Cloud project NUMBER
   },
 
   /* OSCE collections — the bins a station belongs to. The developer can add

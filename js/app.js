@@ -40,6 +40,8 @@
     { re: /^#\/osce\/result\/([^/]+)$/, fn: (id, u) => OSCE.renderResult(view, id, u) },
     { re: /^#\/osce\/circuit\/([^/]+)$/, fn: (sid, u) => OSCE.renderCircuit(view, sid, u) },
     { re: /^#\/osce\/progress$/, fn: (u) => OSCE.renderProgress(view, u) },
+    { re: /^#\/osce\/recall$/, fn: (u) => Recall.render(view, u) },
+    { re: /^#\/osce\/compare\/([^/]+)$/, fn: (id, u) => OSCE.renderCompare(view, id, u) },
     // marking a real person, sitting in front of you
     { re: /^#\/osce\/mark\/([^/]+)$/, fn: (id, u) => Marksheet.render(view, id, u) },
     /* the candidate's half of a live station examined by somebody else */

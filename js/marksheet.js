@@ -193,6 +193,18 @@ const Marksheet = (() => {
           </div>
         </details>
 
+        ${/* THE ACTOR BRIEF, ON THE SHEET THE EXAMINER IS ALREADY HOLDING.
+              In a face-to-face round the person ticking the boxes is also
+              the person playing the patient. Making them hold the brief on
+              a second device is how a reveal gets given away early — and
+              the reveal is the station. It is collapsed by default and
+              says so, because it must not be on screen while the
+              candidate can see it. */
+          OSCE.hasRole(st) ? `<details class="ms-role">
+          <summary><span>🎭 You are playing ${esc(OSCE.roleLabel(st))}</span><i>tap to open — keep it off the candidate's screen</i></summary>
+          <div class="ms-role-body">${OSCE.roleHtml(st, 'brief')}</div>
+        </details>` : ''}
+
         <div id="ms-qs"></div>
 
         <div class="ms-foot">

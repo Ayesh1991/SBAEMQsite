@@ -87,7 +87,18 @@ const RealStation = (() => {
     /* The finished attempt, for them to keep. Sent whole because that is
        what My attempts stores — the same object the chat carries today. */
     if (kind === 'result') return Object.assign(base, { attempt: extra?.attempt || null });
-    return base;
+
+    /* AN UNKNOWN KIND SENDS NOTHING.
+
+       This used to `return base`, which quietly turned the whitelist into
+       a list of known shapes with a permissive default — the exact thing
+       the header says this is not. Nothing leaked, because nothing was
+       ever sent under an unlisted kind; but the guarantee was only true
+       by accident, and the next feature to add a kind and forget to add a
+       case would have found out the hard way. A station now carries a
+       role-player brief, which is the answer sheet for the conversation,
+       so "unlisted means nothing" has to be true by construction. */
+    return null;
   }
 
   /* ================= the examiner's side ================= */
@@ -115,6 +126,11 @@ const RealStation = (() => {
   const finish = row => patchState(row, { status: S.FINISHED });
 
   async function send(row, item) {
+    /* `sendable` answers null for anything not on the whitelist. Refusing
+       here rather than pushing a null keeps the refusal at the one place
+       every caller goes through, instead of asking each of them to
+       remember to check. */
+    if (!item || !item.kind) return row;
     const sent = (row.state?.sent || []).concat([item]);
     return patchState(row, { sent });
   }
