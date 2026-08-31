@@ -5440,6 +5440,198 @@ html.is-printlock, html.is-printlock body { overflow: hidden; }
 .os-claude-note p { margin: 0 0 8px; }
 .warn { color: var(--gold); }
 
+/* ============================================================
+   THE CASE PHASE CLOCK
+   The half-hour feels long, which is how it gets lost. Time against
+   the phase's own budget, and — the part that changes behaviour —
+   what is left for everything that has not happened yet.
+   ============================================================ */
+.cs-pclock { margin: 0 0 14px; padding: 9px 12px; border-radius: 11px; background: rgba(255,255,255,.03); }
+.cs-pclock-row { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; margin-bottom: 6px; }
+.cs-pclock-t { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 1.05rem; }
+.cs-pclock-rest { margin-left: auto; }
+.cs-pclock-rest.is-tight { color: #fca5a5; font-weight: 600; }
+.cs-pclock-bar { height: 4px; border-radius: 999px; background: rgba(255,255,255,.08); overflow: hidden; }
+.cs-pclock-bar i { display: block; height: 100%; background: #34d399; transition: width .3s linear; }
+.cs-pclock.is-near .cs-pclock-bar i { background: var(--gold, #e8b53f); }
+.cs-pclock.is-over .cs-pclock-bar i { background: #f87171; }
+.cs-pclock.is-over .cs-pclock-t { color: #fca5a5; }
+
+/* Time against marks on the report. Two bars on one track, because the
+   whole claim is that they should be the same length. */
+.cs-split { margin: 18px 0; padding: 14px 16px; border-radius: 13px; background: rgba(255,255,255,.03); }
+.cs-split h3 { margin: 0 0 4px; font-size: 1.02rem; }
+.cs-split-rows { display: grid; gap: 9px; margin: 12px 0 10px; }
+.cs-split-row { display: grid; grid-template-columns: minmax(90px, 1fr) 2.4fr auto; gap: 10px; align-items: center; }
+.cs-split-n { font-size: .84rem; }
+.cs-split-bars { display: grid; gap: 3px; }
+.cs-split-bars i { display: block; height: 7px; border-radius: 999px; min-width: 2px; }
+.cs-split-t { background: rgba(167,139,250,.75); }
+.cs-split-m { background: rgba(232,181,63,.75); }
+.cs-split-v { font-variant-numeric: tabular-nums; font-size: .82rem; text-align: right; }
+.cs-split-v em { display: block; font-style: normal; font-size: .72rem; color: var(--ink-2); }
+.cs-split-row.is-over .cs-split-n { color: #fca5a5; }
+.cs-split-key { display: flex; align-items: center; gap: 6px; font-size: .72rem; color: var(--ink-2); margin: 0 0 8px; }
+.cs-split-key span { display: inline-block; width: 16px; height: 7px; border-radius: 999px; }
+.cs-split-say { margin: 0; line-height: 1.6; }
+
+/* ============================================================
+   THE GAP, THE DRIFT LEDGER AND THE SIDE-BY-SIDE
+   ============================================================ */
+.os-gap { border-left: 3px solid var(--gold, #e8b53f); }
+.os-gap-h { margin: 2px 0 6px; font-size: 1.5rem; }
+.os-gap-p { margin: 0 0 12px; line-height: 1.65; }
+.os-gap-acts { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+
+.os-dl-figs { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin: 10px 0 14px; text-align: center; }
+.os-dl-figs > div { padding: 10px 6px; border-radius: 11px; background: rgba(255,255,255,.03); }
+.os-dl-figs strong { display: block; font-size: 1.35rem; }
+.os-dl-figs span { display: block; font-size: .68rem; color: var(--ink-2); margin-top: 3px; }
+.os-dl-list { list-style: none; margin: 0 0 12px; padding: 0; display: grid; gap: 7px; }
+.os-dl-list li { padding: 8px 11px; border-radius: 9px; background: rgba(248,113,113,.06);
+  border-left: 3px solid rgba(248,113,113,.5); }
+.os-dl-list li span { display: block; }
+
+.os-cmp-offer { border-left: 3px solid rgba(167,139,250,.6); }
+.cmp-scores { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.cmp-score { padding: 12px 14px; border-radius: 12px; background: rgba(255,255,255,.03); border-top: 3px solid var(--hairline); }
+.cmp-score.is-ai { border-top-color: #38bdf8; }
+.cmp-score.is-claude { border-top-color: #c96442; }
+.cmp-score.is-manual { border-top-color: #34d399; }
+.cmp-score-w { display: block; font-size: .66rem; letter-spacing: .09em; text-transform: uppercase; color: var(--ink-2); }
+.cmp-score strong { display: block; font-size: 1.9rem; line-height: 1.2; }
+.cmp-tab { width: 100%; border-collapse: collapse; font-size: .86rem; }
+.cmp-tab th, .cmp-tab td { padding: 7px 9px; border-bottom: 1px solid var(--hairline); vertical-align: top; }
+.cmp-h { text-align: center; font-size: .64rem; letter-spacing: .07em; text-transform: uppercase; white-space: nowrap; }
+.cmp-h.is-ai { color: #38bdf8; } .cmp-h.is-claude { color: #c96442; } .cmp-h.is-manual { color: #34d399; }
+.cmp-pt { line-height: 1.5; }
+.cmp-q { font-size: .66rem; letter-spacing: .06em; color: var(--ink-2); margin-right: 5px; }
+.cmp-c { text-align: center; width: 1%; }
+.cmp-v { font-weight: 800; }
+.cmp-v.is-cov { color: #34d399; } .cmp-v.is-par { color: #e8b53f; } .cmp-v.is-mis { color: #f87171; }
+.cmp-na { color: var(--ink-2); opacity: .5; }
+tr.is-split { background: rgba(232,181,63,.06); }
+.cmp-fold > summary { display: flex; justify-content: space-between; align-items: center; cursor: pointer; }
+
+/* ============================================================
+   RECALL
+   The deck of points an examiner recorded as missed. Deliberately
+   plain: this is a page somebody opens on a bus for four minutes, and
+   anything decorative on it is something in the way of the question.
+   ============================================================ */
+.lib-tab-n {
+  display: inline-block; min-width: 18px; padding: 1px 6px; margin-left: 6px; border-radius: 999px;
+  background: var(--gold, #e8b53f); color: #241d05; font-size: .68rem; font-weight: 800; line-height: 1.5;
+}
+.rc-head { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 12px; text-align: center; }
+.rc-head > div { padding: 9px 6px; border-radius: 11px; background: rgba(255,255,255,.03); }
+.rc-head strong { display: block; font-size: 1.5rem; line-height: 1.1; }
+.rc-head span { display: block; font-size: .68rem; color: var(--ink-2); margin-top: 3px; }
+.rc-bar { height: 4px; border-radius: 999px; background: rgba(255,255,255,.08); overflow: hidden; margin-bottom: 16px; }
+.rc-bar i { display: block; height: 100%; background: var(--gold, #e8b53f); transition: width .25s ease; }
+.rc-meta { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.rc-topic { font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-2); text-decoration: none; }
+.rc-topic:hover { color: var(--gold, #e8b53f); }
+.rc-miss, .rc-part {
+  font-size: .64rem; letter-spacing: .06em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px;
+  background: rgba(248,113,113,.14); color: #fca5a5;
+}
+.rc-part { background: rgba(232,181,63,.14); color: #e8b53f; }
+/* The question, and nothing competing with it. */
+.rc-prompt { font-size: 1.18rem; line-height: 1.5; margin: 0 0 10px; }
+.rc-point {
+  display: flex; gap: 10px; align-items: flex-start; margin: 14px 0 10px;
+  padding: 12px 14px; border-radius: 11px;
+  background: rgba(248,113,113,.07); border-left: 3px solid rgba(248,113,113,.6);
+}
+.rc-point span { color: #f87171; font-weight: 800; }
+.rc-point p { margin: 0; line-height: 1.55; }
+.rc-grades { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.rc-grades .btn { flex: 1 1 90px; }
+.rc-side { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+.rc-side .link { background: none; border: 0; padding: 0; cursor: pointer; font: inherit; }
+.rc-done { text-align: center; padding: 18px 6px; }
+.rc-done p { margin: 0 0 6px; }
+.rc-stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; text-align: center; }
+.rc-stat-grid > div { padding: 10px 6px; border-radius: 11px; background: rgba(255,255,255,.03); }
+.rc-stat-grid strong { display: block; font-size: 1.35rem; }
+.rc-stat-grid span { display: block; font-size: .68rem; color: var(--ink-2); margin-top: 3px; }
+
+/* ============================================================
+   THE ROLE PLAYER
+   Violet, and used nowhere else in the app. The colour is the whole
+   safety mechanism: this block is the answer sheet for the conversation,
+   and an examiner glancing down at a shared iPad has to know in one look
+   whether what is on screen is safe for the candidate to see.
+   ============================================================ */
+.os-rp-tag {
+  display: inline-flex; align-items: center; gap: 5px; font-size: .62rem; letter-spacing: .1em;
+  text-transform: uppercase; font-weight: 700; padding: 3px 9px; border-radius: 999px;
+  background: rgba(167,139,250,.16); color: #c4b5fd; border: 1px solid rgba(167,139,250,.4);
+  white-space: nowrap;
+}
+/* The candidate-safe version: says a character exists, never who or what. */
+.os-rp-flag, .ai-rp-flag {
+  margin: 12px 0; padding: 11px 13px; border-radius: 11px; display: flex; gap: 10px;
+  align-items: flex-start; flex-wrap: wrap;
+  background: rgba(167,139,250,.07); border-left: 3px solid rgba(167,139,250,.55);
+}
+.os-rp-flag p, .ai-rp-flag { margin: 0; color: var(--ink-2); font-size: .84rem; line-height: 1.55; flex: 1 1 240px; }
+.ai-rp-flag { display: block; }
+.ai-rp-flag .os-rp-tag { margin-right: 8px; }
+
+.os-rp {
+  margin: 14px 0; padding: 13px 15px; border-radius: 13px;
+  background: rgba(167,139,250,.06); border: 1px solid rgba(167,139,250,.28);
+}
+.os-rp-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; margin-bottom: 8px; }
+.os-rp-head strong { font-size: 1.02rem; }
+.os-rp-warn {
+  margin: 0 0 10px; padding: 7px 10px; border-radius: 8px; font-size: .78rem; line-height: 1.5;
+  background: rgba(248,113,113,.1); color: #fca5a5; border-left: 3px solid rgba(248,113,113,.6);
+}
+.os-rp-sec { margin-bottom: 10px; }
+.os-rp-sec h5 {
+  margin: 0 0 4px; font-size: .64rem; letter-spacing: .1em; text-transform: uppercase;
+  color: #c4b5fd; font-weight: 700;
+}
+.os-rp-sec p { margin: 0; color: var(--ink-1); line-height: 1.55; }
+.os-rp-sec ul { margin: 0; padding-left: 1.15em; display: grid; gap: 4px; }
+.os-rp-sec li { color: var(--ink-1); line-height: 1.5; }
+/* trigger → reveal, so which question unlocks what is readable at a glance */
+.os-rp-rev { padding-left: 0 !important; list-style: none; }
+.os-rp-rev li { display: grid; gap: 2px; padding: 7px 10px; border-radius: 8px;
+  background: rgba(255,255,255,.03); border-left: 2px solid rgba(167,139,250,.45); }
+.os-rp-trig { font-size: .78rem; color: var(--ink-2); font-style: italic; }
+.os-rp-trig::before { content: 'only if: '; font-style: normal; color: #c4b5fd; }
+.os-rp-rvl { color: var(--ink-1); }
+.os-rp-foot { margin: 8px 0 0; font-size: .76rem; color: var(--ink-2); }
+.os-rp.is-after { background: rgba(167,139,250,.045); }
+
+.ms-role { margin: 0 0 14px; border: 1px solid rgba(167,139,250,.35); border-radius: 13px; overflow: hidden; }
+.ms-role > summary {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 11px 14px; cursor: pointer; background: rgba(167,139,250,.1); font-weight: 600;
+}
+.ms-role > summary i { font-style: normal; font-size: .74rem; color: var(--ink-2); font-weight: 400; }
+.ms-role-body { padding: 0 12px 4px; }
+.ms-role-body .os-rp { border: 0; background: transparent; margin: 0; padding: 10px 0; }
+.es-rp-fold > summary { display: flex; justify-content: space-between; align-items: center; cursor: pointer; }
+
+/* The conversation, from inside the character. */
+.es-conv-r { margin: 0 0 12px; }
+.es-conv-sec { margin-bottom: 14px; }
+.es-conv-sec h4 { margin: 0 0 7px; font-size: .95rem; }
+.es-cue-list { display: grid; gap: 9px; }
+.es-cue { padding: 10px 13px; border-radius: 11px; background: rgba(255,255,255,.03);
+  border-left: 3px solid rgba(167,139,250,.5); }
+.es-cue.is-phr { border-left-color: rgba(232,181,63,.55); }
+.es-cue-c { margin: 0; font-style: italic; color: var(--ink-1); }
+.es-cue.is-phr .es-cue-c { font-style: normal; color: var(--ink-2); }
+.es-cue-w { margin: 5px 0 0; color: var(--ink-1); display: flex; gap: 7px; }
+.es-cue-w span { color: #c4b5fd; font-weight: 700; }
+.es-cue-x { margin: 4px 0 0; font-size: .8rem; color: var(--ink-2); }
+
 /* The examiner owning up to its own process. Red, because a marking made
    partly against questions the scheme never asked is not a marking to
    read at face value — but the attempt is kept, because the answers

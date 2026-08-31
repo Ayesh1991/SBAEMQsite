@@ -104,6 +104,15 @@ const Cases = (() => {
 
   const minutesOf = c => Number(c.minutes) || 30;
   const phasesOf = c => c.phases || [];
+  /* A phase's share of the marks. The case file does not carry a mark
+     per phase, but it carries what the marker is looking for in each —
+     and the marks follow those. So the share is the share of expected
+     items, which is what the marker actually scores against. */
+  function phaseMarks(c, p) {
+    const all = phasesOf(c).reduce((n, x) => n + (x.expect || []).length, 0);
+    const mine = (p.expect || []).length;
+    return all && mine ? Math.round((mine / all) * 100) + '%' : '';
+  }
   const questionsOf = c => c.questions || [];
   /** Every expected item across every phase — what a complete case contains. */
   const expectedOf = c => phasesOf(c).flatMap(p => (p.expect || []).map(x => ({ phase: p.id, item: x })));
@@ -532,7 +541,52 @@ const Cases = (() => {
 
     function persist() {
       saveSession({ id: sid, case_id: c.id, topic: c.topic, phase: ph[at]?.id || null, at,
-        elapsed, started: s.started, asked: [...asked], notes });
+        elapsed, started: s.started, asked: [...asked], notes, spent });
+    }
+
+    /* ---- where the half-hour actually went ----
+       `spent` is closed phases; the one in progress is measured from
+       phaseStarted, so a reload mid-phase loses at most that phase's
+       seconds rather than the whole split. */
+    const spent = Object.assign({}, s.spent || {});
+    const hereSecs = () => Math.max(0, Math.round((Date.now() - phaseStarted) / 1000));
+    function closePhase(p) {
+      if (!p) return;
+      spent[p.id] = (spent[p.id] || 0) + hereSecs();
+    }
+    /** Every phase's seconds INCLUDING the one still running. */
+    function splitNow() {
+      const out = Object.assign({}, spent);
+      const p = ph[at];
+      if (p) out[p.id] = (out[p.id] || 0) + hereSecs();
+      return out;
+    }
+
+    function paintPhaseClock() {
+      const box = view.querySelector('#cs-pclock');
+      if (!box) return;
+      const budget = Number(box.dataset.budget) || 300;
+      const secs = hereSecs();
+      const t = view.querySelector('#cs-pclock-t');
+      const bar = view.querySelector('#cs-pclock-i');
+      const rest = view.querySelector('#cs-pclock-rest');
+      if (t) t.textContent = fmt(secs);
+      if (bar) bar.style.width = Math.min(100, (secs / budget) * 100) + '%';
+      box.classList.toggle('is-over', secs > budget);
+      box.classList.toggle('is-near', secs > budget * 0.8 && secs <= budget);
+      /* What is left for everything that has not happened yet. This is
+         the number that actually changes behaviour: "four minutes over"
+         means nothing until you know it leaves eleven minutes for three
+         parts. */
+      if (rest) {
+        const laterBudget = ph.slice(at + 1).reduce((n, x) => n + (x.minutes || 5) * 60, 0);
+        const left = total - elapsed;
+        rest.textContent = ph.length - at - 1 > 0
+          ? `${fmt(Math.max(0, left))} left for ${ph.length - at - 1} more part${ph.length - at - 1 === 1 ? '' : 's'}${
+              left < laterBudget ? ' — that is less than they need' : ''}`
+          : `${fmt(Math.max(0, left))} left`;
+        rest.classList.toggle('is-tight', ph.length - at - 1 > 0 && left < laterBudget);
+      }
     }
 
     /* ---- the phases ---- */
@@ -543,6 +597,27 @@ const Cases = (() => {
       probes.disarm();
       stage.innerHTML = `
         ${stepperHtml(ph, at)}
+        ${/* THE PHASE CLOCK.
+              The OSCE has a clock because fifteen minutes is short. A case
+              is half an hour, which feels long, and that is exactly how
+              candidates lose it: twelve minutes on the history, four on
+              the management, and the management is where the marks are.
+
+              So the time is shown against the phase's own budget, not
+              against the half-hour — and the budget is not arbitrary, it
+              is what the case itself says this part is worth. Amber at
+              the budget, red past it. It never moves you on: an examiner
+              deciding when to stop is a different feature and this one is
+              only meant to make the decision informed. */ ''}
+        <div class="cs-pclock" id="cs-pclock" data-budget="${(p.minutes || 5) * 60}">
+          <div class="cs-pclock-row">
+            <span class="cs-pclock-t" id="cs-pclock-t">00:00</span>
+            <span class="muted tiny">of about ${p.minutes || 5} min for this part${
+              phaseMarks(c, p) ? ` · ${phaseMarks(c, p)} of the marks` : ''}</span>
+            <span class="cs-pclock-rest muted tiny" id="cs-pclock-rest"></span>
+          </div>
+          <div class="cs-pclock-bar"><i id="cs-pclock-i"></i></div>
+        </div>
         <div class="cs-phase">
           <p class="cs-phase-n">Part ${at + 1} of ${ph.length} · about ${p.minutes || 5} minutes</p>
           <h2 class="cs-ask">${esc(p.ask || p.id)}</h2>
@@ -564,6 +639,7 @@ const Cases = (() => {
       paintNext();
       probes.armFor(p, () => saidIn(p.id));
       phaseStarted = Date.now();
+      paintPhaseClock();
       persist();
       if (!drawer.hidden) paintDrawer();
     }
@@ -663,6 +739,7 @@ const Cases = (() => {
          it is over when its questions have been asked. */
       const owed = owedHere();
       if (owed.length) { await putQuestion(owed[0].q, owed[0].i); paintNext(); return; }
+      closePhase(ph[at]);
       at++;
       if (at >= ph.length) return finish();
       show();
@@ -949,6 +1026,7 @@ const Cases = (() => {
         if (!running) return;
         elapsed++;
         paintClock();
+        paintPhaseClock();
         if (elapsed % 5 === 0) persist();
         if (elapsed >= total) { finish(); }
       }, 1000);
@@ -972,7 +1050,9 @@ const Cases = (() => {
       dropSession(sid);
       await renderDebrief(view, c, {
         id: rid('ca'), case_id: c.id, notes, asked: [...asked], heard,
-        elapsed, started: s.started
+        elapsed, started: s.started,
+        // where the half-hour went, per phase, in seconds
+        spent: splitNow()
       }, rec, user);
     }
   }
@@ -1276,6 +1356,74 @@ const Cases = (() => {
 
   /* ================= the report ================= */
 
+  /* ---------------- where the half-hour went ----------------
+
+     The commonest way to fail a half-hour case is not ignorance. It is
+     spending twelve minutes on the history and four on the management,
+     and the management is where the marks are. The candidate never sees
+     that happen, because thirty minutes feels long right up until it is
+     gone.
+
+     So the report puts time against marks, phase by phase, and names the
+     one that took the most time for the fewest marks. It is computed
+     from `spent`, which the runner records as it goes — not estimated
+     afterwards, because an estimate of where your time went is exactly
+     the thing you already got wrong. */
+  function splitHtml(a, r) {
+    const spent = a.spent || {};
+    const phases = a.phases || [];
+    const secs = phases.map(p => Number(spent[p.id]) || 0);
+    const totalSecs = secs.reduce((n, x) => n + x, 0);
+    if (!totalSecs || phases.length < 2) return '';
+
+    const marked = {};
+    (r.phases || []).forEach(p => { marked[p.id] = { got: Number(p.awarded) || 0, max: Number(p.max) || 0 }; });
+    const maxSum = Object.values(marked).reduce((n, x) => n + x.max, 0);
+
+    const rows = phases.map((p, i) => {
+      const t = secs[i];
+      const m = marked[p.id] || { got: 0, max: 0 };
+      const budget = (Number(p.minutes) || 5) * 60;
+      return {
+        id: p.id, name: shortOf(p), t, budget,
+        timeShare: t / totalSecs,
+        markShare: maxSum ? m.max / maxSum : 0,
+        got: m.got, max: m.max, over: budget ? t / budget : 1
+      };
+    });
+    /* The worst trade: most time for least marks. Only called out when
+       the gap is real — a phase 5% over its share is noise. */
+    const worst = rows.slice().sort((a2, b2) =>
+      (b2.timeShare - b2.markShare) - (a2.timeShare - a2.markShare))[0];
+    const gap = worst ? worst.timeShare - worst.markShare : 0;
+    const starved = rows.filter(x => x.markShare - x.timeShare > 0.12)
+      .sort((a2, b2) => (b2.markShare - b2.timeShare) - (a2.markShare - a2.timeShare))[0];
+
+    const pct = v => Math.round(v * 100);
+    return `<div class="cs-split">
+      <h3>⏱ Where the ${Math.round(totalSecs / 60)} minutes went</h3>
+      <p class="muted tiny">Time spent against the share of the marks each part carries. They should roughly match;
+        where they do not is where the half-hour was lost.</p>
+      <div class="cs-split-rows">
+        ${rows.map(x => `<div class="cs-split-row ${x.over > 1.25 ? 'is-over' : ''}">
+          <span class="cs-split-n">${esc(x.name)}</span>
+          <span class="cs-split-bars">
+            <i class="cs-split-t" style="width:${pct(x.timeShare)}%" title="${pct(x.timeShare)}% of your time"></i>
+            <i class="cs-split-m" style="width:${pct(x.markShare)}%" title="${pct(x.markShare)}% of the marks"></i>
+          </span>
+          <span class="cs-split-v">${fmt(x.t)}<em>${x.max ? `${x.got}/${x.max}` : '—'}</em></span>
+        </div>`).join('')}
+      </div>
+      <p class="cs-split-key"><span class="cs-split-t"></span> your time &nbsp; <span class="cs-split-m"></span> the marks</p>
+      ${gap > 0.12 ? `<p class="cs-split-say"><strong>${esc(worst.name)}</strong> took ${pct(worst.timeShare)}% of the
+        half-hour for ${pct(worst.markShare)}% of the marks${starved && starved.id !== worst.id
+          ? `, and <strong>${esc(starved.name)}</strong> — worth ${pct(starved.markShare)}% — got ${pct(starved.timeShare)}%`
+          : ''}. In the real thing the examiner moves you on; here you have to.</p>`
+        : `<p class="cs-split-say">Your time followed the marks closely. That is the part most candidates get wrong,
+          and it is worth more than it looks.</p>`}
+    </div>`;
+  }
+
   async function renderResult(view, id, user) {
     if (!allowed(user)) return notYours(view);
     view.innerHTML = `<section class="page"><p class="muted">Loading…</p></section>`;
@@ -1311,6 +1459,8 @@ const Cases = (() => {
         ${(a.phases || []).length ? stepperHtml(a.phases, (a.phases || []).length) : ''}
 
         ${r.examinerComment ? `<div class="cs-verdict"><h3>The examiner's verdict</h3><p>${esc(r.examinerComment)}</p></div>` : ''}
+
+        ${splitHtml(a, r)}
 
         ${(r.phases || []).map(p => `
           <div class="cs-res-phase">

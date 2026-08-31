@@ -268,6 +268,161 @@ const OSCE = (() => {
     : Math.round(marksOf(st) * ((st.pass_mark_percent || 70) / 100));
   const minsOf = st => st.station_time_min || 15;
 
+  /* ---------------- the role player ----------------
+
+     Some stations are not a viva. Somebody plays the woman who has just
+     been told her baby has a lethal anomaly, and the candidate has to
+     talk to her — and what is being examined is as much the talking as
+     the knowledge. Those stations come with an actor brief: who she is,
+     how she is when the door opens, what she knows, what she will only
+     say if asked the right question, and what she must never volunteer.
+
+     THE BRIEF IS A SECRET ON THE SAME FOOTING AS THE MARKING SCHEME, and
+     for a sharper reason. A scheme tells you what the marks are for. A
+     brief tells you the answers themselves: read "she is frightened her
+     husband will blame her" beforehand and there is nothing left to
+     elicit, which is the entire station. So it travels exactly where the
+     scheme travels — to the examiner, to Claude, to the mark-by-hand
+     sheet, into the printed pack — and exactly nowhere else until the
+     station is over.
+
+     IT IS A PLAIN FIELD ON THE STATION, NOT A SECOND KIND OF STATION.
+     `role_player` sits beside `questions`. Every station without one is
+     untouched, every feature that already works keeps working, and the
+     only thing anything new has to learn is `hasRole()`.
+
+     Nothing here invents. The fields are exactly the ones an actor brief
+     in a real source document carries, and a field the source is silent
+     on is absent rather than filled in — an invented backstory is a
+     different station from the one that was written. */
+
+  /* NORMALISED IN THE READER, NOT IN EACH IMPORTER.
+
+     Briefs arrive from a station-writing project, from a hand-edited
+     JSON, from a file somebody typed in a hurry — under `role_player`,
+     `rolePlayer` or `roleplay`, with `background_facts` sometimes a
+     paragraph instead of a list, and `reveal_only_if_asked` sometimes
+     `{trigger, reveals}` and sometimes `{if, then}`. Every one of those
+     is a station somebody wrote and wants to sit.
+
+     Coercing here means the importer, the editor, the prompt, the sheet
+     and the report all see one shape, and a new importer cannot forget
+     to do it. The alternative — normalise on the way in — leaves every
+     station already stored in whatever shape it happened to arrive in. */
+  const roleSrc = st => (st && typeof st === 'object')
+    ? (st.role_player || st.rolePlayer || st.roleplay || st.role_play || null) : null;
+  const asList = v => {
+    if (Array.isArray(v)) return v.map(x => (typeof x === 'string' ? x : String(x?.text ?? x?.fact ?? ''))).filter(x => x.trim());
+    const s = String(v == null ? '' : v).trim();
+    if (!s) return [];
+    // a paragraph of bullet-ish lines is a list somebody typed as prose
+    return s.split(/\n+|(?:^|\s)[·•\-–]\s+/).map(x => x.trim()).filter(Boolean);
+  };
+  function roleOf(st) {
+    const raw = roleSrc(st);
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const str = v => String(v == null ? '' : v).trim();
+    const rev = (Array.isArray(raw.reveal_only_if_asked) ? raw.reveal_only_if_asked
+      : Array.isArray(raw.revealOnlyIfAsked) ? raw.revealOnlyIfAsked : [])
+      .map(x => (typeof x === 'string'
+        ? { trigger: '', reveals: x }
+        : { trigger: str(x?.trigger ?? x?.if ?? x?.when), reveals: str(x?.reveals ?? x?.then ?? x?.reveal ?? x?.text) }))
+      .filter(x => x.trigger || x.reveals);
+    return {
+      character_name: str(raw.character_name ?? raw.name),
+      character_role: str(raw.character_role ?? raw.role),
+      age_and_context: str(raw.age_and_context ?? raw.context),
+      opening_state: str(raw.opening_state ?? raw.opening),
+      background_facts: asList(raw.background_facts ?? raw.facts),
+      reveal_only_if_asked: rev,
+      do_not_volunteer: asList(raw.do_not_volunteer ?? raw.doNotVolunteer),
+      emotional_arc: asList(raw.emotional_arc ?? raw.arc),
+      tone_and_manner: str(raw.tone_and_manner ?? raw.tone)
+    };
+  }
+  const hasRole = st => {
+    const r = roleOf(st);
+    if (!r) return false;
+    return !!(r.character_name || r.character_role || r.opening_state
+      || r.background_facts.length || r.reveal_only_if_asked.length);
+  };
+  /** "Mrs Nadeeka, her partner" — the one line a badge can carry. */
+  function roleLabel(st) {
+    const r = roleOf(st); if (!r) return '';
+    return [r.character_name, r.character_role].filter(Boolean).join(' — ')
+      || r.character_role || r.character_name || 'a role player';
+  }
+  const roleList = v => Array.isArray(v) ? v.filter(x => String(x || '').trim()) : [];
+
+  /**
+   * The brief as plain text, for a prompt or a clipboard.
+   * Sections the source was silent on are omitted entirely rather than
+   * printed empty — an empty heading reads as "there is nothing to know
+   * here", which is a different and wrong claim from "this was not
+   * written down".
+   */
+  function roleText(st) {
+    const r = roleOf(st); if (!r) return '';
+    const L = ['═══ ROLE PLAYER ═══'];
+    const kv = (k, v) => { if (String(v || '').trim()) L.push(`${k}: ${String(v).trim()}`); };
+    kv('character_name', r.character_name);
+    kv('character_role', r.character_role);
+    kv('age_and_context', r.age_and_context);
+    if (String(r.opening_state || '').trim()) L.push('', 'opening_state: ' + String(r.opening_state).trim());
+    const block = (head, items, fn) => {
+      const rows = roleList(items); if (!rows.length) return;
+      L.push('', head + ':');
+      rows.forEach(x => L.push('  - ' + fn(x)));
+    };
+    block('background_facts', r.background_facts, x => String(x));
+    const rev = (r.reveal_only_if_asked || []).filter(x => x && (x.trigger || x.reveals));
+    if (rev.length) {
+      L.push('', 'reveal_only_if_asked:');
+      rev.forEach(x => {
+        L.push(`  - trigger: ${String(x.trigger || '').trim()}`);
+        L.push(`    reveals: ${String(x.reveals || '').trim()}`);
+      });
+    }
+    block('do_not_volunteer', r.do_not_volunteer, x => String(x));
+    block('emotional_arc', r.emotional_arc, x => String(x));
+    kv('\ntone_and_manner', r.tone_and_manner);
+    return L.join('\n');
+  }
+
+  /**
+   * The brief as HTML. `mode` decides how loud the secrecy warning is:
+   * 'brief'  — the examiner is about to play it, warn hard
+   * 'after'  — the station is over, it is teaching now
+   */
+  function roleHtml(st, mode) {
+    const r = roleOf(st); if (!hasRole(st)) return '';
+    const rows = (head, items, fn) => {
+      const list = roleList(items); if (!list.length) return '';
+      return `<div class="os-rp-sec"><h5>${head}</h5><ul>${list.map(x => `<li>${fn(x)}</li>`).join('')}</ul></div>`;
+    };
+    const rev = (r.reveal_only_if_asked || []).filter(x => x && (x.trigger || x.reveals));
+    return `<div class="os-rp is-${mode || 'brief'}">
+      <div class="os-rp-head">
+        <span class="os-rp-tag">🎭 Role player</span>
+        <strong>${esc(roleLabel(st))}</strong>
+        ${r.age_and_context ? `<span class="muted tiny">${esc(r.age_and_context)}</span>` : ''}
+      </div>
+      ${mode === 'after' ? '' : `<p class="os-rp-warn">The candidate must not see any of this. It is the answer sheet
+        for the conversation — read out, it is the station.</p>`}
+      ${r.opening_state ? `<div class="os-rp-sec"><h5>How the scene opens</h5><p>${esc(r.opening_state)}</p></div>` : ''}
+      ${rows('What the character knows', r.background_facts, x => esc(x))}
+      ${rev.length ? `<div class="os-rp-sec"><h5>Only if asked</h5>
+        <ul class="os-rp-rev">${rev.map(x => `<li>
+          <span class="os-rp-trig">${esc(x.trigger || '')}</span>
+          <span class="os-rp-rvl">${esc(x.reveals || '')}</span></li>`).join('')}</ul></div>` : ''}
+      ${rows('Never volunteer', r.do_not_volunteer, x => esc(x))}
+      ${rows('How the character shifts', r.emotional_arc, x => esc(x))}
+      ${r.tone_and_manner ? `<div class="os-rp-sec"><h5>Tone and manner</h5><p>${esc(r.tone_and_manner)}</p></div>` : ''}
+      <p class="os-rp-foot">Nothing here is marked. The marks come from the scheme${
+        mode === 'after' ? '' : ' — unless the scheme itself has a communication section'}.</p>
+    </div>`;
+  }
+
   /** 45 → "45 min", 120 → "2 h", 135 → "2 h 15". */
   const hours = mins => mins < 60 ? mins + ' min'
     : (mins % 60 ? `${Math.floor(mins / 60)} h ${mins % 60}` : `${mins / 60} h`);
@@ -947,6 +1102,17 @@ const OSCE = (() => {
           <div><strong>${passOf(st)}</strong><span>to pass (${st.pass_mark_percent || 70}%)</span></div>
           <div><strong>${minsOf(st)}</strong><span>minutes</span></div>
         </div>
+        ${/* THE CANDIDATE IS TOLD THERE IS A CHARACTER, AND NOTHING ELSE.
+              Knowing you are about to talk to somebody rather than answer a
+              viva changes how you prepare, and that is fair — it is on the
+              door of the real station too. Who she is and what she is
+              hiding is not, so only the fact appears here. */
+          hasRole(st) ? `<div class="os-rp-flag">
+          <span class="os-rp-tag">🎭 Role player</span>
+          <p>Somebody is in the chair — this is a conversation, not a viva. AUREUM's own examiner reads the
+            questions; to have the character played, sit it in <strong>OSCE in AI</strong> or hand the brief to
+            whoever is examining you.</p>
+        </div>` : ''}
         <p class="muted tiny os-warn">You will answer <strong>out loud</strong>. The browser asks for the microphone
           when the station starts; the whole ${minsOf(st)} minutes is recorded and offered as a download at the end.
           Nothing is uploaded unless you ask for AI marking.</p>
@@ -1061,6 +1227,7 @@ const OSCE = (() => {
         </div>
         <div class="os-modal-body">
           <p class="os-scenario">${esc(st.scenario || '')}</p>
+          ${roleHtml(st, 'brief')}
           ${qs.map((q, i) => `
             <div class="os-sch-q">
               <div class="os-sch-h"><span class="os-sch-n">Q${i + 1}</span>
@@ -3350,7 +3517,12 @@ const OSCE = (() => {
       const usd = ((data.usage?.in || 0) / 1e6) * (choice.rate.in || 0) + ((data.usage?.out || 0) / 1e6) * (choice.rate.out || 0);
       const attempt = {
         id,
-        station_id: st.id, station: { topic: st.topic, scenario: st.scenario, total_marks: marksOf(st), pass_mark: passOf(st) },
+        station_id: st.id,
+        /* The actor brief travels with the attempt. A station can be
+           re-written afterwards, and the report has to show the character
+           who was actually played, not whoever the station has now. */
+        station: { topic: st.topic, scenario: st.scenario, total_marks: marksOf(st), pass_mark: passOf(st),
+          role_player: roleOf(st) || undefined },
         // the blueprint tag is copied onto the attempt: a station may be
         // re-tagged later, and a past result must keep the module it was
         // actually sat under or the coverage map rewrites its own history
@@ -3593,6 +3765,13 @@ const OSCE = (() => {
     let a = null;
     try { a = await Backend.getOsceAttempt(id); } catch {}
     if (!a) { view.innerHTML = shell('bank', `<p class="muted">That result is no longer stored. <a class="link" href="#/osce">Back to OSCE</a></p>`); FX.viewIn(view); return; }
+    /* Every point this marking recorded as missed goes into the Recall
+       deck now. Waiting for the next visit to that tab would mean the
+       card you most want tomorrow is the one card that is not there —
+       and opening the report is the moment the marking exists. Cheap
+       (localStorage), idempotent (keyed on station + point), and never
+       allowed to stand between a candidate and their result. */
+    try { if (typeof Recall !== 'undefined') Recall.noteAttempt(user, a); } catch {}
     const r = a.result || {};
     const part = r.partial || null;
     const tone = part ? 'border'
@@ -3622,6 +3801,7 @@ const OSCE = (() => {
         </header>
 
         <div id="os-res-circ"></div>
+        <div id="os-res-cmp"></div>
 
         ${part ? `<div class="card os-part-note" data-animate>
           <p><strong>⚠️ Only ${part.marked} of the ${part.of} questions were marked.</strong>
@@ -3756,6 +3936,51 @@ const OSCE = (() => {
           <h3 class="card-title">🔑 Key learning points</h3>
           <ol class="es-klp-list">${r.keyLearning.map((k, i) => `<li class="${i === 0 ? 'top' : ''}">${esc(k)}</li>`).join('')}</ol></div>` : ''}
 
+        ${(() => {
+          /* THE CONVERSATION, FROM INSIDE THE CHARACTER.
+             The most useful thing a role-player station produces is not
+             the marks — it is being told which of her cues you walked
+             past. A candidate who never learns that the pause after "my
+             husband doesn't know yet" was an invitation makes the same
+             omission in the real room, where it decides the station. */
+          const c = r.conversation;
+          if (!c || typeof c !== 'object') return '';
+          const missed = (c.missed || []).filter(x => x && (x.cue || x.wanted));
+          const phr = (c.phrasing || []).filter(x => x && (x.said || x.better));
+          const got = (c.elicited || []).filter(Boolean);
+          if (!c.rapport && !missed.length && !phr.length && !got.length) return '';
+          return `<div class="card es-conv" data-animate>
+            <h3 class="card-title">🎭 How the conversation went${c.character ? ` — ${esc(c.character)}` : ''}</h3>
+            <p class="muted tiny">Written from inside the character, not by the examiner. None of it is marked
+              unless the scheme has a communication section — it is the half of the station a viva cannot teach.</p>
+            ${c.rapport ? `<p class="es-conv-r">${esc(c.rapport)}</p>` : ''}
+            ${got.length ? `<div class="es-conv-sec"><h4>What you got out of them</h4>
+              <ul class="es-flag-list">${got.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
+            ${missed.length ? `<div class="es-conv-sec"><h4>Cues you walked past</h4>
+              <div class="es-cue-list">${missed.map(m => `<div class="es-cue">
+                <p class="es-cue-c">“${esc(m.cue || '')}”</p>
+                ${m.wanted ? `<p class="es-cue-w"><span>→</span> ${esc(m.wanted)}</p>` : ''}
+                ${m.cost ? `<p class="es-cue-x">${esc(m.cost)}</p>` : ''}
+              </div>`).join('')}</div></div>` : ''}
+            ${phr.length ? `<div class="es-conv-sec"><h4>How to put it</h4>
+              <div class="es-cue-list">${phr.map(p => `<div class="es-cue is-phr">
+                <p class="es-cue-c">${esc(p.said || '')}</p>
+                <p class="es-cue-w"><span>→</span> ${esc(p.better || '')}</p>
+                ${p.why ? `<p class="es-cue-x">${esc(p.why)}</p>` : ''}
+              </div>`).join('')}</div></div>` : ''}
+          </div>`;
+        })()}
+
+        ${/* The actor brief, now that the station is over and it is
+              teaching rather than an answer sheet. Read afterwards it
+              shows exactly what was there to be found. */
+          hasRole(a.station) ? `<details class="card es-rp-fold" data-animate>
+          <summary><span class="card-title">🎭 What the character was actually briefed with</span><span class="dc-caret">▸</span></summary>
+          <p class="muted tiny">Hidden until now for the obvious reason. Read it against your own answers: every
+            "only if asked" line below is a mark that was sitting there waiting for the right question.</p>
+          ${roleHtml(a.station, 'after')}
+        </details>` : ''}
+
         ${/* THE TEACHING THAT USED TO DIE WITH THE CHAT.
               A chat model gives away far more after the clock stops than
               the marks: the topic summarised properly, the mnemonic it
@@ -3876,6 +4101,30 @@ const OSCE = (() => {
        circuit stopped where it was; this is the way back on, offered on
        whichever page the reader actually lands on. */
     try { AiOsce?.resumeStrip?.(view.querySelector('#os-res-circ'), a); } catch {}
+
+    /* IF SOMEBODY ELSE HAS MARKED THIS TOO, SAY SO HERE.
+       The comparison is the most informative page in the app and it is
+       useless if nobody knows it exists. It is offered from the report
+       of an attempt whose station has been marked another way — which is
+       the exact moment the comparison becomes possible. Drawn after the
+       page, from the cached list, so it costs nothing. */
+    (async () => {
+      const box = view.querySelector('#os-res-cmp');
+      if (!box) return;
+      let list = [];
+      try { list = (await myAttempts()) || []; } catch { return; }
+      const others = list.filter(x => String(x.station_id) === String(a.station_id)
+        && srcOf(x) !== srcOf(a));
+      if (!others.length || !box.isConnected) return;
+      const kinds = [...new Set(others.map(srcOf))].map(k => SRC[k].label);
+      box.innerHTML = `<div class="card os-cmp-offer" data-animate>
+        <h3 class="card-title">⚡ ${kinds.join(' and ')} marked this one too</h3>
+        <p class="muted">Put the markings side by side, point by point. Where they agree you can trust the score;
+          where they disagree is the part worth listening back to.</p>
+        <a class="btn btn-gold" href="#/osce/compare/${encodeURIComponent(a.station_id || '')}">Compare them →</a>
+      </div>`;
+      FX.viewIn(view);
+    })();
     if (typeof FX !== 'undefined' && FX.scoreReveal) {
       const d = view.querySelector('#os-dial');
       if (d) { const pct = r.percent || 0;
@@ -4096,12 +4345,20 @@ const OSCE = (() => {
     { id: 'improve',  label: 'What to do first' },
     { id: 'good',     label: 'What was good' },
     { id: 'learning', label: 'Key learning points' },
-    { id: 'teach',    label: 'The teaching — the topic, mnemonics, pitfalls and what to read' }
+    { id: 'teach',    label: 'The teaching — the topic, mnemonics, pitfalls and what to read' },
+    /* Off unless asked for, and the label says why: this is the one
+       section that must never be handed to somebody about to sit it. */
+    { id: 'role',     label: "The role-player brief — examiner's copy, never give it to a candidate" }
   ];
   const PRINT_PRESETS = {
-    full:   { label: '📋 The whole report', pick: PRINT_SECTIONS.map(s => s.id) },
+    /* "The whole report" deliberately does NOT include the role brief.
+       The commonest use of the printout is handing it to the person you
+       just examined, and a preset that quietly includes the answer sheet
+       for the conversation would be a trap. It is one tick away. */
+    full:   { label: '📋 The whole report', pick: PRINT_SECTIONS.map(s => s.id).filter(id => id !== 'role') },
     marked: { label: '✍️ Marking only', pick: ['cover', 'verdict', 'scheme', 'marks', 'improve'] },
     blank:  { label: '📄 Blank scheme to practise against', pick: ['scheme'] },
+    examiner: { label: "🎭 Examiner's pack — scheme and role brief", pick: ['cover', 'scheme', 'role'] },
     spoken: { label: '🎙 Scheme with what I said', pick: ['cover', 'scheme', 'marks', 'said'] },
     /* A revision sheet with no marks on it at all — this is the one that
        goes in the folder and is read on the bus a fortnight later. */
@@ -4285,6 +4542,10 @@ ${has('improve') && (r.improvements || []).length ? `<section class="blk"><h2>Wh
   `<li>${esc(typeof x === 'string' ? x : x.action)}${x.marks ? ` <strong>(+${x.marks} marks)</strong>` : ''}</li>`).join('')}</ol></section>` : ''}
 ${has('good') && (r.strengths || []).length ? `<section class="blk"><h2>What was good</h2><ul>${r.strengths.map(x => `<li>${esc(x)}</li>`).join('')}</ul></section>` : ''}
 ${has('learning') && (r.keyLearning || []).length ? `<section class="blk"><h2>Key learning points</h2><ol>${r.keyLearning.map(x => `<li>${esc(x)}</li>`).join('')}</ol></section>` : ''}
+${has('role') && hasRole(a.station) ? `<section class="blk"><h2>Role player — examiner's copy</h2>
+  <p class="callout"><strong>Do not give this page to a candidate.</strong> It is the answer sheet for the
+    conversation: read out, there is nothing left to elicit.</p>
+  <pre style="white-space:pre-wrap;font-family:inherit;font-size:9.5pt;margin:0">${esc(roleText(a.station))}</pre></section>` : ''}
 ${has('teach') && String(r.summary || '').trim() ? `<section class="blk"><h2>The topic, properly</h2>${
   String(r.summary).split(/\n{2,}/).filter(p => p.trim()).map(p => `<p>${esc(p.trim())}</p>`).join('')}</section>` : ''}
 ${has('teach') && (r.mnemonics || []).length ? `<section class="blk"><h2>Ways to remember it</h2><ul>${
@@ -4497,6 +4758,13 @@ ${has('teach') && (r.reading || []).length ? `<section class="blk"><h2>Where to 
         ${tab('sim', '#/osce/sim', 'Exam simulator')}
         ${tab('real', '#/osce/real', 'Real station')}
         ${tab('mine', '#/osce/mine', 'My attempts')}
+        ${/* The count is on the tab because a deck you have to remember to
+              open is a deck nobody opens. It reads from localStorage, so it
+              costs nothing and cannot delay the page. */
+          (() => {
+            const n = (typeof Recall !== 'undefined') ? Recall.dueNow() : 0;
+            return tab('recall', '#/osce/recall', 'Recall' + (n ? ` <span class="lib-tab-n">${n}</span>` : ''));
+          })()}
         ${tab('progress', '#/osce/progress', 'Progress')}
         ${tab('cards', '#/osce/cards', 'Study documents')}
         ${tab('edit', '#/osce/edit', 'Station editor')}
@@ -5059,9 +5327,11 @@ ${P} .os-pd-close{background:transparent;color:#fff;border:1px solid rgba(255,25
     /* The mistakes need the FULL attempts — the list projection carries the
        score and nothing else. Only the last dozen are opened: that is where
        a pattern that still matters will be, and it keeps the page cheap. */
-    host.innerHTML = coverageHtml(cov, modules, mean, passed, scored, recent)
+    host.innerHTML = gapHtml(cov, scored)
+      + coverageHtml(cov, modules, mean, passed, scored, recent)
       + `<div class="card" data-animate id="os-mistakes"><h3 class="card-title">🔁 What keeps costing you marks</h3>
-           <p class="muted">Reading your last stations…</p></div>`;
+           <p class="muted">Reading your last stations…</p></div>`
+      + `<div id="os-drift"></div>`;
     FX.viewIn(view);
     paintTrend(view, recent);
 
@@ -5070,6 +5340,287 @@ ${P} .os-pd-close{background:transparent;color:#fff;border:1px solid rgba(255,25
       try { const full = await Backend.getOsceAttempt(a.id); if (full) deep.push(full); } catch {}
     }
     paintMistakes(view.querySelector('#os-mistakes'), deep, modules, cards);
+    paintDrift(view.querySelector('#os-drift'), deep);
+  }
+
+  /* ---------------- the gap, said out loud ----------------
+
+     The coverage map below is a picture, and a picture is something you
+     look at. This is the same data as a sentence with a button on it,
+     because the useful form of "gynae-oncology is 15% of the paper and
+     you have not touched it in six weeks" is not a bar that is shorter
+     than the others — it is being told to go and sit one.
+
+     One module. Naming three would be a list, and a list is a picture
+     again. */
+  function gapHtml(cov, scored) {
+    const mods = (cov.modules || []).filter(m => m.examinable > 0);
+    if (!mods.length || !scored.length) return '';
+
+    /* When each module was last sat, from the attempts' own blueprint
+       tags — an attempt keeps the module it was actually sat under. */
+    const lastAt = {};
+    scored.forEach(a => {
+      const id = a.bp && (a.bp.module || a.bp);
+      if (!id) return;
+      lastAt[id] = Math.max(lastAt[id] || 0, a.created || 0);
+    });
+
+    const now = Date.now();
+    const scoreOf = m => {
+      const covered = m.percent == null ? 0 : m.percent;      // 0–100 of the module walked
+      const weight = Math.max(1, m.examinable);                // topics that can be examined
+      const days = lastAt[m.id] ? (now - lastAt[m.id]) / 86400e3 : 999;
+      /* Untouched beats stale, stale beats merely weak, and a big module
+         beats a small one. Multiplied rather than added so a module that
+         is fully covered cannot be dragged to the top by age alone. */
+      return (100 - covered) * weight * (1 + Math.min(days, 60) / 30);
+    };
+    const worst = mods.slice().sort((a, b) => scoreOf(b) - scoreOf(a))[0];
+    if (!worst || (worst.percent != null && worst.percent >= 85)) return '';
+
+    const days = lastAt[worst.id] ? Math.floor((now - lastAt[worst.id]) / 86400e3) : null;
+    const untouched = (worst.topics || []).filter(t => t.examinable && !t.attempts);
+    const when = days == null ? 'You have never sat a station in it.'
+      : days < 1 ? 'You sat one today.'
+      : `The last one was ${days} day${days === 1 ? '' : 's'} ago.`;
+
+    return `<div class="card os-gap" data-animate>
+      <p class="kicker">THE GAP</p>
+      <h3 class="os-gap-h">${esc(worst.name)}</h3>
+      <p class="os-gap-p">${when} ${untouched.length
+        ? `<strong>${untouched.length}</strong> of its ${worst.examinable} examinable topics have never been sat:
+           ${untouched.slice(0, 4).map(t => esc(t.name)).join(', ')}${untouched.length > 4 ? ', and more' : ''}.`
+        : `You have touched every topic in it, but only ${worst.percent || 0}% of the way through.`}</p>
+      <div class="os-gap-acts">
+        <a class="btn btn-gold" href="#/osce?bp=${encodeURIComponent(worst.id)}">Find a station in it →</a>
+        <a class="btn btn-ghost btn-sm" href="#/osce/sim">Build a circuit</a>
+      </div>
+      <p class="muted tiny">Chosen by what the paper weights, how much of the module is untouched, and how long it
+        has been — not by your worst score. A module you are bad at but sat yesterday is not the gap.</p>
+    </div>`;
+  }
+
+  /* ---------------- the drift ledger ----------------
+
+     Every AI-examined attempt carries processIntegrity: whether the
+     question list was confirmed before the station started, and whether
+     an invented question had to be corrected during it. Read one at a
+     time that is an annoyance. Read together it is evidence — and the
+     thing it is evidence about is a process you can change. */
+  function paintDrift(host, deep) {
+    if (!host) return;
+    const withPi = deep.filter(a => a.result?.processIntegrity);
+    if (withPi.length < 2) { host.innerHTML = ''; return; }
+    const drifted = withPi.filter(a => a.result.processIntegrity.driftDetected);
+    const unconfirmed = withPi.filter(a => a.result.processIntegrity.preflightConfirmed === false);
+    if (!drifted.length && !unconfirmed.length) {
+      host.innerHTML = `<div class="card os-drift-ok" data-animate>
+        <h3 class="card-title">✓ The examiner stayed on the scheme</h3>
+        <p class="muted">${withPi.length} AI-examined station${withPi.length === 1 ? '' : 's'}, every one
+          pre-flight confirmed and none drifting off the pasted questions. Keep pasting the block as one whole
+          message and it stays that way.</p>
+      </div>`;
+      return;
+    }
+    const pct = Math.round((drifted.length / withPi.length) * 100);
+    /* The correlation worth naming: drift concentrates on long stations,
+       because more questions is more chances to reach for a plausible
+       one. If it does not hold in this data, nothing is claimed. */
+    const qOf = a => (a.questions || []).length;
+    const dq = drifted.length ? drifted.reduce((n, a) => n + qOf(a), 0) / drifted.length : 0;
+    const cq = (withPi.length - drifted.length)
+      ? withPi.filter(a => !a.result.processIntegrity.driftDetected).reduce((n, a) => n + qOf(a), 0) / (withPi.length - drifted.length) : 0;
+    const longer = dq && cq && dq > cq + 0.75;
+
+    host.innerHTML = `<div class="card os-drift-ledger" data-animate>
+      <h3 class="card-title">🎯 How often the examiner drifted</h3>
+      <div class="os-dl-figs">
+        <div><strong>${drifted.length}/${withPi.length}</strong><span>stations with an invented question</span></div>
+        <div><strong>${pct}%</strong><span>of AI-examined stations</span></div>
+        <div><strong>${unconfirmed.length}</strong><span>started without confirming the list</span></div>
+      </div>
+      ${drifted.length ? `<ul class="os-dl-list">${drifted.slice(0, 5).map(a => `<li>
+        <a class="link" href="#/osce/result/${encodeURIComponent(a.id)}">${esc(a.station?.topic || a.station_id || 'A station')}</a>
+        <span class="muted tiny">${esc(new Date(a.created || Date.now()).toLocaleDateString('en-GB', { dateStyle: 'medium' }))}${
+          a.result.processIntegrity.driftNotes ? ' — ' + esc(String(a.result.processIntegrity.driftNotes).slice(0, 110)) : ''}</span>
+      </li>`).join('')}</ul>` : ''}
+      <p class="muted">${unconfirmed.length
+        ? `<strong>${unconfirmed.length}</strong> of these began without the examiner reading the question list back to
+           you. That step costs under a minute and is the one that catches a block that did not land — do not skip it.`
+        : 'Every one was pre-flight confirmed, so these drifted mid-session rather than starting wrong.'}
+        ${longer ? ` The ones that drifted had more questions on average (${dq.toFixed(1)} against ${cq.toFixed(1)}) —
+          longer stations give it more chances to reach for a plausible-sounding question.` : ''}</p>
+      <p class="muted tiny">Paste the station block as one whole message with nothing before or after it, and never
+        two stations in one conversation. Both are what this measures.</p>
+    </div>`;
+  }
+
+  /* ================= three examiners, one station =================
+
+     AUREUM keeps AI-marked, Claude-marked and hand-marked attempts
+     deliberately apart, because averaging different examiners together
+     makes the average mean nothing. That is right, and it left the most
+     interesting thing in the whole system with nowhere to be seen: the
+     points where two examiners looked at the same answer and disagreed.
+
+     Agreement is reassuring and tells you little. Disagreement is where
+     the information is. A point the machine called covered and the human
+     called missed is either an answer that reads better than it sounded,
+     or a marker being generous — and which of those it is, is exactly
+     what a candidate needs to know before the real exam.
+
+     So this page shows the scheme once, down the left, and every
+     examiner's verdict beside it, with the rows they disagree on lifted
+     to the top. Nothing is averaged. Nothing is reconciled. The
+     disagreement IS the output. */
+
+  const SRC = {
+    ai:     { label: 'AUREUM AI', cls: 'is-ai' },
+    claude: { label: 'Marked by Claude', cls: 'is-claude' },
+    manual: { label: 'In person', cls: 'is-manual' }
+  };
+  const srcOf = a => (a.source === 'claude' || a.source === 'manual') ? a.source : 'ai';
+  const ptKey = s => String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+  /** The verdicts one attempt recorded, keyed by marking point. */
+  function verdictMap(a) {
+    const out = {};
+    (a.result?.questions || []).forEach(mq => {
+      (mq.points || []).forEach(p => {
+        const k = ptKey(p?.point);
+        if (k) out[k] = { status: String(p?.status || '').toLowerCase(), note: p?.note || '' };
+      });
+    });
+    return out;
+  }
+
+  async function renderCompare(view, stationId, user) {
+    view.innerHTML = shell('mine', `<div id="os-body"><p class="muted">Reading the markings…</p></div>`);
+    FX.viewIn(view);
+    const host = view.querySelector('#os-body');
+
+    let st = null;
+    try { st = await Backend.getOsceStation(stationId); } catch {}
+    let list = [];
+    try { list = (await myAttempts()) || []; } catch {}
+    const mine = list.filter(a => String(a.station_id) === String(stationId))
+      .sort((a, b) => (b.created || 0) - (a.created || 0));
+
+    /* The most recent of each kind. Two AI markings of the same station
+       are the same examiner twice and tell you nothing new; an AI and a
+       human marking are the comparison. */
+    const picked = [];
+    ['manual', 'claude', 'ai'].forEach(kind => {
+      const row = mine.find(a => srcOf(a) === kind);
+      if (row) picked.push(row);
+    });
+
+    if (picked.length < 2) {
+      host.innerHTML = `<div class="card" data-animate>
+        <h3 class="card-title">Only one examiner has marked this</h3>
+        <p class="muted">This page compares the same station marked by more than one examiner — AUREUM's own marker,
+          a chat model, and a person in the room. ${picked.length
+            ? `So far only <strong>${esc(SRC[srcOf(picked[0])].label)}</strong> has.` : 'Nothing has been marked yet.'}</p>
+        <p class="muted tiny">Sit it again and have it marked a different way. The disagreements are where the
+          information is: a point one marker called covered and another called missed is either an answer that reads
+          better than it sounded, or a marker being generous — and knowing which matters more than either score.</p>
+        <a class="btn btn-gold" href="#/osce/station/${encodeURIComponent(stationId)}">Open the station →</a>
+      </div>`;
+      return;
+    }
+
+    const full = [];
+    for (const row of picked) {
+      try { const f = await Backend.getOsceAttempt(row.id); if (f) full.push(f); } catch {}
+    }
+    if (full.length < 2) { host.innerHTML = `<div class="card"><p class="muted">Those markings could not be read.</p></div>`; return; }
+
+    const maps = full.map(verdictMap);
+    /* The scheme's own order, from the station if it is still there —
+       falling back to whatever the first marking listed, so a station
+       that has since been deleted still compares. */
+    const rows = [];
+    const seen = new Set();
+    const push = (point, qLabel) => {
+      const k = ptKey(point);
+      if (!k || seen.has(k)) return;
+      seen.add(k);
+      const cells = maps.map(m => m[k] || null);
+      const known = cells.filter(Boolean).map(c => c.status.replace(/^cover.*/, 'covered').replace(/^part.*/, 'partial').replace(/^miss.*/, 'missed'));
+      const agree = known.length > 1 && known.every(s => s === known[0]);
+      rows.push({ point, q: qLabel, cells, agree, judged: known.length });
+    };
+    if (st) {
+      qsOf(st).forEach((q, i) => scorable(q.marking_points).forEach(p => push(p, `Q${i + 1}`)));
+    }
+    full[0].result?.questions?.forEach((mq, i) => (mq.points || []).forEach(p => push(p?.point, `Q${i + 1}`)));
+
+    const contested = rows.filter(r => r.judged > 1 && !r.agree);
+    const agreed = rows.filter(r => r.judged > 1 && r.agree);
+    const partial = rows.filter(r => r.judged <= 1);
+
+    const ico = c => !c ? '<span class="cmp-na" title="this examiner did not record this point">·</span>'
+      : /^cover/.test(c.status) ? '<span class="cmp-v is-cov">✓</span>'
+      : /^part/.test(c.status) ? '<span class="cmp-v is-par">~</span>'
+      : '<span class="cmp-v is-mis">✗</span>';
+
+    const table = list2 => `<table class="cmp-tab">
+      <thead><tr><th class="cmp-pt">Marking point</th>${full.map(a => {
+        const s = SRC[srcOf(a)];
+        return `<th class="cmp-h ${s.cls}"><span>${esc(s.label)}</span></th>`;
+      }).join('')}</tr></thead>
+      <tbody>${list2.map(r => `<tr class="${r.agree ? '' : 'is-split'}">
+        <td class="cmp-pt"><span class="cmp-q">${esc(r.q || '')}</span> ${esc(r.point)}</td>
+        ${r.cells.map(c => `<td class="cmp-c" ${c?.note ? `title="${esc(c.note)}"` : ''}>${ico(c)}</td>`).join('')}
+      </tr>`).join('')}</tbody></table>`;
+
+    host.innerHTML = `
+      <header class="page-head" data-animate>
+        <p class="kicker">SIDE BY SIDE</p>
+        <h1 class="page-title">${esc(st?.topic || full[0].station?.topic || 'This station')}</h1>
+        <p class="muted">The same station, marked ${full.length} ways. Nothing here is averaged — the point of
+          keeping the markers apart is that they can disagree, and the disagreements are the useful part.</p>
+      </header>
+
+      <div class="card cmp-scores" data-animate>
+        ${full.map(a => {
+          const s = SRC[srcOf(a)];
+          const r = a.result || {};
+          return `<div class="cmp-score ${s.cls}">
+            <span class="cmp-score-w">${esc(s.label)}</span>
+            <strong>${r.percent ?? '—'}%</strong>
+            <span class="muted tiny">${r.total ?? '—'}/${r.max ?? '—'} · ${
+              esc(new Date(a.created || Date.now()).toLocaleDateString('en-GB', { dateStyle: 'medium' }))}</span>
+            <a class="link tiny" href="#/osce/result/${encodeURIComponent(a.id)}">Open →</a>
+          </div>`;
+        }).join('')}
+      </div>
+
+      ${contested.length ? `<div class="card cmp-split" data-animate>
+        <h3 class="card-title">⚡ Where they disagree — ${contested.length} point${contested.length === 1 ? '' : 's'}</h3>
+        <p class="muted">Read these first. Each one is a point where the same answer was scored two different ways.
+          Listen back to what you actually said: either it read better than it sounded, or one of these markers is
+          being kind to you — and both are worth knowing before the real thing.</p>
+        <div class="table-scroll">${table(contested)}</div>
+      </div>` : `<div class="card" data-animate>
+        <h3 class="card-title">✓ They agree on everything they both judged</h3>
+        <p class="muted">${agreed.length} point${agreed.length === 1 ? '' : 's'} scored the same way by every marker.
+          That is a marking you can trust — and a rarer result than you would expect.</p>
+      </div>`}
+
+      ${agreed.length ? `<details class="card cmp-fold" data-animate>
+        <summary><span class="card-title">Where they agree — ${agreed.length} point${agreed.length === 1 ? '' : 's'}</span><span class="dc-caret">▸</span></summary>
+        <div class="table-scroll">${table(agreed)}</div>
+      </details>` : ''}
+
+      ${partial.length ? `<details class="card cmp-fold" data-animate>
+        <summary><span class="card-title">Judged by only one of them — ${partial.length}</span><span class="dc-caret">▸</span></summary>
+        <p class="muted tiny">A marking that stopped early, or a scheme edited between the two attempts. Not a
+          disagreement — nobody to disagree with.</p>
+        <div class="table-scroll">${table(partial)}</div>
+      </details>` : ''}`;
+    FX.viewIn(view);
   }
 
   function coverageHtml(cov, modules, mean, passed, scored, recent) {
@@ -5329,7 +5880,7 @@ ${P} .os-pd-close{background:transparent;color:#fff;border:1px solid rgba(255,25
   }
 
   return { renderBank, renderStation, renderSim, renderRun, renderResult, renderMine, renderEdit, progress,
-    renderCircuit, renderProgress, renderDecks,
+    renderCircuit, renderProgress, renderDecks, renderCompare, srcOf, verdictMap,
     micButton, groqReport, resetGroq, voiceAvailable: () => groqOn('whisper'),
     stations, bustStations, collections, bustCollections, openSessions, dropSession,
     marksOf, passOf, qsOf, minsOf, imagesOf, isHeading, headText, scorable, questionFor, toWav, wavRateFor, modelChoices, noAudioReason,
@@ -5350,5 +5901,6 @@ ${P} .os-pd-close{background:transparent;color:#fff;border:1px solid rgba(255,25
        cost estimate, the same upload, the same pending queue. A second
        copy of this would be a second copy of every one of those. */
     wireMarkControls, effectiveSource, chosenModel,
+    roleOf, hasRole, roleLabel, roleText, roleHtml,
     __parseResult: parseResult };
 })();

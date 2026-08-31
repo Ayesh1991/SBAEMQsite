@@ -136,8 +136,10 @@ paste. Never blend two pastes together.
 PRE-FLIGHT VERIFICATION (mandatory, before the clock starts)
 
 1. Confirm you have the block: say back the topic, the number of questions and
-   the total marks from its header lines. If no station block has arrived, say
-   "I have not received the station block" and stop there. NEVER invent
+   the total marks from its header lines — and, if the header carries a
+   role_player line, say back the character's name and role too, so the
+   candidate knows you will be playing them. If no station block has arrived,
+   say "I have not received the station block" and stop there. NEVER invent
    questions to fill the gap — fifteen minutes of plausible invented questions
    is far worse than a session that stops in the first ten seconds, because it
    is only discovered at the very end.
@@ -175,6 +177,30 @@ HOW THE STATION RUNS (after verification is confirmed)
    pasted block in that turn. Immediately before asking Q3, re-read Q3. Do not
    let the pre-flight verification carry you through the whole session —
    re-verify at the point of use, every time.
+
+WHEN THE BLOCK CARRIES A ROLE PLAYER
+
+Some stations are not a viva. Somebody plays the patient, and what is being
+examined is as much the talking as the knowledge. Where the block has a
+ROLE PLAYER section you play that character as well as examining — and the two
+voices must never blend into one line.
+
+· As EXAMINER you set the scene, ask the scored questions, keep time and mark.
+· As the CHARACTER you say only what the character says, plus — where it helps —
+  a short physical action in *asterisks*: *she looks down, twisting her hands*.
+  Posture, expression, small actions only. Never narration, never inner
+  thoughts, never a restatement of what the candidate just said.
+· Reveal a reveal_only_if_asked fact ONLY when the candidate's approach
+  genuinely triggers it. Respect do_not_volunteer at all times, even when the
+  candidate asks something adjacent but not quite right. Eliciting it is the
+  station; handing it over is marking the candidate's work for them.
+· Follow emotional_arc and tone_and_manner as written rather than defaulting to
+  a generic distressed patient. The specificity is why the brief was written.
+· The character never marks. Marks come from the scheme, and the candidate's
+  manner is scored only where the scheme has a section for it.
+
+Where the block has NO role-player section, the station is a straight examiner
+viva. Do not invent a patient to talk to.
 
 PROMPTING — the level for this run is ${level}/100
 
@@ -270,7 +296,14 @@ fenced code block, valid JSON, nothing after it.
     "pitfalls": [{ "trap": "what candidates say here that loses marks", "instead": "what to say" }],
     "reading": [{ "source": "the guideline, chapter or paper", "why": "one line on what it settles" }],
     "language": [{ "said": "what they said", "correct": "what to say", "why": "why" }],
-    "coaching": { "structure": "", "articulation": "", "pronunciation": "", "technique": "" }
+    "coaching": { "structure": "", "articulation": "", "pronunciation": "", "technique": "" }${OSCE.hasRole(st) ? `,
+    "conversation": {
+      "character": "who you played",
+      "rapport": "How the conversation actually went, from inside the character.",
+      "elicited": ["what they got out of you, and how"],
+      "missed": [{ "cue": "the cue the character gave", "wanted": "what would have opened it", "cost": "what stayed hidden" }],
+      "phrasing": [{ "said": "what they said to you", "better": "how to put it", "why": "why it lands better" }]
+    }` : ''}
   }
 }
 
@@ -296,7 +329,12 @@ RULES FOR THE JSON
 · "summary", "mnemonics", "pitfalls" and "reading" are where the teaching you
   just gave is kept. Everything said in the chat disappears when the chat is
   closed; only what is in this JSON is still there in a fortnight, which is
-  when it is actually revised from. Fill them properly — they are not padding.`;
+  when it is actually revised from. Fill them properly — they are not padding.${OSCE.hasRole(st) ? `
+· "conversation" is written FROM INSIDE THE CHARACTER, not as the examiner —
+  what it felt like to be spoken to that way. "missed" is the valuable half:
+  every cue the character gave that the candidate did not pick up, what would
+  have opened it, and what stayed hidden as a result. Nothing in this block
+  carries marks unless the scheme has a communication section; it is teaching.` : ''}`;
   }
 
   /* ================= the station block, v2 =================
@@ -341,6 +379,11 @@ RULES FOR THE JSON
       `total_marks: ${OSCE.marksOf(st)}`,
       `pass_mark: ${OSCE.passOf(st)}`,
       `question_count: ${qs.length}`,
+      /* Declared in the header, not left to be discovered halfway down.
+         The examiner says this line back during pre-flight, so "it never
+         played the character" is caught in the first ten seconds rather
+         than at the debrief. */
+      ...(OSCE.hasRole(st) ? [`role_player: yes — ${OSCE.roleLabel(st)}`] : []),
       '',
       '── SCENARIO (read aloud word for word) ──',
       st.scenario || '',
@@ -357,6 +400,36 @@ RULES FOR THE JSON
       lines.push('',
         '── REVEALS (say each one out loud immediately before its question, and not before) ──',
         ...reveals.map(r => `Q${r.n} REVEAL (say before asking): ${r.text}`));
+    }
+
+    /* THE ACTOR BRIEF, WHERE A STATION HAS ONE.
+
+       This is the section that makes a chat model worth more than a
+       viva partner: it can be the examiner AND the woman in the chair,
+       switching cleanly, without a second person in the room. It sits
+       after the reveals and before the scheme because that is the order
+       it is needed in, and it carries its own instruction about how to
+       speak — a model handed a character with no direction defaults to
+       a generic distressed patient, and the specificity is the whole
+       point of having written the brief. */
+    if (OSCE.hasRole(st)) {
+      lines.push('',
+        '── ROLE PLAYER (you play this character in scene; never read this section aloud) ──',
+        OSCE.roleText(st).replace(/^═══ ROLE PLAYER ═══\n/, ''),
+        '',
+        'HOW TO PLAY IT',
+        '  · Switch cleanly between EXAMINER (questions, timing, marking) and CHARACTER',
+        '    (in-scene dialogue). Never blend the two in one line.',
+        '  · In character, say only what the character says, plus — where it helps — a short',
+        '    physical action in *asterisks* (e.g. *she looks down, twisting her hands*).',
+        '    Posture, expression, small actions only: never narration, never inner thoughts,',
+        '    never a restatement of what was just said.',
+        '  · Reveal a reveal_only_if_asked fact ONLY when the candidate genuinely triggers it.',
+        '    Respect do_not_volunteer even when the candidate asks something adjacent.',
+        '  · Follow emotional_arc and tone_and_manner as written. Do not default to a generic',
+        '    distressed patient — the specificity is the point.',
+        '  · The character is never the marker. Marks come from the scheme below, and the',
+        '    candidate\'s manner is marked only if the scheme has a section for it.');
     }
 
     lines.push('', '── MARKING SCHEME (examiner\'s eyes only — never read aloud) ──');
@@ -437,6 +510,12 @@ summarise them, do not merge them with the marking scheme's copy of the same
 questions, and do not reword them for speech until after they have been
 confirmed.
 
+Some blocks also carry a **ROLE PLAYER** section, and the header says so on a
+\`role_player:\` line. Where it is present you are the examiner *and* the
+character — see "When the block carries a role player" above. Where it is
+absent the station is a straight viva and you must not invent a patient to
+talk to.
+
 **Confirm you have it before you start.** Say back the topic, the number of
 questions and the total marks. If no station block has arrived, say
 "I have not received the station block" and stop. **Never invent questions
@@ -493,7 +572,14 @@ valid JSON, nothing after it. This is what AUREUM imports.
     "pitfalls": [{ "trap": "what candidates say here that loses marks", "instead": "what to say" }],
     "reading": [{ "source": "the guideline, chapter or paper", "why": "one line on what it settles" }],
     "language": [{ "said": "what they said", "correct": "what to say", "why": "why" }],
-    "coaching": { "structure": "", "articulation": "", "pronunciation": "", "technique": "" }
+    "coaching": { "structure": "", "articulation": "", "pronunciation": "", "technique": "" },
+    "conversation": {
+      "character": "who you played — include this block ONLY if the station had a role player",
+      "rapport": "How the conversation actually went, from inside the character.",
+      "elicited": ["what they got out of you, and how"],
+      "missed": [{ "cue": "the cue the character gave", "wanted": "what would have opened it", "cost": "what stayed hidden" }],
+      "phrasing": [{ "said": "what they said to you", "better": "how to put it", "why": "why it lands better" }]
+    }
   }
 }
 \`\`\`
@@ -546,6 +632,22 @@ in a fortnight, which is when it is actually revised from. So:
 
 Fill them generously. They are not padding, and they cost the candidate
 nothing but the paste.
+
+### And when you played a character
+
+\`conversation\` is written **from inside the character**, not as the examiner:
+what it was like to be spoken to that way. Include it only when the station
+actually had a role player; leave it out entirely otherwise.
+
+\`missed\` is the valuable half. Every cue the character gave that the
+candidate did not pick up, what would have opened it, and what stayed hidden
+as a result. A candidate who never learns that the pause after "my husband
+doesn't know yet" was an invitation will make the same omission in the real
+room, where it is the difference between a pass and a fail.
+
+Nothing in this block carries marks unless the marking scheme itself has a
+communication section. It is teaching, and it is teaching that no viva-only
+station can give.
 
 ---
 
@@ -740,6 +842,17 @@ average mean nothing.
                The scenario is what a candidate is actually given, so the
                scenario is what this page leads with. -->
           <h1 class="page-title ai-scen">${esc(st.scenario || 'This station has no scenario recorded.')}</h1>
+          ${/* WHO, AND NOT ONE WORD MORE.
+                The candidate is looking at this screen for the whole
+                fifteen minutes. Knowing a character is being played is
+                fair and useful — it is on the door of the real station.
+                The brief itself is the answer sheet for the conversation
+                and never appears here, only in the block that goes to the
+                model and on the examiner's own sheet. */
+            OSCE.hasRole(st) ? `<p class="ai-rp-flag">
+            <span class="os-rp-tag">🎭 Role player</span>
+            The examiner is also playing <strong>${esc(OSCE.roleLabel(st))}</strong>. Talk to them, do not
+            talk about them — and if it answers you like a viva instead of like a person, the block did not land.</p>` : ''}
         </header>
 
         <!-- The questions, without their marking points.
@@ -1151,7 +1264,9 @@ average mean nothing.
       id: id || rid('oc'),
       station_id: st.id,
       station: { topic: st.topic, scenario: st.scenario,
-        total_marks: OSCE.marksOf(st), pass_mark: OSCE.passOf(st) },
+        total_marks: OSCE.marksOf(st), pass_mark: OSCE.passOf(st),
+        // the character as it was when this was sat, not as it may be edited later
+        role_player: OSCE.roleOf(st) || undefined },
       bp: (typeof OsceBlueprint !== 'undefined') ? (OsceBlueprint.tagOf(st) || null) : null,
       /* The station's own questions, but with any prompt the marking supplied
          filled in where the station has none to offer — a verdict that named

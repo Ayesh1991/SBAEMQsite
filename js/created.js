@@ -122,10 +122,16 @@ const Created = (() => {
 
   /* ---------------- validation ----------------
 
-     §5 of the instructions states three rules with zero exceptions. They
-     are re-stated here rather than trusted, because the file arriving
-     here was written by a model in somebody else's conversation and
-     nothing guarantees it read §5.
+     The instructions state these rules with zero exceptions. They are
+     re-stated here rather than trusted, because the file arriving here
+     was written by a model in somebody else's conversation and nothing
+     guarantees it read them.
+
+     Deliberately NOT cited by section number any more. The guide is
+     editable by the developer and has been rewritten twice; a validator
+     that tells somebody to read "§5 rule 3" of a document whose §5 is
+     now about something else is worse than one that just says what is
+     wrong.
 
      Every message names the question it is about. "marks must be a
      positive number" sends somebody scrolling through 300 lines of JSON;
@@ -158,15 +164,41 @@ const Created = (() => {
     if (!Number.isFinite(total)) e.push('"total_marks" is missing or is not a number.');
     else if (total <= 0) e.push('"total_marks" is ' + total + ' — it must be greater than 0.');
     else if (qs.length && Math.abs(sum - total) > 0.01)
-      e.push('The questions add up to ' + sum + ', but "total_marks" says ' + total + '. §5 rule 3: they must match exactly.');
+      e.push('The questions add up to ' + sum + ', but "total_marks" says ' + total
+        + '. They must match exactly — a station whose parts do not sum to its whole cannot be marked consistently.');
 
     const pass = num(d.pass_mark);
     if (Number.isFinite(pass) && pass <= 0) e.push('"pass_mark" is ' + pass + ' — leave it out rather than setting it to 0.');
+
+    /* THE ACTOR BRIEF, IF THERE IS ONE.
+
+       Optional, so its absence is never an error. But a brief that is
+       PRESENT and empty is worse than absent: AUREUM reads its presence
+       as "this station has a character" and tells the examiner to play
+       one, so an empty block produces an invented patient — which is the
+       one thing the whole feature exists to prevent. Refused, with the
+       fix named. */
+    const rpRaw = d.role_player || d.rolePlayer || d.roleplay || d.role_play;
+    if (rpRaw != null) {
+      if (typeof rpRaw !== 'object' || Array.isArray(rpRaw)) {
+        e.push('"role_player" must be an object, not ' + (Array.isArray(rpRaw) ? 'an array' : typeof rpRaw)
+          + ' — or left out entirely if this station has no character to play.');
+      } else if (typeof OSCE !== 'undefined' && !OSCE.hasRole({ role_player: rpRaw })) {
+        e.push('"role_player" is there but empty. Either fill in who the character is and what they know, or '
+          + 'remove the block — an empty one makes the examiner invent a patient, which is exactly what it is meant to stop.');
+      } else if (typeof OSCE !== 'undefined') {
+        const rp = OSCE.roleOf({ role_player: rpRaw });
+        const half = (rp.reveal_only_if_asked || []).filter(x => !x.trigger || !x.reveals).length;
+        if (half) e.push(`"role_player.reveal_only_if_asked" has ${half} entr${half === 1 ? 'y' : 'ies'} missing a `
+          + 'trigger or the thing it reveals. Both are needed: without a trigger the fact can never be earned, '
+          + 'and without the fact there is nothing to earn.');
+      }
+    }
     return e;
   }
 
   /* One station, several stations, or a whole file of either. The
-     instructions say one station per file (§6) but people paste what they
+     instructions say one station per file, but people paste what they
      have, and rejecting a valid array on a technicality helps nobody. */
   function unpack(raw) {
     if (Array.isArray(raw)) return raw;
