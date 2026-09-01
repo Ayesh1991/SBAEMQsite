@@ -313,7 +313,7 @@ const RealStation = (() => {
 
        Never automatic. A round nobody pressed record on is a round
        nobody agreed to record. */
-    let mic = null, tape = null, recPhase = 'idle', recT0 = 0;
+    let mic = null, tape = null, recPhase = 'idle', recT0 = 0, kept = false;
     const recSecs = () => recPhase === 'live' ? Math.round((Date.now() - recT0) / 1000) : (tape?.secs || 0);
     const mmss = s => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
@@ -327,8 +327,11 @@ const RealStation = (() => {
       </div>`;
       if (recPhase === 'done') return `<div class="rs-rec is-done">
         <strong>✓ ${mmss(tape?.secs || 0)} recorded</strong>
-        <span class="muted tiny">When the examiner closes the station you can send it to AUREUM's marker and put
-          the two verdicts side by side.</span>
+        <span class="muted tiny">${kept
+          ? `Kept on this device. Send it to AUREUM's marker from <strong>My attempts → Recorded, not yet
+             marked</strong> whenever you like — it is safe there even if you close this page.`
+          : 'Kept in this page only. Send it for marking before you navigate away.'}</span>
+        ${kept ? `<a class="btn btn-ghost btn-sm" href="#/osce/mine">Open My attempts →</a>` : ''}
       </div>`;
       return `<div class="rs-rec">
         <strong>🎙 Record yourself</strong>
@@ -358,15 +361,59 @@ const RealStation = (() => {
         recPhase = 'live'; recT0 = Date.now();
         paint();
       });
-      body.querySelector('#rs-rec-stop')?.addEventListener('click', async () => {
-        let r = null;
-        try { r = await mic?.stop(); } catch {}
-        mic = null;
-        tape = r?.blob ? r : null;
-        recPhase = tape ? 'done' : 'idle';
-        paint();
-      });
+      body.querySelector('#rs-rec-stop')?.addEventListener('click', () => stopRec());
     };
+
+    /**
+     * Stop, and WRITE THE TAPE DOWN BEFORE ANYTHING ELSE.
+     *
+     * THE BUG THIS FIXES, AND IT COST A REAL STATION.
+     *
+     * The recording lived in a variable on this page and nowhere else.
+     * The candidate recorded fifteen minutes, the examiner sent the
+     * marking, the candidate tapped "open it" to read it — and that
+     * navigation destroyed the only copy. When the examiner then closed
+     * the station there was nothing left to offer, and My attempts said
+     * there was no recording, because there wasn't one anywhere.
+     *
+     * A recording that exists only in a variable the next navigation
+     * throws away is not a recording. So it goes into the same
+     * IndexedDB queue a failed marking uses: it survives navigation, a
+     * locked phone, a discarded tab and a reload, and it appears in
+     * My attempts under "Recorded, not yet marked" with a Send for
+     * marking button — which is the SAME button, the same markCore and
+     * the same attempt shape as every other route.
+     *
+     * The wrap-up screen is now a convenience for somebody who happens
+     * to still be on the page, not the only way through.
+     */
+    async function stopRec() {
+      let r = null;
+      try { r = await mic?.stop(); } catch {}
+      mic = null;
+      tape = r?.blob ? r : null;
+      recPhase = tape ? 'done' : 'idle';
+      paint();
+      if (!tape || typeof Pending === 'undefined') return;
+      try {
+        Pending.setOwner(user?.email || '');
+        await Pending.put({
+          kind: 'osce', id: 'rs-' + cur.id, title: cur.state?.topic || cur.station_id,
+          blob: tape.blob, mime: tape.mime, secs: tape.secs,
+          payload: {
+            station_id: cur.station_id, answers: {}, choiceKey: '',
+            /* Merged onto the attempt when it is finally marked, from
+               whichever route marks it. It is what tells the
+               side-by-side that this and the examiner's marking are one
+               performance. */
+            stamp: { sitting: cur.id, examiner: { name: cur.state?.examinerName || '', email: '' } }
+          },
+          reason: 'Recorded in a live station. Not sent for marking yet.'
+        });
+        kept = true;
+        paint();
+      } catch { /* the wrap-up can still offer it from memory */ }
+    }
 
     const paint = () => {
       const s = cur.state || {};
@@ -478,9 +525,17 @@ const RealStation = (() => {
       clearInterval(timer); timer = null; try { off?.(); } catch {} off = null;
     };
 
-    /* Leaving the page must never leave a microphone running. */
+    /* LEAVING THE PAGE STOPS THE RECORDING AND KEEPS IT.
+
+       Not just "stop the microphone". The candidate taps the examiner's
+       marking to read it, or checks something in another tab — and if
+       leaving merely killed the recorder, the fifteen minutes went with
+       it. Stopping THROUGH stopRec() writes the tape to the queue on the
+       way out, so the same navigation that used to destroy it now files
+       it. */
     window.addEventListener('hashchange', function micOff() {
       window.removeEventListener('hashchange', micOff);
+      if (recPhase === 'live') { stopRec(); return; }
       try { mic?.stop(); } catch {}
       mic = null;
     });
@@ -509,15 +564,14 @@ const RealStation = (() => {
            exists in this page. So a recorded sitting ends on its own
            wrap-up screen instead, where the recording can be marked. */
         if (recPhase === 'live') {
-          (async () => {
-            let x = null;
-            try { x = await mic?.stop(); } catch {}
-            mic = null; tape = x?.blob ? x : null; recPhase = tape ? 'done' : 'idle';
-            if (tape) wrapUp(view, body, cur, user, tape); else render(view, user);
-          })();
+          /* Through stopRec, so the tape is filed before anything else
+             happens to this page. */
+          stopRec().then(() => {
+            if (tape) wrapUp(view, body, cur, user, tape, kept); else render(view, user);
+          });
           return;
         }
-        if (tape) { wrapUp(view, body, cur, user, tape); return; }
+        if (tape) { wrapUp(view, body, cur, user, tape, kept); return; }
         render(view, user);
         return;
       }
@@ -549,7 +603,7 @@ const RealStation = (() => {
      comparison say "one performance, two markers" rather than leaving
      the reader to assume something that is usually untrue. */
 
-  async function wrapUp(view, body, row, user, tape) {
+  async function wrapUp(view, body, row, user, tape, kept) {
     const sitting = row.id;
     let st = null;
     try { st = await Backend.getOsceStation(row.station_id); } catch {}
@@ -568,7 +622,11 @@ const RealStation = (() => {
       <div class="card rs-wrap-tape" data-animate>
         <h3 class="card-title">🎧 Your recording</h3>
         <audio controls src="${esc(tape.url)}" class="rs-wrap-audio"></audio>
-        <p class="muted tiny">On this device only until you send it. Nothing has been uploaded.</p>
+        <p class="muted tiny">${kept
+          ? `Saved on this device. Nothing has been uploaded — and if you leave this page it is still there, under
+             <strong>My attempts → Recorded, not yet marked</strong>.`
+          : `This page holds the only copy — the browser would not keep it. Mark it or download it before you
+             navigate away.`}</p>
         <a class="btn btn-ghost btn-sm" href="${esc(tape.url)}"
           download="${esc(String(row.state?.topic || 'station').replace(/[^\w -]/g, ''))}.${esc(tape.ext || 'webm')}">⬇ Download it</a>
       </div>
@@ -629,6 +687,10 @@ const RealStation = (() => {
          minutes with no per-question segmentation, which is exactly what
          the audio marking path already handles. */
       OSCE.wireMarkControls(body, st, {}, [], rec, { elapsed: tape.secs || null }, null, {
+        /* The id the recording was queued under, so marking it here
+           clears it from "Recorded, not yet marked" instead of leaving a
+           second copy waiting for a marking it has already had. */
+        attemptId: kept ? 'rs-' + row.id : null,
         meta: { sitting, examiner: { name: row.state?.examinerName || '', email: '' } },
         onDone: (a) => {
           const done = body.querySelector('#rs-wrap-done');
