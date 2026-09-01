@@ -1614,7 +1614,7 @@ const OSCE = (() => {
         say('<span class="muted">Marking…</span>');
         const attempt = await markCore({
           st, ans: row.payload.answers || {}, rec, session: null, choice,
-          attemptId: row.id,
+          attemptId: row.id, stamp: row.payload.stamp || null,
           kept: row.payload.audioPath ? { path: row.payload.audioPath, expires: row.payload.audioExpires } : null,
           say: t => say(`<span class="muted">${esc(t)}</span>`)
         });
@@ -3276,12 +3276,14 @@ const OSCE = (() => {
         ${qsOf(st).reduce((n, q) => n + scorable(q.marking_points).length, 0)} marking points…</p>`;
     try {
       const attempt = await markCore({ st, ans, rec, session, choice, kept,
+        stamp: opts?.meta || null,
+        /* Reusing the id the recording was queued under is what makes the
+           queue row BE this attempt: markCore rewrites it on the way in
+           and drops it on success, so a tape cannot end up both marked
+           and still sitting in "not yet marked". */
+        attemptId: opts?.attemptId || null,
         say: t => { const n = out.querySelector('.os-mark-step'); if (n) n.textContent = t;
           else out.insertAdjacentHTML('beforeend', `<p class="muted tiny os-mark-step">${esc(t)}</p>`); } });
-      if (opts?.meta) {
-        Object.assign(attempt, opts.meta);
-        try { await Backend.saveOsceAttempt(attempt); bustAttempts(); } catch { /* the marking still stands */ }
-      }
       out.innerHTML = '';
       if (opts?.onDone) { opts.onDone(attempt); return; }
       location.hash = '#/osce/result/' + attempt.id;
@@ -3408,7 +3410,16 @@ const OSCE = (() => {
 
      • The attempt id is minted BEFORE either step, because it is the name
        the tape is stored under and the two must agree. */
-  async function markCore({ st, ans, rec, session, choice, say = () => {}, kept = null, attemptId = null, meta = {} }) {
+  /**
+   * `stamp` is merged onto the finished attempt before it is first saved.
+   * It exists so a caller that knows something markCore cannot — which
+   * live sitting this recording belongs to, who examined it — can put it
+   * on the attempt without a second write, and so every route to the
+   * marking (the button, the queue, a wrap-up screen) stamps it the same
+   * way. `meta` is unrelated: that is the OUT-parameter the caller reads
+   * the storage path back from.
+   */
+  async function markCore({ st, ans, rec, session, choice, say = () => {}, kept = null, attemptId = null, meta = {}, stamp = null }) {
     if (typeof Wallet !== 'undefined' && !(await Wallet.canSpend())) throw new Error(Wallet.blockedMessage());
     const token = await Backend.getAccessToken();
     if (!token) throw new Error('Sign in to have a station marked.');
@@ -3465,7 +3476,7 @@ const OSCE = (() => {
     }
 
     try {
-      const out = await markSend({ id, st, ans, rec, session, choice, useAudio, say, audioPath, audioExpires, token, driveJob });
+      const out = await markSend({ id, st, ans, rec, session, choice, useAudio, say, audioPath, audioExpires, token, driveJob, stamp });
       try { if (typeof Pending !== 'undefined') await Pending.drop(id); } catch {}
       return out;
     } catch (e) {
@@ -3521,7 +3532,7 @@ const OSCE = (() => {
       : (last?.message || String(last)));
   }
 
-  async function markSend({ id, st, ans, rec, session, choice, useAudio, say, audioPath, audioExpires, token, driveJob }) {
+  async function markSend({ id, st, ans, rec, session, choice, useAudio, say, audioPath, audioExpires, token, driveJob, stamp }) {
     {
       const body = {
         action: 'osce', provider: choice.provider, model: choice.model, dailyLimit: cfg().ai.dailyLimit,
@@ -3585,6 +3596,8 @@ const OSCE = (() => {
       /* The tape is already up — it went before the model was called, so a
          failed marking leaves something to retry with. Record where. */
       if (audioPath) { attempt.audioPath = audioPath; attempt.audioExpires = audioExpires; attempt.audioSecs = rec?.secs || null; }
+      // whatever the caller knew and markCore could not — before the first save
+      if (stamp) Object.assign(attempt, stamp);
       try { await Backend.saveOsceAttempt(attempt); bustAttempts(); } catch {}
       try { if (typeof Wallet !== 'undefined') Wallet.bust(); } catch {}
 
