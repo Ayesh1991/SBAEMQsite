@@ -490,7 +490,13 @@ const TeaRoom = (() => {
           <div class="tc-sheet-b">
             <strong>${esc(a.station?.topic || 'An OSCE station')}</strong>
             <span class="tc-sheet-s ${r.pass ? 'is-pass' : 'is-fail'}">${r.total} / ${r.max} · ${r.percent}%</span>
-            <em>Marked in person${a.examiner?.name ? ' by ' + esc(a.examiner.name) : ''}</em>
+            <em>${a.source === 'manual'
+              ? `Marked in person${a.examiner?.name ? ' by ' + esc(a.examiner.name) : ''}`
+              : a.source === 'claude' ? 'Marked by a chat model'
+              /* A hand marking and an AUREUM marking of the SAME sitting
+                 arrive together. Labelling both "marked in person" would
+                 make the pair look like one message sent twice. */
+              : `Marked by AUREUM${a.sitting ? ' — the same recording' : ''}`}</em>
           </div>
           <button class="btn btn-gold btn-sm" data-import-sheet="${key}">Import</button>
           <span class="tc-sheet-msg" data-sheet-msg="${key}"></span>

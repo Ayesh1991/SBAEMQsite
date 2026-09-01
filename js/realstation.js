@@ -294,6 +294,80 @@ const RealStation = (() => {
   function sitting(view, body, row, user) {
     let cur = row, timer = null, off = null;
 
+    /* ---------------- recording, on THIS device ----------------
+
+       WHY HERE AND NOT ON THE EXAMINER'S SHEET.
+
+       The candidate is the one speaking, the one holding a phone at
+       arm's length, and the one both markings are about. Recording from
+       their device is better audio and, more importantly, better
+       ownership: the tape is theirs, the AI marking that comes out of it
+       is their attempt on their balance, and it lands in their My
+       attempts beside the hand marking with nothing to forward.
+
+       Recording it on the examiner's device instead would put somebody
+       else's performance into the examiner's account — their mean, their
+       coverage map, their revision deck — and every one of those would
+       then need an exception. There is no exception here; it is simply
+       the candidate's own station, recorded.
+
+       Never automatic. A round nobody pressed record on is a round
+       nobody agreed to record. */
+    let mic = null, tape = null, recPhase = 'idle', recT0 = 0;
+    const recSecs = () => recPhase === 'live' ? Math.round((Date.now() - recT0) / 1000) : (tape?.secs || 0);
+    const mmss = s => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+
+    const recHtml = () => {
+      if (typeof OSCE === 'undefined') return '';
+      if (recPhase === 'live') return `<div class="rs-rec is-live">
+        <strong><i class="rs-rec-dot"></i> Recording you</strong>
+        <span class="muted tiny" id="rs-rec-t">${mmss(recSecs())}</span>
+        <button class="btn btn-ghost btn-sm" id="rs-rec-stop">■ Stop</button>
+        <div id="rs-rec-mic" class="rs-rec-mic"></div>
+      </div>`;
+      if (recPhase === 'done') return `<div class="rs-rec is-done">
+        <strong>✓ ${mmss(tape?.secs || 0)} recorded</strong>
+        <span class="muted tiny">When the examiner closes the station you can send it to AUREUM's marker and put
+          the two verdicts side by side.</span>
+      </div>`;
+      return `<div class="rs-rec">
+        <strong>🎙 Record yourself</strong>
+        <span class="muted tiny">Optional, and on this device only. Afterwards AUREUM can mark the same answers
+          against the same scheme — so you get the examiner's verdict and a second one on the identical
+          fifteen minutes.</span>
+        <button class="btn btn-ghost btn-sm" id="rs-rec-go">● Start recording</button>
+        <p class="rs-rec-msg" id="rs-rec-msg"></p>
+        <div id="rs-rec-mic" class="rs-rec-mic"></div>
+      </div>`;
+    };
+
+    const wireRec = () => {
+      body.querySelector('#rs-rec-go')?.addEventListener('click', async e => {
+        e.currentTarget.disabled = true;
+        mic = OSCE.makeCapture(body.querySelector('#rs-rec-mic'), false);
+        let ok = false;
+        try { ok = await mic.start(); } catch { ok = false; }
+        if (!ok) {
+          mic = null;
+          const m = body.querySelector('#rs-rec-msg');
+          if (m) m.innerHTML = `<span class="bad">The microphone would not open. The station is unaffected —
+            the examiner is marking you either way.</span>`;
+          const b = body.querySelector('#rs-rec-go'); if (b) b.disabled = false;
+          return;
+        }
+        recPhase = 'live'; recT0 = Date.now();
+        paint();
+      });
+      body.querySelector('#rs-rec-stop')?.addEventListener('click', async () => {
+        let r = null;
+        try { r = await mic?.stop(); } catch {}
+        mic = null;
+        tape = r?.blob ? r : null;
+        recPhase = tape ? 'done' : 'idle';
+        paint();
+      });
+    };
+
     const paint = () => {
       const s = cur.state || {};
       const running = s.status === S.RUNNING;
@@ -314,11 +388,15 @@ const RealStation = (() => {
           <button class="btn btn-ghost btn-sm" id="rs-leave">Leave this station</button>
         </div>
 
+        ${recHtml()}
+
         <div class="card" data-animate>
           <h3 class="card-title">What the examiner has sent</h3>
           ${sent.length ? `<div class="rs-feed">${sent.map(it => item(it)).join('')}</div>`
             : `<p class="muted">Nothing yet. The scenario arrives first.</p>`}
         </div>`;
+
+      wireRec();
 
       /* Keeping the result. It becomes an ordinary manual attempt through
          the same importer the chat uses, so nothing downstream learns that
@@ -396,13 +474,24 @@ const RealStation = (() => {
       ${it.comment ? `<div class="rs-sq-c is-final"><b>The examiner's comment</b>${esc(it.comment)}</div>` : ''}
     </div>`;
 
-    const stop = () => { clearInterval(timer); timer = null; try { off?.(); } catch {} off = null; };
+    const stop = () => {
+      clearInterval(timer); timer = null; try { off?.(); } catch {} off = null;
+    };
+
+    /* Leaving the page must never leave a microphone running. */
+    window.addEventListener('hashchange', function micOff() {
+      window.removeEventListener('hashchange', micOff);
+      try { mic?.stop(); } catch {}
+      mic = null;
+    });
 
     paint();
     /* The clock is redrawn every second from the shared start time; the ROW
        is only re-read on the poll. Redrawing the whole feed once a second
        would fight with the reader scrolling it. */
     timer = setInterval(() => {
+      const rt = body.querySelector('#rs-rec-t');
+      if (rt) rt.textContent = mmss(recSecs());
       const el = body.querySelector('.rs-clock');
       if (!el || cur.state?.status !== S.RUNNING) return;
       const left = secondsLeft(cur.state);
@@ -413,7 +502,25 @@ const RealStation = (() => {
     off = follow(cur.id, r => {
       const was = cur.state?.status;
       cur = r;
-      if (!live(r.state?.status)) { stop(); render(view, user); return; }
+      if (!live(r.state?.status)) {
+        stop();
+        /* THE STATION IS OVER AND THIS DEVICE HOLDS A TAPE.
+           Bouncing back to the inbox would throw it away — the blob only
+           exists in this page. So a recorded sitting ends on its own
+           wrap-up screen instead, where the recording can be marked. */
+        if (recPhase === 'live') {
+          (async () => {
+            let x = null;
+            try { x = await mic?.stop(); } catch {}
+            mic = null; tape = x?.blob ? x : null; recPhase = tape ? 'done' : 'idle';
+            if (tape) wrapUp(view, body, cur, user, tape); else render(view, user);
+          })();
+          return;
+        }
+        if (tape) { wrapUp(view, body, cur, user, tape); return; }
+        render(view, user);
+        return;
+      }
       /* A new item, or the clock starting, both mean a redraw. */
       paint();
       if (was !== S.RUNNING && r.state?.status === S.RUNNING) { try { navigator.vibrate?.(200); } catch {} }
@@ -421,6 +528,128 @@ const RealStation = (() => {
     window.addEventListener('hashchange', function goodbye() {
       window.removeEventListener('hashchange', goodbye); stop();
     });
+  }
+
+  /* ================= after a recorded sitting =================
+
+     The examiner has closed the station and this device is holding the
+     only copy of the fifteen minutes. Three things belong here and
+     nothing else:
+
+       1. The tape, playable and downloadable, before anything is sent.
+       2. AUREUM's marker, against the same scheme, at a price shown
+          first — the SAME marking path every other station uses, so
+          there is one upload, one queue, one retry and one attempt
+          shape in the whole app.
+       3. The examiner's marking, if it arrived, and a way to see the
+          two side by side.
+
+     The sitting id is the live row's own id. Both devices already have
+     it, so nothing has to be negotiated, and it is what lets the
+     comparison say "one performance, two markers" rather than leaving
+     the reader to assume something that is usually untrue. */
+
+  async function wrapUp(view, body, row, user, tape) {
+    const sitting = row.id;
+    let st = null;
+    try { st = await Backend.getOsceStation(row.station_id); } catch {}
+
+    /* The examiner's verdict, if it came down the wire before the close. */
+    const res = (row.state?.sent || []).slice().reverse().find(x => x.kind === 'result' && x.attempt);
+
+    body.innerHTML = `
+      <header data-animate>
+        <p class="kicker">REAL STATION · FINISHED</p>
+        <h1 class="page-title">${esc(row.state?.topic || st?.topic || '')}</h1>
+        <p class="muted">Examined by ${esc(row.state?.examinerName || 'your examiner')}. You recorded it, so the
+          same fifteen minutes can be marked a second way.</p>
+      </header>
+
+      <div class="card rs-wrap-tape" data-animate>
+        <h3 class="card-title">🎧 Your recording</h3>
+        <audio controls src="${esc(tape.url)}" class="rs-wrap-audio"></audio>
+        <p class="muted tiny">On this device only until you send it. Nothing has been uploaded.</p>
+        <a class="btn btn-ghost btn-sm" href="${esc(tape.url)}"
+          download="${esc(String(row.state?.topic || 'station').replace(/[^\w -]/g, ''))}.${esc(tape.ext || 'webm')}">⬇ Download it</a>
+      </div>
+
+      ${res ? `<div class="card rs-wrap-hand" data-animate>
+        <h3 class="card-title">✍️ ${esc(row.state?.examinerName || 'The examiner')} gave you
+          ${res.attempt.result?.percent ?? '—'}%</h3>
+        <p class="muted">Keep it first — then AUREUM's marking of the same tape sits beside it instead of
+          replacing it.</p>
+        <button class="btn btn-gold btn-sm" id="rs-wrap-keep">Keep the examiner's marking</button>
+        <span class="rs-keep-msg" id="rs-wrap-keep-msg"></span>
+      </div>` : `<div class="card" data-animate>
+        <p class="muted">${esc(row.state?.examinerName || 'Your examiner')} has not sent their marking yet. It will
+          arrive in the chat — keep it when it does, and it lands beside this one.</p>
+      </div>`}
+
+      ${st ? `<div class="card os-markbox" data-animate>
+        <h3 class="card-title">✨ Have AUREUM mark the same fifteen minutes</h3>
+        <p class="muted">A person marked you in the room. This sends your recording of the <em>same</em> answers to
+          AUREUM's marker against the <em>same</em> scheme, so the two verdicts differ only in who was marking —
+          and every point they disagree on is one where somebody is being generous.</p>
+        <p class="muted tiny">It lands in <strong>Marked by AI</strong> as your own attempt, and is charged to your
+          balance. The examiner's marking is untouched.</p>
+        <div class="os-src" id="os-src"></div>
+        <div id="os-coach-box"></div>
+        <div class="os-mark-acts">
+          <div class="os-prov" id="os-prov"></div>
+          <button class="btn btn-gold btn-lg" id="os-mark">Mark my recording</button>
+        </div>
+        <p class="os-est" id="os-est"></p>
+        <div id="os-mark-out"></div>
+        <div id="rs-wrap-done"></div>
+      </div>` : `<div class="card"><p class="muted">That station is no longer published, so it cannot be marked
+        against its scheme. The recording above is still yours to download.</p></div>`}
+
+      <div class="card" data-animate>
+        <a class="btn btn-ghost" href="#/osce/real">← Back to Real station</a>
+      </div>`;
+    FX.viewIn(view);
+
+    body.querySelector('#rs-wrap-keep')?.addEventListener('click', async e => {
+      e.currentTarget.disabled = true;
+      const msg = body.querySelector('#rs-wrap-keep-msg');
+      msg.textContent = 'Keeping…';
+      try {
+        const a = await Marksheet.importAttempt(Object.assign({}, res.attempt, { sitting }));
+        msg.innerHTML = `<span class="good">✓ In your attempts —
+          <a class="link" href="#/osce/result/${encodeURIComponent(a.id)}">open it</a></span>`;
+      } catch (err) {
+        e.currentTarget.disabled = false;
+        msg.innerHTML = `<span class="bad">${esc(err.message || err)}</span>`;
+      }
+    });
+
+    if (st && body.querySelector('#os-mark')) {
+      const rec = Object.assign({}, tape, { secs: tape.secs || Math.round((tape.size || 0) / 3000) });
+      /* `ans` is empty and that is correct: this is one unbroken fifteen
+         minutes with no per-question segmentation, which is exactly what
+         the audio marking path already handles. */
+      OSCE.wireMarkControls(body, st, {}, [], rec, { elapsed: tape.secs || null }, null, {
+        meta: { sitting, examiner: { name: row.state?.examinerName || '', email: '' } },
+        onDone: (a) => {
+          const done = body.querySelector('#rs-wrap-done');
+          if (!done) return;
+          const mine = a.result?.percent ?? 0;
+          const theirs = res?.attempt?.result?.percent;
+          const gap = theirs == null ? null : mine - theirs;
+          done.innerHTML = `<div class="rs-wrap-out">
+            <p><strong>AUREUM gave ${mine}%.</strong>${theirs == null
+              ? ' Keep the examiner\'s marking when it arrives and the two can be compared.'
+              : ` ${esc(row.state?.examinerName || 'Your examiner')} gave ${theirs}%${Math.abs(gap) < 1
+                  ? ' — the same.'
+                  : ` — ${Math.abs(gap)} point${Math.abs(gap) === 1 ? '' : 's'} ${gap > 0 ? 'more generous' : 'harsher'}.`}`}</p>
+            <div class="rs-wrap-acts">
+              <a class="btn btn-gold btn-sm" href="#/osce/compare/${encodeURIComponent(row.station_id)}">⚡ Put them side by side →</a>
+              <a class="btn btn-ghost btn-sm" href="#/osce/result/${encodeURIComponent(a.id)}">Open its report</a>
+            </div>
+          </div>`;
+        }
+      });
+    }
   }
 
   return { S, live, open, start, finish, send, sendable, patchState, follow,

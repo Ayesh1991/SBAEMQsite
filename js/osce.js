@@ -898,14 +898,26 @@ const OSCE = (() => {
 
   /* ================= the bank (#/osce) ================= */
 
-  async function renderBank(view, user) {
+  async function renderBank(view, user, opts) {
     view.innerHTML = shell('bank', `<div id="os-body"><p class="muted">Loading OSCE stations…</p></div>`);
     FX.viewIn(view);
-    const [list, past, colls] = await Promise.all([
+    const [list, past, colls, bpMods] = await Promise.all([
       stations().catch(() => []),
       myAttempts().catch(() => []),
-      collections().catch(() => [])
+      collections().catch(() => []),
+      // only fetched to put a name on the filter strip; never blocks the page
+      (opts && opts.bp && typeof OsceBlueprint !== 'undefined')
+        ? OsceBlueprint.get().catch(() => []) : Promise.resolve([])
     ]);
+    /* ARRIVED FROM "THE GAP" ON THE PROGRESS PAGE.
+       A module filter is not a bin and not a search: it cuts across both,
+       and it is temporary — you came here to sit one station in it and
+       then you are done. So it is a strip with a way out, not a chip
+       added to the row of bins. */
+    const wantBp = String(opts?.bp || '');
+    const bpName = wantBp
+      ? ((bpMods || []).find(m => m.id === wantBp)?.name || wantBp)
+      : '';
     // recordings older than a day are not worth storing; take them out while we are here
     Backend.sweepOsceAudio?.().catch(() => {});
     const bestOf = {};
@@ -965,6 +977,13 @@ const OSCE = (() => {
           ${list.length} station${list.length > 1 ? 's' : ''}. Several words = all of them must appear.</p>
       </div>
 
+      ${wantBp ? `<div class="os-bpfilter" id="os-bpfilter" data-animate>
+        <span class="os-bpfilter-k">SHOWING ONLY</span>
+        <strong>${esc(bpName)}</strong>
+        <span class="muted tiny" id="os-bpfilter-n"></span>
+        <a class="btn btn-ghost btn-sm" href="#/osce">✕ Show every station</a>
+      </div>` : ''}
+
       ${bins.length > 1 ? `<div class="os-bins" id="os-bins" data-animate>
         ${bins.map((b, i) => `<button class="os-bin ${i === 0 ? 'active' : ''}" data-bin="${esc(b.id)}">
           ${esc(b.label)}<i>${b.n}</i></button>`).join('')}
@@ -998,8 +1017,11 @@ const OSCE = (() => {
         (idx || []).forEach(r => { if (r.search) hay[r.id] = (hay[r.id] + ' ' + r.search).toLowerCase(); });
       } catch { /* topic + scenario search still works */ }
     }
-    // a remembered bin that no longer holds anything falls back to All
-    let bin = bins.some(b => b.id === bankView.bin) ? bankView.bin : '*';
+    /* A remembered bin that no longer holds anything falls back to All —
+       and so does arriving with a module filter, because a remembered bin
+       AND a module together routinely show nothing, and "the gap sent me
+       somewhere empty" is the failure this path exists to avoid. */
+    let bin = (!wantBp && bins.some(b => b.id === bankView.bin)) ? bankView.bin : '*';
     body.querySelectorAll('.os-bin').forEach(x => x.classList.toggle('active', x.dataset.bin === bin));
     /* The Created OSCE panel is drawn only while that bin is the one being
        looked at. It is a whole card of import controls: on every other bin it
@@ -1009,8 +1031,14 @@ const OSCE = (() => {
     const paintMade = () => {
       if (typeof Created === 'undefined') { madeHost.innerHTML = ''; return; }
       if (bin !== madeId) { Created.closePanel?.(madeHost); madeHost.innerHTML = ''; return; }
-      Created.panel(madeHost, user, () => { bustStations(); renderBank(view, user); });
+      Created.panel(madeHost, user, () => { bustStations(); renderBank(view, user, opts); });
     };
+
+    /* The module a station is tagged to, read once. Cards carry the bin
+       in a data attribute but not the blueprint tag, and putting it on
+       every card would change the card markup for one temporary filter. */
+    const bpOf = {};
+    list.forEach(st => { bpOf[st.id] = (st.bp && st.bp.module) || ''; });
 
     const run = () => {
       const terms = input.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -1018,13 +1046,18 @@ const OSCE = (() => {
       bankView.q = input.value; bankView.bin = bin;
       let shown = 0;
       grid.querySelectorAll('.os-card').forEach(c => {
-        const ok = (bin === '*' || (c.dataset.coll || '') === bin) && terms.every(t => hay[c.dataset.st].includes(t));
+        const ok = (bin === '*' || (c.dataset.coll || '') === bin)
+          && (!wantBp || bpOf[c.dataset.st] === wantBp)
+          && terms.every(t => hay[c.dataset.st].includes(t));
         c.hidden = !ok; if (ok) shown++;
       });
       none.hidden = shown > 0;
       none.textContent = terms.length ? 'No station mentions that.'
+        : wantBp ? `No station in ${bpName} is filed here. Try “All stations”, or write one.`
         : bin === madeId ? 'No stations have been created yet — yours would be the first.'
         : 'Nothing filed here yet.';
+      const nEl = body.querySelector('#os-bpfilter-n');
+      if (nEl) nEl.textContent = `${shown} station${shown === 1 ? '' : 's'}`;
       paintMade();
       restoreScroll();
     };
@@ -3171,7 +3204,7 @@ const OSCE = (() => {
      instead of sending several megabytes a second time. The station runner
      never has one (it records and marks in one go); OSCE in AI always does,
      because it stores the recording the moment the session ends. */
-  function wireMarkControls(stage, st, ans, said, rec, session, kept) {
+  function wireMarkControls(stage, st, ans, said, rec, session, kept, opts) {
     const coachHost = stage.querySelector('#os-coach-box');
     if (coachHost) { coachHost.innerHTML = coachPicker(!!rec?.blob); wireCoachPicker(coachHost); }
     const srcHost = stage.querySelector('#os-src');
@@ -3218,10 +3251,22 @@ const OSCE = (() => {
       provHost.querySelector('#os-model-sel').addEventListener('change', ev => { setModel(ev.target.value); paint(); });
     };
     paint();
-    stage.querySelector('#os-mark')?.addEventListener('click', e => mark(e.target, st, ans, rec, session, kept));
+    stage.querySelector('#os-mark')?.addEventListener('click', e => mark(e.target, st, ans, rec, session, kept, opts));
   }
 
-  async function mark(btn, st, ans, rec, session, kept) {
+  /**
+   * `opts` lets a caller that is NOT a station page use this same marking
+   * path without being thrown off its own screen when it finishes:
+   *
+   *   meta   — merged onto the finished attempt and saved. The mark-by-hand
+   *            sheet uses it to record whose sitting this was, and that the
+   *            hand marking and this one are of the SAME performance.
+   *   onDone — called with the attempt instead of navigating to its report.
+   *
+   * Everything else is unchanged, deliberately: one marking path means one
+   * upload, one pending queue, one retry, one attempt shape.
+   */
+  async function mark(btn, st, ans, rec, session, kept, opts) {
     const out = document.querySelector('#os-mark-out');
     const choice = chosenModel();
     const useAudio = effectiveSource(rec, choice) === 'audio';
@@ -3233,7 +3278,12 @@ const OSCE = (() => {
       const attempt = await markCore({ st, ans, rec, session, choice, kept,
         say: t => { const n = out.querySelector('.os-mark-step'); if (n) n.textContent = t;
           else out.insertAdjacentHTML('beforeend', `<p class="muted tiny os-mark-step">${esc(t)}</p>`); } });
+      if (opts?.meta) {
+        Object.assign(attempt, opts.meta);
+        try { await Backend.saveOsceAttempt(attempt); bustAttempts(); } catch { /* the marking still stands */ }
+      }
       out.innerHTML = '';
+      if (opts?.onDone) { opts.onDone(attempt); return; }
       location.hash = '#/osce/result/' + attempt.id;
     } catch (e) {
       out.innerHTML = `<p class="ai-error">${esc(e.message || e)}</p>`;
@@ -5576,12 +5626,30 @@ ${P} .os-pd-close{background:transparent;color:#fff;border:1px solid rgba(255,25
       </tr>`).join('')}</tbody></table>`;
 
     host.innerHTML = `
-      <header class="page-head" data-animate>
-        <p class="kicker">SIDE BY SIDE</p>
+      ${(() => {
+        /* ONE PERFORMANCE OR SEVERAL? It changes what the page means.
+
+           Two markings of two different sittings differ for two reasons
+           at once — you answered differently AND the marker was
+           different — and nothing can separate them. Two markings of the
+           SAME recording hold the answer constant, so every disagreement
+           is about the marking and only the marking. That is a far
+           stronger reading and the page has to say which one it is
+           rather than let it be assumed. */
+        const sits = full.map(a => a.sitting).filter(Boolean);
+        const oneSitting = sits.length === full.length && new Set(sits).size === 1;
+        return `<header class="page-head" data-animate>
+        <p class="kicker">SIDE BY SIDE${oneSitting ? ' · ONE SITTING' : ''}</p>
         <h1 class="page-title">${esc(st?.topic || full[0].station?.topic || 'This station')}</h1>
-        <p class="muted">The same station, marked ${full.length} ways. Nothing here is averaged — the point of
-          keeping the markers apart is that they can disagree, and the disagreements are the useful part.</p>
-      </header>
+        <p class="muted">${oneSitting
+          ? `The <strong>same fifteen minutes</strong>, marked ${full.length} ways — one recording, ${full.length}
+             markers. The answer is held constant, so every disagreement below is about the marking and nothing
+             else. This is the strongest reading this page can give you.`
+          : `The same station, marked ${full.length} ways on ${full.length} separate sittings. You answered
+             differently each time as well, so a disagreement here is partly the marker and partly you.`}
+          Nothing is averaged — the point of keeping the markers apart is that they can disagree.</p>
+      </header>`;
+      })()}
 
       <div class="card cmp-scores" data-animate>
         ${full.map(a => {

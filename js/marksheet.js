@@ -733,7 +733,18 @@ const Marksheet = (() => {
       if (!row) { msg.innerHTML = '<span class="bad">That station has closed.</span>'; return; }
       b.disabled = true; msg.textContent = 'Sending…';
       try {
-        await RealStation.send(row, RealStation.sendable('result', null, { attempt }));
+        /* THE SITTING ID GOES WITH IT.
+
+           The candidate may have recorded themselves on their own device
+           and be about to send that recording to AUREUM's marker. When
+           they do, both markings are of ONE performance — and the only
+           thing that can tell the side-by-side page so is a shared id.
+           The live row's own id is exactly that: both ends already have
+           it, neither has to be told, and it cannot collide with another
+           sitting. */
+        await RealStation.send(row, RealStation.sendable('result', null, {
+          attempt: Object.assign({}, attempt, { sitting: row.id })
+        }));
         msg.innerHTML = '<span class="good">✓ On their screen. They tap once to keep it.</span>';
       } catch (err) {
         b.disabled = false;
