@@ -18,13 +18,18 @@
    gains a field one day and a delete-list quietly leaks it, whereas a
    copy-list quietly omits it.
 
-   ONE ROW, POLLED
+   ONE ROW, WATCHED
 
    The whole session is one jsonb row. Not a row per message: a candidate
    who reloads mid-station has to get back everything already sent, and
-   one row read gives that in a single round trip. Realtime is subscribed
-   where the project has it, but the poll is what it actually runs on —
-   so a deployment without realtime loses immediacy and nothing else.
+   one row read gives that in a single round trip.
+
+   REALTIME IS THE PRIMARY; THE POLL IS THE NET. That is the opposite of
+   how this shipped, and the reason is measured rather than aesthetic —
+   reading the whole row every 2.5 seconds cost 6.6 MB an hour per open
+   page and came to 85% of the project's entire Supabase egress. See
+   `follow()` for what replaced it. A deployment without realtime still
+   works: the net simply runs faster.
 
    ROTATION IS THE POINT, AGAIN
 
@@ -40,7 +45,6 @@ const RealStation = (() => {
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const rid = () => 'ls-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-  const POLL_MS = 2500;
 
   /* invited → accepted → running → finished, plus `left` if the candidate
      stands down before it starts. Written out rather than implied by which
@@ -150,24 +154,116 @@ const RealStation = (() => {
   };
 
   /* ---------------- following a row ----------------
-     Poll, and subscribe as well where realtime exists. Both call the same
-     handler, and the handler is idempotent, so a doubled update costs a
-     redraw and nothing else. */
+
+     WHAT THIS USED TO COST, AND WHY IT WAS WORTH REWRITING
+
+     The first version read the WHOLE row every 2.5 seconds and kept a
+     realtime subscription doing the same job beside it. The row is about
+     4.6 kB, because `state.sent` accumulates the scenario, every
+     question, every reveal, the marksheet and the finished attempt. That
+     is 6.6 MB an hour PER OPEN PAGE — measured, not estimated — and it
+     ran whether or not anything was happening: while the invitation
+     waited to be accepted, while the tab sat in the background, while
+     somebody walked away with the page open. It came to 85% of the whole
+     project's Supabase egress, for a feature two people use at a time.
+
+     Four things fix it, and they compound:
+
+       • REALTIME IS THE PRIMARY, NOT AN EXTRA. Told the channel is
+         subscribed, the poll drops to a slow safety net. The moment the
+         socket says otherwise it comes back at full speed. Before, a
+         perfectly working realtime connection bought nothing.
+
+       • A HIDDEN TAB POLLS NOTHING. Nobody is reading it. One read on
+         the way back covers whatever was missed — and realtime, which
+         does not care about visibility, was listening the whole time.
+
+       • THE POLL READS A HEADER, NOT THE ROW. `id, updated_at, status`
+         is ~0.2 kB. The full 4.6 kB is fetched only when `updated_at`
+         has actually moved, which in a fifteen-minute station is a
+         handful of times rather than 360.
+
+       • A STATION THAT IS NOT RUNNING IS CHECKED RARELY. An invitation
+         waiting to be accepted changes once. Checking it every 2.5
+         seconds for twenty minutes is 480 requests to discover one.
+
+     Together: ~6.6 MB/hour becomes single-digit kB/hour while idle, and
+     a running station costs about what its actual changes weigh.
+
+     The handler is unchanged and still idempotent, so realtime and the
+     poll delivering the same update costs a redraw and nothing else. */
+
+  /* Slow enough to be a safety net, fast enough that a dropped socket is
+     noticed inside a question rather than at the end of the station. */
+  const POLL_LIVE   = 8000;    // running, and realtime is NOT connected
+  const POLL_IDLE   = 30000;   // invited or accepted — one change to catch
+  const POLL_BACKUP = 45000;   // realtime is connected; this only proves it
+
   function follow(id, onRow) {
-    let stopped = false, last = '';
+    let stopped = false, last = '', stamp = '', rt = false, timer = null, at = 0;
+
     const hand = row => {
       if (stopped || !row) return;
       const key = JSON.stringify(row.state || {});
       if (key === last) return;              // nothing moved; do not redraw
       last = key;
+      stamp = row.updated_at || stamp;
       onRow(row);
+      /* The state we just learned is what sets the pace: an invitation
+         that has become a running station has to be followed at the
+         speed of a running station, not the one it was invited at. */
+      arm();
     };
-    const tick = async () => { try { hand(await Backend.getLiveStation(id)); } catch {} };
-    tick();
-    const t = setInterval(tick, POLL_MS);
+
+    /* The cheap read. Only when the stamp has moved — or when we have
+       never read one — does the full row travel. */
+    const peek = async () => {
+      if (stopped) return;
+      try {
+        if (!Backend.peekLiveStation) return hand(await Backend.getLiveStation(id));
+        const head = await Backend.peekLiveStation(id);
+        if (!head) return;
+        if (stamp && String(head.updated_at) === String(stamp)) return;   // nothing new: 0.2 kB spent
+        hand(await Backend.getLiveStation(id));
+      } catch { /* a poll that fails is a poll; the next one is in seconds */ }
+    };
+
+    /* One timer, re-armed at whatever the current state deserves, rather
+       than a fixed interval that has to be right for every state at once. */
+    const wanted = () => {
+      if (document.hidden) return 0;                       // nobody is reading it
+      if (rt) return POLL_BACKUP;                          // realtime has this
+      const s = (() => { try { return JSON.parse(last || '{}').status; } catch { return ''; } })();
+      return (s === S.RUNNING) ? POLL_LIVE : POLL_IDLE;
+    };
+    const arm = () => {
+      if (stopped) return;
+      const ms = wanted();
+      if (ms === at) return;                               // already armed correctly
+      at = ms;
+      clearInterval(timer); timer = null;
+      if (ms) timer = setInterval(peek, ms);
+    };
+
+    peek();
+    arm();
+
+    /* Coming back to a hidden tab reads once immediately: whatever
+       changed while it slept is caught in a single request. */
+    const vis = () => { if (!document.hidden) peek(); arm(); };
+    document.addEventListener('visibilitychange', vis);
+
     let off = () => {};
-    try { off = Backend.watchLiveStation(id, hand) || (() => {}); } catch {}
-    return () => { stopped = true; clearInterval(t); try { off(); } catch {} };
+    try {
+      off = Backend.watchLiveStation(id, hand, live => { rt = !!live; arm(); }) || (() => {});
+    } catch {}
+
+    return () => {
+      stopped = true;
+      clearInterval(timer); timer = null;
+      document.removeEventListener('visibilitychange', vis);
+      try { off(); } catch {}
+    };
   }
 
   /* ================= the candidate's side (#/osce/real) ================= */
@@ -261,7 +357,20 @@ const RealStation = (() => {
 
   /* Watching for an invitation while the page is open. Redraws only when
      the set of live sessions actually changes, so a candidate reading the
-     page is not fighting a redraw every few seconds. */
+     page is not fighting a redraw every few seconds.
+
+     WAITING FOR AN INVITATION IS NOT AN EMERGENCY. This read is the whole
+     row set — the same 4.6 kB shape as a station — and it was running
+     every 2.5 seconds on a page whose entire content is "nothing yet".
+     A candidate who is told about an invitation ten seconds later has
+     lost nothing; the examiner is still setting up. And a page nobody is
+     looking at is asked nothing at all: the tab is hidden, the answer
+     cannot be read, and one request on the way back catches up.
+
+     Local mode is the exception, and for the reason that makes the rule:
+     it reads a browser object, so the read costs nothing and can be as
+     eager as it likes. */
+  const inboxMs = () => (Backend.mode === 'cloud' ? 10000 : 1200);
   let inboxTimer = null;
   function watchInbox(view, user, rows) {
     clearInterval(inboxTimer);
@@ -275,6 +384,7 @@ const RealStation = (() => {
       if (!document.body.contains(view) || !location.hash.startsWith('#/osce/real')) {
         clearInterval(inboxTimer); inboxTimer = null; return;
       }
+      if (document.hidden) return;
       let fresh = [];
       try { fresh = await Backend.myLiveStations(); } catch { return; }
       const k = key(fresh);
@@ -283,7 +393,7 @@ const RealStation = (() => {
       clearInterval(inboxTimer); inboxTimer = null;
       render(view, user);
       try { navigator.vibrate?.(120); } catch {}
-    }, POLL_MS);
+    }, inboxMs());
   }
 
   /* ---------------- the candidate, mid-station ----------------

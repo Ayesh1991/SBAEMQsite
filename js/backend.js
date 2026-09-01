@@ -277,6 +277,12 @@ const Backend = (() => {
       write('livestations', all); return all[row.id];
     }
     async function getLiveStation(id) { return liveAll()[id] || null; }
+    /* Local storage costs no egress, so the cheap read is only here to
+       keep both backends exporting the same function list. */
+    async function peekLiveStation(id) {
+      const r = liveAll()[id];
+      return r ? { id: r.id, updated_at: r.updated_at, status: r.state?.status || '' } : null;
+    }
     async function saveLiveStation(id, patch) {
       const all = liveAll(); if (!all[id]) return null;
       all[id] = Object.assign({}, all[id], patch, { updated_at: Date.now() });
@@ -290,7 +296,34 @@ const Backend = (() => {
         .filter(r => r.examiner_id === me || r.candidate_id === me)
         .sort((x, y) => (y.updated_at || 0) - (x.updated_at || 0));
     }
-    function watchLiveStation() { return () => {}; }   // local mode polls; nothing to subscribe to
+    /* Local mode has no socket, but it also has no egress: reading a
+       browser object costs nothing, so it can afford to look closely.
+       A `storage` event carries the other tab's write the moment it
+       lands — which is the whole of the two-device case on one machine —
+       and a short interval covers a change made in this tab. Saying we
+       are live lets the caller stand its own (network-shaped) timer down;
+       here, that timer would only be re-reading the same object. */
+    function watchLiveStation(lid, fn, onStatus) {
+      let stopped = false, seen = '';
+      const look = () => {
+        if (stopped) return;
+        const r = liveAll()[lid];
+        if (!r) return;
+        const k = String(r.updated_at || '') + '|' + JSON.stringify(r.state || {});
+        if (k === seen) return;
+        seen = k;
+        try { fn(r); } catch {}
+      };
+      const onStore = e => { if (!e || !e.key || e.key === NS + 'livestations') look(); };
+      const t = setInterval(look, 700);
+      try { window.addEventListener('storage', onStore); } catch {}
+      try { onStatus?.(true); } catch {}
+      return () => {
+        stopped = true; clearInterval(t);
+        try { window.removeEventListener('storage', onStore); } catch {}
+        try { onStatus?.(false); } catch {}
+      };
+    }
     async function getOsceBlueprint() { return read('osceblueprint', null); }
     async function saveOsceBlueprint(b) { write('osceblueprint', b); return b; }
     /** Write a blueprint tag onto stations without touching anything else. */
@@ -793,7 +826,7 @@ const Backend = (() => {
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
       getOsceStations, getOsceStation, getOsceSearchIndex, publishOsceStation, unpublishOsceStation,
       moveOsceStations, getOsceCollections, saveOsceCollections, getOsceGuide, saveOsceGuide, getGroqConfig, saveGroqConfig,
-      findUserByNo, createLiveStation, getLiveStation, saveLiveStation, dropLiveStation, myLiveStations, watchLiveStation,
+      findUserByNo, createLiveStation, getLiveStation, peekLiveStation, saveLiveStation, dropLiveStation, myLiveStations, watchLiveStation,
       getOsceBlueprint, saveOsceBlueprint, tagOsceStations, listOsceDecks, saveOsceDeck, deleteOsceDeck,
       listOsceAttempts, getOsceAttempt,
       saveOsceAttempt, deleteOsceAttempt, uploadOsceAudio, getOsceAudioUrl, sweepOsceAudio,
@@ -1096,6 +1129,25 @@ const Backend = (() => {
       const { data } = await sb.from('live_stations').select('*').eq('id', lid).single();
       return data || null;
     }
+    /**
+     * JUST ENOUGH TO KNOW WHETHER ANYTHING MOVED.
+     *
+     * The whole row is about 4.6 kB, because `state.sent` accumulates the
+     * scenario, every question, every reveal, the marksheet and the final
+     * attempt. Polled every 2.5 seconds that was 6.6 MB an hour per open
+     * page — 85% of this project's entire egress — and almost all of it
+     * was the same bytes over and over.
+     *
+     * This is ~0.2 kB. The caller reads the full row only when
+     * `updated_at` has actually changed, which during a fifteen-minute
+     * station is a handful of times rather than 360.
+     */
+    async function peekLiveStation(lid) {
+      await ensureClient();
+      const { data } = await sb.from('live_stations')
+        .select('id,updated_at,state->>status').eq('id', lid).single();
+      return data || null;
+    }
     async function saveLiveStation(lid, patch) {
       await ensureClient();
       const row = Object.assign({}, patch, { updated_at: new Date().toISOString() });
@@ -1112,17 +1164,26 @@ const Backend = (() => {
         .order('updated_at', { ascending: false }).limit(20);
       return data || [];
     }
-    /* Realtime where the project has it; the caller polls regardless, so
-       this only makes a live station feel immediate rather than making it
-       work. Returns an unsubscribe. */
-    function watchLiveStation(lid, fn) {
+    /* Realtime where the project has it.
+     *
+     * `onStatus` is new and is the point: it reports whether the channel
+     * is actually SUBSCRIBED. The caller used to poll regardless, which
+     * meant a working realtime connection bought nothing and cost 6.6 MB
+     * an hour alongside it. Told that realtime is live, the caller can
+     * stand its poll down to a slow safety net — and be told again the
+     * moment the socket drops, so the net comes back before anything is
+     * missed.
+     *
+     * Returns an unsubscribe.
+     */
+    function watchLiveStation(lid, fn, onStatus) {
       try {
         const ch = sb.channel('live-' + lid)
           .on('postgres_changes', { event: '*', schema: 'public', table: 'live_stations', filter: 'id=eq.' + lid },
             p => { try { fn(p.new || null); } catch {} })
-          .subscribe();
-        return () => { try { sb.removeChannel(ch); } catch {} };
-      } catch { return () => {}; }
+          .subscribe(s => { try { onStatus?.(s === 'SUBSCRIBED'); } catch {} });
+        return () => { try { onStatus?.(false); } catch {} try { sb.removeChannel(ch); } catch {} };
+      } catch { try { onStatus?.(false); } catch {} return () => {}; }
     }
 
     async function getOsceCollections() {
@@ -2162,7 +2223,7 @@ const Backend = (() => {
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
       getOsceStations, getOsceStation, getOsceSearchIndex, publishOsceStation, unpublishOsceStation,
       moveOsceStations, getOsceCollections, saveOsceCollections, getOsceGuide, saveOsceGuide, getGroqConfig, saveGroqConfig,
-      findUserByNo, createLiveStation, getLiveStation, saveLiveStation, dropLiveStation, myLiveStations, watchLiveStation,
+      findUserByNo, createLiveStation, getLiveStation, peekLiveStation, saveLiveStation, dropLiveStation, myLiveStations, watchLiveStation,
       getOsceBlueprint, saveOsceBlueprint, tagOsceStations, listOsceDecks, saveOsceDeck, deleteOsceDeck,
       listOsceAttempts, getOsceAttempt,
       saveOsceAttempt, deleteOsceAttempt, uploadOsceAudio, getOsceAudioUrl, sweepOsceAudio,
