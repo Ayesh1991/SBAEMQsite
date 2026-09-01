@@ -1044,16 +1044,47 @@ const TeaRoom = (() => {
     updateLaunchers();
   }
 
+  /* ---------------- the corner ----------------
+
+     Three things live in the bottom-right corner now — chat, the wall and
+     the code scanner — and three permanent bubbles is two too many on a
+     phone held in one hand. So they fold into one.
+
+     Closed, the button carries the unread count for everything behind it;
+     nothing is hidden by folding, which is the difference between a
+     drawer and a place things go missing. The state is remembered,
+     because somebody who wants the fan open wants it open tomorrow. */
+  const OPEN_KEY = 'aureum.dock.open';
+  const dockOpen = () => { try { return localStorage.getItem(OPEN_KEY) === '1'; } catch { return false; } };
+  const setDockOpen = v => { try { localStorage.setItem(OPEN_KEY, v ? '1' : '0'); } catch {} };
+
   let launchBar = null;
   function ensureLaunchers() {
     if (launchBar) return launchBar;
     launchBar = document.createElement('div');
-    launchBar.className = 'tr-launchbar';
+    launchBar.className = 'tr-launchbar' + (dockOpen() ? ' is-open' : '');
+    const scanner = typeof QR !== 'undefined';
     launchBar.innerHTML = `
-      <button class="tr-launch" data-open="chat" title="Chat"><span class="tr-launch-ico">💬</span><span class="tr-launch-badge" hidden></span></button>
-      <button class="tr-launch" data-open="wall" title="Tea room wall"><span class="tr-launch-ico">🧱</span><span class="tr-launch-badge" hidden></span></button>`;
+      <div class="tr-fan">
+        ${scanner ? `<button class="tr-launch tr-launch-qr" data-open="qr" title="Scan a code" aria-label="Scan a code">
+          <span class="tr-launch-ico">${QR.ICON}</span></button>` : ''}
+        <button class="tr-launch" data-open="wall" title="Tea room wall"><span class="tr-launch-ico">🧱</span><span class="tr-launch-badge" hidden></span></button>
+        <button class="tr-launch" data-open="chat" title="Chat"><span class="tr-launch-ico">💬</span><span class="tr-launch-badge" hidden></span></button>
+      </div>
+      <button class="tr-launch tr-launch-main" data-dock aria-expanded="${dockOpen() ? 'true' : 'false'}" title="Chat, wall and the code scanner">
+        <span class="tr-launch-ico tr-dot" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span class="tr-launch-badge" hidden></span>
+      </button>`;
     launchBar.addEventListener('click', e => {
+      if (e.target.closest('[data-dock]')) {
+        const on = !launchBar.classList.contains('is-open');
+        launchBar.classList.toggle('is-open', on);
+        launchBar.querySelector('[data-dock]').setAttribute('aria-expanded', on ? 'true' : 'false');
+        setDockOpen(on); updateLaunchers();
+        return;
+      }
       const b = e.target.closest('[data-open]'); if (!b) return;
+      if (b.dataset.open === 'qr') { try { QR.scan(); } catch {} return; }
       b.dataset.open === 'chat' ? toggleChat() : toggleWall();
     });
     document.body.appendChild(launchBar);
@@ -1063,14 +1094,25 @@ const TeaRoom = (() => {
     const bar = ensureLaunchers();
     const muted = !!muteUntil();
     const set = (sel, n, hide) => {
-      const b = bar.querySelector(sel);
+      const b = bar.querySelector(sel); if (!b) return;
       b.classList.toggle('is-hidden', hide);
       b.classList.toggle('is-muted', muted);
       const badge = b.querySelector('.tr-launch-badge');
+      if (!badge) return;
       badge.textContent = n > 99 ? '99+' : n; badge.hidden = !n;
     };
     set('[data-open="chat"]', unreadChat(), chatOpen || cfg.chatEnabled === false);
     set('[data-open="wall"]', unreadWall(), wallOpen || cfg.wallEnabled === false);
+    /* Folded away is not the same as gone: whatever is waiting inside is
+       counted on the button that hides it. */
+    const total = (cfg.chatEnabled === false ? 0 : unreadChat()) + (cfg.wallEnabled === false ? 0 : unreadWall());
+    const main = bar.querySelector('[data-dock] .tr-launch-badge');
+    if (main) {
+      const show = total && !bar.classList.contains('is-open');
+      main.textContent = total > 99 ? '99+' : total;
+      main.hidden = !show;
+    }
+    bar.querySelector('[data-dock]')?.classList.toggle('is-muted', muted);
   }
   function mountLauncher() { ensureLaunchers(); updateLaunchers(); }
   function unmountLauncher() {
