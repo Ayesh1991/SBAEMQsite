@@ -1111,7 +1111,7 @@ const OSCE = (() => {
 
   /* ================= one station's brief (#/osce/station/:id) ================= */
 
-  async function renderStation(view, id, user) {
+  async function renderStation(view, id, user, query) {
     const st = await station(id);
     if (!st) { view.innerHTML = shell('bank', `<p class="muted">That station is no longer published. <a class="link" href="#/osce">Back</a></p>`); FX.viewIn(view); return; }
     let past = [];
@@ -1160,6 +1160,24 @@ const OSCE = (() => {
         </div>
         <p class="muted tiny">Most of these stations exist on paper too — open the scheme if you want to check this is
           the one you meant before you start the clock.</p>
+        ${/* THE STATION, HANDED ACROSS THE TABLE.
+
+              Two people preparing together lose a minute every time each
+              of them searches the bank for the same station, and the one
+              who finds it second is often on a different one. A code on
+              the screen removes the search: whoever has it open, the
+              others point a phone at it and land on this page.
+
+              Small on purpose. It is a shortcut, not the subject of the
+              page, and it opens full size when it needs to be read from
+              across a room. */
+          typeof QR !== 'undefined' ? `<div class="os-qc" id="os-qc">
+          ${QR.card({ hash: '#/osce/station/' + encodeURIComponent(st.id), small: true,
+            kicker: 'OPEN IT ON ANOTHER DEVICE',
+            title: esc(st.topic || 'This station'),
+            note: 'Point a phone at it — anybody preparing with you lands on this station without searching for it.' })}
+          <button type="button" class="btn btn-ghost btn-sm" id="os-qc-big">⤢ Show it big</button>
+        </div>` : ''}
       </div>
       ${past.length ? `
       <div class="card" data-animate>
@@ -1186,6 +1204,29 @@ const OSCE = (() => {
     view.querySelector('#os-copy').addEventListener('click', e =>
       copyOut(stationAsText(st), e.currentTarget, '📄 Copy the station'));
     view.querySelector('#os-aiosce')?.addEventListener('click', () => AiOsce.openDialog(st));
+
+    if (typeof QR !== 'undefined') {
+      QR.wire(view.querySelector('#os-qc'));
+      view.querySelector('#os-qc-big')?.addEventListener('click', () => QR.show({
+        hash: '#/osce/station/' + encodeURIComponent(st.id),
+        kicker: 'OPEN IT ON ANOTHER DEVICE',
+        title: st.topic || 'This station',
+        note: 'Whoever is preparing with you points a phone at this and lands on the same station.'
+      }));
+    }
+
+    /* ARRIVING FROM A CODE.
+
+       `?ai=1` on this route means somebody scanned the code at the foot
+       of the OSCE-in-AI dialog. Open that dialog, set the way the code
+       said, and do nothing else — a scan must never start a clock by
+       itself, because the scan happens while you are still finding your
+       seat. */
+    const q = new URLSearchParams(String(query || '').replace(/^\?/, ''));
+    if (q.get('ai') === '1' && typeof AiOsce !== 'undefined' && AiOsce.allowed(user)) {
+      const p = q.get('p');
+      AiOsce.openDialog(st, { model: q.get('m') || '', level: p == null ? null : Number(p) });
+    }
   }
 
   /* ---------------- the scheme, in a dialog ----------------

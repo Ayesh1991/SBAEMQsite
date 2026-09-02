@@ -729,6 +729,20 @@ average mean nothing.
             station, the paste did not land — re-paste the whole block rather than correcting it, and never let two
             stations share one conversation.</p>
           <div id="ai-msg" class="ai-msg"></div>
+
+          ${/* THE SAME DIALOG, ON THE OTHER DEVICE.
+
+                The station is being sat on an iPad with the model in the
+                other half of the screen; the clock and the recording want
+                to be on the phone in your hand, close enough to hear you.
+                Typing a station name into a second device costs thirty
+                seconds of a fifteen-minute station.
+
+                The code carries the CHOICES, not just the station — the
+                model you picked and how hard you want to be pushed — so
+                the phone opens on this dialog exactly as it stands, and
+                it is redrawn whenever either of those changes. */
+            typeof QR !== 'undefined' ? `<div class="ai-qc" id="ai-qc"></div>` : ''}
         </div>
 
         <div class="ai-modal-foot">
@@ -738,7 +752,7 @@ average mean nothing.
       </div>`;
     document.body.appendChild(wrap);
 
-    let picked = MODELS[0].id;
+    let picked = (opts && opts.model && MODELS.some(m => m.id === opts.model)) ? opts.model : MODELS[0].id;
     let lvl = level;
     const msg = wrap.querySelector('#ai-msg');
     const say = (t, cls) => { msg.innerHTML = `<span class="${cls || 'good'}">${esc(t)}</span>`; };
@@ -749,11 +763,46 @@ average mean nothing.
     window.addEventListener('hashchange', shut);
     document.addEventListener('keydown', onKey);
 
+    /* The code is redrawn from the CURRENT choices rather than the ones
+       the dialog opened with — a code that still says "Claude, 35" after
+       you have moved to Gemini and 70 is worse than no code, because it
+       is confidently wrong on the device you are about to sit on. */
+    const qcHost = wrap.querySelector('#ai-qc');
+    const paintQc = () => {
+      if (!qcHost || typeof QR === 'undefined') return;
+      const hash = '#/osce/station/' + encodeURIComponent(st.id) +
+        '?ai=1&m=' + encodeURIComponent(picked) + '&p=' + encodeURIComponent(lvl);
+      qcHost.innerHTML = QR.card({
+        hash, small: true,
+        kicker: 'SIT IT ON YOUR PHONE',
+        title: (MODELS.find(m => m.id === picked) || {}).name + ' · prompting ' + lvl,
+        note: 'Scan with the phone’s camera and this dialog opens there, set the same way. Record on the phone, examine on this screen.'
+      });
+      QR.wire(qcHost);
+    };
+
+    /* Arriving from a code: the dialog opens on the choices the code
+       carried, not on the defaults, or scanning it would have been a
+       longer way of pressing the button. */
+    if (opts && opts.level != null && Number.isFinite(Number(opts.level))) {
+      lvl = Math.max(0, Math.min(100, Math.round(Number(opts.level) / 5) * 5));
+      setLevel(lvl);
+      wrap.querySelector('#ai-lvl').value = lvl;
+      wrap.querySelector('#ai-lvl-n').textContent = lvl;
+      wrap.querySelector('#ai-lvl-t').textContent = levelText(lvl);
+    }
+    if (picked !== MODELS[0].id) {
+      wrap.querySelectorAll('.ai-pick-b').forEach(x => x.classList.toggle('active', x.dataset.model === picked));
+      wrap.querySelector('#ai-note').textContent = MODELS.find(m => m.id === picked).note;
+    }
+    paintQc();
+
     wrap.querySelector('#ai-pick').addEventListener('click', e => {
       const b = e.target.closest('[data-model]'); if (!b) return;
       picked = b.dataset.model;
       wrap.querySelectorAll('.ai-pick-b').forEach(x => x.classList.toggle('active', x === b));
       wrap.querySelector('#ai-note').textContent = MODELS.find(m => m.id === picked).note;
+      paintQc();
     });
 
     const slider = wrap.querySelector('#ai-lvl');
@@ -762,6 +811,7 @@ average mean nothing.
       wrap.querySelector('#ai-lvl-n').textContent = lvl;
       wrap.querySelector('#ai-lvl-t').textContent = levelText(lvl);
     });
+    slider.addEventListener('change', paintQc);      // once the finger lifts, not on every pixel
 
     const copy = async (text, what) => {
       try { await navigator.clipboard.writeText(text); say('✓ ' + what + ' copied — paste it into ' + MODELS.find(m => m.id === picked).where); }

@@ -39,7 +39,10 @@
     { re: /^#\/osce\/mine$/, fn: (u) => OSCE.renderMine(view, u) },
     { re: /^#\/osce\/edit$/, fn: (u) => OSCE.renderEdit(view, null, u) },
     { re: /^#\/osce\/edit\/([^/]+)$/, fn: (id, u) => OSCE.renderEdit(view, id, u) },
-    { re: /^#\/osce\/station\/([^/]+)$/, fn: (id, u) => OSCE.renderStation(view, id, u) },
+    /* The query is how a scanned code says which model and how much
+       prompting the dialog should open with. Optional, and the group is
+       allowed not to participate — see the note on `#/osce` above. */
+    { re: /^#\/osce\/station\/([^/?]+)(?:\?(.*))?$/, fn: (id, q, u) => OSCE.renderStation(view, id, u, q || '') },
     { re: /^#\/osce\/run\/([^/]+)$/, fn: (sid, u) => OSCE.renderRun(view, sid, u) },
     { re: /^#\/osce\/result\/([^/]+)$/, fn: (id, u) => OSCE.renderResult(view, id, u) },
     { re: /^#\/osce\/circuit\/([^/]+)$/, fn: (sid, u) => OSCE.renderCircuit(view, sid, u) },
