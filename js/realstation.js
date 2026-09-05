@@ -284,7 +284,25 @@ const RealStation = (() => {
 
     const mine = rows.filter(r => r.candidate_id === user.id && live(r.state?.status));
     const examining = rows.filter(r => r.examiner_id === user.id && live(r.state?.status));
-    const active = mine.find(r => r.state?.status === S.RUNNING || r.state?.status === S.ACCEPTED);
+
+    /* A STATION THAT HAS ENDED IS STILL SOMEWHERE TO BE.
+
+       The debrief comes after the clock stops, so a candidate who
+       reloads, locks their phone or wanders off for a minute has to be
+       able to get back to a finished station and read what arrived. It
+       stays reachable for a few hours and then stops competing with
+       whatever they are doing next — a station from last Tuesday must
+       not greet somebody instead of today's invitation. */
+    const stamp = r => {
+      const v = r.updated_at;
+      const n = typeof v === 'number' ? v : Date.parse(v || 0);
+      return Number.isFinite(n) ? n : 0;
+    };
+    const debrief = rows.filter(r => r.candidate_id === user.id
+      && r.state?.status === S.FINISHED && Date.now() - stamp(r) < 3 * 3600e3);
+
+    const active = mine.find(r => r.state?.status === S.RUNNING || r.state?.status === S.ACCEPTED)
+      || debrief[0];
 
     if (active) { return sitting(view, body, active, user); }
 
@@ -528,9 +546,25 @@ const RealStation = (() => {
     const paint = () => {
       const s = cur.state || {};
       const running = s.status === S.RUNNING;
+      /* A station that has ENDED is not a station to leave. The debrief
+         arrives after the clock stops — that is the whole point of
+         sealing it — so this screen stays, unsealed, until the candidate
+         walks away from it themselves. */
+      const done = s.status === S.FINISHED;
       const left = secondsLeft(s);
       const sent = (s.sent || []);
       body.innerHTML = `
+        ${/* THE CLOCK IS PINNED, FOR THE SAME REASON AS THE EXAMINER'S.
+
+              A candidate reads down the feed as the questions arrive, so
+              within a minute the clock has scrolled off the top of the
+              screen — and the one number a candidate needs, continuously,
+              is how long is left. It stays. */''}
+        ${running ? `<div class="rs-bar ${left <= 0 ? 'is-out' : left <= 60 ? 'is-low' : ''}">
+          <span class="rs-bar-who">${esc(s.topic || 'Station')}</span>
+          <span class="rs-bar-clock">${clock(left)}</span>
+        </div>` : ''}
+
         <header data-animate>
           <p class="kicker">REAL STATION · EXAMINED BY ${esc((s.examinerName || '').toUpperCase())}</p>
           <h1 class="page-title">${esc(s.topic || '')}</h1>
@@ -540,16 +574,20 @@ const RealStation = (() => {
           ${running
             ? `<div class="rs-clock ${left <= 0 ? 'is-out' : left <= 60 ? 'is-low' : ''}">${clock(left)}</div>
                <p class="muted tiny">${left <= 0 ? 'Time is up — the examiner will close the station.' : 'Answer out loud. The examiner is marking as you speak.'}</p>`
-            : `<div class="rs-wait"><i></i><i></i><i></i></div>
-               <p class="muted">Accepted. Waiting for ${esc(s.examinerName || 'the examiner')} to start the clock.</p>`}
-          <button class="btn btn-ghost btn-sm" id="rs-leave">Leave this station</button>
+            : done
+              ? `<p class="rs-over">■ The station is over</p>
+                 <p class="muted tiny">Anything ${esc(s.examinerName || 'the examiner')} sends now — the marked
+                   sheet, your marks — opens below as it arrives. Stay on this page for the debrief.</p>`
+              : `<div class="rs-wait"><i></i><i></i><i></i></div>
+                 <p class="muted">Accepted. Waiting for ${esc(s.examinerName || 'the examiner')} to start the clock.</p>`}
+          <button class="btn btn-ghost btn-sm" id="rs-leave">${done ? 'Back to Real station' : 'Leave this station'}</button>
         </div>
 
         ${recHtml()}
 
         <div class="card" data-animate>
           <h3 class="card-title">What the examiner has sent</h3>
-          ${sent.length ? `<div class="rs-feed">${sent.map(it => item(it)).join('')}</div>`
+          ${sent.length ? `<div class="rs-feed">${sent.map(it => item(it, running)).join('')}</div>`
             : `<p class="muted">Nothing yet. The scenario arrives first.</p>`}
         </div>`;
 
@@ -576,6 +614,9 @@ const RealStation = (() => {
 
       body.querySelector('#rs-leave').addEventListener('click', async e => {
         const b = e.currentTarget;
+        /* Leaving a station that is already over needs no confirmation and
+           no state change — there is nothing left to abandon. */
+        if (done) { stop(); render(view, user); return; }
         if (b.dataset.sure !== '1') {
           b.dataset.sure = '1'; b.textContent = 'Leave? Tap again';
           setTimeout(() => { if (b.dataset.sure === '1') { b.dataset.sure = ''; b.textContent = 'Leave this station'; } }, 4000);
@@ -588,7 +629,23 @@ const RealStation = (() => {
       });
     };
 
-    const item = it => {
+    /* MARKING IS SEALED UNTIL THE STATION ENDS.
+
+       An examiner may send the sheet the moment they have finished
+       ticking, and there is no reason to stop them — but a candidate who
+       can read their marks while still being asked questions is a
+       candidate who has stopped answering and started arguing. Worse,
+       reading "✗ missed" against something you are about to be asked
+       about is the answer, handed over mid-station.
+
+       So the item arrives, and is kept shut until the status leaves
+       RUNNING. The seal is at the point of DISPLAY rather than the point
+       of sending, because that is the side the harm is on. */
+    const item = (it, running) => {
+      if (running && (it.kind === 'marksheet' || it.kind === 'result')) return `<div class="rs-it is-sealed">
+        <b>🔒 ${it.kind === 'result' ? 'Your marks are here' : 'The marking sheet is here'}</b>
+        <p class="muted tiny">It opens when the examiner ends the station. Keep answering — nothing is lost.</p>
+      </div>`;
       if (it.kind === 'scenario') return `<div class="rs-it is-scen"><b>The scenario</b><p>${esc(it.text || '')}</p></div>`;
       if (it.kind === 'reveal') return `<div class="rs-it is-rev"><b>New information</b><p>${esc(it.text || '')}</p></div>`;
       if (it.kind === 'image') return `<div class="rs-it is-img"><b>Look at this</b>
@@ -657,17 +714,27 @@ const RealStation = (() => {
     timer = setInterval(() => {
       const rt = body.querySelector('#rs-rec-t');
       if (rt) rt.textContent = mmss(recSecs());
-      const el = body.querySelector('.rs-clock');
-      if (!el || cur.state?.status !== S.RUNNING) return;
+      if (cur.state?.status !== S.RUNNING) return;
       const left = secondsLeft(cur.state);
-      el.textContent = clock(left);
-      el.classList.toggle('is-low', left > 0 && left <= 60);
-      el.classList.toggle('is-out', left <= 0);
+      /* Both faces of the same clock — the one in the card and the one
+         pinned to the top — are written from the same number, so they
+         cannot disagree by a second while somebody is watching both. */
+      for (const el of body.querySelectorAll('.rs-clock, .rs-bar-clock')) el.textContent = clock(left);
+      for (const el of body.querySelectorAll('.rs-clock, .rs-bar')) {
+        el.classList.toggle('is-low', left > 0 && left <= 60);
+        el.classList.toggle('is-out', left <= 0);
+      }
     }, 1000);
     off = follow(cur.id, r => {
       const was = cur.state?.status;
       cur = r;
       if (!live(r.state?.status)) {
+        /* A station that ENDED is not a station that is finished with.
+           The marked sheet and the marks arrive after the clock stops,
+           so this page stays where it is — still following — and simply
+           unseals. Only a station that was LEFT, cancelled or deleted
+           sends the candidate back to the inbox. */
+        if (r.state?.status === S.FINISHED && recPhase !== 'live' && !tape) { paint(); return; }
         stop();
         /* THE STATION IS OVER AND THIS DEVICE HOLDS A TAPE.
            Bouncing back to the inbox would throw it away — the blob only
@@ -718,8 +785,10 @@ const RealStation = (() => {
     let st = null;
     try { st = await Backend.getOsceStation(row.station_id); } catch {}
 
-    /* The examiner's verdict, if it came down the wire before the close. */
-    const res = (row.state?.sent || []).slice().reverse().find(x => x.kind === 'result' && x.attempt);
+    /* The examiner's verdict, whenever it comes down the wire — before the
+       close or ten minutes after it. Read from the row each time it is
+       asked for, never captured once. */
+    const handResult = r => (r?.state?.sent || []).slice().reverse().find(x => x.kind === 'result' && x.attempt);
 
     body.innerHTML = `
       <header data-animate>
@@ -741,17 +810,17 @@ const RealStation = (() => {
           download="${esc(String(row.state?.topic || 'station').replace(/[^\w -]/g, ''))}.${esc(tape.ext || 'webm')}">⬇ Download it</a>
       </div>
 
-      ${res ? `<div class="card rs-wrap-hand" data-animate>
-        <h3 class="card-title">✍️ ${esc(row.state?.examinerName || 'The examiner')} gave you
-          ${res.attempt.result?.percent ?? '—'}%</h3>
-        <p class="muted">Keep it first — then AUREUM's marking of the same tape sits beside it instead of
-          replacing it.</p>
-        <button class="btn btn-gold btn-sm" id="rs-wrap-keep">Keep the examiner's marking</button>
-        <span class="rs-keep-msg" id="rs-wrap-keep-msg"></span>
-      </div>` : `<div class="card" data-animate>
-        <p class="muted">${esc(row.state?.examinerName || 'Your examiner')} has not sent their marking yet. It will
-          arrive in the chat — keep it when it does, and it lands beside this one.</p>
-      </div>`}
+      <div id="rs-wrap-hand"></div>
+
+      ${/* THE DEBRIEF ARRIVES AFTER THE CLOCK STOPS.
+
+            The examiner ends the station and then sends the sheet and the
+            marks — that order is deliberate, since a candidate must not
+            read either while still being asked questions. So this screen
+            keeps listening. Painting it once from the row as it stood at
+            the final second would show "has not sent their marking yet"
+            for ever, with the marking arriving into a page that had
+            stopped looking. */''}
 
       ${st ? `<div class="card os-markbox" data-animate>
         <h3 class="card-title">✨ Have AUREUM mark the same fifteen minutes</h3>
@@ -777,18 +846,52 @@ const RealStation = (() => {
       </div>`;
     FX.viewIn(view);
 
-    body.querySelector('#rs-wrap-keep')?.addEventListener('click', async e => {
-      e.currentTarget.disabled = true;
-      const msg = body.querySelector('#rs-wrap-keep-msg');
-      msg.textContent = 'Keeping…';
-      try {
-        const a = await Marksheet.importAttempt(Object.assign({}, res.attempt, { sitting }));
-        msg.innerHTML = `<span class="good">✓ In your attempts —
-          <a class="link" href="#/osce/result/${encodeURIComponent(a.id)}">open it</a></span>`;
-      } catch (err) {
-        e.currentTarget.disabled = false;
-        msg.innerHTML = `<span class="bad">${esc(err.message || err)}</span>`;
-      }
+    /* The examiner's half, repainted whenever something new comes down the
+       line, and wired each time — one function so a marking that arrives
+       in three seconds and one that was already there behave identically. */
+    const handHost = body.querySelector('#rs-wrap-hand');
+    const paintHand = r => {
+      const sent = (r.state?.sent || []);
+      const hit = handResult(r);
+      const sheet = sent.slice().reverse().find(x => x.kind === 'marksheet');
+      handHost.innerHTML = hit ? `<div class="card rs-wrap-hand" data-animate>
+          <h3 class="card-title">✍️ ${esc(r.state?.examinerName || 'The examiner')} gave you
+            ${hit.attempt.result?.percent ?? '—'}%</h3>
+          <p class="muted">Keep it first — then AUREUM's marking of the same tape sits beside it instead of
+            replacing it.</p>
+          <button class="btn btn-gold btn-sm" id="rs-wrap-keep">Keep the examiner's marking</button>
+          <span class="rs-keep-msg" id="rs-wrap-keep-msg"></span>
+        </div>` : `<div class="card" data-animate>
+          <p class="muted">${esc(r.state?.examinerName || 'Your examiner')} has not sent their marking yet — this
+            page is watching for it, and it opens here the moment it lands.</p>
+        </div>`;
+      if (sheet) handHost.insertAdjacentHTML('beforeend',
+        `<div class="card" data-animate><h3 class="card-title">📋 The marking sheet</h3>
+          <div class="rs-feed">${sheetHtml(sheet)}</div></div>`);
+
+      handHost.querySelector('#rs-wrap-keep')?.addEventListener('click', async e => {
+        e.currentTarget.disabled = true;
+        const msg = handHost.querySelector('#rs-wrap-keep-msg');
+        msg.textContent = 'Keeping…';
+        try {
+          const a = await Marksheet.importAttempt(Object.assign({}, hit.attempt, { sitting }));
+          msg.innerHTML = `<span class="good">✓ In your attempts —
+            <a class="link" href="#/osce/result/${encodeURIComponent(a.id)}">open it</a></span>`;
+        } catch (err) {
+          e.currentTarget.disabled = false;
+          msg.innerHTML = `<span class="bad">${esc(err.message || err)}</span>`;
+        }
+      });
+    };
+    paintHand(row);
+
+    let offWrap = () => {};
+    try {
+      offWrap = follow(row.id, r => { row = r; paintHand(r); }) || (() => {});
+    } catch {}
+    window.addEventListener('hashchange', function bye() {
+      window.removeEventListener('hashchange', bye);
+      try { offWrap(); } catch {}
     });
 
     if (st && body.querySelector('#os-mark')) {
@@ -806,7 +909,7 @@ const RealStation = (() => {
           const done = body.querySelector('#rs-wrap-done');
           if (!done) return;
           const mine = a.result?.percent ?? 0;
-          const theirs = res?.attempt?.result?.percent;
+          const theirs = handResult(row)?.attempt?.result?.percent;
           const gap = theirs == null ? null : mine - theirs;
           done.innerHTML = `<div class="rs-wrap-out">
             <p><strong>AUREUM gave ${mine}%.</strong>${theirs == null

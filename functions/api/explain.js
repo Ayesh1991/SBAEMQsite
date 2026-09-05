@@ -100,6 +100,37 @@ export async function onRequest(context) {
     }
     geminiRestricted = !flags.gemini_advanced;
     if (geminiRestricted) effectiveModel = defaultGemini;
+
+    /* --- the prepaid balance ---
+
+       THE ONLY PLACE THIS CAN BE ENFORCED.
+
+       The browser asks Wallet.guard() before it spends, and that is the
+       right thing for the person using it — the refusal arrives before a
+       fifteen-minute recording is uploaded, and it arrives in words. But
+       a client-side check is a courtesy: anything holding a token can
+       post straight here. Every AI action in the app goes through this
+       function, so this is where "no balance, no AI" is actually true.
+
+       402 rather than 403, and a `code` the client can recognise without
+       reading the prose: a balance that has run out is not a permission
+       problem, and the two want different words on screen. */
+    const wallet = await walletSettings(env);
+    /* Enforced unless it was deliberately switched off. A deployment that
+       has never opened Rates & settings still has a working till. */
+    if (wallet.enforce !== false) {
+      const bal = await cachedBalance(user.id, env);
+      /* A balance that cannot be READ must never block. The reading is
+         our failure, not theirs, and a study session stopped by our own
+         outage is worse than a few rupees of credit given away. */
+      if (!bal.error && bal.balance <= 0) {
+        return json({
+          error: 'Your AUREUM balance has run out, so the AI features are paused. Top up in Profile → Billing '
+            + '& balance and they come straight back.',
+          code: 'no-balance', balance: bal.balance
+        }, 402);
+      }
+    }
   }
 
   // --- rate limit (per user per day) via Supabase RPC ---
@@ -641,6 +672,31 @@ async function userNoOf(id, env, svc) {
     return (await r.json())?.[0]?.user_no || '';
   } catch { return ''; }
 }
+/* The balance, but not read from scratch on every single AI call.
+
+   balanceOf() reads every approved top-up and every metered token row a
+   user has ever had. For somebody a year into their preparation that is
+   thousands of rows, and doing it in front of each request would put the
+   billing check itself among the larger egress costs on the account —
+   which is a poor way to police spending.
+
+   A Worker isolate is reused across a burst of requests, and a burst is
+   exactly what an OSCE marking is: mark, then flashcards, then the
+   debrief. Sixty seconds of memory turns those into one read. It is a
+   cache of a number that only moves when the same user spends, and the
+   worst case is that a wallet is one minute stale — smaller than the
+   cost of the call that would have found out. */
+const BAL_CACHE = new Map();
+async function cachedBalance(id, env) {
+  const hit = BAL_CACHE.get(id);
+  if (hit && Date.now() - hit.at < 60000) return hit.val;
+  if (!env.SUPABASE_SERVICE_KEY) return { error: 'not-configured' };
+  const svc = { apikey: env.SUPABASE_SERVICE_KEY, Authorization: 'Bearer ' + env.SUPABASE_SERVICE_KEY };
+  const val = await balanceOf(id, env, svc);
+  if (!val.error) BAL_CACHE.set(id, { at: Date.now(), val });
+  return val;
+}
+
 async function balanceOf(id, env, svc) {
   try {
     const [tRes, uRes] = await Promise.all([

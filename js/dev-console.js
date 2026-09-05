@@ -1458,9 +1458,29 @@ const DevConsole = (() => {
         c.thisMonth += extra[uid].thisMonth; c.allTime += extra[uid].allTime;
       }
     } catch { sharedCtx = null; }
+    /* WHAT EACH PERSON HAS LEFT, IN THE MONEY THEY PAID IN.
+
+       The dollar cost is what the developer is billed; the rupee balance
+       is what the user has. They are different questions and this panel
+       was only answering the first, so the one thing needed before
+       telling somebody "top up" — how much is actually left — had to be
+       worked out by hand from two other screens.
+
+       The sum comes from Wallet, the same function the user's own
+       Billing page uses, so the two can never disagree. */
+    let tops = [], bal = {};
+    try {
+      await Wallet.loadRate();
+      tops = (await ctx.Backend.listAllTopUps?.()) || [];
+      bal = Wallet.balances(tops, costs);
+    } catch { bal = {}; }
+    const balOf = u => bal[u.id] || bal[u.email] || { creditedLkr: 0, spentLkr: 0, balanceLkr: 0 };
+
     const devMail = (ctx.cfg.developer.email || '').toLowerCase();
     const totalAi = Object.values(usage).reduce((s, u) => s + (u.total || 0), 0);
     const monthTotal = Object.values(costs).reduce((s, c) => s + c.thisMonth, 0);
+    const enforcing = Wallet.enforcing ? Wallet.enforcing() : true;
+    const emptyN = list.filter(u => (u.email || '').toLowerCase() !== devMail && balOf(u).balanceLkr <= 0).length;
     let regOpen = true;
     try { regOpen = await ctx.Backend.getRegistrationOpen(); } catch { regOpen = true; }
     const pendingN = list.filter(u => u.status === 'pending').length;
@@ -1476,6 +1496,8 @@ const DevConsole = (() => {
         <div><strong>${list.filter(u => u.featureFlags?.paid).length}</strong><span>Paid</span></div>
         <div><strong>${totalAi}</strong><span>AI calls (all time)</span></div>
         <div><strong>${Billing.usd(monthTotal)}</strong><span>AI cost this month</span></div>
+        <div class="${emptyN ? 'is-empty' : ''}"><strong>${emptyN}</strong><span>Out of credit${
+          enforcing ? '' : ' (not enforced)'}</span></div>
       </div>
       <p class="tiny muted">Click a user to open their full control panel. <strong>Paid</strong> is the master key: an unpaid account has
         NO AI, no Simulator, no Flashcards, and a 30-question daily practice cap — one toggle activates everything they've been granted.</p>
@@ -1483,6 +1505,7 @@ const DevConsole = (() => {
         ${list.map((u, i) => {
           const isDev = (u.email || '').toLowerCase() === devMail;
           const c = costs[u.id] || { thisMonth: 0, allTime: 0 };
+          const b0 = balOf(u);
           const ai = usage[u.id] || { total: 0, today: 0 };
           const paid = isDev || !!u.featureFlags?.paid;
           const stChip = isDev ? '<span class="qedit-tag">developer</span>'
@@ -1496,6 +1519,9 @@ const DevConsole = (() => {
               ${stChip}
               <span class="chip ${paid ? 'pr-st-approved' : 'pr-st-rejected'}">${paid ? '💳 Paid' : 'Unpaid'}</span>
               <span class="dev-cost">${Billing.usd(c.thisMonth)}<span class="muted tiny">/mo</span></span>
+              ${isDev ? '' : `<span class="dev-bal ${b0.balanceLkr <= 0 ? 'is-empty' : b0.balanceLkr < 200 ? 'is-low' : ''}"
+                title="Prepaid balance — topped up ${Wallet.lkr(b0.creditedLkr)}, used ${Wallet.lkr(b0.spentLkr)}">${
+                Wallet.lkr(b0.balanceLkr)}</span>`}
               <span class="dc-caret">▸</span>
             </button>
             <div class="dev-user-panel" hidden>
@@ -1529,6 +1555,13 @@ const DevConsole = (() => {
                   <h4>Usage &amp; billing</h4>
                   <p class="tiny muted">XP ${u.xp || 0} · AI today ${ai.today} · AI total ${ai.total}<br>
                     Cost this month <strong class="dev-cost">${Billing.usd(c.thisMonth)}</strong> · all time ${Billing.usd(c.allTime)}</p>
+                  <p class="dev-bal-line ${b0.balanceLkr <= 0 ? 'is-empty' : ''}">
+                    Balance <strong>${Wallet.lkr(b0.balanceLkr)}</strong>
+                    <span class="tiny muted">topped up ${Wallet.lkr(b0.creditedLkr)} · used ${Wallet.lkr(b0.spentLkr)}
+                      at LKR ${Wallet.rate()}/USD</span>
+                    ${b0.balanceLkr <= 0 ? `<span class="tiny">${enforcing
+                      ? 'AI is paused for this account until they top up.'
+                      : 'Enforcement is OFF in Rates &amp; settings, so the AI still runs.'}</span>` : ''}</p>
                   <button class="btn btn-ghost btn-sm" data-bill="${ctx.esc(u.id)}">🧾 Generate bill</button>
                 </div>
               </div>`}

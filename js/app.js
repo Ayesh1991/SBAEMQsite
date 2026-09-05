@@ -147,6 +147,9 @@
     if (user) applyPrefsAppearance(user);       // theme + energy-saving from prefs
     renderNav(user);
     startTeaRoom(user);                         // live chat + dock, once per session
+    /* An empty wallet is discovered on arrival, not four minutes into a
+       station when the marking will not send. Once per session. */
+    if (user && typeof Wallet !== 'undefined') Wallet.nudge?.();
     if (typeof Ecosystem !== 'undefined') { if (user) Ecosystem.sync(); else Ecosystem.suspend(); }
     if (typeof TeaRoom !== 'undefined') TeaRoom.releasePanel();   // leaving a page drops its panel mount
     view.className = 'view';

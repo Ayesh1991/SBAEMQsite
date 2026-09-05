@@ -136,7 +136,11 @@ paste. Never blend two pastes together.
 PRE-FLIGHT VERIFICATION (mandatory, before the clock starts)
 
 1. Confirm you have the block: say back the topic, the number of questions and
-   the total marks from its header lines — and, if the header carries a
+   the total marks from its header lines, AND THE FIRST TWELVE WORDS OF THE
+   SCENARIO, copied exactly — the scenario is where an invented station shows
+   itself first, because a remembered case on the same topic will have a
+   different woman, a different gestation and different numbers, and the
+   candidate spots that in one second. If the header carries a
    role_player line, say back the character's name and role too, so the
    candidate knows you will be playing them. If no station block has arrived,
    say "I have not received the station block" and stop there. NEVER invent
@@ -186,16 +190,48 @@ ROLE PLAYER section you play that character as well as examining — and the two
 voices must never blend into one line.
 
 · As EXAMINER you set the scene, ask the scored questions, keep time and mark.
-· As the CHARACTER you say only what the character says, plus — where it helps —
-  a short physical action in *asterisks*: *she looks down, twisting her hands*.
-  Posture, expression, small actions only. Never narration, never inner
-  thoughts, never a restatement of what the candidate just said.
+· As the CHARACTER you say ONLY what the character says. Nothing else.
+
+NO STAGE DIRECTIONS. THIS IS SPOKEN, NOT WRITTEN.
+
+This station is sat in VOICE MODE. Everything you type is read out loud, which
+means "*she shakes her head*" is not a stage direction the candidate can skim
+past — it is a sentence spoken into the middle of a consultation, in the same
+voice as the patient, while the candidate is trying to listen. It breaks the
+conversation every single time.
+
+So, while the station is running:
+
+· NEVER write an action, a gesture, an expression or a movement — not in
+  asterisks, not in brackets, not in italics, not as "she pauses", not as a
+  narrator's aside of any kind. If it is not a word the character actually
+  says out loud, do not produce it.
+· NEVER announce the character's feelings ("she sounds worried"). Sound
+  worried instead.
+· Everything a gesture would have carried belongs in the VOICE. That is what
+  a real role player has, and it is more than enough:
+    – hesitation: "I… I don't know. Maybe two months?"
+    – reluctance: shorter answers, more of them, offering nothing extra
+    – anger: clipped, interrupting, "You already asked me that."
+    – distress and crying: breaks mid-sentence, half-finished words, "Sorry —
+      sorry, give me a second."
+    – shutting down: near-silence, "Hm.", "I suppose."
+    – warming to a candidate who has earned it: longer answers, volunteering
+      the next thing.
+· TONE IS THE PERFORMANCE, and it moves. Follow emotional_arc and
+  tone_and_manner as written — hostile at the start and softening, calm until
+  a word lands badly, tearful from the first question — rather than defaulting
+  to a mildly anxious patient. Where the brief calls for anger, be angry.
+  Where it calls for tears, cry. A role player who is the same temperature for
+  fifteen minutes is not testing anything.
+· If the candidate says in so many words that they are TYPING rather than
+  speaking, you may then use a short bracketed action, at most one per
+  answer. Voice is the default and the assumption.
+
 · Reveal a reveal_only_if_asked fact ONLY when the candidate's approach
   genuinely triggers it. Respect do_not_volunteer at all times, even when the
   candidate asks something adjacent but not quite right. Eliciting it is the
   station; handing it over is marking the candidate's work for them.
-· Follow emotional_arc and tone_and_manner as written rather than defaulting to
-  a generic distressed patient. The specificity is why the brief was written.
 · The character never marks. Marks come from the scheme, and the candidate's
   manner is scored only where the scheme has a section for it.
 
@@ -314,7 +350,28 @@ RULES FOR THE JSON
   that calls them Q1,Q2,Q3, and the report then shows bare question numbers
   with no questions on them.
 · One object per marking point, for EVERY point in the scheme, in scheme order.
-· "point" must be the scheme's own wording, not a paraphrase.
+· "point" must be the scheme's own wording, COPIED, not a paraphrase and not
+  a point you remember from a similar station. This one is checked.
+
+  AUREUM COMPARES EVERY "point" AGAINST THE REAL SCHEME ON IMPORT.
+
+  The station block above is the only scheme this marking may use. When the
+  file is imported, each "point" is matched against the ${(() => {
+    let n = 0; OSCE.qsOf(st).forEach(q => n += OSCE.scorable(q.marking_points || []).length); return n;
+  })()} marking points the
+  station actually has. If the marking is built from a station you remember
+  rather than the one above, the match fails and the WHOLE FILE IS REJECTED —
+  the candidate loses the marking, the teaching, the summary and the fifteen
+  minutes with it, and is told the marking was of a different station.
+
+  This is not a threat, it is the failure mode: a fabricated marking is
+  indistinguishable from a real one to read, which is exactly why it has to
+  be caught mechanically. If you cannot see the scheme in this conversation,
+  say "I do not have the marking scheme" and produce no JSON at all. A
+  refusal costs a re-paste. An invented marking costs the exam preparation
+  it silently corrupts — the revision deck, the coverage map and the
+  examiner comparison are all built on the assumption that a marking refers
+  to the scheme it names.
 · "awarded" per question must sum to "total", and "max" per question to the
   station's ${OSCE.marksOf(st)}.
 · "percent" is round(total / max × 100). "pass" is total ≥ ${OSCE.passOf(st)}.
@@ -470,7 +527,7 @@ RULES FOR THE JSON
     const folder = cfg().drive?.claudeMarkFolderId
       ? `https://drive.google.com/drive/folders/${cfg().drive.claudeMarkFolderId}`
       : '';
-    return `# AUREUM — PGIM Part II OSCE examiner (v2 — drift-corrected)
+    return `# AUREUM — PGIM Part II OSCE examiner (v3 — scheme-bound, voice-first)
 
 Paste this whole document into the **instructions** of a Claude project (or
 a custom GPT, or a Gem). Then, for each station, paste only the STATION
@@ -487,6 +544,21 @@ pasted block at the moment each question was asked, so the model
 pattern-matched to a plausible-sounding question instead. v2 fixes that with
 a checkable step rather than a politer instruction, and AUREUM now emits the
 question stems in a section of their own so there is nothing to skim past.
+
+**What changed in v3, and why it is not another instruction:** the questions
+started coming from the block, and the *scenario and the marking scheme* did
+not. A marking built from a remembered station reads perfectly and is
+worthless, so it is now checked mechanically instead of being asked for
+nicely — **AUREUM compares every marking point in the JSON against the real
+scheme when the file is imported, and rejects the whole file when they do
+not match.** The pre-flight also quotes the first words of the scenario back,
+which is the cheapest possible proof that the block is actually in front of
+you.
+
+v3 also rewrote the role player for VOICE. Stage directions in asterisks —
+*she shakes her head* — are read out loud by voice mode, in the patient's
+own voice, in the middle of the consultation. Every gesture now belongs in
+the delivery instead: tone, pace, hesitation, anger, tears.
 
 ---
 
@@ -517,7 +589,11 @@ absent the station is a straight viva and you must not invent a patient to
 talk to.
 
 **Confirm you have it before you start.** Say back the topic, the number of
-questions and the total marks. If no station block has arrived, say
+questions, the total marks **and the first twelve words of the scenario,
+copied exactly**. The scenario is where an invented station shows itself
+first: a remembered case on the same topic will have a different woman, a
+different gestation and different numbers, and the candidate sees that in
+one second. If no station block has arrived, say
 "I have not received the station block" and stop. **Never invent questions
 to fill the gap** — fifteen minutes of plausible invented questions is far
 worse than a session that stops in the first ten seconds, because it is
@@ -536,6 +612,18 @@ entirely.
 
 After the teaching, produce ONE JSON file in a single fenced code block,
 valid JSON, nothing after it. This is what AUREUM imports.
+
+> **Every \`"point"\` is checked against the real scheme on import.** The
+> station block in the conversation is the only scheme this marking may use.
+> AUREUM matches each point you return against the points the station
+> actually has; if the marking was built from a station you remember rather
+> than the one pasted, the match fails and the **whole file is rejected** —
+> the candidate loses the marking, the teaching and the fifteen minutes with
+> it. If you cannot see the scheme, say "I do not have the marking scheme"
+> and produce no JSON at all. A refusal costs a re-paste; an invented
+> marking silently corrupts the revision deck, the coverage map and the
+> examiner comparison, all of which assume a marking refers to the scheme
+> it names.
 
 \`\`\`json
 {
@@ -1282,7 +1370,92 @@ average mean nothing.
        it would import cleanly and quietly attach itself to the wrong topic. */
     if (st && d.station_id && String(d.station_id) !== String(st.id))
       e.push(`This marking is for station "${d.station_id}", not "${st.id}".`);
+
+    /* ...and a verdict against a scheme the model INVENTED is the failure
+       worth catching second, because it looks exactly like a good one. */
+    const f = fidelity(d, st);
+    if (f && f.verdict === 'bad') {
+      e.push(`This marking is not against this station's scheme: ${f.invented} of the ${f.marked} points it `
+        + `marked are not in the scheme at all${f.matched ? `, and only ${f.matched} are` : ''}. `
+        + `That is a marking of a remembered station, not this one — re-paste the station block into a `
+        + `fresh conversation and run it again.`);
+    }
     return e;
+  }
+
+  /* ================= did it mark THIS station? =================
+
+     THE FAILURE THIS EXISTS FOR.
+
+     A model that has read ten thousand O&G stations does not need ours to
+     produce something that looks like a marking. Asked to mark a station
+     it has half-forgotten, the most fluent thing it can do is mark the
+     station it remembers — same topic, plausible points, a total out of
+     100, every field in the right place. It imports cleanly. It appears
+     in My attempts. It feeds Recall, the coverage map, the drift ledger
+     and the three-examiner comparison, all of which are built on the
+     assumption that a marking refers to the scheme it names.
+
+     Instructions alone cannot fix this, because the instruction and the
+     fabrication live in the same conversation and the model is equally
+     confident about both. What CAN fix it is a check on our side, where
+     the real scheme is: every point the model marked is compared with
+     the points the station actually has.
+
+     Deliberately forgiving about wording — a model may shorten a point
+     for its own output and that is not fabrication — and deliberately
+     unforgiving about substance: points that are not in the scheme, and
+     scheme points that never came back, are both counted. */
+  function fidelity(d, st) {
+    if (!st) return null;
+    const scheme = [];
+    OSCE.qsOf(st).forEach(q => OSCE.scorable(q.marking_points || []).forEach(p => scheme.push(String(p))));
+    if (scheme.length < 4) return null;            // too small a scheme to judge
+
+    const words = s => new Set(String(s || '').toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 3));
+    const near = (a, b) => {
+      const A = words(a), B = words(b);
+      if (!A.size || !B.size) return false;
+      let hit = 0; A.forEach(w => { if (B.has(w)) hit++; });
+      return hit / Math.min(A.size, B.size) >= 0.6;
+    };
+
+    const got = [];
+    ((d.result || {}).questions || []).forEach(q => (q.points || []).forEach(p => {
+      const t = String(p && (p.point ?? p.text ?? p) || '').trim();
+      if (t) got.push(t);
+    }));
+    if (!got.length) return { scheme: scheme.length, marked: 0, matched: 0, invented: 0, verdict: 'empty' };
+
+    const used = new Set();
+    let matched = 0, invented = 0;
+    got.forEach(g => {
+      const i = scheme.findIndex((s, k) => !used.has(k) && near(g, s));
+      if (i >= 0) { used.add(i); matched++; } else invented++;
+    });
+    /* WHAT ACTUALLY DISTINGUISHES A FABRICATION.
+
+       The first version of this judged coverage — matched divided by the
+       size of the scheme — and it was wrong, in the way that matters:
+       it failed markings that were merely SHORT. A station cut off after
+       one question, or a scheme half of which was never reached, comes
+       back with two points of sixteen and every one of them genuine.
+       That is an incomplete marking, which the report already shows
+       honestly; it is not an invented one, and refusing it would throw
+       away a real fifteen minutes.
+
+       The evidence of fabrication is the opposite quantity: points that
+       are NOT in the scheme at all. A model working from the block
+       cannot produce them; a model working from memory produces almost
+       nothing else. Three is the floor, so that a couple of heavily
+       reworded points can never trip it on their own. */
+    const ratio = matched / scheme.length;
+    const verdict = !got.length ? 'empty'
+      : invented === 0 ? 'ok'
+      : (invented > matched && invented >= 3) ? 'bad'
+      : invented > matched ? 'shaky' : 'ok';
+    return { scheme: scheme.length, marked: got.length, matched, invented, ratio, verdict };
   }
 
   /* The report matches a marking to a question loosely (OSCE.questionFor),
@@ -1568,7 +1741,7 @@ average mean nothing.
 
   return {
     allowed, buttonHtml, openDialog, buildPrompt, buildInstructions,
-    stationBlock, rulesBlock, jsonBlock, levelOf, setLevel, levelText, LOGOS, MODELS,
+    stationBlock, rulesBlock, jsonBlock, levelOf, setLevel, levelText, LOGOS, MODELS, fidelity,
     session, validate, toAttempt, importPanel, attemptsPanel, stripFence, SCHEMA,
     noteCircuit, pendingCircuit, clearCircuit, resumeStrip
   };

@@ -83,7 +83,10 @@ window.AUREUM_CONFIG = {
      suggested amounts, enforce) come from the developer's Rates & settings
      panel; these are only the fallbacks. */
   wallet: {
-    enforce: false,
+    /* ON unless the developer explicitly turns it off in Rates & settings.
+       A prepaid system that does not stop at zero is a price list, not a
+       prepaid system. */
+    enforce: true,
     usdRate: 340,                // LKR per USD
     packs: [300, 500, 1000, 2000],
     /* The account users pay into. A slip that names THIS account, an amount,
