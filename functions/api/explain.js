@@ -122,8 +122,11 @@ export async function onRequest(context) {
       const bal = await cachedBalance(user.id, env);
       /* A balance that cannot be READ must never block. The reading is
          our failure, not theirs, and a study session stopped by our own
-         outage is worse than a few rupees of credit given away. */
-      if (!bal.error && bal.balance <= 0) {
+         outage is worse than a few rupees of credit given away.
+
+         Nor does an account that never joined the prepaid system: it has
+         no balance to run down, and `paid` governs it as it always did. */
+      if (!bal.error && bal.onPrepaid && bal.balance <= 0) {
         return json({
           error: 'Your AUREUM balance has run out, so the AI features are paused. Top up in Profile → Billing '
             + '& balance and they come straight back.',
@@ -700,12 +703,28 @@ async function cachedBalance(id, env) {
 async function balanceOf(id, env, svc) {
   try {
     const [tRes, uRes] = await Promise.all([
-      sb(`/rest/v1/credit_topups?user_id=eq.${id}&status=eq.approved&select=amount_lkr`, env, { headers: svc }),
-      sb(`/rest/v1/ai_token_usage?user_id=eq.${id}&select=model,input_tokens,output_tokens`, env, { headers: svc })
+      sb(`/rest/v1/credit_topups?user_id=eq.${id}&status=eq.approved&select=amount_lkr,created_at`, env, { headers: svc }),
+      sb(`/rest/v1/ai_token_usage?user_id=eq.${id}&select=day,model,input_tokens,output_tokens`, env, { headers: svc })
     ]);
     if (!tRes.ok || !uRes.ok) return { error: 'Your balance could not be read just now.' };
-    const tops = await tRes.json(), usage = await uRes.json();
+    const tops = await tRes.json(), allUsage = await uRes.json();
     const credited = (tops || []).reduce((n, t) => n + (Number(t.amount_lkr) || 0), 0);
+
+    /* THE METER STARTS AT THE FIRST TOP-UP.
+
+       Charging a new top-up for AI used months before the prepaid system
+       existed — and already paid for another way — is how one account
+       ended up reading minus nine hundred rupees against a hundred-rupee
+       top-up. Only usage from the day they joined counts.
+
+       No top-up at all means they never joined: there is no prepaid
+       balance to have run out, and the caller must not treat them as
+       empty. `onPrepaid` says so explicitly rather than leaving it to be
+       inferred from a zero. */
+    const days = (tops || []).map(t => String(t.created_at || '').slice(0, 10)).filter(Boolean).sort();
+    const since = days[0] || null;
+    if (!since) return { onPrepaid: false, balance: 0, credited: 0, spentLkr: 0 };
+    const usage = (allUsage || []).filter(r => String(r.day || '') >= since);
 
     const rates = await pricingTable(env, svc);
     // longest-prefix match, exactly as the invoice engine does it
@@ -725,7 +744,7 @@ async function balanceOf(id, env, svc) {
     const w = await walletSettings(env);
     const rate = Number(w.usdRate) > 0 ? Number(w.usdRate) : 340;
     const balance = Math.round((credited - usd * rate) * 100) / 100;
-    return { balance, credited, spentLkr: usd * rate, rate };
+    return { onPrepaid: true, since, balance, credited, spentLkr: usd * rate, rate };
   } catch { return { error: 'Your balance could not be read just now.' }; }
 }
 

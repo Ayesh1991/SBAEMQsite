@@ -1472,15 +1472,25 @@ const DevConsole = (() => {
     try {
       await Wallet.loadRate();
       tops = (await ctx.Backend.listAllTopUps?.()) || [];
-      bal = Wallet.balances(tops, costs);
+      /* The RAW metered rows, not the per-user totals above. The totals
+         are all-time and include the shared platform pools; a balance
+         needs neither — it needs to know which rows fall after the
+         account joined the prepaid system, which a total cannot say. */
+      bal = Wallet.balances(tops, tokenRows);
     } catch { bal = {}; }
-    const balOf = u => bal[u.id] || bal[u.email] || { creditedLkr: 0, spentLkr: 0, balanceLkr: 0 };
+    const balOf = u => bal[u.id] || bal[u.email]
+      || { creditedLkr: 0, spentLkr: 0, balanceLkr: 0, onPrepaid: false, beforeLkr: 0, since: null };
 
     const devMail = (ctx.cfg.developer.email || '').toLowerCase();
     const totalAi = Object.values(usage).reduce((s, u) => s + (u.total || 0), 0);
     const monthTotal = Object.values(costs).reduce((s, c) => s + c.thisMonth, 0);
     const enforcing = Wallet.enforcing ? Wallet.enforcing() : true;
-    const emptyN = list.filter(u => (u.email || '').toLowerCase() !== devMail && balOf(u).balanceLkr <= 0).length;
+    /* Out of credit means: joined the prepaid system, and spent it. An
+       account that has never topped up has no prepaid balance to be out
+       of, and counting it here would report every legacy user as broke. */
+    const emptyN = list.filter(u => (u.email || '').toLowerCase() !== devMail
+      && balOf(u).onPrepaid && balOf(u).balanceLkr <= 0).length;
+    const notJoinedN = list.filter(u => (u.email || '').toLowerCase() !== devMail && !balOf(u).onPrepaid).length;
     let regOpen = true;
     try { regOpen = await ctx.Backend.getRegistrationOpen(); } catch { regOpen = true; }
     const pendingN = list.filter(u => u.status === 'pending').length;
@@ -1498,6 +1508,7 @@ const DevConsole = (() => {
         <div><strong>${Billing.usd(monthTotal)}</strong><span>AI cost this month</span></div>
         <div class="${emptyN ? 'is-empty' : ''}"><strong>${emptyN}</strong><span>Out of credit${
           enforcing ? '' : ' (not enforced)'}</span></div>
+        <div><strong>${notJoinedN}</strong><span>Never topped up</span></div>
       </div>
       <p class="tiny muted">Click a user to open their full control panel. <strong>Paid</strong> is the master key: an unpaid account has
         NO AI, no Simulator, no Flashcards, and a 30-question daily practice cap — one toggle activates everything they've been granted.</p>
@@ -1519,9 +1530,11 @@ const DevConsole = (() => {
               ${stChip}
               <span class="chip ${paid ? 'pr-st-approved' : 'pr-st-rejected'}">${paid ? '💳 Paid' : 'Unpaid'}</span>
               <span class="dev-cost">${Billing.usd(c.thisMonth)}<span class="muted tiny">/mo</span></span>
-              ${isDev ? '' : `<span class="dev-bal ${b0.balanceLkr <= 0 ? 'is-empty' : b0.balanceLkr < 200 ? 'is-low' : ''}"
-                title="Prepaid balance — topped up ${Wallet.lkr(b0.creditedLkr)}, used ${Wallet.lkr(b0.spentLkr)}">${
-                Wallet.lkr(b0.balanceLkr)}</span>`}
+              ${isDev ? '' : b0.onPrepaid
+                ? `<span class="dev-bal ${b0.balanceLkr <= 0 ? 'is-empty' : b0.balanceLkr < 200 ? 'is-low' : ''}"
+                    title="Prepaid balance — topped up ${Wallet.lkr(b0.creditedLkr)}, used ${Wallet.lkr(b0.spentLkr)} since ${ctx.esc(b0.since)}">${
+                    Wallet.lkr(b0.balanceLkr)}</span>`
+                : `<span class="dev-bal is-none" title="Has never topped up — the prepaid gate does not apply">no top-up</span>`}
               <span class="dc-caret">▸</span>
             </button>
             <div class="dev-user-panel" hidden>
@@ -1555,13 +1568,21 @@ const DevConsole = (() => {
                   <h4>Usage &amp; billing</h4>
                   <p class="tiny muted">XP ${u.xp || 0} · AI today ${ai.today} · AI total ${ai.total}<br>
                     Cost this month <strong class="dev-cost">${Billing.usd(c.thisMonth)}</strong> · all time ${Billing.usd(c.allTime)}</p>
-                  <p class="dev-bal-line ${b0.balanceLkr <= 0 ? 'is-empty' : ''}">
-                    Balance <strong>${Wallet.lkr(b0.balanceLkr)}</strong>
-                    <span class="tiny muted">topped up ${Wallet.lkr(b0.creditedLkr)} · used ${Wallet.lkr(b0.spentLkr)}
-                      at LKR ${Wallet.rate()}/USD</span>
-                    ${b0.balanceLkr <= 0 ? `<span class="tiny">${enforcing
-                      ? 'AI is paused for this account until they top up.'
-                      : 'Enforcement is OFF in Rates &amp; settings, so the AI still runs.'}</span>` : ''}</p>
+                  <p class="dev-bal-line ${b0.onPrepaid && b0.balanceLkr <= 0 ? 'is-empty' : ''}">
+                    ${b0.onPrepaid ? `Balance <strong>${Wallet.lkr(b0.balanceLkr)}</strong>
+                      <span class="tiny muted">topped up ${Wallet.lkr(b0.creditedLkr)} · used
+                        ${Wallet.lkr(b0.spentLkr)} since they joined on ${ctx.esc(b0.since)}
+                        at LKR ${Wallet.rate()}/USD</span>
+                      ${b0.beforeLkr > 0.005 ? `<span class="tiny muted">${Wallet.lkr(b0.beforeLkr)} was used
+                        BEFORE that and is not charged here — it was settled outside the wallet.</span>` : ''}
+                      ${b0.balanceLkr <= 0 ? `<span class="tiny">${enforcing
+                        ? 'AI is paused for this account until they top up.'
+                        : 'Enforcement is OFF in Rates &amp; settings, so the AI still runs.'}</span>` : ''}`
+                    : `<strong>Not on the prepaid system</strong>
+                      <span class="tiny muted">No approved top-up, so there is no balance to run down and the
+                        wallet does not gate them — Paid does, as it always did.${b0.beforeLkr > 0.005
+                        ? ` They have used ${Wallet.lkr(b0.beforeLkr)} of AI, settled outside the wallet.` : ''}
+                        Their meter starts on the day of their first top-up.</span>`}</p>
                   <button class="btn btn-ghost btn-sm" data-bill="${ctx.esc(u.id)}">🧾 Generate bill</button>
                 </div>
               </div>`}

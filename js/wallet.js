@@ -98,7 +98,47 @@ const Wallet = (() => {
   }
   const slipComplete = c => Object.values(c).every(x => x.ok);
 
-  /* ---------------- the balance ---------------- */
+  /* ================= the balance =================
+
+     THE METER STARTS WHEN YOU JOIN, NOT WHEN YOU SIGNED UP.
+
+     This got somebody's balance badly wrong, and the arithmetic was
+     never the problem — the START DATE was. A user had been using
+     AUREUM for months and paying for it directly, outside the app.
+     Then the prepaid system arrived, they topped up LKR 100, and the
+     balance read MINUS 898: every rupee of AI they had ever used, from
+     long before there was a wallet to charge it to, deducted from a
+     top-up that was never meant to cover it. They had already paid for
+     that usage once.
+
+     So spend is counted from the day of the FIRST APPROVED TOP-UP.
+     Everything before that was settled some other way and is none of
+     this ledger's business. It is still shown — under its own heading,
+     so the numbers reconcile and nobody thinks usage went missing — but
+     it is not deducted.
+
+     A user with NO top-up has not joined the prepaid system at all.
+     They have no prepaid balance to run down, so the wallet does not
+     gate them; the `paid` flag governs them exactly as it did before
+     any of this existed. The meter starts the moment they top up. */
+
+  /** The day the account joined the prepaid system, as YYYY-MM-DD. */
+  const joinedOn = tops => {
+    const days = (tops || [])
+      .filter(t => t.status === 'approved')
+      .map(t => String(t.created_at || t.createdAt || '').slice(0, 10))
+      .filter(Boolean)
+      .sort();
+    return days[0] || null;
+  };
+  /* Usage rows carry a DAY, not an instant, so the comparison is by day
+     and a top-up made at three in the afternoon forgives that morning.
+     Erring towards the user is the right direction for a rounding rule
+     nobody can see. */
+  const chargeable = (rows, since) => (since ? (rows || []).filter(r => String(r.day || '') >= since) : []);
+  const earlier = (rows, since) => (since ? (rows || []).filter(r => String(r.day || '') < since) : (rows || []));
+  const usd = rows => (typeof Billing !== 'undefined')
+    ? (rows || []).reduce((n, r) => n + Billing.lineCost(r), 0) : 0;
 
   let _cached = null, _at = 0;
   async function summary(force) {
@@ -111,12 +151,15 @@ const Wallet = (() => {
     ]);
     const creditedLkr = tops.filter(t => t.status === 'approved')
       .reduce((n, t) => n + (Number(t.amount_lkr) || 0), 0);
-    const spentUsd = (typeof Billing !== 'undefined')
-      ? rows.reduce((n, r) => n + Billing.lineCost(r), 0) : 0;
+    const since = joinedOn(tops);
+    const spentUsd = usd(chargeable(rows, since));
+    const beforeUsd = usd(earlier(rows, since));
     const spentLkr = spentUsd * rate();
-    const byFeature = (typeof Billing !== 'undefined') ? Billing.personalByFeature(rows) : [];
+    const byFeature = (typeof Billing !== 'undefined') ? Billing.personalByFeature(chargeable(rows, since)) : [];
     _cached = {
       creditedLkr, spentUsd, spentLkr, balanceLkr: creditedLkr - spentLkr,
+      /* what was used before the wallet existed — shown, never charged */
+      since, onPrepaid: !!since, beforeUsd, beforeLkr: beforeUsd * rate(),
       rate: rate(), topUps: tops, byFeature,
       usage: rows,                 // the metered rows themselves, for the statement
       pending: tops.filter(t => t.status === 'pending').length
@@ -155,6 +198,10 @@ const Wallet = (() => {
       await loadRate();                                    // brings the saved wallet settings with it
       if (!enforcing()) return true;                       // prepaid off = nothing changes
       const s = await summary();
+      /* Never topped up = never joined. There is no prepaid balance to
+         have run out, so this is not the gate that applies to them —
+         the `paid` flag is, as it was before the wallet existed. */
+      if (!s.onPrepaid) return true;
       return s.balanceLkr > 0;
     } catch { return true; }                               // never block on a read failure
   }
@@ -245,6 +292,7 @@ const Wallet = (() => {
       const u = await Backend.currentUser();
       if (!u || u.isDeveloper) return;
       const s = await summary();
+      if (!s.onPrepaid) return;                 // never joined; nothing has run out
       if (s.balanceLkr > 0) return;
       toldThisSession = true;
       emptyPopup(s.balanceLkr, s.creditedLkr);
@@ -260,19 +308,46 @@ const Wallet = (() => {
      own page says it is not. Credited minus spent, converted at the one
      rate, once. */
   const balanceFrom = (creditedLkr, spentUsd) => creditedLkr - spentUsd * rate();
-  function balances(topUps, costsUsd) {
-    const credited = {};
+
+  /**
+   * Everybody's balance, for the developer's Users & access panel.
+   *
+   * Takes the RAW metered rows rather than a per-user total, because the
+   * total cannot answer the only question that matters here: was this
+   * spent before or after they joined? A pre-computed all-time figure is
+   * exactly what produced a balance of minus nine hundred rupees for an
+   * account that had topped up a hundred and spent a fraction of it.
+   *
+   * Personal rows only. The shared platform pools the panel adds to its
+   * COST column are the developer's own outgoings, attributed for
+   * invoicing; they were never charged to anybody's wallet, and adding
+   * them here would make this disagree with the user's own page.
+   */
+  function balances(topUps, usageRows) {
+    const mine = {}, tops = {};
     (topUps || []).forEach(t => {
-      if (t.status !== 'approved') return;
       const id = t.user_id || t.user_email;
       if (!id) return;
-      credited[id] = (credited[id] || 0) + (Number(t.amount_lkr) || 0);
+      (tops[id] || (tops[id] = [])).push(t);
+    });
+    (usageRows || []).forEach(r => {
+      const id = r.userId || r.user_id;
+      if (!id) return;
+      (mine[id] || (mine[id] = [])).push(r);
     });
     const out = {};
-    for (const id of new Set([...Object.keys(credited), ...Object.keys(costsUsd || {})])) {
-      const c = credited[id] || 0;
-      const usd = costsUsd?.[id]?.allTime || 0;
-      out[id] = { creditedLkr: c, spentUsd: usd, spentLkr: usd * rate(), balanceLkr: balanceFrom(c, usd) };
+    for (const id of new Set([...Object.keys(tops), ...Object.keys(mine)])) {
+      const ts = tops[id] || [], rows = mine[id] || [];
+      const creditedLkr = ts.filter(t => t.status === 'approved')
+        .reduce((n, t) => n + (Number(t.amount_lkr) || 0), 0);
+      const since = joinedOn(ts);
+      const spentUsd = usd(chargeable(rows, since));
+      const beforeUsd = usd(earlier(rows, since));
+      out[id] = {
+        creditedLkr, spentUsd, spentLkr: spentUsd * rate(),
+        balanceLkr: balanceFrom(creditedLkr, spentUsd),
+        since, onPrepaid: !!since, beforeUsd, beforeLkr: beforeUsd * rate()
+      };
     }
     return out;
   }
@@ -345,7 +420,9 @@ const Wallet = (() => {
   async function renderBilling(view, user) {
     view.innerHTML = `<section class="page narrow"><p class="muted">Loading your balance…</p></section>`;
     const s = await summary(true);
-    const low = s.balanceLkr <= 0 ? 'is-empty' : s.balanceLkr < 100 ? 'is-low' : '';
+    /* Not on the prepaid system is not the same as empty: nothing has run
+       out for somebody who has not started. */
+    const low = !s.onPrepaid ? '' : s.balanceLkr <= 0 ? 'is-empty' : s.balanceLkr < 100 ? 'is-low' : '';
     const packs = settings().packs || [300, 500, 1000, 2000];
     const ben = beneficiary();
 
@@ -362,10 +439,24 @@ const Wallet = (() => {
             <span class="wl-bal-label">Your balance</span>
             <strong class="wl-bal-n">${lkr(s.balanceLkr)}</strong>
             <span class="muted tiny">Topped up ${lkr(s.creditedLkr)} · used ${lkr(s.spentLkr)}
-              ($${s.spentUsd.toFixed(4)} at LKR ${s.rate}/USD)</span>
+              ($${s.spentUsd.toFixed(4)} at LKR ${s.rate}/USD)${
+              s.since ? ` since ${esc(s.since)}` : ''}</span>
+            ${/* WHERE THE OLD USAGE WENT.
+
+                  Somebody who used AUREUM before the wallet existed, and
+                  paid for it another way, must not see that usage
+                  deducted from the first top-up they make. It is not
+                  hidden either — a figure that quietly vanishes is a
+                  figure somebody spends an evening looking for. It is
+                  named, and shown not to count. */
+              s.beforeLkr > 0.005 ? `<span class="muted tiny wl-bal-before">
+              ${lkr(s.beforeLkr)} of AI was used before you topped up${s.since ? ' on ' + esc(s.since) : ''}.
+              That was settled outside this balance and is <strong>not</strong> charged here.</span>` : ''}
           </div>
           <div class="wl-bal-side">
-            ${s.balanceLkr <= 0
+            ${!s.onPrepaid
+              ? `<span class="wl-chip">Top up to start your balance</span>`
+              : s.balanceLkr <= 0
               ? `<span class="wl-chip bad">AI paused — top up to resume</span>`
               : `<span class="wl-chip good">AI active</span>`}
             ${s.pending ? `<span class="wl-chip">${s.pending} top-up awaiting approval</span>` : ''}
