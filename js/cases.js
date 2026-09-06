@@ -904,7 +904,7 @@ const Cases = (() => {
         const missing = missingIn(p, said);
         if (!missing.length) return generic;
         try {
-          if (typeof Wallet !== 'undefined' && !(await Wallet.canSpend())) return generic;
+          if (typeof Wallet !== 'undefined' && !(await Wallet.guard())) return generic;
           const token = await Backend.getAccessToken();
           if (!token) return generic;
           const res = await fetch(cfg().ai.apiBase, {
@@ -1159,7 +1159,7 @@ const Cases = (() => {
 
     /* 3. Mark. */
     try {
-      if (typeof Wallet !== 'undefined' && !(await Wallet.canSpend())) {
+      if (typeof Wallet !== 'undefined' && !(await Wallet.guard())) {
         throw new Error(Wallet.blockedMessage ? Wallet.blockedMessage() : 'There is no credit left on this account.');
       }
       say('Sending the recording to be marked. A half-hour case takes a minute or two…');

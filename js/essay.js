@@ -759,6 +759,7 @@ const Essay = (() => {
         (cal ? `The scheme's own calibration notes for this question:\n${cal}\n\n` : '') +
         `In under 220 words with **bold** headers: (1) the single recurring WEAKNESS pattern behind these losses; (2) the 3 highest-yield facts/figures to memorise to fix it; (3) one concrete drill for their next attempt. Be specific and practical.`;
       const messages = [{ role: 'user', content: q }];
+      if (typeof Wallet !== 'undefined' && !(await Wallet.guard())) throw new Error(Wallet.blockedMessage());
       const res = await fetch(cfg().ai.apiBase, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
         body: JSON.stringify({ action: 'chat', provider: prov, model: modelFor(prov), dailyLimit: cfg().ai.dailyLimit,
@@ -1105,6 +1106,7 @@ const Essay = (() => {
         `**Structure & concision** — 1 drill on planning/structuring an answer in 2 minutes for their weakest area.\n` +
         `**Exam technique** — 2 concrete habits to drill before their next mock.\n` +
         `Keep it under 260 words, practical and specific to O&G essays.`;
+      if (typeof Wallet !== 'undefined' && !(await Wallet.guard())) throw new Error(Wallet.blockedMessage());
       const res = await fetch(cfg().ai.apiBase, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
         body: JSON.stringify({ action: 'chat', provider: prov, model: modelFor(prov), dailyLimit: cfg().ai.dailyLimit,

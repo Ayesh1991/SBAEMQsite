@@ -1323,6 +1323,7 @@ const OSCE = (() => {
           ${st.edited_by ? `<span class="muted tiny">Last edited by ${esc(st.edited_by)}${
             st.edited_at ? ' on ' + esc(new Date(st.edited_at).toLocaleDateString('en-GB', { dateStyle: 'medium' })) : ''}</span>` : ''}
           <a class="btn btn-gold btn-sm" href="#/osce/mark/${encodeURIComponent(st.id)}">✍️ Mark somebody with it</a>
+          <button class="btn btn-ghost btn-sm" id="os-sch-print">🖨 Print / Save as PDF</button>
           <a class="btn btn-ghost btn-sm" href="#/osce/edit/${encodeURIComponent(st.id)}">✎ Edit this scheme</a>
           <button class="btn btn-ghost btn-sm" data-close>Close</button>
         </div>
@@ -1330,6 +1331,7 @@ const OSCE = (() => {
     document.body.appendChild(wrap);
     wireLightbox(wrap);
     wireSchemeEdit(wrap, st.id);
+    wrap.querySelector('#os-sch-print')?.addEventListener('click', () => printScheme(st));
     const shut = () => {
       wrap.remove();
       document.removeEventListener('keydown', onKey);
@@ -2467,7 +2469,7 @@ const OSCE = (() => {
       /** One short push about a specific missing point. */
       async function pointedLine(question, missing, said) {
         try {
-          if (typeof Wallet !== 'undefined' && !(await Wallet.canSpend())) return null;
+          if (typeof Wallet !== 'undefined' && !(await Wallet.guard())) return null;
           const token = await Backend.getAccessToken();
           if (!token) return null;
           const choice = chosenModel();
@@ -3461,7 +3463,7 @@ const OSCE = (() => {
    * the storage path back from.
    */
   async function markCore({ st, ans, rec, session, choice, say = () => {}, kept = null, attemptId = null, meta = {}, stamp = null }) {
-    if (typeof Wallet !== 'undefined' && !(await Wallet.canSpend())) throw new Error(Wallet.blockedMessage());
+    if (typeof Wallet !== 'undefined' && !(await Wallet.guard())) throw new Error(Wallet.blockedMessage());
     const token = await Backend.getAccessToken();
     if (!token) throw new Error('Sign in to have a station marked.');
     const id = attemptId || ('oa-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5));
@@ -4350,7 +4352,7 @@ const OSCE = (() => {
       msgs.appendChild(holder);
       msgs.scrollTop = msgs.scrollHeight;
       try {
-        if (typeof Wallet !== 'undefined' && !(await Wallet.canSpend())) throw new Error(Wallet.blockedMessage());
+        if (typeof Wallet !== 'undefined' && !(await Wallet.guard())) throw new Error(Wallet.blockedMessage());
         const token = await Backend.getAccessToken();
         if (!token) throw new Error('Sign in to ask about this station.');
         const res = await fetch(cfg().ai.apiBase, {
@@ -4714,6 +4716,90 @@ ${has('teach') && (r.reading || []).length ? `<section class="blk"><h2>Where to 
   a[href]::after { content:"" !important; }
 }`;
 
+  /* ================= the scheme, on paper =================
+
+     WHY A SCHEME NEEDS ITS OWN PRINT.
+
+     Everything printable in AUREUM until now was an ATTEMPT — the report
+     after you sat something. But most revision is done before that: two
+     people at a table with a station between them, one asking and one
+     answering, neither of whom wants to hold a phone. And a station that
+     exists only on a screen cannot be taken into a study group, marked up
+     with a pen, or read on a ward round.
+
+     So this prints the station as an examiner's paper: the scenario, the
+     reveals, every question with its marks, every marking point with a
+     box to tick, and the role-player brief on a page of its own at the
+     back — because that page must not be face-up while somebody is being
+     examined from the front one.
+
+     No score, no verdict, no candidate. It is a blank instrument. */
+  function printScheme(st) {
+    const qs = qsOf(st);
+    const P = '#os-printdoc';
+    const styles = `
+@page { size: A4 portrait; margin: 15mm 14mm 13mm; }
+${P}, ${P} *{box-sizing:border-box}
+${P}{position:fixed;inset:0;z-index:9000;overflow:auto;background:#f1f2f6;color:#111;
+  font-family:"Helvetica Neue",Arial,sans-serif;font-size:10pt;line-height:1.5;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact}
+${P} .sheet{background:#fff;width:210mm;min-height:297mm;margin:0 auto 28px;padding:15mm 14mm;box-shadow:0 2px 18px rgba(0,0,0,.16)}
+${P} .brand{font-size:7.5pt;letter-spacing:.22em;text-transform:uppercase;color:#7a5a10;margin:0 0 2px}
+${P} h1{font-family:Georgia,serif;font-size:20pt;margin:0 0 6px;color:#111}
+${P} .facts{font-size:8.5pt;color:#555;margin:0 0 14px;padding-bottom:12px;border-bottom:3px solid #0d8f7d}
+${P} .scen{background:#f6f7f9;border-left:4px solid #0d8f7d;padding:10px 12px;margin:0 0 16px}
+${P} .scen b{display:block;font-size:7.5pt;letter-spacing:.14em;text-transform:uppercase;color:#666;margin-bottom:4px}
+${P} .q{margin:0 0 14px;page-break-inside:avoid;break-inside:avoid}
+${P} .qh{display:flex;gap:9px;align-items:baseline;border-bottom:1px solid #ddd;padding-bottom:5px;margin-bottom:7px}
+${P} .qn{flex:0 0 auto;font-weight:700;color:#0d8f7d;font-size:9pt}
+${P} .qt{flex:1 1 auto;font-weight:600;font-size:10.5pt}
+${P} .qm{flex:0 0 auto;font-size:8.5pt;color:#555;white-space:nowrap}
+${P} .rev{font-size:9pt;background:#fff8e6;border:1px solid #e8d9a8;padding:6px 9px;margin:0 0 7px}
+${P} .rev b{color:#7a5a10}
+${P} ul{list-style:none;margin:0;padding:0}
+${P} li{position:relative;padding:2px 0 2px 22px;font-size:9.5pt;page-break-inside:avoid}
+${P} li::before{content:'';position:absolute;left:2px;top:4px;width:11px;height:11px;border:1.2px solid #999;border-radius:2px}
+${P} li.head{padding-left:0;margin:9px 0 3px;font-size:8pt;letter-spacing:.1em;text-transform:uppercase;color:#0d8f7d;font-weight:700}
+${P} li.head::before{display:none}
+${P} .role{page-break-before:always;break-before:page}
+${P} .role h2{font-size:13pt;margin:0 0 4px;border-left:4px solid #c96442;padding-left:9px}
+${P} .role .warn{font-size:8.5pt;color:#a33;border:1px dashed #d9a9a9;padding:7px 9px;margin:0 0 12px}
+${P} .role h3{font-size:9.5pt;margin:11px 0 3px}
+${P} .foot{margin-top:16px;padding-top:8px;border-top:1px solid #ddd;font-size:7.5pt;color:#777;display:flex;justify-content:space-between}
+@media print { ${P} .sheet{box-shadow:none;margin:0;width:auto;min-height:0;padding:0} }`;
+
+    const pts = q => (q.marking_points || []).map(p => isHeading(p)
+      ? `<li class="head">${esc(headText(p) || 'Section')}</li>`
+      : `<li>${esc(p)}</li>`).join('');
+
+    const role = hasRole(st) ? `
+      <section class="role">
+        <h2>Role player — ${esc(roleLabel(st))}</h2>
+        <p class="warn">Keep this page turned over while the station is being sat. It carries what the character
+          is holding back, and a candidate who sees it has been given the station.</p>
+        ${roleHtml(st, 'brief')}
+      </section>` : '';
+
+    const body = `<div class="sheet">
+      <p class="brand">AUREUM · Pathway to MD</p>
+      <h1>${esc(st.topic || st.id)}</h1>
+      <p class="facts">${minsOf(st)} minutes · ${qs.length} question${qs.length === 1 ? '' : 's'} ·
+        ${marksOf(st)} marks · ${ptCount(st)} marking points · ${passOf(st)} to pass (${st.pass_mark_percent || 70}%)${
+        st.created_by_name ? ' · written by ' + esc(st.created_by_name) : ''}</p>
+      ${st.scenario ? `<div class="scen"><b>The scenario — read this to the candidate</b>${esc(st.scenario)}</div>` : ''}
+      ${qs.map((q, i) => `
+        <div class="q">
+          <div class="qh"><span class="qn">Q${i + 1}</span><span class="qt">${esc(q.prompt || '')}</span>
+            <span class="qm">${q.marks} marks</span></div>
+          ${q.reveal_before ? `<p class="rev"><b>Reveal first:</b> ${esc(q.reveal_before)}</p>` : ''}
+          <ul>${pts(q)}</ul>
+        </div>`).join('')}
+      <div class="foot"><span>${esc(st.topic || st.id)}</span><span>Marking scheme · not a completed marking</span></div>
+      ${role}
+    </div>`;
+    openPrintSheet(styles, body);
+  }
+
   function openPrintSheet(styles, bodyHtml) {
     releaseScroll();                     // never stack two locks
     document.getElementById('os-printdoc')?.remove();
@@ -5047,7 +5133,7 @@ ${has('teach') && (r.reading || []).length ? `<section class="blk"><h2>Where to 
   async function makeDoc(a, onStep = () => {}) {
     const qs = allPoints(a);
     if (!qs.length) throw new Error('This attempt has no marked scheme, so there is nothing to build from.');
-    if (typeof Wallet !== 'undefined' && !(await Wallet.canSpend())) throw new Error(Wallet.blockedMessage());
+    if (typeof Wallet !== 'undefined' && !(await Wallet.guard())) throw new Error(Wallet.blockedMessage());
     const token = await Backend.getAccessToken();
     if (!token) throw new Error('Sign in to make a study document.');
     const choice = chosenModel();
@@ -6017,7 +6103,7 @@ ${P} .os-pd-close{background:transparent;color:#fff;border:1px solid rgba(255,25
     makeDoc, docAsText, allPoints, coachFor, coachWanted, COACH,
     // exposed for tests and for the circuit page's live redraw
     markState, onMarkChange, retryMark, shell, circuitNext,
-    printResult, __printPresets: PRINT_PRESETS,
+    printResult, printScheme, __printPresets: PRINT_PRESETS,
     /* Lent to OSCE in AI so a tape recorded there is marked by exactly the
        same path as one recorded here — the same model picker, the same
        cost estimate, the same upload, the same pending queue. A second

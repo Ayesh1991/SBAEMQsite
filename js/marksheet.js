@@ -145,6 +145,20 @@ const Marksheet = (() => {
             <span class="ms-kicker">MARKING IN PERSON</span>
             <span class="ms-topic">${esc(st.topic || stationId)}</span>
           </div>
+          ${/* THE CLOCK LIVES IN THE BAR, AND THE BAR IS PINNED.
+
+                An examiner marking a fifty-point scheme is scrolling
+                almost continuously, and a clock anywhere else in the
+                page is a clock they cannot see while doing the one
+                thing they are here to do. There is no elegant way to
+                keep track of fifteen minutes by scrolling up to check.
+
+                One clock, not two: when a live station is running it is
+                the SAME instant both screens count from, so the bar
+                simply reads that row instead of its own timer, and the
+                candidate's screen can never disagree with the
+                examiner's. */''}
+          <div class="ms-clock" id="ms-clock" hidden></div>
           <div class="ms-score" id="ms-score"></div>
           <div class="ms-bar-acts">
             <button class="btn btn-ghost btn-sm" id="ms-collapse">⇕ Collapse all</button>
@@ -359,6 +373,80 @@ const Marksheet = (() => {
 
     paintQs();
     wireLive(view, st, qs, user);
+    wireClock(view, st, sheet);
+  }
+
+  /* ================= the clock in the pinned bar =================
+
+     Countdown, because what an examiner needs is how long is LEFT, and
+     because the station is over when it reaches zero whatever anybody
+     thinks. It stops there rather than running into negative numbers: a
+     station that has overrun is a station that has ended.
+
+     Where the time comes from, in order:
+       • a running live station — both screens count from the one instant
+       • the examiner's own start, kept in the sheet so a reload, a
+         locked phone or a stray Back does not lose the round
+
+     It is deliberately not pausable. A real station has no pause, and a
+     clock that can be stopped is a clock that gets stopped by accident
+     and noticed four minutes later. Reset is there for the misclick, and
+     asks twice. */
+  function wireClock(view, st, sheet) {
+    const host = view.querySelector('#ms-clock');
+    if (!host) return;
+    const total = Math.max(1, OSCE.minsOf(st)) * 60;
+    const mmss = s => `${String(Math.floor(Math.max(0, s) / 60)).padStart(2, '0')}:${String(Math.floor(Math.max(0, s) % 60)).padStart(2, '0')}`;
+
+    const liveSecs = () => {
+      const row = liveRow[st.id]?.();
+      if (!row || row.state?.status !== RealStation?.S?.RUNNING) return null;
+      return RealStation.secondsLeft(row.state);
+    };
+    const ownSecs = () => sheet.clockFrom ? Math.max(0, total - Math.round((Date.now() - sheet.clockFrom) / 1000)) : null;
+
+    let asked = false, timer = null;
+    const paint = () => {
+      const fromLive = liveSecs();
+      const left = fromLive == null ? ownSecs() : fromLive;
+      host.hidden = false;
+      if (left == null) {
+        host.className = 'ms-clock';
+        host.innerHTML = `<b>${mmss(total)}</b><button type="button" class="ms-clock-b" id="ms-clock-go">▶ Start</button>`;
+        host.querySelector('#ms-clock-go').addEventListener('click', () => {
+          sheet.clockFrom = Date.now(); save(sheet); asked = false; paint();
+        });
+        return;
+      }
+      const out = left <= 0;
+      host.className = 'ms-clock is-going' + (out ? ' is-out' : left <= 60 ? ' is-low' : '');
+      host.innerHTML = `<b>${out ? '00:00' : mmss(left)}</b>${
+        out ? '<em>time</em>' : ''}${
+        fromLive == null ? `<button type="button" class="ms-clock-b" id="ms-clock-x"
+          title="Reset the clock">${asked ? 'Sure?' : '↺'}</button>` : '<em>live</em>'}`;
+      host.querySelector('#ms-clock-x')?.addEventListener('click', () => {
+        if (!asked) { asked = true; paint(); setTimeout(() => { if (asked) { asked = false; paint(); } }, 4000); return; }
+        asked = false; sheet.clockFrom = 0; save(sheet); paint();
+      });
+    };
+
+    paint();
+    clearInterval(timer);
+    timer = setInterval(() => {
+      if (!document.body.contains(host)) { clearInterval(timer); return; }
+      /* Only the digits change on a tick — rebuilding the node every
+         second would take the focus off whatever the examiner is typing
+         in and lose a half-written note. */
+      const fromLive = liveSecs();
+      const left = fromLive == null ? ownSecs() : fromLive;
+      if (left == null) return;
+      const b = host.querySelector('b');
+      const was = host.className;
+      const out = left <= 0;
+      const now = 'ms-clock is-going' + (out ? ' is-out' : left <= 60 ? ' is-low' : '');
+      if (b) b.textContent = out ? '00:00' : mmss(left);
+      if (was !== now) paint();
+    }, 1000);
   }
 
   /* ================= the live half =================
@@ -387,6 +475,20 @@ const Marksheet = (() => {
       const s = row?.state || null;
       const status = s?.status || '';
       const running = status === RealStation.S.RUNNING;
+      /* ENDING THE STATION USED TO END THE CONNECTION.
+
+         "End the station" finished the row and then dropped it, which
+         closed the only channel to the candidate's screen — so the sheet
+         and the result had to be sent while the clock was still running,
+         which is precisely when a candidate must not be reading them.
+         The two requirements were in direct conflict and the marking won.
+
+         Now the station ends and the line stays open. The clock stops,
+         the candidate's screen unseals, and the examiner can send the
+         sheet and the result into a station that is over. Close is a
+         separate, deliberate act. */
+      const done = status === RealStation.S.FINISHED;
+      const openLine = running || done;
 
       host.innerHTML = `
         <div class="ms-live ${status ? 'is-' + status : ''}">
@@ -404,23 +506,27 @@ const Marksheet = (() => {
                 <b>${esc(s.candidateName || 'The candidate')}</b>
                 <i>${status === RealStation.S.INVITED ? 'invited — waiting for them to accept'
                   : status === RealStation.S.ACCEPTED ? '✓ invitation granted'
-                  : running ? 'sitting the station' : esc(status)}</i>
+                  : running ? 'sitting the station'
+                  : done ? 'station ended — the line is still open for the debrief' : esc(status)}</i>
               </span>
               ${running ? `<span class="ms-live-clock" id="ms-live-clock">${RealStation.clock(RealStation.secondsLeft(s))}</span>` : ''}
               <span class="ms-live-acts">
                 ${status === RealStation.S.ACCEPTED ? `<button class="btn btn-gold btn-sm" id="ms-live-start">▶ Start — 15 minutes on both screens</button>` : ''}
-                ${running ? `<button class="btn btn-ghost btn-sm" id="ms-live-stop">■ End the station</button>` : ''}
-                <button class="btn btn-ghost btn-sm" id="ms-live-drop">Cancel</button>
+                ${running ? `<button class="btn btn-gold btn-sm" id="ms-live-stop">■ End the station</button>` : ''}
+                <button class="btn btn-ghost btn-sm" id="ms-live-drop">${done ? 'Close' : 'Cancel'}</button>
               </span>
             </div>
             ${status === RealStation.S.INVITED ? `<p class="muted tiny">They see a card saying
               <strong>OSCE by ${esc(s.examinerName || '')}</strong> under OSCE → Real station.</p>` : ''}
             ${running ? `<p class="muted tiny">Use <strong>➤ Send</strong> beside the scenario, a question, a reveal or
-              a picture to put it on their screen. The marking points are never sent.</p>
-              <div class="ms-live-after">
+              a picture to put it on their screen. The marking points are never sent.</p>` : ''}
+            ${done ? `<p class="muted tiny">The clock has stopped and their screen has opened. Send the sheet and
+              the marks now — then <strong>Close</strong> when you are both finished.</p>` : ''}
+            ${openLine ? `<div class="ms-live-after">
                 <button class="btn btn-ghost btn-sm" id="ms-live-sheet">📋 Send them the marked sheet</button>
                 <span class="muted tiny">For the debrief — every point with what it earned, read-only on their side.
-                  Send it when the questions are done.</span>
+                  Send it whenever you are ready: it stays <strong>sealed on their screen until you end the
+                  station</strong>, so it cannot be read while you are still asking.</span>
               </div>` : ''}`}
         </div>`;
 
@@ -432,8 +538,10 @@ const Marksheet = (() => {
       });
       host.querySelector('#ms-live-stop')?.addEventListener('click', async e => {
         e.currentTarget.disabled = true;
-        try { row = await RealStation.finish(row); } catch {}
-        stop(); setLive(st.id, ''); row = null; paint();
+        /* The row is KEPT. Finishing stops the clock and unseals their
+           screen; it does not hang up. */
+        try { row = await RealStation.finish(row); } catch (err) { warn(err); }
+        paint();
       });
       host.querySelector('#ms-live-sheet')?.addEventListener('click', async e => {
         const b = e.currentTarget, was = b.textContent;
@@ -513,7 +621,14 @@ const Marksheet = (() => {
       if (!row) return;
       off = RealStation.follow(row.id, r => {
         row = r;
-        if (!RealStation.live(r.state?.status)) { stop(); setLive(st.id, ''); row = null; }
+        /* FINISHED is not the end of the session, only of the clock. The
+           debrief — the sheet, then the marks — is sent afterwards, so
+           the row is kept and the watch stays up. Anything else (the
+           candidate left, the row was cancelled) really is over. */
+        const st2 = r.state?.status;
+        if (!RealStation.live(st2) && st2 !== RealStation.S.FINISHED) {
+          stop(); setLive(st.id, ''); row = null;
+        }
         paint();
       });
     }
@@ -555,7 +670,18 @@ const Marksheet = (() => {
       if (!id) { paint(); return; }
       try {
         const r = await Backend.getLiveStation(id);
-        if (r && RealStation.live(r.state?.status)) { row = r; listen(); }
+        /* A station that ENDED is still resumable for a few hours: the
+           sheet and the marks are sent after the clock stops, and an
+           examiner who reloaded — or came back to the sheet from the
+           finish modal — must still find the line open. Older than that
+           and it is history, not a session. */
+        const stamp = (() => {
+          const v = r?.updated_at;
+          const n = typeof v === 'number' ? v : Date.parse(v || 0);
+          return Number.isFinite(n) ? n : 0;
+        })();
+        const debriefing = r?.state?.status === RealStation.S.FINISHED && Date.now() - stamp < 3 * 3600e3;
+        if (r && (RealStation.live(r.state?.status) || debriefing)) { row = r; listen(); }
         else setLive(st.id, '');
       } catch { setLive(st.id, ''); }
       paint();

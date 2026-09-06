@@ -126,18 +126,156 @@ const Wallet = (() => {
   }
   function bust() { _cached = null; _at = 0; }
 
+  /* IS THE PREPAID SYSTEM BEING ENFORCED?
+
+     The developer's own setting wins, and it is only OFF when somebody
+     deliberately turned it off. The old test read the STATIC config file
+     and ignored the saved one entirely, so the toggle in Rates &
+     settings changed the server's behaviour and not the browser's — and
+     the two then disagreed about whether a user could spend. One
+     question, one answer, live setting first. */
+  function enforcing() {
+    /* There is no till in local mode. Top-ups, the metered rows and the
+       rate card all live in the cloud backend; a browser-only deployment
+       has no way to have been paid and no way to have spent, so every
+       account there reads as a balance of exactly zero. Enforcing that
+       would tell a brand-new local user their credit had run out before
+       they had done anything at all. */
+    if (typeof Backend !== 'undefined' && Backend.mode !== 'cloud') return false;
+    const saved = settings();
+    if (saved && saved.enforce != null) return saved.enforce !== false;
+    return (cfg().wallet?.enforce) !== false;
+  }
+
   /** Every AI surface asks this before spending. */
   async function canSpend() {
     try {
       const u = await Backend.currentUser();
       if (u && u.isDeveloper) return true;                 // the owner is never gated
-      if (!cfg().wallet?.enforce) return true;             // prepaid off = nothing changes
+      await loadRate();                                    // brings the saved wallet settings with it
+      if (!enforcing()) return true;                       // prepaid off = nothing changes
       const s = await summary();
       return s.balanceLkr > 0;
     } catch { return true; }                               // never block on a read failure
   }
   const blockedMessage = () =>
     'Your AUREUM balance has run out, so the AI features are paused. Top up in Profile → Billing & balance and they come straight back.';
+
+  /* ================= the empty wallet =================
+
+     THE FAILURE HAS TO SAY WHY, AND IT HAS TO SAY IT WHERE IT HAPPENED.
+
+     An AI feature that simply stops working reads as a broken app. The
+     three things somebody needs at that moment are: what happened (the
+     balance is gone), what it cost them (nothing — the request was never
+     sent), and what to do about it (top up, one tap away). A red line in
+     a corner of a panel is none of those, so this is a dialog: it stops
+     the page, says the number, and offers the button.
+
+     Once per session, not once per attempt. Being told six times that
+     your balance is empty is being shouted at. */
+  let toldThisSession = false;
+  /**
+   * @param bal      the balance, or null when it could not be read
+   * @param credited what has ever been paid in — a nought balance that was
+   *                 never topped up is a NEW account, not an exhausted one,
+   *                 and telling somebody their credit "has run out" on the
+   *                 day they joined is both wrong and rude.
+   */
+  function emptyPopup(bal, credited) {
+    if (document.querySelector('.wl-empty')) return;
+    const fresh = !credited;
+    const el = document.createElement('div');
+    el.className = 'os-modal wl-empty';
+    const n = bal == null ? null : lkr(bal);
+    el.innerHTML = `
+      <div class="os-modal-back" data-close></div>
+      <div class="os-modal-box" role="dialog" aria-modal="true" aria-label="Balance empty">
+        <div class="os-modal-head">
+          <div><p class="kicker">BALANCE</p><h3>${fresh ? 'The AI features need a balance' : 'The AI features are paused'}</h3></div>
+          <button class="os-modal-x" data-close aria-label="Close">✕</button>
+        </div>
+        <div class="os-modal-body">
+          <p class="wl-empty-n">${n ? esc(n) : (fresh ? 'Nothing topped up yet' : 'Your balance has run out')}</p>
+          <p>${fresh
+            ? 'AUREUM is prepaid: the AI features draw on a balance you top up, and this account has not been '
+              + 'topped up yet. Nothing has been charged and nothing is owed.'
+            : 'Everything that costs money to run — marking, the tutor, flashcards, the spoken examiner, the case '
+              + 'discussions — is paused until the balance is back above zero.'}
+            <strong>Nothing was charged for the request you just made</strong>: it was never sent.</p>
+          <p class="muted">The rest of AUREUM is untouched. Stations, schemes, your attempts, the printouts, the
+            simulator questions and everything you have already been marked on are all still here.</p>
+        </div>
+        <div class="os-modal-foot">
+          <a class="btn btn-gold" href="#/billing">Top up →</a>
+          <button class="btn btn-ghost btn-sm" data-close>Not now</button>
+        </div>
+      </div>`;
+    document.body.appendChild(el);
+    const shut = () => { el.remove(); window.removeEventListener('hashchange', shut); document.removeEventListener('keydown', key); };
+    const key = e => { if (e.key === 'Escape') shut(); };
+    el.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', shut));
+    el.querySelector('a')?.addEventListener('click', shut);
+    window.addEventListener('hashchange', shut);
+    document.addEventListener('keydown', key);
+  }
+
+  /**
+   * The one call an AI surface makes before spending. Returns true to go
+   * ahead; shows the dialog and returns false when the wallet is empty.
+   *
+   * The server refuses the same request independently — this is here so
+   * the refusal arrives before a fifteen-minute recording is uploaded,
+   * not after.
+   */
+  async function guard() {
+    if (await canSpend()) return true;
+    let s = null;
+    try { s = await summary(); } catch {}
+    emptyPopup(s ? s.balanceLkr : null, s ? s.creditedLkr : 0);
+    return false;
+  }
+
+  /** Once per session, on arrival, so nobody discovers it mid-station. */
+  async function nudge() {
+    if (toldThisSession) return;
+    try {
+      await loadRate();
+      if (!enforcing()) return;
+      const u = await Backend.currentUser();
+      if (!u || u.isDeveloper) return;
+      const s = await summary();
+      if (s.balanceLkr > 0) return;
+      toldThisSession = true;
+      emptyPopup(s.balanceLkr, s.creditedLkr);
+    } catch {}
+  }
+
+  /* THE SAME ARITHMETIC, WHEREVER IT IS ASKED.
+
+     The developer's Users & access panel shows what each person has left,
+     and a user's own Billing page shows the same number. If those two are
+     computed in two places they will one day disagree, and the person who
+     notices will be the one being told their balance is empty when their
+     own page says it is not. Credited minus spent, converted at the one
+     rate, once. */
+  const balanceFrom = (creditedLkr, spentUsd) => creditedLkr - spentUsd * rate();
+  function balances(topUps, costsUsd) {
+    const credited = {};
+    (topUps || []).forEach(t => {
+      if (t.status !== 'approved') return;
+      const id = t.user_id || t.user_email;
+      if (!id) return;
+      credited[id] = (credited[id] || 0) + (Number(t.amount_lkr) || 0);
+    });
+    const out = {};
+    for (const id of new Set([...Object.keys(credited), ...Object.keys(costsUsd || {})])) {
+      const c = credited[id] || 0;
+      const usd = costsUsd?.[id]?.allTime || 0;
+      out[id] = { creditedLkr: c, spentUsd: usd, spentLkr: usd * rate(), balanceLkr: balanceFrom(c, usd) };
+    }
+    return out;
+  }
 
   /** Charge is a no-op by design — spend is metered server-side and derived. */
   async function charge() { bust(); }
@@ -928,6 +1066,7 @@ const Wallet = (() => {
   }
 
   return { rate, loadRate, bustRate, settings, summary, bust, canSpend, blockedMessage, charge,
+    guard, nudge, emptyPopup, balances, balanceFrom, enforcing,
     readSlip, renderBilling, badge, lkr, userNo, DEFAULT_RATE,
     beneficiary, instantOn, instantHours, slipCheck, slipComplete, sameAccount };
 })();

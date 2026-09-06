@@ -499,6 +499,15 @@ const AI = (() => {
   /* ---------------- transport ---------------- */
 
   async function call(payload) {
+    /* THE WALLET, BEFORE THE REQUEST AND NOT AFTER IT.
+
+       Every AI surface that goes through this transport — the tutor, the
+       OSCE debrief, the search — is stopped here when the balance is
+       empty, with the dialog that explains why. The server refuses the
+       same call independently; this only means the refusal arrives
+       before anything was uploaded, and in words rather than as an HTTP
+       status somebody has to interpret. */
+    if (typeof Wallet !== 'undefined' && !(await Wallet.guard())) throw new Error(Wallet.blockedMessage());
     const token = await Backend.getAccessToken();
     if (!token) throw new Error('Please sign in to use the AI tutor.');
     const res = await fetch(cfg().apiBase, {

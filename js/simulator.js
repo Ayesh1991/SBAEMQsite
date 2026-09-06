@@ -946,6 +946,7 @@ const Simulator = (() => {
         const vocab = [...new Set(index.flatMap(r => r.tagTopic ? [r.tagTopic] : []))].slice(0, 250);
         const token = await Backend.getAccessToken();
         if (!token) throw new Error('Sign in first.');
+        if (typeof Wallet !== 'undefined' && !(await Wallet.guard())) throw new Error(Wallet.blockedMessage());
         const res = await fetch(window.AUREUM_CONFIG?.ai?.apiBase || '/api/explain', {
           method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
           body: JSON.stringify({ action: 'termmap', model: overlay.querySelector('#tm-model').value,
@@ -1522,6 +1523,7 @@ const Simulator = (() => {
     try {
       const token = await Backend.getAccessToken();
       if (!token) throw new Error('Sign in to use the AI coach.');
+      if (typeof Wallet !== 'undefined' && !(await Wallet.guard())) throw new Error(Wallet.blockedMessage());
       const res = await fetch((window.AUREUM_CONFIG?.ai?.apiBase) || '/api/explain', {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
         body: JSON.stringify({
@@ -1605,6 +1607,7 @@ const Simulator = (() => {
     try {
       const token = await Backend.getAccessToken();
       if (!token) throw new Error('Sign in first.');
+      if (typeof Wallet !== 'undefined' && !(await Wallet.guard())) throw new Error(Wallet.blockedMessage());
       for (let i = 0; i < items.length; i++) {
         msg.textContent = `Writing cards… ${i + 1}/${items.length}`; msg.className = 'dev-row-msg muted';
         const q = dict[items[i].qkey];
