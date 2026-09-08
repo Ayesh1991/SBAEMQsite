@@ -595,6 +595,146 @@ export async function onRequest(context) {
       return json({ text: r.text, model: r.model, usage: { in: r.in, out: r.out } });
     }
 
+    /* ---- handwriting, transcribed ----
+
+       The pages arrive already shrunk by the browser and go up together so
+       a sentence crossing a page break can be read. `tail` carries the last
+       few lines of the previous batch for the same reason, since a long
+       answer is sent in batches rather than as one enormous request.
+
+       Always Gemini: this is a vision job, and the model is pinned by the
+       server rather than taken from the caller so an OCR pass cannot be
+       silently redirected to a model that cannot see. `ai.ocrModel` in the
+       deployment config overrides it, because the day handwriting proves
+       too hard for the cheap model is the day this needs to change without
+       a redeploy of the client. */
+    if (action === 'ocr') {
+      const pages = Array.isArray(body.pages) ? body.pages.slice(0, 6) : [];
+      if (!pages.length) return json({ error: 'No pages were sent.' }, 400);
+      const bytes = pages.reduce((n, p) => n + String(p.data || '').length, 0);
+      if (!pages.every(p => p.data)) return json({ error: 'One of the pages had no image data.' }, 400);
+      if (bytes > 24_000_000) return json({ error: 'Those pages are too large together — send fewer at a time.' }, 413);
+
+      const ocrModel = body.ocrModel && /^gemini-[\w.\-]{1,40}$/i.test(body.ocrModel)
+        ? body.ocrModel : (env.OCR_MODEL || 'gemini-3.1-flash-lite');
+      const tail = String(body.tail || '').slice(-600);
+      const ask = [
+        `Transcribe ${pages.length === 1 ? 'this page' : 'these ' + pages.length + ' pages'} of handwriting.`,
+        tail ? `\nFor continuity only, the previous page ended:\n"""${tail}"""\nDo not repeat any of that in your output.` : '',
+        body.context ? `\nContext (what the writing is about — use it ONLY to read ambiguous handwriting, never to invent content): ${String(body.context).slice(0, 400)}` : '',
+        '\nRemember: never guess a word. [?] for unreadable, [?likely] for nearly read.'
+      ].join('');
+
+      const rr = await callGeminiPages(OCR_SYSTEM, ask, pages, ocrModel, env, 8000);
+      await logTokens(token, env, 'gemini', rr, 'ocr');
+      let out = null;
+      try { out = JSON.parse(String(rr.text || '').replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()); } catch {}
+      if (!out || !Array.isArray(out.pages)) {
+        return json({ error: 'The transcript came back in a shape this could not read. Try again, or send fewer pages at once.' }, 502);
+      }
+      /* A transcript cut off mid-page is worse than a failure, because the
+         missing half is invisible in the result — the marking would simply
+         be of a shorter answer. Say so instead. */
+      const truncated = /MAX_TOKENS/i.test(rr.stop || '');
+      return json({ pages: out.pages, truncated, model: rr.model, usage: { in: rr.in, out: rr.out } });
+    }
+
+    /* ---- an essay, marked from its transcript ----
+
+       WHAT THIS CAN AND CANNOT CLAIM.
+
+       The OSCE marker is bound to a scheme AUREUM holds, so a marking can
+       be checked against it. Essays are not in that position: the papers
+       carry the question, not an official mark scheme, and the reports
+       uploaded until now brought their scheme with them, built by whatever
+       model marked them.
+
+       So this builds a scheme too — and says so, in `schemeSource` and in
+       `flags`, which the report already renders. Where the caller supplies
+       a real scheme it is used verbatim and marked as official. What must
+       never happen is a model-built scheme presented as an examiner's one;
+       that is the whole difference between a study aid and a lie. */
+    if (action === 'essaymark') {
+      const t = String(body.transcript || '').slice(0, 40000);
+      if (t.trim().length < 40) return json({ error: 'There is no answer to mark.' }, 400);
+      const code = String(body.code || '').slice(0, 40);
+      const scheme = String(body.scheme || '').slice(0, 20000);
+      const stem = String(body.stem || '').slice(0, 4000);
+      const parts = Array.isArray(body.parts) ? body.parts.slice(0, 12) : [];
+      const maxMarks = Number(body.maxMarks) || 100;
+
+      const sys = `You are a senior examiner for the PGIM (Sri Lanka) MD Part II written paper in
+Obstetrics and Gynaecology. You mark a candidate's answer and write the feedback
+that makes them better. You are exact, you are specific, and you never invent
+what the candidate wrote.
+
+THE TRANSCRIPT IS THE ANSWER.
+You are given a typed transcript of a handwritten answer, checked by the
+candidate. Mark what is in it. Do not assume they meant something they did not
+write, and do not credit knowledge they did not put on the page.
+Anything still marked [?] was unreadable — never award or deny a point on a
+[?]; note it instead.
+
+${scheme ? `THE MARK SCHEME BELOW IS OFFICIAL. Mark against it, point by point, and
+do not add points of your own.` : `NO OFFICIAL MARK SCHEME WAS SUPPLIED. Build one from the question and from
+current RCOG/NICE/SLCOG guidance, then mark against it. You must set
+"schemeSource" to "model-built" and put "scheme built by the model, not an
+official PGIM scheme" in "flags". Never describe a scheme you invented as the
+examiner's.`}
+
+Return ONLY valid JSON, no prose around it, of this shape:
+
+{"schema":"essay-feedback-v2","code":"${code || 'CODE'}","questionType":"SEQ",
+ "subject":"O&G","schemeSource":"${scheme ? 'official' : 'model-built'}",
+ "schemeVersion":"1.0","markedOn":"YYYY-MM-DD","questionStem":"the question as given",
+ "score":{"raw":0,"rawMax":${maxMarks},"percent":0,"band":"Distinction | Clear pass | Borderline | Fail"},
+ "breakdown":[{"section":"(a)","raw":0,"max":0,"percent":0}],
+ "markScheme":[{"section":"(a) what it asks","raw":0,"max":0,
+   "points":[{"point":"the scheme point","status":"covered | partial | missed",
+     "note":"what they wrote, or what was missing","guideline":"optional source"}]}],
+ "examinerComment":"Three or four sentences, as an examiner would write them.",
+ "lossAnalysis":{"totalLost":0,"biggestSingleLoss":"",
+   "byCause":[{"cause":"knowledge | structure | detail | omission | safety","marks":0,"detail":""}]},
+ "improvementAdvice":[{"label":"(a)","points":["what to have written"]}],
+ "writingAnalysis":{"overallVerdict":"one paragraph on how it is WRITTEN, not what it knows",
+   "recurringErrors":[{"pattern":"","count":0,"examples":[""],"fix":""}]},
+ "timeManagement":{"estimatedWordCount":0,"comment":""},
+ "priorityActions":[{"rank":1,"action":"","estimatedMarkGain":0,"type":"knowledge | technique"}],
+ "keyLearningPoints":["the facts to take away"],
+ "flags":[]}
+
+RULES
+- "percent" is round(raw / rawMax x 100). Bands: 75+ Distinction, 60-74 Clear
+  pass, 50-59 Borderline, under 50 Fail.
+- Every sub-question in the question gets its own section in "markScheme" and
+  its own row in "breakdown", even if the candidate did not answer it — a part
+  left out is a marked zero with "missed" points, never a silent omission.
+- "note" on a missed point says what was needed, in one line a candidate can
+  act on. Never "not mentioned" alone.
+- Be a real examiner. Sri Lankan practice, current guidelines, and the marks
+  where they are actually earned.`;
+
+      const usr = [
+        `QUESTION${code ? ' ' + code : ''} (out of ${maxMarks} marks)`,
+        stem ? `\n${stem}` : '',
+        parts.length ? '\n\nParts:\n' + parts.map(p =>
+          `${String(p.label || '').slice(0, 12)} ${String(p.text || '').slice(0, 600)}${
+            p.marks != null ? ` (${Number(p.marks) || 0} marks)` : ''}`).join('\n') : '',
+        scheme ? `\n\nOFFICIAL MARK SCHEME:\n${scheme}` : '',
+        `\n\nTHE CANDIDATE'S ANSWER, transcribed from their handwriting:\n"""\n${t}\n"""`
+      ].join('');
+
+      const r = await run({ system: sys, user: usr }, 'essay_mark', 8000);
+      let out = null;
+      try { out = JSON.parse(String(r.text || '').replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()); } catch {}
+      if (!out) {
+        const a = String(r.text || '').indexOf('{'), b = String(r.text || '').lastIndexOf('}');
+        if (a >= 0 && b > a) { try { out = JSON.parse(String(r.text).slice(a, b + 1)); } catch {} }
+      }
+      if (!out || !out.score) return json({ error: 'The marking came back in a shape this could not read. Try again.' }, 502);
+      return json({ report: out, model: r.model, usage: { in: r.in, out: r.out } });
+    }
+
     // ---- a payment slip, read as structured data ----
     // Deliberately the cheapest call in the app: one small image, a JSON-only
     // instruction, a 400-token ceiling. Always Gemini Flash Lite regardless of
@@ -2056,6 +2196,98 @@ async function maybeCreditSlip(text, user, env, image) {
 }
 
 /** One image + a short instruction. Used only for payment slips. */
+/* ================= reading handwriting =================
+
+   THE ONE RULE THAT MAKES THIS SAFE TO MARK FROM.
+
+   A transcriber that guesses is worse than no transcriber at all. A model
+   asked to read difficult handwriting will produce a clean, fluent,
+   confident page of text with a dozen words silently invented — and the
+   marking that follows will be against words the candidate never wrote,
+   with no trace of where it went wrong. In a marking scheme the damage
+   lands exactly where it hurts: a drug name, a gestation, "day 3 to day
+   14", "80%". Those are the hardest words to read and the ones that carry
+   the marks.
+
+   So: NEVER GUESS. An unreadable word comes back as [?], a half-read one
+   as [?best-guess]. That single instruction turns a silent corruption
+   into a visible question, which the writer can answer in five seconds
+   because it is their own handwriting.
+
+   Everything else follows from "transcribe, do not improve": no spelling
+   corrections, no expanded abbreviations, no tidied grammar, no filled-in
+   sentences. What is on the paper is what the examiner would have seen,
+   and it is what the marking must be done against. */
+const OCR_SYSTEM = `You are a transcription engine for handwritten examination answers.
+You transcribe. You do not correct, improve, complete, summarise or comment.
+
+ABSOLUTE RULES
+
+1. NEVER GUESS A WORD. If you cannot read a word with confidence, output [?].
+   If you can very nearly read it, output [?likely] — the square brackets and
+   the question mark are what tell the writer to look. A confident wrong word
+   is the single most damaging thing you can produce here, because the answer
+   is about to be marked and nobody will know the word was invented.
+2. DO NOT CORRECT ANYTHING. Keep the writer's spelling, grammar, punctuation,
+   capitalisation and abbreviations exactly as written — "PPH", "c/s", "USS",
+   a misspelling, a wrong drug name. The examiner would have seen it as
+   written and so must the marker.
+3. DO NOT ADD ANYTHING. No headings that are not there, no bullet markers that
+   are not there, no summary, no note about the handwriting, no apology.
+4. KEEP THE LAYOUT. One line of writing is one line of text. Keep numbering
+   (1), (a), i., dashes and bullets as the writer used them. Keep underlined
+   or boxed headings on their own line. Keep blank lines between blocks.
+5. Words struck through are NOT part of the answer — omit them. If a
+   correction is written above a line, use the correction.
+6. If a page is blank, or is not a page of answer at all, say so with an
+   empty text and note it.
+
+OUTPUT
+Return ONLY valid JSON of this shape, nothing else:
+
+{"pages":[{"page":1,"text":"the transcript, with \\n between lines",
+  "unreadable":0,"note":""}]}
+
+- "page" is the number printed in the "--- PAGE n ---" marker before the image.
+- "unreadable" is how many [?] marks you had to use on that page.
+- "note" is at most one short sentence, and only when something needs saying
+  (blank page, photograph cut off, second column, page upside down). Otherwise "".`;
+
+/* Several pages in one call.
+   `callGeminiVision` takes exactly one image because it was written for a
+   payment slip. Handwriting arrives as a stack of pages, and a sentence
+   that runs over a page break is only readable if the reader can see both
+   sides of it — so the pages go in together, in order, each announced by a
+   text part so the model can label its output. */
+async function callGeminiPages(system, user, images, model, env, maxTokens) {
+  if (!env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not configured on the server.');
+  const key = String(env.GEMINI_API_KEY).trim();
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
+  const parts = [];
+  images.forEach((im, i) => {
+    parts.push({ text: `--- PAGE ${im.page || i + 1} ---` });
+    parts.push({ inlineData: { mimeType: im.mime || 'image/jpeg', data: im.data } });
+  });
+  parts.push({ text: user });
+  const res = await fetch(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: system }] },
+      contents: [{ role: 'user', parts }],
+      generationConfig: { maxOutputTokens: maxTokens || 8000, temperature: 0, responseMimeType: 'application/json' }
+    })
+  });
+  if (!res.ok) {
+    let detail = ''; try { detail = (await res.json())?.error?.message || ''; } catch {}
+    throw new Error(`The pages could not be read (HTTP ${res.status})${detail ? ': ' + detail : ''}`);
+  }
+  const data = await res.json();
+  const text = (data?.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
+  const u = data?.usageMetadata || {};
+  const stop = data?.candidates?.[0]?.finishReason || '';
+  return { text, model, stop, in: u.promptTokenCount | 0, out: u.candidatesTokenCount | 0 };
+}
+
 async function callGeminiVision(system, user, image, model, env, maxTokens) {
   if (!env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not configured on the server.');
   const key = String(env.GEMINI_API_KEY).trim();
