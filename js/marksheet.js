@@ -466,6 +466,15 @@ const Marksheet = (() => {
   function wireLive(view, st, qs, user) {
     const host = view.querySelector('#ms-live');
     if (!host || typeof RealStation === 'undefined') return;
+    /* SWITCHED OFF MEANS THIS PANEL IS NOT DRAWN AND, MORE TO THE POINT,
+       THE REMEMBERED SESSION IS NOT LOOKED UP.
+
+       This is the second place the Real station costs something when
+       nobody is using it: opening a hand-marking sheet on a station that
+       once had a live session fetches that row to see whether it is
+       still going. One request per sheet opened, for a feature that is
+       off. See js/features.js. */
+    if (typeof Features !== 'undefined' && !Features.on('realStation')) { host.innerHTML = ''; return; }
 
     let row = null, off = null, tick = null;
 

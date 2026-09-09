@@ -3719,6 +3719,17 @@ const DevConsole = (() => {
             typically is, and which payments to credit.</p>
         </header>
 
+        ${/* THE SWITCHES, FIRST — because the one thing on this page you
+              might need at short notice is turning a feature on for an
+              evening, and hunting for it under the exchange rate is not
+              a thing to be doing while two people wait. */''}
+        <div class="card dev-switches" data-animate>
+          <h3 class="card-title">⏻ Feature switches</h3>
+          <p class="muted">Features that cost something to leave running, and can be turned on only when they are
+            wanted. Off means nothing runs — no polling, no subscription, no lookup — not merely a hidden button.</p>
+          <div id="st-switches"><p class="muted tiny">Reading the switches…</p></div>
+        </div>
+
         <div class="card" data-animate>
           <h3 class="card-title">💱 Exchange rate</h3>
           <p class="muted">Every AI call is priced by the providers in US dollars. This is the rate used to turn that
@@ -3816,6 +3827,56 @@ const DevConsole = (() => {
           <div id="st-tops"><p class="muted">Loading…</p></div>
         </div>
       </section>`;
+
+    /* ---------------- the feature switches ----------------
+
+       Each one says what it does, what it costs while it is on, and what
+       stops when it is off — because a switch whose consequence you have
+       to remember is a switch you will not dare to touch. Saved the
+       moment it is flipped: there is no Save button here, and a switch
+       with an unsaved state is a switch that lies about what is running. */
+    (async () => {
+      const host = view.querySelector('#st-switches');
+      if (!host || typeof Features === 'undefined') { if (host) host.innerHTML = ''; return; }
+      const paint = async () => {
+        await Features.load(true);
+        const rows = Object.keys(Features.DEFAULTS).map(k => {
+          const m = Features.META[k] || {};
+          const on = Features.on(k);
+          return `<div class="dev-switch ${on ? 'is-on' : 'is-off'}">
+            <div class="dev-switch-head">
+              <div>
+                <strong>${esc(m.label || k)}</strong>
+                <span class="dev-switch-pill">${on ? 'ON' : 'OFF'}</span>
+              </div>
+              <label class="dev-flag"><input type="checkbox" data-switch="${esc(k)}" ${on ? 'checked' : ''}><span></span></label>
+            </div>
+            <p class="muted tiny">${esc(m.what || '')}</p>
+            <p class="muted tiny"><strong>While it is on:</strong> ${esc(m.cost || '')}</p>
+            <p class="muted tiny"><strong>While it is off:</strong> ${esc(m.off || '')}</p>
+            ${k === 'realStation' && on ? `<a class="link tiny" href="#/osce/real">Open the Real station page →</a>` : ''}
+          </div>`;
+        }).join('');
+        host.innerHTML = rows + `<p class="dev-status" id="st-sw-msg"></p>
+          <p class="muted tiny">A switch decides what the app does, not what the database permits. It is a cost
+            control, not a lock.</p>`;
+      };
+      await paint();
+      host.addEventListener('change', async e => {
+        const b = e.target.closest('[data-switch]'); if (!b) return;
+        const msg = () => host.querySelector('#st-sw-msg');
+        b.disabled = true;
+        if (msg()) msg().textContent = 'Saving…';
+        try {
+          await Features.set(b.dataset.switch, b.checked);
+          await paint();
+          if (msg()) msg().innerHTML = `<span class="good">✓ Saved — ${esc(Features.META[b.dataset.switch]?.label || b.dataset.switch)} is now ${Features.on(b.dataset.switch) ? 'ON' : 'OFF'} for everyone.</span>`;
+        } catch (err) {
+          b.checked = !b.checked; b.disabled = false;
+          if (msg()) msg().innerHTML = `<span class="bad">${esc(err.message || err)}</span>`;
+        }
+      });
+    })();
 
     const egs = () => {
       try {
