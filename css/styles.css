@@ -6124,3 +6124,180 @@ body.qc-scanning { overflow: hidden; }
 /* the balance dialog */
 .wl-empty .os-modal-box { max-width: 520px; }
 .wl-empty-n { font-family: Georgia, serif; font-size: 1.9rem; color: var(--bad); margin: 0 0 10px; }
+
+/* ============================================================
+   v98 — Scribe: reading handwriting off a photograph.
+
+   The transcript screen is the point of the whole feature, so it
+   gets the room: big type, the uncertain words impossible to miss,
+   and the original photograph one tap away beside its own text.
+   ============================================================ */
+
+.sc-veil { position: fixed; inset: 0; z-index: 3050; display: grid; place-items: center; padding: 16px; }
+body.sc-open { overflow: hidden; }
+.sc-back { position: absolute; inset: 0; background: rgba(4,6,16,.78); backdrop-filter: blur(6px); }
+.sc-box {
+  position: relative; z-index: 1; width: min(860px, 100%); max-height: 92vh;
+  display: flex; flex-direction: column; border-radius: 20px;
+  border: 1px solid var(--hairline); background: var(--surface); box-shadow: 0 30px 80px rgba(0,0,0,.5);
+}
+.sc-head { display: flex; align-items: flex-start; gap: 14px; padding: 18px 20px 12px; border-bottom: 1px solid var(--hairline); }
+.sc-head h3 { margin: 2px 0 0; font-size: 1.15rem; }
+.sc-head .os-modal-x { margin-left: auto; }
+.sc-body { padding: 16px 20px; overflow: auto; flex: 1 1 auto; }
+.sc-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 13px 20px calc(13px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--hairline); background: var(--surface-2); border-radius: 0 0 20px 20px;
+}
+.sc-hint { margin: 0 0 14px; font-size: .8rem; color: var(--ink-2); line-height: 1.55; }
+
+/* the pages */
+.sc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.sc-page { margin: 0; border: 1px solid var(--hairline); border-radius: 12px; overflow: hidden; background: var(--surface-2); }
+.sc-page img { display: block; width: 100%; height: 190px; object-fit: cover; background: #fff; }
+.sc-page figcaption { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 6px 8px; font-size: .72rem; }
+.sc-page-acts { display: flex; gap: 3px; }
+.sc-page-acts button {
+  border: 1px solid var(--hairline); background: transparent; color: var(--ink-2);
+  border-radius: 7px; width: 24px; height: 24px; cursor: pointer; font-size: .7rem; line-height: 1;
+}
+.sc-page-acts button:hover:not(:disabled) { color: var(--gold); border-color: var(--gold); }
+.sc-page-acts button:disabled { opacity: .3; cursor: default; }
+.sc-page-acts .is-x:hover { color: var(--bad); border-color: var(--bad); }
+.sc-add {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  min-height: 224px; border: 2px dashed var(--hairline); border-radius: 12px; cursor: pointer;
+  text-align: center; padding: 10px; font-size: .8rem; transition: border-color .16s ease, color .16s ease;
+}
+.sc-add:hover { border-color: var(--gold); color: var(--gold); }
+.sc-add.is-full { opacity: .5; cursor: default; }
+.sc-add-ico { font-size: 1.7rem; line-height: 1; color: var(--gold); }
+
+/* reading */
+.sc-working { text-align: center; padding: 34px 10px; }
+.sc-work-ico { font-size: 2.4rem; animation: sc-blink 2.2s ease-in-out infinite; }
+@keyframes sc-blink { 0%, 44%, 56%, 100% { opacity: 1; } 50% { opacity: .25; } }
+.energy-saving .sc-work-ico { animation: none; }
+@media (prefers-reduced-motion: reduce) { .sc-work-ico { animation: none; } }
+.sc-bar { height: 5px; border-radius: 3px; background: var(--surface-2); overflow: hidden; margin: 12px auto 10px; max-width: 340px; }
+.sc-bar i { display: block; height: 100%; background: var(--gold); transition: width .4s ease; }
+
+/* the transcript */
+.sc-verdict { border-radius: 12px; padding: 12px 14px; margin: 0 0 14px; font-size: .84rem; line-height: 1.5; }
+.sc-verdict strong { display: block; margin-bottom: 2px; }
+.sc-verdict.is-check { border: 1px solid color-mix(in srgb, var(--gold) 45%, transparent);
+  background: color-mix(in srgb, var(--gold) 9%, transparent); }
+.sc-verdict.is-clean { border: 1px solid color-mix(in srgb, var(--good) 40%, transparent);
+  background: color-mix(in srgb, var(--good) 8%, transparent); }
+.sc-tr { border: 1px solid var(--hairline); border-radius: 12px; margin-bottom: 12px; overflow: hidden; }
+.sc-tr-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 9px 12px; background: var(--surface-2); font-size: .78rem; }
+.sc-tr-n { font-size: .68rem; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--hairline); }
+.sc-tr-n.is-check { color: var(--gold); border-color: color-mix(in srgb, var(--gold) 50%, transparent); }
+.sc-tr-n.is-clean { color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, transparent); }
+.sc-peek { margin-left: auto; border: 0; background: none; color: var(--ink-3); font-size: .7rem; cursor: pointer; font-family: inherit; }
+.sc-peek:hover { color: var(--gold); }
+.sc-tr-shot img { display: block; width: 100%; max-height: 420px; object-fit: contain; background: #fff; }
+.sc-tr-view {
+  padding: 12px 14px; font-size: .88rem; line-height: 1.7; white-space: pre-wrap;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.sc-unsure {
+  background: color-mix(in srgb, var(--bad) 24%, transparent); color: var(--ink);
+  border-radius: 4px; padding: 0 3px; font-weight: 700;
+}
+.sc-tr-edit {
+  display: block; width: 100%; border: 0; border-top: 1px dashed var(--hairline);
+  background: var(--surface-2); color: var(--ink); padding: 11px 14px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .82rem; line-height: 1.6; resize: vertical;
+}
+.sc-tr-edit:focus { outline: 2px solid color-mix(in srgb, var(--gold) 55%, transparent); outline-offset: -2px; }
+.sc-msg { margin: 12px 0 0; font-size: .8rem; }
+
+/* the essay page's own entry point */
+.es-shoot-acts { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
+.es-shoot-msg { margin: 12px 0 0; font-size: .84rem; }
+.es-shoot-work { color: var(--gold); }
+.es-shoot-keep { margin-top: 10px; }
+.es-shoot-keep textarea { width: 100%; margin-top: 8px; padding: 10px; border-radius: 10px;
+  border: 1px solid var(--hairline); background: var(--surface-2); color: var(--ink);
+  font-family: ui-monospace, monospace; font-size: .76rem; }
+
+@media (max-width: 620px) {
+  .sc-veil { padding: 0; }
+  .sc-box { width: 100%; height: 100%; max-height: 100%; border-radius: 0; }
+  .sc-foot { border-radius: 0; }
+  .sc-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+  .sc-page img { height: 140px; }
+  .sc-add { min-height: 170px; }
+}
+
+/* ============================================================
+   v99 — the candidate's own mark on a station (★ / ↓)
+
+   Deliberately quiet until it is used. An unpressed star is a thin
+   outline that sits in the corner of a card and does not compete with
+   the topic; a pressed one is gold and unmistakable across a grid of two
+   hundred. The ↓ is the same control in grey, because it is the same
+   judgement pointing the other way.
+   ============================================================ */
+.st-mark { display: inline-flex; gap: 6px; align-items: center; }
+.os-card .st-mark { position: absolute; top: 10px; right: 10px; z-index: 2; opacity: .55; transition: opacity .16s; }
+.os-card:hover .st-mark, .os-card .st-mark:focus-within { opacity: 1; }
+.os-card .st-mark:has(.is-on) { opacity: 1; }
+.st-b { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font: inherit;
+  font-size: .78rem; line-height: 1; padding: 6px 9px; border-radius: 999px;
+  border: 1px solid var(--line); background: color-mix(in srgb, var(--panel) 80%, transparent);
+  color: var(--muted); transition: color .16s, border-color .16s, background .16s, transform .1s; }
+.st-b:hover { color: var(--ink); border-color: var(--teal); }
+.st-b:active { transform: scale(.94); }
+.st-b[disabled] { opacity: .5; cursor: progress; }
+.st-mark.is-compact .st-b { padding: 5px 8px; font-size: .82rem; }
+.st-star.is-on { color: var(--gold); border-color: var(--gold);
+  background: color-mix(in srgb, var(--gold) 16%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--gold) 22%, transparent); }
+.st-low.is-on { color: var(--muted); border-color: color-mix(in srgb, var(--muted) 50%, transparent);
+  background: color-mix(in srgb, var(--muted) 12%, transparent); }
+.os-card { position: relative; }
+.os-star-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 10px 0 0; }
+.os-star-say { flex: 1 1 240px; }
+.os-bin-mine { border-style: dashed; }
+.os-pick-star { font-style: normal; color: var(--gold); }
+.os-pick-low { font-style: normal; color: var(--muted); }
+
+/* the ★ revision pack */
+.os-starpack { border-left: 3px solid var(--gold); }
+.os-starpack-acts { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 8px; }
+
+/* leaving the ↓ ones out of a circuit — the same shape as the fresh tick */
+.os-skiplow.is-on { border-color: color-mix(in srgb, var(--gold) 40%, transparent); }
+
+/* skipping one station of a circuit, before its clock starts */
+.os-skipbox { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line);
+  display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; }
+.os-skip-say { margin: 0; font-size: .84rem; color: var(--muted); }
+.os-skip-say strong { color: var(--ink); }
+
+/* ============================================================
+   v99 — the marks, recalculated from the ticks
+
+   Amber, not red: nothing has gone wrong with the candidate's answer,
+   and the tone should not suggest it has. What went wrong is the
+   marker's arithmetic, and this is the app saying so out loud.
+   ============================================================ */
+.os-regrade { border-left: 3px solid var(--gold);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--gold) 7%, transparent), transparent 70%); }
+.os-regrade p { margin: 0 0 8px; }
+.os-qres-was { opacity: .55; text-decoration-thickness: 1.5px; margin-right: 2px; font-weight: 400; }
+
+/* why Drive keeps asking — developer only, folded away */
+.wl-dv-dev { margin-top: 14px; }
+.wl-dv-why { margin: 8px 0 0; padding-left: 18px; font-size: .84rem; color: var(--muted); }
+.wl-dv-why li { margin: 0 0 8px; }
+.wl-dv-why strong { color: var(--ink); }
+
+@media (max-width: 640px) {
+  .os-card .st-mark { opacity: 1; }
+  .os-starpack-acts .btn { width: 100%; }
+}

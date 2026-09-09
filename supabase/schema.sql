@@ -1461,3 +1461,30 @@ end;
 $$;
 revoke all on function public.sweep_live_stations() from public;
 grant execute on function public.sweep_live_stations() to authenticated;
+
+/* ============================================================
+   v99 — what a candidate thinks of a station
+
+   Two judgements, one field. A candidate marks a station ★ because it is
+   worth coming back to in the last week before the exam, or ↓ because it
+   is not worth fifteen minutes of a practice circuit. They are ends of
+   one axis, never both at once, so they are one value and not two flags —
+   which also means clearing one cannot leave the other behind.
+
+   No row means no opinion, and that is the common case: a bank of two
+   hundred stations should not carry two hundred rows per candidate to say
+   nothing about any of them. Clearing a mark deletes the row.
+   ============================================================ */
+create table if not exists public.osce_stars (
+  user_id    uuid not null references auth.users(id) on delete cascade,
+  station_id text not null,
+  mark       text not null check (mark in ('star', 'low')),
+  note       text not null default '',
+  created_at timestamptz not null default now(),
+  primary key (user_id, station_id)
+);
+create index if not exists osce_stars_user_idx on public.osce_stars (user_id);
+alter table public.osce_stars enable row level security;
+drop policy if exists "osce stars own" on public.osce_stars;
+create policy "osce stars own" on public.osce_stars for all
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);

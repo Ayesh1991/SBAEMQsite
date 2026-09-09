@@ -683,8 +683,48 @@ const Wallet = (() => {
             up now.</p>
           ${missBox}`
       }[st.code] || '';
+      /* WHY THIS KEEPS ASKING — FOR THE ONE PERSON WHO CAN STOP IT.
+
+         "I have to reconnect almost every time" has two causes and only
+         one of them was ours. The one that was ours is fixed: a token
+         request that failed because the browser blocked Google's popup
+         used to be recorded as a dead grant, which meant a manual
+         reconnection after something that was never a permission problem
+         at all.
+
+         The other is Google's, and it is a setting rather than a bug: an
+         OAuth app left in Testing has its grants expired after seven
+         days, for every user, no matter what the app does. Publishing the
+         consent screen ends that. The `drive.file` scope is non-sensitive,
+         so publishing does not put this app into the paid security
+         assessment — which is the reason the scope was chosen.
+
+         Shown to the developer only. Nobody else can act on it. */
+      const devEmail = (window.AUREUM_CONFIG || {}).developer?.email;
+      const isDev = (user?.email && devEmail && user.email === devEmail)
+        || sessionStorage.getItem('aureum-dev') === '1';
+      const devNote = isDev ? `
+        <details class="dev-collapse wl-dv-dev">
+          <summary><span class="card-title">Why it asks so often — and the one setting that stops it</span><span class="dc-caret">▸</span></summary>
+          <p class="muted tiny">Two different things expire, and only the second is fixable from here.</p>
+          <ul class="wl-dv-why">
+            <li><strong>The access token lasts one hour.</strong> By design — a browser-side token client is given no
+              refresh token, so nothing long-lived about anyone's Google account is stored on this site. It is renewed
+              silently and you never see it happen. This is not what makes you reconnect.</li>
+            <li><strong>The grant lasts seven days while the OAuth app is in Testing.</strong> This is the one you are
+              feeling. In the Google Cloud console, <em>APIs &amp; Services → OAuth consent screen → Publish app</em>.
+              With only the <code>drive.file</code> scope — which is what this uses — the app is not sensitive and
+              publishing does not require Google's paid verification. After publishing, a connection lasts until it is
+              revoked.</li>
+            <li><strong>A blocked popup used to look like an expired grant.</strong> Fixed here: only a real refusal
+              from Google (<code>access_denied</code>, <code>consent_required</code>, <code>login_required</code>,
+              <code>invalid_grant</code>) now marks the connection stale. A popup Safari would not open, a dropped
+              network or a backgrounded tab leaves it alone, and the next upload simply tries again.</li>
+          </ul>
+        </details>` : '';
+
       host.hidden = false;
-      host.innerHTML = `<h3 class="card-title">☁ Recordings in your Drive ${Drive.badgeHtml()}</h3>${body}
+      host.innerHTML = `<h3 class="card-title">☁ Recordings in your Drive ${Drive.badgeHtml()}</h3>${body}${devNote}
         <div class="dev-status" id="wl-dv-msg"></div>`;
 
       /* SENDING UP WHAT THE OUTBOX REMEMBERS.

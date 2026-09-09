@@ -343,6 +343,19 @@ const Backend = (() => {
       const e = sessionEmail(); if (!e) return;
       write('oscedecks:' + e, read('oscedecks:' + e, []).filter(x => x.id !== id));
     }
+    /* ---- what a candidate thinks of a station ----
+       One row per station the candidate has an opinion about, and no row
+       at all for the ones they have not. See js/stars.js for why the two
+       marks are one field and not two flags. */
+    async function listOsceStars() { const e = sessionEmail(); if (!e) return []; return read('oscestars:' + e, []); }
+    async function setOsceStar(stationId, mark, note) {
+      const e = sessionEmail(); if (!e) return null;
+      const l = read('oscestars:' + e, []).filter(x => x.stationId !== stationId);
+      const row = mark ? { stationId, mark, note: note || '', at: Date.now() } : null;
+      if (row) l.unshift(row);
+      write('oscestars:' + e, l);
+      return row;
+    }
     /* ---- case discussions ----
        A case is a whole document (vignette, phases, questions with model
        answers), so the LIST is a card and the case itself is fetched only
@@ -828,6 +841,7 @@ const Backend = (() => {
       moveOsceStations, getOsceCollections, saveOsceCollections, getOsceGuide, saveOsceGuide, getGroqConfig, saveGroqConfig,
       findUserByNo, createLiveStation, getLiveStation, peekLiveStation, saveLiveStation, dropLiveStation, myLiveStations, watchLiveStation,
       getOsceBlueprint, saveOsceBlueprint, tagOsceStations, listOsceDecks, saveOsceDeck, deleteOsceDeck,
+      listOsceStars, setOsceStar,
       listOsceAttempts, getOsceAttempt,
       saveOsceAttempt, deleteOsceAttempt, uploadOsceAudio, getOsceAudioUrl, sweepOsceAudio,
       /* case discussions — the SAME names in both backends, always */
@@ -1270,6 +1284,29 @@ const Backend = (() => {
     async function deleteOsceDeck(did) {
       await ensureClient(); const id = await uid(); if (!id) return;
       await sb.from('osce_decks').delete().eq('id', did).eq('user_id', id);
+    }
+    /* ---- what a candidate thinks of a station ----
+       Tiny rows, read whole: the whole point is to have every mark in hand
+       when a page draws two hundred cards, so this is one request and not
+       one per card. Clearing a mark DELETES the row rather than writing an
+       empty one, so the table only ever holds opinions that exist. */
+    async function listOsceStars() {
+      await ensureClient(); const id = await uid(); if (!id) return [];
+      const { data, error } = await sb.from('osce_stars').select('station_id,mark,note,created_at').eq('user_id', id);
+      if (error) return [];
+      return (data || []).map(r => ({ stationId: r.station_id, mark: r.mark, note: r.note || '',
+        at: new Date(r.created_at).getTime() }));
+    }
+    async function setOsceStar(stationId, mark, note) {
+      await ensureClient(); const id = await uid(); if (!id) throw new Error('Sign in first.');
+      if (!mark) {
+        await sb.from('osce_stars').delete().eq('user_id', id).eq('station_id', stationId);
+        return null;
+      }
+      const row = { user_id: id, station_id: stationId, mark, note: note || '' };
+      const { error } = await sb.from('osce_stars').upsert(row, { onConflict: 'user_id,station_id' });
+      if (error) throw new Error('Could not save that: ' + (error.message || error.code));
+      return { stationId, mark, note: note || '', at: Date.now() };
     }
     /* A list of attempts needs the score, not the answers. Selecting whole
        payloads shipped every question, every marking point and every
@@ -2225,6 +2262,7 @@ const Backend = (() => {
       moveOsceStations, getOsceCollections, saveOsceCollections, getOsceGuide, saveOsceGuide, getGroqConfig, saveGroqConfig,
       findUserByNo, createLiveStation, getLiveStation, peekLiveStation, saveLiveStation, dropLiveStation, myLiveStations, watchLiveStation,
       getOsceBlueprint, saveOsceBlueprint, tagOsceStations, listOsceDecks, saveOsceDeck, deleteOsceDeck,
+      listOsceStars, setOsceStar,
       listOsceAttempts, getOsceAttempt,
       saveOsceAttempt, deleteOsceAttempt, uploadOsceAudio, getOsceAudioUrl, sweepOsceAudio,
       /* case discussions — the SAME names in both backends, always */

@@ -907,7 +907,11 @@ const OSCE = (() => {
       collections().catch(() => []),
       // only fetched to put a name on the filter strip; never blocks the page
       (opts && opts.bp && typeof OsceBlueprint !== 'undefined')
-        ? OsceBlueprint.get().catch(() => []) : Promise.resolve([])
+        ? OsceBlueprint.get().catch(() => []) : Promise.resolve([]),
+      /* The candidate's own ★ and ↓, fetched alongside everything else so
+         the cards are drawn already marked. Held by the module, not
+         returned here — every card asks it directly. */
+      (typeof Stars !== 'undefined') ? Stars.load().catch(() => null) : Promise.resolve(null)
     ]);
     /* ARRIVED FROM "THE GAP" ON THE PROGRESS PAGE.
        A module filter is not a bin and not a search: it cuts across both,
@@ -932,9 +936,28 @@ const OSCE = (() => {
        is noise": it is the one bin you reach in order to PUT something in it,
        so an empty one still has to be reachable. */
     const madeId = createdId();
+    /* THE CANDIDATE'S OWN BIN.
+
+       A star is not a collection — the developer files stations into
+       bins, the candidate stars them — but the place a candidate goes
+       looking for "the ones I marked" is the same strip of chips, so
+       that is where it is. It is drawn only when something is in it:
+       an empty ★ chip on every account would be furniture.
+
+       ↓ gets a chip too, and for a reason worth stating: a mark you
+       cannot review is a mark you stop trusting. Being able to see what
+       you have pushed down, and change your mind, is what makes it safe
+       to push things down at all. */
+    const starN = (typeof Stars !== 'undefined') ? Stars.counts() : { star: 0, low: 0 };
+    /* Both chips are always DRAWN and hidden while empty, rather than
+       drawn only when they have something in them: the first star of the
+       day has to be able to make its chip appear without redrawing the
+       page under the finger that pressed it. */
     const bins = [{ id: '*', label: 'All stations', n: list.length }].concat(
+      [{ id: '@star', label: '★ Starred', n: starN.star, hide: !starN.star }],
       colls.filter(c => counts[c.id] || c.id === madeId).map(c => ({ id: c.id, label: c.label, n: counts[c.id] || 0 })),
-      counts[''] ? [{ id: '', label: UNFILED.label, n: counts[''] }] : []
+      counts[''] ? [{ id: '', label: UNFILED.label, n: counts[''] }] : [],
+      [{ id: '@low', label: '↓ Less important', n: starN.low, hide: !starN.low }]
     );
 
     if (!list.length) {
@@ -985,11 +1008,13 @@ const OSCE = (() => {
       </div>` : ''}
 
       ${bins.length > 1 ? `<div class="os-bins" id="os-bins" data-animate>
-        ${bins.map((b, i) => `<button class="os-bin ${i === 0 ? 'active' : ''}" data-bin="${esc(b.id)}">
+        ${bins.map((b, i) => `<button class="os-bin ${i === 0 ? 'active' : ''}${
+          b.id === '@star' || b.id === '@low' ? ' os-bin-mine' : ''}" data-bin="${esc(b.id)}"${b.hide ? ' hidden' : ''}>
           ${esc(b.label)}<i>${b.n}</i></button>`).join('')}
       </div>` : ''}
 
       <div id="os-made"></div>
+      <div id="os-starpack"></div>
 
       <div class="os-grid" id="os-grid" data-animate>${list.map(st => card(st, bestOf[st.id], colls)).join('')}</div>
       <p class="muted" id="os-none" hidden>No station mentions that.</p>`;
@@ -1038,15 +1063,20 @@ const OSCE = (() => {
        in a data attribute but not the blueprint tag, and putting it on
        every card would change the card markup for one temporary filter. */
     const bpOf = {};
-    list.forEach(st => { bpOf[st.id] = (st.bp && st.bp.module) || ''; });
+    const byIdBank = {};
+    list.forEach(st => { bpOf[st.id] = (st.bp && st.bp.module) || ''; byIdBank[st.id] = st; });
 
     const run = () => {
       const terms = input.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
       clear.hidden = !terms.length;
       bankView.q = input.value; bankView.bin = bin;
       let shown = 0;
+      const inBin = id => bin === '*' ? true
+        : bin === '@star' ? (typeof Stars !== 'undefined' && Stars.starred(id))
+        : bin === '@low' ? (typeof Stars !== 'undefined' && Stars.low(id))
+        : (byIdBank[id]?.collection || '') === bin;
       grid.querySelectorAll('.os-card').forEach(c => {
-        const ok = (bin === '*' || (c.dataset.coll || '') === bin)
+        const ok = inBin(c.dataset.st)
           && (!wantBp || bpOf[c.dataset.st] === wantBp)
           && terms.every(t => hay[c.dataset.st].includes(t));
         c.hidden = !ok; if (ok) shown++;
@@ -1054,13 +1084,86 @@ const OSCE = (() => {
       none.hidden = shown > 0;
       none.textContent = terms.length ? 'No station mentions that.'
         : wantBp ? `No station in ${bpName} is filed here. Try “All stations”, or write one.`
+        : bin === '@star' ? 'Nothing starred yet. Tap the ★ on any station and it waits for you here.'
+        : bin === '@low' ? 'Nothing marked less important yet.'
         : bin === madeId ? 'No stations have been created yet — yours would be the first.'
         : 'Nothing filed here yet.';
+      paintStarPack(shown);
       const nEl = body.querySelector('#os-bpfilter-n');
       if (nEl) nEl.textContent = `${shown} station${shown === 1 ? '' : 's'}`;
       paintMade();
       restoreScroll();
     };
+    /* ---------------- the revision pack ----------------
+
+       What the ★ is FOR. A list of starred stations is a list; the thing
+       a candidate actually wants in the last week is all of them in one
+       document they can read on a bus or print on paper. The scheme
+       printer already exists and already takes a station — so this hands
+       it all of them at once, in the order they were starred, and the
+       week before the exam is one press away from a revision booklet.
+
+       Drawn only in the ★ bin: everywhere else it would be an offer to
+       print something you are not looking at. */
+    const packHost = body.querySelector('#os-starpack');
+    function paintStarPack(shown) {
+      if (!packHost) return;
+      if (bin !== '@star' || typeof Stars === 'undefined' || !Stars.counts().star) { packHost.innerHTML = ''; return; }
+      if (packHost.dataset.n === String(shown)) return;      // no need to redraw on every keystroke
+      packHost.dataset.n = String(shown);
+      packHost.innerHTML = `
+        <div class="card os-starpack" data-animate>
+          <h3 class="card-title">★ Your revision list</h3>
+          <p class="muted">The stations you marked as worth coming back to. Nobody else sees this list, and starring
+            one never changes how it is drawn for anyone else.</p>
+          <div class="os-starpack-acts">
+            <button class="btn btn-gold" id="os-star-print">🖨 Print all ${shown} marking scheme${shown === 1 ? '' : 's'}</button>
+            <a class="btn btn-ghost" href="#/osce/sim">▶ Sit them as a circuit</a>
+          </div>
+          <p class="muted tiny">The printout is the schemes themselves — every question, every marking point, with a
+            box to tick — not a record of how you did. It is what to revise from, and what to hand somebody who is
+            going to examine you.</p>
+        </div>`;
+      packHost.querySelector('#os-star-print')?.addEventListener('click', async e => {
+        const b = e.currentTarget;
+        const ids = Stars.idsAt(Stars.STAR).filter(id => byIdBank[id]);
+        if (!ids.length) return;
+        b.disabled = true; b.textContent = `Fetching ${ids.length} scheme${ids.length === 1 ? '' : 's'}…`;
+        try {
+          /* The bank holds cards, not schemes — the marking points are
+             fetched per station and deliberately are not in the list
+             payload. So they are fetched here, once, for the print. */
+          const full = [];
+          for (const id of ids) { const s = await station(id).catch(() => null); if (s) full.push(s); }
+          if (!full.length) throw new Error('None of the starred stations could be loaded.');
+          printScheme(full);
+        } catch (err) {
+          alert('Could not build the printout: ' + (err?.message || err));
+        }
+        b.disabled = false; b.textContent = `🖨 Print all ${ids.length} marking scheme${ids.length === 1 ? '' : 's'}`;
+      });
+    }
+
+    /* One listener for the whole grid — see the note on Stars.wire. A star
+       pressed inside the ★ bin drops the card out of the list it is in,
+       which is the right behaviour and would be baffling anywhere else,
+       so the whole strip is redrawn from the counts instead. */
+    if (typeof Stars !== 'undefined') {
+      Stars.wire(body, () => {
+        const c = Stars.counts();
+        const chip = (id, n) => {
+          const el = body.querySelector(`.os-bin[data-bin="${id}"]`);
+          if (!el) return;
+          el.querySelector('i').textContent = n;
+          /* An empty chip you are standing in must not vanish under you —
+             it would leave the page filtered to a bin with no button. */
+          el.hidden = !n && bin !== id;
+        };
+        chip('@star', c.star); chip('@low', c.low);
+        if (bin === '@star' || bin === '@low') { packHost.dataset.n = ''; run(); }
+      });
+    }
+
     input.addEventListener('input', async () => { bankView.top = 0; await loadDeep(); run(); });
     clear.addEventListener('click', () => { input.value = ''; bankView.top = 0; run(); input.focus(); });
     body.querySelector('#os-bins')?.addEventListener('click', e => {
@@ -1093,6 +1196,7 @@ const OSCE = (() => {
     return `
       <a class="os-card" data-st="${esc(st.id)}" data-coll="${esc(st.collection || '')}"
          href="#/osce/station/${encodeURIComponent(st.id)}">
+        ${typeof Stars !== 'undefined' ? Stars.html(st.id, true) : ''}
         <div class="os-card-top">
           <span class="os-card-time">${minsOf(st)} min</span>
           ${st.image_count ? `<span class="os-card-img" title="${st.image_count} image${st.image_count === 1 ? '' : 's'} — a CTG, a partogram or a scan">🖼 ${st.image_count}</span>` : ''}
@@ -1122,6 +1226,14 @@ const OSCE = (() => {
       <header data-animate>
         <p class="kicker">STATION · ${minsOf(st)} MINUTES · ${marksOf(st)} MARKS</p>
         <h1 class="page-title">${esc(st.topic || '')}</h1>
+        ${/* Marked HERE as well as on the card, because this is the page
+              you are on when you find out a station is hard — and the
+              moment you learn it is worth revising is the moment you want
+              to say so, not two taps later back in the bank. */
+          typeof Stars !== 'undefined' ? `<div class="os-star-row" id="os-star-row">
+          ${Stars.html(st.id)}
+          <span class="muted tiny os-star-say" id="os-star-say"></span>
+        </div>` : ''}
         ${st.created_by_name ? `<p class="muted os-by">✍️ Written by <strong>${esc(st.created_by_name)}</strong>${
           st.created_on ? ' · ' + esc(new Date(st.created_on).toLocaleDateString()) : ''}${
           st.source_meta?.origin ? ' · from ' + esc(st.source_meta.origin) : ''}</p>` : ''}
@@ -1198,6 +1310,25 @@ const OSCE = (() => {
       location.hash = '#/osce/run/' + sid;
     });
     view.querySelector('#os-scheme').addEventListener('click', () => showScheme(st));
+
+    /* The ★ / ↓ pair, and a line saying what each one will actually do —
+       a mark whose consequence is invisible is a mark nobody presses. */
+    if (typeof Stars !== 'undefined') {
+      const row = view.querySelector('#os-star-row');
+      const say = view.querySelector('#os-star-say');
+      const sayIt = () => {
+        if (!say) return;
+        const m = Stars.of(st.id);
+        say.textContent = m === Stars.STAR
+          ? 'In your ★ revision list — and never skipped in a circuit.'
+          : m === Stars.LOW
+            ? 'A circuit will offer to skip this one, and can leave it out altogether.'
+            : 'Star it for the week before the exam, or lower it to keep it out of your circuits.';
+      };
+      Stars.load().then(() => { Stars.paint(row); sayIt(); }).catch(() => {});
+      Stars.wire(row, sayIt);
+      sayIt();
+    }
     view.querySelector('#os-hand')?.addEventListener('click', () => {
       location.hash = '#/osce/mark/' + encodeURIComponent(st.id);
     });
@@ -1746,6 +1877,7 @@ const OSCE = (() => {
 
   async function renderSim(view, user) {
     const list = await stations().catch(() => []);   // cards only — the circuit needs names, not schemes
+    if (typeof Stars !== 'undefined') { try { await Stars.load(); } catch {} }
     const modules = await OsceBlueprint.get().catch(() => []);
     let attempts = [];
     try { attempts = (await myAttempts()) || []; } catch {}
@@ -1791,6 +1923,23 @@ const OSCE = (() => {
           <span><strong>All stations must be new to me</strong><br>
             <span class="muted tiny" id="os-freshnote"></span></span>
         </label>
+        ${/* LEAVING OUT THE ONES YOU HAVE ALREADY JUDGED.
+
+              Nine stations is two and a quarter hours. Spending fifteen
+              minutes of it on a station you have already decided is not
+              worth your time is the most expensive thing this page can
+              do, and until now there was no way to say so.
+
+              Ticked by default the moment there is anything to leave out:
+              having marked something ↓ IS the instruction, and having to
+              repeat it on every circuit would make the mark pointless.
+              It is still a tick and not a rule — untick it and they come
+              back, because "less important" is not "never again". */''}
+        <label class="os-fresh os-skiplow" id="os-lowwrap" hidden>
+          <input type="checkbox" id="os-low" checked>
+          <span><strong>Leave out the ones I marked ↓ less important</strong><br>
+            <span class="muted tiny" id="os-lownote"></span></span>
+        </label>
 
         <details class="dev-collapse os-simcoach" style="margin-top:14px" open>
           <summary><span class="card-title">Coaching on every station in this circuit</span><span class="dc-caret">▸</span></summary>
@@ -1812,7 +1961,7 @@ const OSCE = (() => {
     FX.viewIn(view);
     if (!list.length) return;
 
-    let want = 9, mode = 'blueprint', chosen = new Set(), freshOnly = false;
+    let want = 9, mode = 'blueprint', chosen = new Set(), freshOnly = false, skipLow = true;
     let done = new Set();
     attempts.forEach(a => done.add(a.station_id));
 
@@ -1835,17 +1984,28 @@ const OSCE = (() => {
     /* The circuit is settled ONCE, when the button is pressed — not on every
        repaint. A pool that reshuffled itself as you looked at it made the
        summary a lie about what you were going to sit. */
+    /* The stations this candidate has pushed down, taken out of the draw
+       before any other rule runs — including the blueprint balance, which
+       would otherwise reach for one to fill a module. Choosing by hand is
+       exempt: a station you have just ticked yourself is a station you
+       want, whatever you thought of it last month. */
+    const lowSet = () => (skipLow && typeof Stars !== 'undefined')
+      ? new Set(Stars.idsAt(Stars.LOW)) : new Set();
+    const dropLow = arr => { const l = lowSet(); return l.size ? arr.filter(s => !l.has(s.id)) : arr; };
+
     function pool() {
       if (mode === 'pick') return list.filter(s => chosen.has(s.id));
-      if (mode === 'blueprint' && tagged.length) {
-        const c = OsceBlueprint.buildCircuit(tagged, history, want,
+      const bank = dropLow(list);
+      const bankTagged = dropLow(tagged);
+      if (mode === 'blueprint' && bankTagged.length) {
+        const c = OsceBlueprint.buildCircuit(bankTagged, history, want,
           { avoid: done, freshOnly, priorities, weights });
         if (c.length) return c;
       }
       /* The plain modes honour the tick too: "all new to me" is a promise
          about the circuit, not about one way of building it. */
-      let src = (mode === 'unseen' || freshOnly) ? list.filter(s => !done.has(s.id)) : list.slice();
-      if (!src.length && !freshOnly) src = list.slice();
+      let src = (mode === 'unseen' || freshOnly) ? bank.filter(s => !done.has(s.id)) : bank.slice();
+      if (!src.length && !freshOnly) src = bank.slice();
       const bag = src.slice();
       for (let i = bag.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [bag[i], bag[j]] = [bag[j], bag[i]]; }
       return bag.slice(0, want);
@@ -1864,6 +2024,20 @@ const OSCE = (() => {
         : 'Choose at least one station.';
       freshNote.textContent = `${freshLeft} of ${tagged.length} blueprint stations are still untried.`;
       view.querySelector('#os-freshwrap').classList.toggle('is-on', freshOnly);
+
+      /* The ↓ tick appears only for somebody who has marked something.
+         It also says what it is costing them — a candidate who has
+         quietly excluded half the bank should be able to see that. */
+      const lowN = (typeof Stars !== 'undefined') ? Stars.counts().low : 0;
+      const lowWrap = view.querySelector('#os-lowwrap');
+      if (lowWrap) {
+        lowWrap.hidden = !lowN || mode === 'pick';
+        lowWrap.classList.toggle('is-on', skipLow);
+        const ln = view.querySelector('#os-lownote');
+        if (ln) ln.textContent = skipLow
+          ? `${lowN} station${lowN === 1 ? '' : 's'} you marked ↓ are out of this draw — ${list.length - lowN} left to draw from.`
+          : `${lowN} station${lowN === 1 ? '' : 's'} you marked ↓ are back in the draw.`;
+      }
       view.querySelector('#os-sim-go').disabled = !p.length;
       note.textContent = mode === 'unseen'
         ? `${list.filter(s => !done.has(s.id)).length} of ${list.length} stations are still untried.`
@@ -1899,7 +2073,11 @@ const OSCE = (() => {
         pickHost.innerHTML = `<div class="os-picks">${list.map(s => `
           <label class="os-pick ${chosen.has(s.id) ? 'is-on' : ''}">
             <input type="checkbox" data-pickst="${esc(s.id)}" ${chosen.has(s.id) ? 'checked' : ''}>
-            <span><strong>${esc(s.topic || s.id)}</strong><em>${qCount(s)} questions · ${marksOf(s)} marks${done.has(s.id) ? ' · attempted' : ''}</em></span>
+            <span><strong>${esc(s.topic || s.id)}</strong>${(() => {
+              const m = (typeof Stars !== 'undefined') ? Stars.of(s.id) : '';
+              return m === 'star' ? ' <i class="os-pick-star" title="you starred this">★</i>'
+                : m === 'low' ? ' <i class="os-pick-low" title="you marked this less important">↓</i>' : '';
+            })()}<em>${qCount(s)} questions · ${marksOf(s)} marks${done.has(s.id) ? ' · attempted' : ''}</em></span>
           </label>`).join('')}</div>`;
       } else { pickHost.hidden = true; pickHost.innerHTML = ''; }
     }
@@ -1917,6 +2095,7 @@ const OSCE = (() => {
       paint();
     });
     freshBox.addEventListener('change', () => { freshOnly = freshBox.checked; paint(); });
+    view.querySelector('#os-low')?.addEventListener('change', e => { skipLow = e.target.checked; paint(); });
     {
       // a circuit is recorded, so every option is answerable
       const ch = view.querySelector('#os-sim-coach');
@@ -1993,6 +2172,11 @@ const OSCE = (() => {
     if (!s) { location.hash = '#/osce'; return; }
     const st = await station(s.stations[s.at]);
     if (!st || !qsOf(st).length) { location.hash = '#/osce'; return; }
+    /* A circuit resumed tomorrow lands here without passing the builder,
+       so the marks are fetched here too — the brief reads them straight
+       out of the module and must not find it empty. Cached after the
+       first call, so this costs nothing on the other eight stations. */
+    if (typeof Stars !== 'undefined') { try { await Stars.load(); } catch {} }
 
     const qs = qsOf(st);
     const total = minsOf(st) * 60;
@@ -2127,6 +2311,8 @@ const OSCE = (() => {
 
     function brief(resuming) {
       paintClock();
+      // read from what Stars already holds; a circuit page has loaded it
+      const lowHere = (typeof Stars !== 'undefined') && Stars.low(st.id);
       stage.innerHTML = `
         <div class="os-sheet" data-animate>
           <p class="kicker">${resuming ? 'RESUMING' : 'READ THE SCENARIO'}</p>
@@ -2180,6 +2366,35 @@ const OSCE = (() => {
           </label>` : ''}
           <div id="os-brief-drive"></div>
           <button class="btn btn-gold btn-lg" id="os-go">${resuming ? '▶ Resume the station' : "▶ I've read it — start"}</button>
+          ${/* SKIPPING ONE, WITHOUT ENDING THE ROUND.
+
+                Until now a circuit had two exits: sit this station, or end
+                the whole round. There was no way to say "not this one" —
+                so a candidate with an hour spent it on whatever the draw
+                happened to hand them.
+
+                A skipped station is `notSat`, exactly like the ones a
+                round ended early never reached: not counted against the
+                mean, still counted as fresh, still offered next time. It
+                is not `skipped`, which means you were there and said
+                nothing — that is a different fact and the circuit page
+                already tells them apart.
+
+                Only before the clock starts. Once you have spoken, the
+                tape exists and the way out is Next, which hands it over
+                to be marked. Skipping then would throw away an answer.
+
+                THE BLIND RULE SURVIVES IT. A blind circuit still names
+                nothing here. The one thing it will say is what YOU said
+                about this station earlier — your own ↓ is not a hint
+                about the topic, and it is exactly what makes the choice
+                to skip an informed one rather than a coin toss. */''}
+          ${s.circuit && !resuming && s.at + 1 < s.stations.length ? `<div class="os-skipbox">
+            ${lowHere ? `<p class="os-skip-say">↓ <strong>You marked this one less important.</strong></p>` : ''}
+            <button class="btn btn-ghost btn-sm" id="os-skipst">⏭ Skip this station — go to ${s.at + 2} of ${s.stations.length}</button>
+            <span class="muted tiny">It is recorded as not sat: it counts neither for you nor against you, stays
+              fresh, and will be offered again.</span>
+          </div>` : ''}
           ${typeof AiOsce !== 'undefined' && AiOsce.allowed(user) ? `<div class="os-brief-ai">
             ${AiOsce.buttonHtml()}
             <span class="muted tiny">Sit this one against a chat model instead — the same station, the same fifteen
@@ -2250,6 +2465,19 @@ const OSCE = (() => {
         await startCapture();
         startClock();
         show(qi);
+      });
+
+      /* Skipping is cheap and reversible in the sense that matters — the
+         station stays fresh — so it does not ask twice the way ending the
+         whole round does. It does have to be deliberate, though, so it
+         says which station is coming next rather than just moving. */
+      stage.querySelector('#os-skipst')?.addEventListener('click', async ev => {
+        const b = ev.currentTarget;
+        b.disabled = true;
+        saveMark(sid, st.id, { status: 'notSat', message: 'Skipped before the clock started.', at: Date.now() });
+        s.at += 1; s.qi = 0; s.elapsed = 0; s.phase = 'brief';
+        await saveSession(s); stopLive();
+        renderRun(view, sid, user);
       });
     }
 
@@ -3771,6 +3999,85 @@ const OSCE = (() => {
     try { return JSON.parse(body); } catch { return null; }
   }
 
+  /* ================= THE TICKS ARE THE MARKING =================
+
+     A real report came back reading "Q3 — 20/20" above five marking
+     points of which three said "did not mention". Both numbers came from
+     the same model in the same answer, and they cannot both be true.
+
+     The marking prompt already spells the arithmetic out: share = the
+     question's marks divided by its points, credit = the share if
+     covered, half if partial, none if missed, awarded = the sum. A model
+     that ticks the points correctly and then writes a number that
+     contradicts them has done the hard half and fluffed the easy one —
+     and it is the easy half that a candidate reads as their score.
+
+     So the number is no longer taken on trust. It is COMPUTED, from the
+     ticks, by the same rule the hand-marking sheet has always used — and
+     where the model's own figure differs it is kept as `claimed`, so the
+     report can say what happened instead of quietly disagreeing.
+
+     Why the ticks win, and not the number: the ticks are the evidence.
+     Each one is a specific claim about a specific sentence, with a note
+     saying what was said or missing, and the candidate can check every
+     one against their own transcript. "20/20" is a claim about nothing
+     that can be checked. When a marker contradicts itself, believe the
+     half that shows its working.
+
+     A question is left exactly as it came when there is nothing to
+     recompute from — no points, or no marks on the question. Guessing
+     would be the same fault in the other direction. */
+
+  const PT_CREDIT = { covered: 1, partial: 0.5, missed: 0 };
+  function creditOf(status) {
+    const s = String(status || '').toLowerCase();
+    if (/cover/.test(s)) return PT_CREDIT.covered;
+    if (/part/.test(s)) return PT_CREDIT.partial;
+    return PT_CREDIT.missed;                       // missed, blank, or a word we do not know
+  }
+
+  /**
+   * Recompute every question's marks from its ticks, and the totals from
+   * those. Mutates and returns `d`. `st` is the station when we have it —
+   * an imported marking may be against a station we do not hold, and the
+   * question's own `max` is then the only scale there is.
+   */
+  function reconcile(d, st) {
+    if (!d || !Array.isArray(d.questions)) return d;
+    const src = {};
+    (st ? qsOf(st) : []).forEach((q, i) => { src[String(q.id)] = q; src['#' + i] = q; });
+
+    let changed = 0, before = 0, after = 0;
+    d.questions.forEach((qr, i) => {
+      const pts = Array.isArray(qr.points) ? qr.points : [];
+      const q = src[String(qr.id)] || src['#' + i] || {};
+      const max = Number(qr.max) || Number(q.marks) || 0;
+      const was = Number(qr.awarded) || 0;
+      before += was;
+      if (!pts.length || !max) { after += was; return; }   // nothing to recompute from
+      const share = max / pts.length;
+      const got = pts.reduce((n, p) => n + share * creditOf(p.status), 0);
+      const now = Math.min(max, Math.round(got * 2) / 2);
+      /* Rounding to the half mark means a model can legitimately land a
+         quarter of a mark away. Only a real disagreement is a correction. */
+      if (Math.abs(now - was) > 0.5) {
+        qr.claimed = was;
+        qr.awarded = now;
+        changed++;
+      }
+      qr.max = max;
+      qr.share = Math.round(share * 100) / 100;
+      after += Number(qr.awarded) || 0;
+    });
+
+    if (!changed) return d;
+    d.total = Math.round(after * 2) / 2;
+    const max = Number(d.max) || d.questions.reduce((n, q) => n + (Number(q.max) || 0), 0);
+    if (max) { d.max = max; d.percent = Math.round((d.total / max) * 100); }
+    d.regraded = { questions: changed, from: Math.round(before * 2) / 2, to: d.total };
+    return d;
+  }
+
   function parseResult(text, st, finish) {
     let raw = String(text || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
     let d = null;
@@ -3834,6 +4141,15 @@ const OSCE = (() => {
        marked, flagged, and offered to be marked again. A partial is never
        given a pass/fail, because passing 44 of 52 marks that happen to be
        the easy half is not a pass and not a fail either. */
+    /* Before a single total is worked out, make the numbers agree with
+       the ticks — see the note above `reconcile`. It runs here rather
+       than in the renderer so that everything downstream (the circuit
+       mean, the progress page, the drift ledger, the recall queue, a
+       report printed a month later) is looking at the same corrected
+       figure, and so a correction is recorded once with the attempt
+       instead of recomputed differently in five places. */
+    reconcile(d, st);
+
     const want = qsOf(st);
     const got = (d.questions || []).length;
     const short = want.length && got < want.length;
@@ -3860,7 +4176,10 @@ const OSCE = (() => {
       };
       out.pass = null;                    // no verdict on half a station
     } else {
-      out.pass = d.pass != null ? d.pass : total >= passOf(st);
+      /* A regraded station cannot keep the model's own verdict: "pass"
+         was written against the total it thought it had given, and that
+         total has just been corrected. The pass mark decides. */
+      out.pass = (d.regraded || d.pass == null) ? total >= passOf(st) : d.pass;
     }
     return out;
   }
@@ -3920,6 +4239,23 @@ const OSCE = (() => {
           <div class="os-part-acts">
             <a class="btn btn-gold btn-sm" href="#/osce/station/${encodeURIComponent(a.station_id || '')}">Mark it again</a>
           </div>
+        </div>` : ''}
+
+        ${/* THE MARKER'S ARITHMETIC, CORRECTED IN THE OPEN.
+
+              Never a silent fix. The candidate is entitled to know that
+              the score they are looking at is not the one the model
+              typed, and to check the working themselves — every tick is
+              on this page, a few inches below. */''}
+        ${r.regraded ? `<div class="card os-regrade" data-animate>
+          <p><strong>⚖️ The marks were recalculated from the ticks.</strong>
+            The marker ticked the scheme point by point and then wrote a total that did not match its own ticks —
+            ${r.regraded.from} where the points it marked come to <strong>${r.regraded.to}</strong>. AUREUM scores from
+            the points, so this report shows ${r.regraded.to}/${r.max}.</p>
+          <p class="muted tiny">${r.regraded.questions} question${r.regraded.questions === 1 ? ' was' : 's were'}
+            affected; each shows the marker's own figure struck through. Every point below says what was said or
+            missing, so you can check the marking that produced this against your own transcript — which is exactly
+            why the ticks are believed and the total is not.</p>
         </div>` : ''}
 
         ${a.source === 'claude' ? `<div class="card os-claude-note" data-animate>
@@ -4004,7 +4340,9 @@ const OSCE = (() => {
               <summary>
                 <span class="os-qres-n">Q${i + 1}</span>
                 <span class="os-qres-p">${esc(q.prompt || '')}</span>
-                <span class="os-qres-m ${pct < 50 ? 'bad' : pct < 70 ? '' : 'good'}">${qr.awarded}/${qr.max}</span>
+                <span class="os-qres-m ${pct < 50 ? 'bad' : pct < 70 ? '' : 'good'}">${
+                  qr.claimed != null ? `<s class="os-qres-was" title="what the marker itself wrote">${qr.claimed}</s> ` : ''
+                }${qr.awarded}/${qr.max}</span>
                 <span class="dc-caret">▸</span>
               </summary>
               <div class="os-qres-body">
@@ -4734,8 +5072,17 @@ ${has('teach') && (r.reading || []).length ? `<section class="blk"><h2>Where to 
      examined from the front one.
 
      No score, no verdict, no candidate. It is a blank instrument. */
-  function printScheme(st) {
-    const qs = qsOf(st);
+  /**
+   * The marking scheme, printable. Takes one station or a list of them —
+   * a list prints as one document with a page break between stations,
+   * which is what the ★ revision pack asks for and what a printer does
+   * best. One station is the same code path with a list of one, so there
+   * is no second layout to keep in step with this one.
+   */
+  function printScheme(input) {
+    const many = Array.isArray(input) ? input.filter(Boolean) : [input].filter(Boolean);
+    if (!many.length) return;
+    const st = many[0];
     const P = '#os-printdoc';
     const styles = `
 @page { size: A4 portrait; margin: 15mm 14mm 13mm; }
@@ -4762,6 +5109,7 @@ ${P} li::before{content:'';position:absolute;left:2px;top:4px;width:11px;height:
 ${P} li.head{padding-left:0;margin:9px 0 3px;font-size:8pt;letter-spacing:.1em;text-transform:uppercase;color:#0d8f7d;font-weight:700}
 ${P} li.head::before{display:none}
 ${P} .role{page-break-before:always;break-before:page}
+${P} .sheet.brk{page-break-before:always;break-before:page}
 ${P} .role h2{font-size:13pt;margin:0 0 4px;border-left:4px solid #c96442;padding-left:9px}
 ${P} .role .warn{font-size:8.5pt;color:#a33;border:1px dashed #d9a9a9;padding:7px 9px;margin:0 0 12px}
 ${P} .role h3{font-size:9.5pt;margin:11px 0 3px}
@@ -4772,31 +5120,50 @@ ${P} .foot{margin-top:16px;padding-top:8px;border-top:1px solid #ddd;font-size:7
       ? `<li class="head">${esc(headText(p) || 'Section')}</li>`
       : `<li>${esc(p)}</li>`).join('');
 
-    const role = hasRole(st) ? `
-      <section class="role">
-        <h2>Role player — ${esc(roleLabel(st))}</h2>
-        <p class="warn">Keep this page turned over while the station is being sat. It carries what the character
-          is holding back, and a candidate who sees it has been given the station.</p>
-        ${roleHtml(st, 'brief')}
-      </section>` : '';
+    /* One station's pages. `nth` is only used to break the page before
+       every station after the first — a booklet whose second station
+       starts halfway down the first one's last page is not a booklet. */
+    const sheetFor = (s, nth) => {
+      const qs = qsOf(s);
+      const role = hasRole(s) ? `
+        <section class="role">
+          <h2>Role player — ${esc(roleLabel(s))}</h2>
+          <p class="warn">Keep this page turned over while the station is being sat. It carries what the character
+            is holding back, and a candidate who sees it has been given the station.</p>
+          ${roleHtml(s, 'brief')}
+        </section>` : '';
+      return `<div class="sheet${nth ? ' brk' : ''}">
+        <p class="brand">AUREUM · Pathway to MD${many.length > 1
+          ? ` · station ${nth + 1} of ${many.length}` : ''}</p>
+        <h1>${esc(s.topic || s.id)}</h1>
+        <p class="facts">${minsOf(s)} minutes · ${qs.length} question${qs.length === 1 ? '' : 's'} ·
+          ${marksOf(s)} marks · ${ptCount(s)} marking points · ${passOf(s)} to pass (${s.pass_mark_percent || 70}%)${
+          s.created_by_name ? ' · written by ' + esc(s.created_by_name) : ''}</p>
+        ${s.scenario ? `<div class="scen"><b>The scenario — read this to the candidate</b>${esc(s.scenario)}</div>` : ''}
+        ${qs.map((q, i) => `
+          <div class="q">
+            <div class="qh"><span class="qn">Q${i + 1}</span><span class="qt">${esc(q.prompt || '')}</span>
+              <span class="qm">${q.marks} marks</span></div>
+            ${q.reveal_before ? `<p class="rev"><b>Reveal first:</b> ${esc(q.reveal_before)}</p>` : ''}
+            <ul>${pts(q)}</ul>
+          </div>`).join('')}
+        <div class="foot"><span>${esc(s.topic || s.id)}</span><span>Marking scheme · not a completed marking</span></div>
+        ${role}
+      </div>`;
+    };
 
-    const body = `<div class="sheet">
+    const cover = many.length > 1 ? `<div class="sheet">
       <p class="brand">AUREUM · Pathway to MD</p>
-      <h1>${esc(st.topic || st.id)}</h1>
-      <p class="facts">${minsOf(st)} minutes · ${qs.length} question${qs.length === 1 ? '' : 's'} ·
-        ${marksOf(st)} marks · ${ptCount(st)} marking points · ${passOf(st)} to pass (${st.pass_mark_percent || 70}%)${
-        st.created_by_name ? ' · written by ' + esc(st.created_by_name) : ''}</p>
-      ${st.scenario ? `<div class="scen"><b>The scenario — read this to the candidate</b>${esc(st.scenario)}</div>` : ''}
-      ${qs.map((q, i) => `
-        <div class="q">
-          <div class="qh"><span class="qn">Q${i + 1}</span><span class="qt">${esc(q.prompt || '')}</span>
-            <span class="qm">${q.marks} marks</span></div>
-          ${q.reveal_before ? `<p class="rev"><b>Reveal first:</b> ${esc(q.reveal_before)}</p>` : ''}
-          <ul>${pts(q)}</ul>
-        </div>`).join('')}
-      <div class="foot"><span>${esc(st.topic || st.id)}</span><span>Marking scheme · not a completed marking</span></div>
-      ${role}
-    </div>`;
+      <h1>Revision pack — ${many.length} starred stations</h1>
+      <p class="facts">${many.reduce((n, s) => n + qsOf(s).length, 0)} questions ·
+        ${many.reduce((n, s) => n + ptCount(s), 0)} marking points ·
+        ${many.reduce((n, s) => n + marksOf(s), 0)} marks · about ${hours(many.length * 15)} of examining</p>
+      <div class="scen"><b>The stations, in the order you starred them</b>${
+        many.map((s, i) => `${i + 1}. ${esc(s.topic || s.id)}`).join('\n')}</div>
+      <div class="foot"><span>Marking schemes</span><span>not a completed marking</span></div>
+    </div>` : '';
+
+    const body = cover + many.map((s, i) => sheetFor(s, cover ? i + 1 : i)).join('');
     openPrintSheet(styles, body);
   }
 
@@ -6104,6 +6471,7 @@ ${P} .os-pd-close{background:transparent;color:#fff;border:1px solid rgba(255,25
     // exposed for tests and for the circuit page's live redraw
     markState, onMarkChange, retryMark, shell, circuitNext,
     printResult, printScheme, __printPresets: PRINT_PRESETS,
+    reconcile, creditOf,
     /* Lent to OSCE in AI so a tape recorded there is marked by exactly the
        same path as one recorded here — the same model picker, the same
        cost estimate, the same upload, the same pending queue. A second

@@ -396,6 +396,9 @@ const Essay = (() => {
     const qs = questionsOf(p);
     const idx = Math.max(0, Math.min(qs.length - 1, Number(qi) || 0));
     const q = qs[idx];
+    /* A paper with no questions in it is a data fault, not a crash: send the
+       reader back to the paper rather than throwing on `q.code`. */
+    if (!q) { location.hash = `#/library/essay/${encodeURIComponent(p.id)}`; return; }
     const PER_Q = 30 * 60;                                // 30 minutes a question
     const stKey = `essay-timer:${p.id}:${q.code}`;
     let remaining = PER_Q, running = false, tid = null;
@@ -428,8 +431,30 @@ const Essay = (() => {
           ${partsOf(q).length ? `<ul class="es-q-parts">${partsOf(q).map(pt => `<li class="${pt.sub ? 'is-sub' : ''}"><strong>${esc(pt.label)}</strong> ${esc(pt.text)}${
             pt.marks != null ? ` <span class="muted tiny">(${pt.marks} marks)</span>` : ''}</li>`).join('')}</ul>` : ''}
           <p class="es-write-hint muted tiny">✍ Write your answer on paper. This timer paces you at 30 minutes — pause it whenever
-            real life interrupts; your remaining time is saved. When done, photograph your answer and upload the marking report
-            from the Essay home.</p>
+            real life interrupts; your remaining time is saved.</p>
+        </div>
+
+        ${/* THE ANSWER COMES BACK OFF THE PAPER, HERE.
+
+              Until now the loop ended at "write it on paper" and resumed
+              somewhere else entirely: photograph the pages, open another
+              app, paste a prompt, wait, copy JSON back, upload it. Four
+              places to lose an hour's work and one to lose the plot.
+
+              AUREUM reads the pages itself now. The transcript is shown
+              first and corrected by the person who wrote it — see the
+              header of ocr.js for why that step is not optional — and
+              only then is it marked. */''}
+        <div class="card es-shoot" data-animate>
+          <h3 class="card-title">📸 Have it marked</h3>
+          <p class="muted">Photograph the pages you have just written. AUREUM reads them, shows you the transcript to
+            correct — anything it could not read for certain is marked, never guessed — and then marks the corrected
+            answer against the scheme.</p>
+          <div class="es-shoot-acts">
+            <button class="btn btn-gold btn-lg" id="es-shoot">📸 Photograph my answer</button>
+            <a class="btn btn-ghost btn-sm" href="#/library/essay">Upload a marking report instead</a>
+          </div>
+          <p class="es-shoot-msg" id="es-shoot-msg"></p>
         </div>
 
         <div class="es-write-nav" data-animate>
@@ -451,6 +476,91 @@ const Essay = (() => {
     view.querySelector('#es-reset').addEventListener('click', () => { stop(); remaining = PER_Q; timerEl.textContent = fmt(remaining); timerEl.classList.remove('low'); toggle.innerHTML = '▶ Start'; persist(); });
     const cleanup = () => { if (tid) clearInterval(tid); window.removeEventListener('hashchange', cleanup); };
     window.addEventListener('hashchange', cleanup);
+
+    view.querySelector('#es-shoot')?.addEventListener('click', () => {
+      if (typeof Scribe === 'undefined') return;
+      stop();                                   // the clock stops when the pen does
+      Scribe.open({
+        title: `${q.code} — photograph your answer`,
+        doneLabel: 'Mark this answer →',
+        /* The question goes with the pages: it does not put words into the
+           transcript, it tells the reader that "PPH" is likely to be PPH
+           and not "PP4". Reading is easier when you know the subject. */
+        context: `${q.code}. ${String(q.stem || '').slice(0, 300)}`,
+        onDone: r => markTranscript(view, p, q, r, user)
+      });
+    });
+  }
+
+  /* ================= from transcript to marked report =================
+
+     The corrected transcript goes up, the report comes back in the same
+     shape an uploaded one has, and is saved through the same path — so
+     the report page, the feedback list, the writing lab and the tutor all
+     work on it without knowing it was marked here rather than pasted in.
+     One shape, one store, one renderer. */
+  async function markTranscript(view, paper, q, tr, user) {
+    const msg = view.querySelector('#es-shoot-msg');
+    const btn = view.querySelector('#es-shoot');
+    if (!msg) return;
+    if (btn) btn.disabled = true;
+    msg.innerHTML = `<span class="es-shoot-work">✍ Marking ${esc(q.code)} — ${tr.words} words${
+      tr.unsure ? `, ${tr.unsure} still unread` : ''}…</span>`;
+
+    try {
+      if (typeof Wallet !== 'undefined' && !(await Wallet.guard())) throw new Error(Wallet.blockedMessage());
+      const token = await Backend.getAccessToken();
+      if (!token) throw new Error('Sign in first.');
+      const res = await fetch(cfg().ai.apiBase, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+        body: JSON.stringify({
+          action: 'essaymark', provider: 'gemini', dailyLimit: cfg().ai?.dailyLimit,
+          code: q.code, stem: q.stem || '',
+          parts: partsOf(q).map(pt => ({ label: pt.label, text: pt.text, marks: pt.marks })),
+          maxMarks: qMarks(q) || 100,
+          scheme: q.scheme || q.markScheme || '',
+          transcript: tr.text
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Marking failed (HTTP ${res.status}).`);
+
+      /* THE TRANSCRIPT TRAVELS WITH THE MARKING.
+
+         The report schema already has a `transcription` block because the
+         external pipeline filled it; ours fills it from what was actually
+         read and corrected. It matters more here than there: this is the
+         evidence of what was marked, and if a point looks wrongly given
+         the candidate can see, on the same page, the words it was given
+         against. */
+      const report = Object.assign({}, data.report, {
+        code: q.code,
+        paper: paper.id,
+        topic: data.report?.topic || q.sectionTitle || '',
+        questionStem: data.report?.questionStem || q.stem || '',
+        markedOn: data.report?.markedOn || new Date().toISOString().slice(0, 10),
+        markedBy: 'AUREUM',
+        transcription: {
+          pageCount: tr.pageCount,
+          illegiblePercent: tr.words ? Math.round(tr.unsure / tr.words * 1000) / 10 : 0,
+          pages: tr.pages.map(pg => ({ page: pg.page, text: pg.text }))
+        }
+      });
+      const bad = validateFeedback(report);
+      if (bad.length) throw new Error(bad[0]);
+      await Backend.saveEssayFeedback(normaliseFeedback(report));
+      msg.innerHTML = `<span class="good">✓ Marked — ${report.score?.percent ?? '—'}%. Opening your report…</span>`;
+      setTimeout(() => { location.hash = '#/library/essay/feedback/' + encodeURIComponent(q.code); }, 900);
+    } catch (err) {
+      if (btn) btn.disabled = false;
+      /* The transcript is the expensive half and it must not die with the
+         error. It is put on screen to be copied out, so an hour of writing
+         survives a failed marking. */
+      msg.innerHTML = `<span class="bad">${esc(err.message || err)}</span>
+        <details class="es-shoot-keep" open><summary>Your transcript is safe — open it to copy</summary>
+          <textarea rows="10" readonly>${esc(tr.text)}</textarea></details>`;
+    }
   }
 
   /* ================= feedback report (#/library/essay/feedback/:code) ================= */
