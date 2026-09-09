@@ -1064,7 +1064,11 @@ function buildOsceMarkPrompt(body) {
     + 'matches your points to the scheme by position, and a candidate revises from the full wording.',
     '"share" is marks divided by the number of marking points for that question.',
     '"credit" is the marks that point earned: the full share if covered, half the share if partial, 0 if missed.',
-    'awarded must equal the sum of that question\'s credits, rounded to the nearest 0.5, and total the sum of awarded.'
+    'awarded must equal the sum of that question\'s credits, rounded to the nearest 0.5, and total the sum of awarded.',
+    'THE APP RECOMPUTES THIS. Every question\'s marks are worked out again from the statuses you give, by the '
+      + 'rule above, and where your number disagrees with your own ticks the ticks are used and your figure is '
+      + 'shown to the candidate struck through. So there is nothing to be gained by writing a generous total '
+      + 'over a scheme you marked as missed: mark each point as you actually find it, and let the arithmetic follow.'
   ].join('\n');
   return { system, user };
 }
@@ -1316,7 +1320,11 @@ function buildOsceAudioPrompt(body) {
     'If nothing was said for a question, set its transcript to "" and mark every point missed.',
     '"share" is marks divided by the number of marking points for that question.',
     '"credit" is the marks that point earned: the full share if covered, half the share if partial, 0 if missed.',
-    'awarded must equal the sum of that question\'s credits, rounded to the nearest 0.5, and total the sum of awarded.'
+    'awarded must equal the sum of that question\'s credits, rounded to the nearest 0.5, and total the sum of awarded.',
+    'THE APP RECOMPUTES THIS. Every question\'s marks are worked out again from the statuses you give, by the '
+      + 'rule above, and where your number disagrees with your own ticks the ticks are used and your figure is '
+      + 'shown to the candidate struck through. So there is nothing to be gained by writing a generous total '
+      + 'over a scheme you marked as missed: mark each point as you actually find it, and let the arithmetic follow.'
   ].join('\n');
   return { system, user };
 }

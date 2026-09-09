@@ -6232,3 +6232,72 @@ body.sc-open { overflow: hidden; }
   .sc-page img { height: 140px; }
   .sc-add { min-height: 170px; }
 }
+
+/* ============================================================
+   v99 — the candidate's own mark on a station (★ / ↓)
+
+   Deliberately quiet until it is used. An unpressed star is a thin
+   outline that sits in the corner of a card and does not compete with
+   the topic; a pressed one is gold and unmistakable across a grid of two
+   hundred. The ↓ is the same control in grey, because it is the same
+   judgement pointing the other way.
+   ============================================================ */
+.st-mark { display: inline-flex; gap: 6px; align-items: center; }
+.os-card .st-mark { position: absolute; top: 10px; right: 10px; z-index: 2; opacity: .55; transition: opacity .16s; }
+.os-card:hover .st-mark, .os-card .st-mark:focus-within { opacity: 1; }
+.os-card .st-mark:has(.is-on) { opacity: 1; }
+.st-b { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font: inherit;
+  font-size: .78rem; line-height: 1; padding: 6px 9px; border-radius: 999px;
+  border: 1px solid var(--line); background: color-mix(in srgb, var(--panel) 80%, transparent);
+  color: var(--muted); transition: color .16s, border-color .16s, background .16s, transform .1s; }
+.st-b:hover { color: var(--ink); border-color: var(--teal); }
+.st-b:active { transform: scale(.94); }
+.st-b[disabled] { opacity: .5; cursor: progress; }
+.st-mark.is-compact .st-b { padding: 5px 8px; font-size: .82rem; }
+.st-star.is-on { color: var(--gold); border-color: var(--gold);
+  background: color-mix(in srgb, var(--gold) 16%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--gold) 22%, transparent); }
+.st-low.is-on { color: var(--muted); border-color: color-mix(in srgb, var(--muted) 50%, transparent);
+  background: color-mix(in srgb, var(--muted) 12%, transparent); }
+.os-card { position: relative; }
+.os-star-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 10px 0 0; }
+.os-star-say { flex: 1 1 240px; }
+.os-bin-mine { border-style: dashed; }
+.os-pick-star { font-style: normal; color: var(--gold); }
+.os-pick-low { font-style: normal; color: var(--muted); }
+
+/* the ★ revision pack */
+.os-starpack { border-left: 3px solid var(--gold); }
+.os-starpack-acts { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 8px; }
+
+/* leaving the ↓ ones out of a circuit — the same shape as the fresh tick */
+.os-skiplow.is-on { border-color: color-mix(in srgb, var(--gold) 40%, transparent); }
+
+/* skipping one station of a circuit, before its clock starts */
+.os-skipbox { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line);
+  display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; }
+.os-skip-say { margin: 0; font-size: .84rem; color: var(--muted); }
+.os-skip-say strong { color: var(--ink); }
+
+/* ============================================================
+   v99 — the marks, recalculated from the ticks
+
+   Amber, not red: nothing has gone wrong with the candidate's answer,
+   and the tone should not suggest it has. What went wrong is the
+   marker's arithmetic, and this is the app saying so out loud.
+   ============================================================ */
+.os-regrade { border-left: 3px solid var(--gold);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--gold) 7%, transparent), transparent 70%); }
+.os-regrade p { margin: 0 0 8px; }
+.os-qres-was { opacity: .55; text-decoration-thickness: 1.5px; margin-right: 2px; font-weight: 400; }
+
+/* why Drive keeps asking — developer only, folded away */
+.wl-dv-dev { margin-top: 14px; }
+.wl-dv-why { margin: 8px 0 0; padding-left: 18px; font-size: .84rem; color: var(--muted); }
+.wl-dv-why li { margin: 0 0 8px; }
+.wl-dv-why strong { color: var(--ink); }
+
+@media (max-width: 640px) {
+  .os-card .st-mark { opacity: 1; }
+  .os-starpack-acts .btn { width: 100%; }
+}

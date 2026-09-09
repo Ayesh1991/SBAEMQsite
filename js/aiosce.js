@@ -1479,7 +1479,14 @@ average mean nothing.
   }
 
   function toAttempt(d, st, user, audio, id) {
-    const r = d.result || {};
+    /* THE TICKS DECIDE THE MARKS HERE TOO.
+
+       A marking pasted back from a chat model is the same kind of object
+       our own marker returns and fails in the same way — a scheme ticked
+       honestly under a total that contradicts it. It goes through the
+       same reconciliation, so a chat-marked station and an AUREUM-marked
+       one cannot end up scored by different rules. */
+    const r = OSCE.reconcile(Object.assign({}, d.result || {}), st);
     const num = v => Number(v) || 0;
     const max = num(r.max) || OSCE.marksOf(st);
     const total = num(r.total);
@@ -1509,7 +1516,8 @@ average mean nothing.
       result: Object.assign({}, r, {
         max, total,
         percent: r.percent != null ? num(r.percent) : Math.round((total / Math.max(1, max)) * 100),
-        pass: r.pass != null ? !!r.pass : total >= OSCE.passOf(st)
+        // a regraded station cannot keep the verdict written against the old total
+        pass: (r.regraded || r.pass == null) ? total >= OSCE.passOf(st) : !!r.pass
       })
     };
   }

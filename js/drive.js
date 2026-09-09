@@ -173,6 +173,34 @@ const Drive = (() => {
    * consent screen — silent renewal first, because being thrown a popup
    * mid-station would be worse than losing the upload.
    */
+  /* WHAT ACTUALLY MEANS "THE GRANT IS GONE".
+
+     This distinction is the whole of a bug that made people reconnect to
+     Drive several times a week when Google's own expiry is weekly at
+     worst. A silent token request fails for two completely different
+     kinds of reason, and the old code treated them as one:
+
+       • The grant really is gone, or Google wants the user to say yes
+         again — `access_denied`, `consent_required`, `interaction_required`,
+         `login_required`. Reconnecting is the only fix.
+
+       • Nothing is wrong with the grant at all. The browser blocked the
+         popup Google wanted to open (Safari does this to any popup not
+         opened by a tap — and the probe before a station is not a tap),
+         the tab was in the background, the network hiccuped, or the
+         person closed the window. On iPad these are the COMMON case.
+
+     The second kind used to latch `lapsed`, and `deposit()` then refused
+     to try at all until somebody pressed Reconnect. One blocked popup on
+     the brief screen therefore cost a manual reconnection, every time.
+
+     So: only the first kind latches. The second clears the cached token
+     and leaves the connection exactly as it was, to be tried again at the
+     next upload — which is the moment that matters, and which by then may
+     well succeed. */
+  const GONE_RE = /access_denied|consent_required|interaction_required|login_required|invalid_grant|expired|revoked/i;
+  const isGrantGone = e => GONE_RE.test(String(e?.error || e?.type || e?.message || e || ''));
+
   function token(interactive) {
     if (tok && Date.now() < tokExp - 60000) return Promise.resolve(tok);
     return new Promise((res, rej) => {
@@ -180,24 +208,44 @@ const Drive = (() => {
         client = client || google.accounts.oauth2.initTokenClient({
           client_id: clientId(),
           scope: 'https://www.googleapis.com/auth/drive.file',
+          /* Whom to sign in as. Without it Google offers the account
+             chooser to anybody signed into more than one account, which
+             needs a popup — and a popup is the thing that gets blocked.
+             It is a hint, not a restriction: the user can still pick
+             another account on the consent screen. */
+          hint: state().email || '',
           callback: () => {}
         });
         client.callback = r => {
           if (r && r.access_token) {
             tok = r.access_token;
             tokExp = Date.now() + (Number(r.expires_in || 3600) * 1000);
-            save({ lapsed: false, lapsedAt: 0 });
+            save({ lapsed: false, lapsedAt: 0, lastError: '' });
             res(tok);
           } else {
-            markLapsed();
+            softFail(r, 'Google did not return a token.');
             rej(new Error(r?.error_description || r?.error || 'Google did not return a token.'));
           }
         };
-        client.error_callback = e => { markLapsed(); rej(new Error(e?.message || 'The Drive sign-in was dismissed.')); };
-        client.requestAccessToken({ prompt: interactive ? 'consent' : '' });
+        client.error_callback = e => {
+          softFail(e, 'The Drive sign-in did not open.');
+          rej(new Error(e?.message || 'The Drive sign-in was dismissed.'));
+        };
+        /* 'consent' only when the user pressed Connect and is expecting a
+           screen. A renewal asks for no prompt, so a live grant renews
+           without anything appearing. */
+        client.requestAccessToken({ prompt: interactive ? 'consent' : '', hint: state().email || '' });
       } catch (e) { rej(e); }
     });
   }
+
+  /** A failed token request: latch only when the grant is genuinely gone. */
+  function softFail(e, fallback) {
+    tok = null; tokExp = 0;
+    if (isGrantGone(e)) markLapsed(e?.error_description || e?.message || fallback);
+    else ping();
+  }
+
   function markLapsed(why) {
     tok = null; tokExp = 0;
     if (state().folderId) save({ lapsed: true, lapsedAt: Date.now(), lastError: why || '' });
@@ -217,8 +265,16 @@ const Drive = (() => {
    */
   async function probe() {
     if (!configured() || !state().folderId) return status();
+    /* The probe REPORTS; it does not condemn. token() has already latched
+       the connection if Google genuinely refused, so a rejection reaching
+       here is either that (already recorded) or one of the harmless kinds
+       — a blocked popup, a dropped network, a backgrounded tab. This used
+       to call markLapsed on all of them, which is how a probe run
+       automatically before every station, without a tap and therefore with
+       its popup blocked, came to demand a manual reconnection several
+       times a week. */
     try { await ready(); await token(false); save({ lapsed: false, lapsedAt: 0, lastError: '' }); }
-    catch (e) { markLapsed(e?.message || 'The Drive permission has expired.'); }
+    catch (e) { if (!state().lapsed) save({ lastError: e?.message || 'Drive could not be checked just now.' }); }
     ping();
     return status();
   }
@@ -232,6 +288,20 @@ const Drive = (() => {
     await token(true);
     const folder = await pickFolder();
     save({ folderId: folder.id, folderName: folder.name, since: Date.now(), lapsed: false, lapsedAt: 0 });
+    /* WHICH GOOGLE ACCOUNT THIS IS.
+
+       Asked once, here, and only so that a later silent renewal can name
+       the account instead of putting up a chooser — the chooser needs a
+       popup and the popup is what gets blocked. `drive.file` is enough to
+       read this one field, and if it is refused nothing is stored and the
+       renewal behaves exactly as it did before. */
+    try {
+      const r = await fetch('https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)',
+        { headers: { Authorization: 'Bearer ' + tok } });
+      const who = r.ok ? (await r.json().catch(() => ({}))) : null;
+      const email = who?.user?.emailAddress || '';
+      if (email) save({ email });
+    } catch { /* a hint we do not have is a hint we do not pass */ }
     ping();
     return status();
   }
@@ -270,12 +340,20 @@ const Drive = (() => {
      resumable uploads buy nothing at that size but a second round trip. */
 
   async function upload(blob, name, meta = {}) {
-    if (!on()) return null;
+    /* A folder is what this needs, not a clean bill of health: a stale
+       `lapsed` must never be the reason a tape is not even attempted.
+       If the grant really is gone the token request says so in a second
+       and the tape goes to the outbox exactly as before. */
+    if (!configured() || !state().folderId) return null;
     const st = state();
     await ready();
     let t;
-    try { t = await token(false); }              // silent — never a popup mid-station
-    catch (e) { markLapsed(e?.message || 'Google would not renew the permission.'); return null; }
+    /* Silent — never a popup mid-station. A failure here does NOT by
+       itself mean the grant is gone (see isGrantGone): token() has
+       already latched it if it was, and if it was not then the tape goes
+       to the outbox and the next upload tries again. */
+    try { t = await token(false); }
+    catch (e) { save({ lastError: e?.message || 'Google would not renew the permission.' }); ping(); return null; }
 
     const body = () => {
       const f = new FormData();
@@ -345,7 +423,14 @@ const Drive = (() => {
        outbox exists for the case that actually cost recordings: a folder
        that WAS taking tapes and quietly stopped. */
     if (!state().folderId) return null;
-    if (state().lapsed) { note('The Drive permission had expired.'); return null; }
+    /* A LAPSED FLAG IS A WARNING, NOT A LOCK.
+
+       This used to return here without trying, so a connection marked
+       stale by one blocked popup stayed stale until somebody pressed
+       Reconnect — and every recording in between went to the outbox
+       untried. The flag is worth showing; it is not worth refusing on.
+       Trying costs one silent token request, and succeeding clears the
+       flag by itself. */
     let up = null;
     try { up = await upload(blob, name, meta); }
     catch (e) { note(e?.message || 'The upload failed.'); return null; }
