@@ -82,7 +82,34 @@ const Search = (() => {
      stemmer would also collapse words a clinician means to distinguish. */
   const stem = w => (w.length > 3 && /s$/.test(w) && !/ss$/.test(w)) ? w.slice(0, -1) : w;
 
+  /* WORDS THAT ARE NOT WHAT ANYBODY IS LOOKING FOR.
+
+     This omission had a real cost. In the bank's search box it never
+     showed, because people type "shoulder dystocia" and not sentences.
+     In the assistant they type sentences — and "how to write essay and
+     get marked" was tokenised into seven terms of which five were
+     `how`, `to`, `and`, `get` and `marked`. Nothing matched all seven,
+     the loose fallback then matched ANY of them, and the answer was
+     three hundred and nineteen unrelated stations.
+
+     So they are dropped. Not from the text being searched — a marking
+     point still reads as it was written — only from the QUERY, where
+     they are noise pretending to be a term. If a query is nothing but
+     these, they are kept, because "who is she" should search for
+     something rather than for nothing. */
+  const STOP = new Set(('a an the and or but if of in on at to for with without from by as is are was were be been being '
+    + 'do does did doing done have has had having i we you he she it they them me my our your their this that these those '
+    + 'what which who whom whose when where why how can could should would may might will shall must please thanks '
+    + 'about into over under again then than there here so such no not only own same too very just also get got make made '
+    + 'want need like use using used give given show tell find me us out up down off between during before after').split(' '));
+
   const words = s => norm(s).split(' ').filter(Boolean).map(stem);
+  /** The words worth searching for — see STOP. */
+  function terms(s) {
+    const all = words(s);
+    const kept = all.filter(w => !STOP.has(w));
+    return kept.length ? kept : all;
+  }
 
   /* ---------------- what doctors actually type ----------------
 
@@ -250,8 +277,12 @@ const Search = (() => {
 
   /** Parse once per keystroke, not once per station. */
   function parse(raw) {
-    const terms = words(raw);
-    return { raw: String(raw || ''), terms, phrase: terms.join(' ') };
+    const t = terms(raw);
+    /* The phrase is built from the words as TYPED, not from the kept
+       ones: "postpartum haemorrhage" must still match as a phrase, and
+       a phrase with the stopwords cut out of the middle would match
+       nothing. */
+    return { raw: String(raw || ''), terms: t, phrase: words(raw).join(' '), core: t.join(' ') };
   }
 
   /* ---------------- the cut ----------------
@@ -263,6 +294,8 @@ const Search = (() => {
      against, so a vague query that matches everything weakly still shows
      everything. */
   const FLOOR = 0.14;
+  /* Beyond this many, a partial-match fallback is not an answer. */
+  const LOOSE_MAX = 12;
   const STRONG = W.topic * 0.5;      // below this nothing is confident enough to cut by
 
   /**
@@ -282,7 +315,21 @@ const Search = (() => {
     /* NOTHING MATCHING EVERY WORD IS NOT NOTHING.
        "postpartum haemorrhage management" finds no station containing all
        three; a blank page is a worse answer than the PPH station. */
-    if (!kept.length && all.length) { kept = all; loose = true; }
+    /* NOTHING MATCHING EVERY WORD IS NOT NOTHING — BUT IT IS NOT
+       EVERYTHING EITHER.
+
+       Falling back to "matches any word" is right for a two- or
+       three-word query where one word was simply absent. It is
+       catastrophic for a sentence: every station containing any one
+       common word comes back, which is how a question about essays
+       returned three hundred stations. So the fallback only stands when
+       it produces a SHORT list; a long one means the query was never
+       really about these words at all. */
+    if (!kept.length && all.length) {
+      const most = Math.max(...all.map(x => x.matched || 0));
+      const near = all.filter(x => (x.matched || 0) >= Math.max(1, most));
+      if (near.length && near.length <= LOOSE_MAX) { kept = near; loose = true; }
+    }
 
     kept.sort((a, b) => b.score - a.score || String(a.rec.topic || '').localeCompare(String(b.rec.topic || '')));
 
@@ -323,5 +370,6 @@ const Search = (() => {
   /** A record's fields are cached on it; call this if the text changes. */
   const bust = rec => { delete rec._f_topic; delete rec._f_scen; delete rec._f_deep; };
 
-  return { norm, words, stem, parse, score, rank, bust, W, GROUPS, SYN, _strength: strength, _claim: claim, _field: field };
+  return { norm, words, terms, stem, parse, score, rank, bust, W, GROUPS, SYN, STOP,
+    _strength: strength, _claim: claim, _field: field };
 })();
