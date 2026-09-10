@@ -269,6 +269,21 @@ const RealStation = (() => {
   /* ================= the candidate's side (#/osce/real) ================= */
 
   async function render(view, user) {
+    /* THE SWITCH IS READ BEFORE ANYTHING IS ASKED OF THE DATABASE.
+
+       Off means off: no invitation list, no poll, no subscription. The
+       page still draws — somebody arriving from a bookmark or a code is
+       owed an explanation rather than a redirect — but nothing behind it
+       runs. See the header of js/features.js. */
+    if (typeof Features !== 'undefined') {
+      await Features.load();
+      if (!Features.on('realStation')) {
+        clearInterval(inboxTimer); inboxTimer = null;
+        view.innerHTML = OSCE.shell('real', Features.offCard('realStation',
+          'Any station you were in the middle of is untouched and will still be there when it is switched back on.'));
+        FX.viewIn(view); return;
+      }
+    }
     if (!user) {
       view.innerHTML = OSCE.shell('real', `<div class="card" data-animate><h3 class="card-title">Sign in first</h3>
         <p class="muted">A real station is between two named people.</p></div>`);

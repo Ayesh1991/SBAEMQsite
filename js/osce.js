@@ -996,8 +996,10 @@ const OSCE = (() => {
             placeholder="Search stations — e.g. HELLP, sepsis, shoulder dystocia, consent">
           <button class="es-search-x" id="os-search-x" hidden aria-label="Clear search">✕</button>
         </div>
-        <p class="muted tiny es-search-hint">Searches the topic, the scenario and every question across all
-          ${list.length} station${list.length > 1 ? 's' : ''}. Several words = all of them must appear.</p>
+        <p class="muted tiny es-search-hint">Searches the topic, the scenario and every marking point across all
+          ${list.length} station${list.length > 1 ? 's' : ''}, best match first. Abbreviations work — PPH, PET, LSCS,
+          CTG — and so does either spelling of haemorrhage, oestrogen or caesarean.</p>
+        <div id="os-searchnote"></div>
       </div>
 
       ${wantBp ? `<div class="os-bpfilter" id="os-bpfilter" data-animate>
@@ -1013,6 +1015,15 @@ const OSCE = (() => {
           ${esc(b.label)}<i>${b.n}</i></button>`).join('')}
       </div>` : ''}
 
+      ${/* A star that cannot be saved must say so BEFORE it is pressed,
+            not after. This is the only state in which the ★ is not
+            trustworthy, and it is a state the site owner can fix in one
+            action. */
+        (typeof Stars !== 'undefined' && Stars.trouble()) ? `<div class="card os-star-broken" data-animate>
+        <p><strong>⚠ Your ★ marks cannot be saved at the moment.</strong> ${esc(Stars.trouble())}</p>
+        <p class="muted tiny">Marks are stored against your account, not this device, so they follow you to your
+          phone and your laptop — but that needs the table on the database.</p>
+      </div>` : ''}
       <div id="os-made"></div>
       <div id="os-starpack"></div>
 
@@ -1030,8 +1041,15 @@ const OSCE = (() => {
        searches. The deep index — every prompt and every marking point — is
        fetched on the FIRST keystroke and never on a visit that does not
        search, which is most of them. */
-    const hay = {};
-    list.forEach(st => hay[st.id] = `${st.topic || ''} ${st.scenario || ''}`.toLowerCase());
+    /* ONE RECORD PER STATION, THREE FIELDS, KEPT APART.
+
+       The fields are not concatenated. That is the whole point: the
+       ranking needs to know WHERE a word was found — a word in the topic
+       is what the station is, a word in a marking point is a passing
+       mention — and a single blob cannot tell those apart. See the header
+       of search.js. */
+    const recs = list.map(st => ({ id: st.id, topic: st.topic || '', scenario: st.scenario || '', deep: '' }));
+    const recById = {}; recs.forEach(r => recById[r.id] = r);
     let deep = false;
     async function loadDeep() {
       if (deep) return; deep = true;
@@ -1039,8 +1057,13 @@ const OSCE = (() => {
         const idx = (typeof Cache !== 'undefined')
           ? await Cache.wrap('osce-search', TTL, () => Backend.getOsceSearchIndex(), { keepIfEmptied: true })
           : await Backend.getOsceSearchIndex();
-        (idx || []).forEach(r => { if (r.search) hay[r.id] = (hay[r.id] + ' ' + r.search).toLowerCase(); });
-      } catch { /* topic + scenario search still works */ }
+        (idx || []).forEach(r => {
+          const rec = recById[r.id];
+          if (!rec || !r.search) return;
+          rec.deep = r.search;
+          Search.bust(rec);            // its normalised form is now out of date
+        });
+      } catch { /* topic + scenario search still works without it */ }
     }
     /* A remembered bin that no longer holds anything falls back to All —
        and so does arriving with a module filter, because a remembered bin
@@ -1066,34 +1089,84 @@ const OSCE = (() => {
     const byIdBank = {};
     list.forEach(st => { bpOf[st.id] = (st.bp && st.bp.module) || ''; byIdBank[st.id] = st; });
 
+    /* Whether the weak matches are being shown, for this search only.
+       Reset on every new query: an "everything" that persisted would
+       quietly turn the ranking off for the rest of the visit. */
+    let showAll = false;
+    let lastQ = '';
+
     const run = () => {
-      const terms = input.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
-      clear.hidden = !terms.length;
+      const raw = input.value.trim();
+      clear.hidden = !raw;
+      if (raw !== lastQ) { lastQ = raw; showAll = false; }
       bankView.q = input.value; bankView.bin = bin;
-      let shown = 0;
+
       const inBin = id => bin === '*' ? true
         : bin === '@star' ? (typeof Stars !== 'undefined' && Stars.starred(id))
         : bin === '@low' ? (typeof Stars !== 'undefined' && Stars.low(id))
         : (byIdBank[id]?.collection || '') === bin;
+      /* The bin and the module filter are not relevance, they are a
+         question about which shelf to look on — so they are applied
+         BEFORE the ranking, not scored into it. Ranking within the wrong
+         shelf would put a brilliant match you cannot see at the top. */
+      const pool = recs.filter(r => inBin(r.id) && (!wantBp || bpOf[r.id] === wantBp));
+
+      const res = Search.rank(pool, raw, { showAll });
+      const order = {}; const where = {};
+      res.rows.forEach((x, i) => { order[x.rec.id] = i; where[x.rec.id] = x.where; });
+
+      let shown = 0;
       grid.querySelectorAll('.os-card').forEach(c => {
-        const ok = inBin(c.dataset.st)
-          && (!wantBp || bpOf[c.dataset.st] === wantBp)
-          && terms.every(t => hay[c.dataset.st].includes(t));
-        c.hidden = !ok; if (ok) shown++;
+        const ok = order[c.dataset.st] != null;
+        c.hidden = !ok;
+        if (!ok) return;
+        shown++;
+        /* Reordered by `order`, not by moving nodes: the cards carry
+           their own listeners and their own star state, and moving them
+           in the DOM to sort a list is how those get lost. */
+        c.style.order = order[c.dataset.st];
+        /* Say why it is here, but only when that is not obvious — a
+           title match speaks for itself. */
+        const w = raw ? where[c.dataset.st] : '';
+        const tag = c.querySelector('.os-card-why');
+        const label = w === 'scheme' ? 'in the marking scheme' : w === 'scenario' ? 'in the scenario' : '';
+        if (tag) { tag.textContent = label; tag.hidden = !label; }
       });
+
       none.hidden = shown > 0;
-      none.textContent = terms.length ? 'No station mentions that.'
+      none.textContent = raw ? `Nothing in the bank matches “${raw}”.`
         : wantBp ? `No station in ${bpName} is filed here. Try “All stations”, or write one.`
         : bin === '@star' ? 'Nothing starred yet. Tap the ★ on any station and it waits for you here.'
         : bin === '@low' ? 'Nothing marked less important yet.'
         : bin === madeId ? 'No stations have been created yet — yours would be the first.'
         : 'Nothing filed here yet.';
+
+      paintSearchNote(res, shown, raw);
       paintStarPack(shown);
       const nEl = body.querySelector('#os-bpfilter-n');
       if (nEl) nEl.textContent = `${shown} station${shown === 1 ? '' : 's'}`;
       paintMade();
       restoreScroll();
     };
+
+    /* WHAT WAS LEFT OUT, SAID OUT LOUD.
+
+       Hiding a weak result is only honest if the hiding is visible and
+       reversible. This is the line that makes the cut a decision the
+       reader can overrule rather than a silence they have to guess at. */
+    const noteHost = body.querySelector('#os-searchnote');
+    function paintSearchNote(res, shown, raw) {
+      if (!noteHost) return;
+      if (!raw) { noteHost.innerHTML = ''; return; }
+      const bits = [`<strong>${shown}</strong> station${shown === 1 ? '' : 's'}, best match first`];
+      if (res.loose) bits.push(`nothing matches every word — these match some of them`);
+      noteHost.innerHTML = `<div class="os-srch-note">
+        <span>${bits.join(' · ')}</span>
+        ${res.cut ? `<button class="btn btn-ghost btn-sm" id="os-srch-all">
+          ${showAll ? 'Hide' : 'Show'} ${res.cut} weaker match${res.cut === 1 ? '' : 'es'}</button>` : ''}
+      </div>`;
+      noteHost.querySelector('#os-srch-all')?.addEventListener('click', () => { showAll = !showAll; run(); });
+    }
     /* ---------------- the revision pack ----------------
 
        What the ★ is FOR. A list of starred stations is a list; the thing
@@ -1204,6 +1277,7 @@ const OSCE = (() => {
           ${best != null ? `<span class="os-card-best ${best >= (st.pass_mark_percent || 70) ? 'good' : 'bad'}">best ${best}%</span>` : ''}
         </div>
         <h3>${esc(st.topic || st.id)}</h3>
+        <span class="os-card-why" hidden></span>
         <p class="os-card-sc">${esc(st.scenario || '')}</p>
         ${st.created_by_name ? `<p class="os-card-by">✍️ written by ${esc(st.created_by_name)}</p>` : ''}
         <div class="os-card-foot">
@@ -5313,7 +5387,13 @@ ${P} .foot{margin-top:16px;padding-top:8px;border-top:1px solid #ddd;font-size:7
       <div class="lib-subnav" data-animate>
         ${tab('bank', '#/osce', 'Station bank')}
         ${tab('sim', '#/osce/sim', 'Exam simulator')}
-        ${tab('real', '#/osce/real', 'Real station')}
+        ${/* A switched-off feature does not advertise itself. The route
+              still works and still explains itself to anybody holding a
+              link — see features.js — but a tab nobody can use is a tab
+              in the way. The developer reaches it from the switch itself,
+              in Developer → Settings. */
+          (typeof Features === 'undefined' || Features.on('realStation'))
+            ? tab('real', '#/osce/real', 'Real station') : ''}
         ${tab('mine', '#/osce/mine', 'My attempts')}
         ${/* The count is on the tab because a deck you have to remember to
               open is a deck nobody opens. It reads from localStorage, so it

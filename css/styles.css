@@ -6301,3 +6301,40 @@ body.sc-open { overflow: hidden; }
   .os-card .st-mark { opacity: 1; }
   .os-starpack-acts .btn { width: 100%; }
 }
+
+/* ============================================================
+   v100 — a search that ranks, and switches that say what they cost
+   ============================================================ */
+
+/* The cards are ordered by `order`, not by moving nodes, so the grid has
+   to be a formatting context that honours it. It already is; this is here
+   so that stays true if the layout is ever changed. */
+.os-grid { display: grid; }
+
+.os-srch-note { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 10px; margin: 8px 0 0; padding: 8px 12px; border-radius: 10px;
+  border: 1px solid var(--line); background: color-mix(in srgb, var(--panel) 60%, transparent);
+  font-size: .8rem; color: var(--muted); }
+.os-srch-note strong { color: var(--ink); }
+
+/* why a card is in the results, when that is not obvious from the title */
+.os-card-why { display: inline-block; margin: 2px 0 4px; font-size: .68rem; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--muted); opacity: .8; }
+.os-card-why::before { content: '↳ matched '; }
+
+/* the developer's switches */
+.dev-switches { border-left: 3px solid var(--gold); }
+.dev-switch { padding: 14px 0; border-top: 1px solid var(--line); }
+.dev-switch:first-child { border-top: 0; padding-top: 4px; }
+.dev-switch p { margin: 4px 0 0; }
+.dev-switch-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.dev-switch-pill { margin-left: 9px; font-size: .62rem; letter-spacing: .1em; font-weight: 700;
+  padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.dev-switch.is-on .dev-switch-pill { color: var(--ink); border-color: var(--gold);
+  background: color-mix(in srgb, var(--gold) 20%, transparent); }
+
+/* what a switched-off feature shows in its own place */
+.ft-off { border-left: 3px solid var(--line); text-align: center; }
+.ft-off .card-title { justify-content: center; }
+.os-star-broken { border-left: 3px solid var(--gold); }
+.os-star-broken p { margin: 0 0 6px; }

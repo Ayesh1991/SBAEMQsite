@@ -260,6 +260,11 @@ const Backend = (() => {
     async function saveOsceCollections(list) { write('oscecollections', list); return list; }
     async function getOsceGuide() { return read('osceguide', null); }
     async function saveOsceGuide(g) { write('osceguide', g); return g; }
+    /* ---- the feature switches ----
+       Site-wide, developer-set, everybody-read. See js/features.js for
+       what they are for and why they default to off. */
+    async function getFeatureSwitches() { return read('features', null); }
+    async function saveFeatureSwitches(f) { write('features', f); return f; }
 
     /* ---- live stations ----
        Kept OUTSIDE the per-email namespace on purpose: a live station has
@@ -839,6 +844,7 @@ const Backend = (() => {
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
       getOsceStations, getOsceStation, getOsceSearchIndex, publishOsceStation, unpublishOsceStation,
       moveOsceStations, getOsceCollections, saveOsceCollections, getOsceGuide, saveOsceGuide, getGroqConfig, saveGroqConfig,
+      getFeatureSwitches, saveFeatureSwitches,
       findUserByNo, createLiveStation, getLiveStation, peekLiveStation, saveLiveStation, dropLiveStation, myLiveStations, watchLiveStation,
       getOsceBlueprint, saveOsceBlueprint, tagOsceStations, listOsceDecks, saveOsceDeck, deleteOsceDeck,
       listOsceStars, setOsceStar,
@@ -1232,6 +1238,22 @@ const Backend = (() => {
     /* The blueprint shares the 'osce' config row with the collections, so
        each must merge rather than overwrite — saving one used to erase the
        other. */
+    /* ---- the feature switches ----
+       Their own app_config row rather than a corner of the 'osce' one:
+       they are read by pages that have nothing to do with OSCE, and a
+       switch that can only be read by fetching the blueprint and every
+       collection is a switch nobody will read cheaply. */
+    async function getFeatureSwitches() {
+      await ensureClient();
+      const { data } = await sb.from('app_config').select('data').eq('id', 'features').single();
+      return data?.data || null;
+    }
+    async function saveFeatureSwitches(f) {
+      await ensureClient();
+      const { error } = await sb.from('app_config').upsert({ id: 'features', data: f });
+      if (error) throw new Error(error.message || 'Could not save the switches.');
+      return f;
+    }
     async function getOsceBlueprint() {
       await ensureClient();
       const { data } = await sb.from('app_config').select('data').eq('id', 'osce').single();
@@ -2260,6 +2282,7 @@ const Backend = (() => {
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
       getOsceStations, getOsceStation, getOsceSearchIndex, publishOsceStation, unpublishOsceStation,
       moveOsceStations, getOsceCollections, saveOsceCollections, getOsceGuide, saveOsceGuide, getGroqConfig, saveGroqConfig,
+      getFeatureSwitches, saveFeatureSwitches,
       findUserByNo, createLiveStation, getLiveStation, peekLiveStation, saveLiveStation, dropLiveStation, myLiveStations, watchLiveStation,
       getOsceBlueprint, saveOsceBlueprint, tagOsceStations, listOsceDecks, saveOsceDeck, deleteOsceDeck,
       listOsceStars, setOsceStar,

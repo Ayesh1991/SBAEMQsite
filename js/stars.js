@@ -39,9 +39,37 @@ const Stars = (() => {
 
   let cache = null;                 // { stationId: mark } once loaded
   let loading = null;
+  let broken = '';                  // why the store could not be read, if it could not
   const listeners = new Set();
 
   const ping = () => listeners.forEach(fn => { try { fn(); } catch {} });
+
+  /* IT IS THE PERSON'S MARK, NOT THE DEVICE'S.
+
+     Every mark is stored against the signed-in account in the database,
+     never in this browser — so starring a station on an iPad shows it
+     starred on a phone, on a laptop, and on somebody else's computer the
+     moment that person signs in as themselves. Nothing here reads or
+     writes localStorage, deliberately: a per-device star would be
+     discovered to be per-device in the week before the exam, on the
+     device that does not have it.
+
+     The one exception is local mode — no Supabase configured — where
+     there is no account and no server to be user-specific about. That is
+     the development backend and it is single-device by definition.
+
+     WHICH MEANS THE TABLE HAS TO EXIST. Until supabase/schema.sql is run
+     with the osce_stars table in it, every read comes back empty and
+     every write is refused. That is not a silent state: it is recorded
+     here and said plainly wherever a mark is offered, because "I starred
+     it and it did not stick" is the worst way to find out. */
+  const MISSING = /relation .*osce_stars.* does not exist|could not find the table|schema cache|PGRST205|42P01/i;
+  const why = e => {
+    const m = String(e?.message || e?.code || e || '');
+    return MISSING.test(m)
+      ? 'The stars table has not been created yet — run supabase/schema.sql on the database and they will save.'
+      : m || 'The stars could not be reached.';
+  };
 
   /** Everything the signed-in candidate has marked, in one request. */
   async function load(force) {
@@ -52,13 +80,20 @@ const Stars = (() => {
         const rows = await Backend.listOsceStars();
         const m = {};
         (rows || []).forEach(r => { if (r && r.stationId && r.mark) m[r.stationId] = r.mark; });
-        cache = m;
-      } catch { cache = cache || {}; }   /* an unreachable backend is not an opinion */
+        cache = m; broken = '';
+      } catch (e) {
+        /* An unreachable store is not an opinion — but it is not nothing
+           either, and the difference has to be visible. */
+        cache = cache || {}; broken = why(e);
+      }
       loading = null;
       return cache;
     })();
     return loading;
   }
+
+  /** '' when the store is fine, otherwise why it is not. */
+  const trouble = () => broken;
 
   /** The mark held right now, without waiting. '' until load() has run. */
   const of = id => (cache || {})[id] || '';
@@ -89,9 +124,12 @@ const Stars = (() => {
       await Backend.setOsceStar(id, want || null, '');
       return want;
     } catch (e) {
+      /* The optimism is put back. A star that stayed gold over a write
+         that failed would be a promise the app cannot keep. */
       if (was) cache[id] = was; else delete cache[id];
+      broken = why(e);
       ping();
-      throw e;
+      throw new Error(broken);
     }
   }
 
@@ -177,8 +215,8 @@ const Stars = (() => {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
   /** Forget everything held — used when a different person signs in. */
-  function bust() { cache = null; loading = null; }
+  function bust() { cache = null; loading = null; broken = ''; }
 
-  return { STAR, LOW, load, of, starred, low, ready, idsAt, counts, set, toggleStar, toggleLow,
+  return { STAR, LOW, load, of, starred, low, ready, trouble, idsAt, counts, set, toggleStar, toggleLow,
     onChange, html, wire, paint, bust };
 })();

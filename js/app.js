@@ -2386,6 +2386,15 @@
     const canvas = document.getElementById('bg-canvas');
     if (canvas && !_energyBoot) ThreeBG.init(canvas);
     try { await Backend.init(); } catch (e) { console.warn('Backend init:', e); }
+    /* THE SWITCHES ARE READ ONCE, BEFORE THE FIRST PAGE IS DRAWN.
+
+       Every page that asks whether a feature is on asks synchronously —
+       a tab bar cannot await — so the answer has to be in hand before
+       anything renders, or a feature that IS on would draw itself as off
+       for the first second and then flicker. One request per session, and
+       it never blocks: an unreachable config leaves the defaults, which
+       for anything expensive means off. See js/features.js. */
+    if (typeof Features !== 'undefined') { try { await Features.load(); } catch { /* defaults */ } }
     route();
   });
 })();
