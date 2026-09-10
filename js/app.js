@@ -70,6 +70,8 @@
     { re: /^#\/osce\/cards$/, fn: (u) => OSCE.renderDecks(view, null, u) },
     { re: /^#\/osce\/cards\/([^/]+)$/, fn: (id, u) => OSCE.renderDecks(view, id, u) },
     { re: /^#\/billing$/, fn: (u) => Wallet.renderBilling(view, u) },
+    { re: /^#\/tools$/, fn: (u) => renderTools(view, u) },
+    { re: /^#\/tools\/([a-z0-9]+)$/, fn: (id, u) => renderTools(view, u, id) },
     { re: /^#\/library\/cpd$/, fn: (u) => cpdGate(u) && CPD.renderList(view, u) },
     { re: /^#\/library\/cpd\/([^/]+)\/([^/]+)$/, fn: (v, sec, u) => cpdGate(u) && CPD.renderTopic(view, v, sec, u) },
     { re: /^#\/library\/cpd\/([^/]+)$/, fn: (v, u) => cpdGate(u) && CPD.renderVolume(view, v, u) },
@@ -1401,6 +1403,27 @@
   }
 
   /* ================= profile ================= */
+
+  /* ---------------- the calculators (#/tools) ----------------
+
+     The same panel the assistant puts in its popup, given a whole page.
+     One implementation — see the note at the top of js/calc.js — so the
+     narrow one and the wide one cannot drift apart. */
+  function renderTools(view, user, only) {
+    view.innerHTML = `
+      <section class="page">
+        <header data-animate>
+          <p class="kicker">CLINICAL CALCULATORS</p>
+          <h1 class="page-title">The arithmetic, done by arithmetic</h1>
+          <p class="muted">Gestational age and dates, the Bishop score, shock index and blood loss, magnesium sulphate
+            volumes, the Ganzoni iron deficit, BMI and Apgar. Every one runs on this device — nothing is sent
+            anywhere, nothing is charged, and they all work with no signal at all.</p>
+        </header>
+        <div class="card" data-animate><div id="tools-host"></div></div>
+      </section>`;
+    FX.viewIn(view);
+    if (typeof Calc !== 'undefined') Calc.panel(view.querySelector('#tools-host'), { only });
+  }
 
   async function renderProfile(user) {
     const progress = await Backend.getProgress();

@@ -1064,8 +1064,16 @@ const TeaRoom = (() => {
     launchBar = document.createElement('div');
     launchBar.className = 'tr-launchbar' + (dockOpen() ? ' is-open' : '');
     const scanner = typeof QR !== 'undefined';
+    const assistant = typeof Assist !== 'undefined';
     launchBar.innerHTML = `
       <div class="tr-fan">
+        ${/* The assistant sits at the TOP of the fan — furthest from the
+              thumb that opened it, which sounds like the wrong place and
+              is not: it is the one you reach for deliberately, where the
+              chat and the wall are things you glance at. Being first out
+              of the fan also makes it the one you see. */''}
+        ${assistant ? `<button class="tr-launch tr-launch-as" data-open="assist" title="Ask AUREUM" aria-label="Ask AUREUM">
+          <span class="tr-launch-ico">${Assist.ICON}</span></button>` : ''}
         ${scanner ? `<button class="tr-launch tr-launch-qr" data-open="qr" title="Scan a code" aria-label="Scan a code">
           <span class="tr-launch-ico">${QR.ICON}</span></button>` : ''}
         <button class="tr-launch" data-open="wall" title="Tea room wall"><span class="tr-launch-ico">🧱</span><span class="tr-launch-badge" hidden></span></button>
@@ -1085,6 +1093,7 @@ const TeaRoom = (() => {
       }
       const b = e.target.closest('[data-open]'); if (!b) return;
       if (b.dataset.open === 'qr') { try { QR.scan(); } catch {} return; }
+      if (b.dataset.open === 'assist') { try { Assist.toggle(); } catch {} return; }
       b.dataset.open === 'chat' ? toggleChat() : toggleWall();
     });
     document.body.appendChild(launchBar);
@@ -1101,6 +1110,10 @@ const TeaRoom = (() => {
       if (!badge) return;
       badge.textContent = n > 99 ? '99+' : n; badge.hidden = !n;
     };
+    /* Open means the button that opened it steps aside — the same rule
+       the chat and the wall follow, so the fan never has a button that
+       does nothing but close what is already in front of it. */
+    set('[data-open="assist"]', 0, typeof Assist !== 'undefined' && Assist.isOpen());
     set('[data-open="chat"]', unreadChat(), chatOpen || cfg.chatEnabled === false);
     set('[data-open="wall"]', unreadWall(), wallOpen || cfg.wallEnabled === false);
     /* Folded away is not the same as gone: whatever is waiting inside is
@@ -1114,10 +1127,18 @@ const TeaRoom = (() => {
     }
     bar.querySelector('[data-dock]')?.classList.toggle('is-muted', muted);
   }
-  function mountLauncher() { ensureLaunchers(); updateLaunchers(); }
+  function mountLauncher() {
+    ensureLaunchers(); updateLaunchers();
+    /* The assistant's own open/close has to move its button too, and it
+       can be opened from places that are not this bar. */
+    if (typeof Assist !== 'undefined' && !mountLauncher._as) {
+      mountLauncher._as = Assist.onChange(() => updateLaunchers());
+    }
+  }
   function unmountLauncher() {
     launchBar?.remove(); launchBar = null;
     closeWall(); closeChat();
+    try { Assist.unmount(); } catch {}
     wallEl?.remove(); wallEl = null; chatEl?.remove(); chatEl = null;
     reset();
   }
