@@ -761,6 +761,30 @@ RULES
         reason: credit.reason, confirmBy: credit.confirmBy, beneficiary: credit.beneficiary,
         flags: credit.flags, risk: credit.risk });
     }
+    /* ---- the assistant's last resort ----
+
+       Most of what the assistant is asked never gets here: a calculation
+       is done on the device, a question about AUREUM is answered from a
+       written index, and "find me a station" is a search over the real
+       bank. See the header of js/assist.js. This is only what none of
+       those could answer.
+
+       Groq first, because its free tier costs nothing and this is the
+       cheapest kind of question there is — a paragraph of ordinary help.
+       Gemini is the fallback, and the answer says which one replied and
+       what it cost, so a person can see when they have been charged. */
+    if (action === 'assist') {
+      const p = buildAssistPrompt(body);
+      if (env.GROQ_API_KEY) {
+        const g = await callGroqText(p.system, p.user, env, 700);
+        if (g && g.text) {
+          await logTokens(token, env, 'groq', { model: g.model, in: 0, out: 0 }, 'assistant');
+          return json({ text: g.text, model: g.model, free: true, usage: { in: 0, out: 0 } });
+        }
+      }
+      const r = await run(p, 'assistant', 700);
+      return json({ text: r.text, model: r.model, free: false, usage: { in: r.in || 0, out: r.out || 0 } });
+    }
     const prompt = action === 'chat' ? buildChatPrompt(question, messages) : buildExplainPrompt(question);
     const r = await run(prompt, 'tutor');
     if (cacheable) await cacheSet(question.questionKey, provider, r.text, env);
@@ -1676,6 +1700,102 @@ async function pickGroqModel(kind, env, saved) {
 }
 
 /** Groq's own settings, developer-editable, alongside the wallet's. */
+/* ---------------- Groq, for text ----------------
+
+   Groq already carries the transcription and the examiner's voice. This
+   is the third thing it does, and the one that matters most to a user's
+   balance: an ordinary help answer on the free tier costs them nothing
+   at all.
+
+   NEVER LOAD-BEARING. Every path out of here that is not a real answer
+   returns null, and the caller falls through to the paid model. A free
+   tier that is out of quota, out of models, or simply down must cost the
+   person asking nothing more than a second. */
+const GROQ_CHAT_PREF = /llama-3\.[13]-(70|8)b|llama-3\.3|llama3|mixtral|gemma2?-/i;
+
+async function groqChatModel(env) {
+  const saved = await groqSettings(env);
+  if (saved?.chatModel) return saved.chatModel;
+  const ids = await groqModels(env);
+  /* Anything obviously not a chat model is excluded first — the account's
+     speech models live in the same list. */
+  const text = (ids || []).filter(id => !GROQ_ASR.test(id) && !GROQ_TTS.test(id));
+  return text.find(id => GROQ_CHAT_PREF.test(id)) || text[0] || '';
+}
+
+async function callGroqText(system, user, env, maxTokens) {
+  try {
+    const model = await groqChatModel(env);
+    if (!model) return null;
+    const res = await fetch(`${GROQ}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + env.GROQ_API_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+        max_tokens: Number(maxTokens) || 700,
+        temperature: 0.3
+      })
+    });
+    if (!res.ok) return null;                       // quota, outage, bad id — fall through
+    const d = await res.json().catch(() => null);
+    const text = d?.choices?.[0]?.message?.content || '';
+    return text.trim() ? { text: text.trim(), model } : null;
+  } catch { return null; }
+}
+
+/* ---------------- what the assistant is allowed to be ----------------
+
+   The three rules here are the whole difference between a help
+   assistant and a liability.
+
+   It is told the ACTUAL page list, so it can point somewhere real. It is
+   told to refuse rather than guess about the application, because a
+   confidently invented menu sends somebody hunting for a button that
+   does not exist. And it is told to hand arithmetic and doses BACK to
+   the calculators rather than doing them, because the calculators cannot
+   be wrong and it can. */
+function buildAssistPrompt(body) {
+  const pages = Array.isArray(body.pages) ? body.pages.slice(0, 40) : [];
+  const history = Array.isArray(body.history) ? body.history.slice(-6) : [];
+  const system = [
+    'You are the assistant inside AUREUM, a study application for Sri Lankan postgraduate obstetrics and',
+    'gynaecology trainees preparing for the PGIM MD Part II and the MRCOG. You are talking to a doctor.',
+    '',
+    'HOW TO ANSWER',
+    '· Short. Two or three sentences for most questions; a few bullets when there is genuinely a list.',
+    '· Plain British English, the way a senior colleague speaks. No preamble, no "great question", no sign-off.',
+    '· Assume clinical knowledge. Do not explain what a partogram is to somebody who used one this morning.',
+    '',
+    'THREE THINGS YOU MUST NOT DO',
+    '1. Do not invent anything about AUREUM. The pages that exist are listed below and that is all there is.',
+    '   If you are asked how to do something in the app and it is not in that list, say you are not sure and',
+    '   suggest they look in the section that seems closest. Never describe a button, menu or setting unless',
+    '   it is named in the list.',
+    '2. Do not do arithmetic and do not give a drug dose. AUREUM has calculators for gestational age and EDD,',
+    '   the Bishop score, shock index and blood loss, magnesium sulphate volumes, the Ganzoni iron deficit,',
+    '   BMI and Apgar. Point at the calculator instead: it is exact, it is free, and it shows its working.',
+    '3. Do not give advice about the care of a particular patient. This is a revision tool. Discuss what the',
+    '   exam expects and what the guidelines say; if a question reads as a real patient in front of them now,',
+    '   say plainly that this is a study assistant and they should follow their unit protocol and seniors.',
+    '',
+    'If you do not know, say so in one sentence. A wrong answer here is read as an AUREUM answer.',
+    '',
+    'THE PAGES THAT EXIST:',
+    pages.length ? pages.map(p => `· ${String(p.title || '').slice(0, 80)} — ${String(p.route || '').slice(0, 60)}`).join('\n')
+      : '· (none supplied)'
+  ].join('\n');
+
+  const user = [
+    history.length ? 'The conversation so far:\n' + history
+      .map(h => `${h.role === 'user' ? 'Them' : 'You'}: ${String(h.text || '').slice(0, 600)}`).join('\n') + '\n'
+      : '',
+    'Their question: ' + String(body.question || '').slice(0, 1200)
+  ].filter(Boolean).join('\n');
+
+  return { system, user };
+}
+
 async function groqSettings(env) {
   try {
     const res = await sb(`/rest/v1/app_config?id=eq.groq&select=data`, env,

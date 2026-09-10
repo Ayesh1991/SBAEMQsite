@@ -106,7 +106,7 @@ const ROUTES = [
   '#/cases', '#/cases/mine', '#/cases/mine-disc',
   '#/billing', '#/profile', '#/studio', '#/review', '#/peer', '#/cards',
   '#/simulator', '#/simulator/design', '#/simulator/search', '#/mistakes',
-  '#/library/cpd',
+  '#/library/cpd', '#/tools', '#/tools/bishop',
   '#/dev', '#/dev/users', '#/dev/osce', '#/dev/blueprint', '#/dev/essays', '#/dev/settings'
 ];
 
