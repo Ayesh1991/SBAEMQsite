@@ -6692,3 +6692,70 @@ body.sc-open { overflow: hidden; }
   .rd-bar { display: none; }
   .rd-scroll { overflow: visible; padding: 0; }
 }
+
+/* ============================================================
+   v104 — the images, and marking the document up
+   ============================================================ */
+
+/* the pictures, in the article */
+.rd-imgs { display: grid; gap: 12px; margin: 0 0 16px; }
+.rd-imgs.is-many { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.rd-img { margin: 0; }
+.rd-img-b { display: block; width: 100%; padding: 0; cursor: zoom-in; border-radius: 10px;
+  border: 1px solid #e4e2dc; background: #fff; overflow: hidden; }
+.rd-img-b img { display: block; width: 100%; height: auto; }
+.rd-img figcaption { margin-top: 6px; font-family: system-ui, sans-serif; font-size: .74rem; color: #86857e; }
+
+/* ---- the pencil case ---- */
+.an-bar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; flex: 1 1 auto;
+  justify-content: center; font-family: system-ui, -apple-system, sans-serif; }
+.an-tools, .an-acts { display: inline-flex; gap: 4px; }
+.an-t { width: 34px; height: 34px; display: grid; place-items: center; cursor: pointer;
+  border-radius: 9px; border: 1px solid #d9d6ce; background: #fcfcfb; font-size: .95rem; line-height: 1; }
+.an-t:hover { border-color: #86857e; }
+.an-t.is-on { border-color: #0b0b0b; background: #0b0b0b; }
+.an-colours { display: inline-flex; align-items: center; gap: 10px; }
+.an-hl-set, .an-pen-set { display: inline-flex; align-items: center; gap: 5px; }
+.an-sw { width: 22px; height: 22px; border-radius: 50%; cursor: pointer; background: var(--c);
+  border: 2px solid #fcfcfb; box-shadow: 0 0 0 1px #d9d6ce; }
+.an-sw.is-on { box-shadow: 0 0 0 2px #0b0b0b; }
+.an-well { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%;
+  cursor: pointer; overflow: hidden; box-shadow: 0 0 0 1px #d9d6ce;
+  background: conic-gradient(#e03131, #eda100, #2f9e44, #1971c2, #9c36b5, #e03131); }
+.an-well input { width: 40px; height: 40px; opacity: 0; cursor: pointer; border: 0; padding: 0; }
+.an-widths { display: inline-flex; gap: 3px; margin-left: 4px; }
+.an-w { width: 24px; height: 22px; display: grid; place-items: center; cursor: pointer;
+  border-radius: 6px; border: 1px solid #d9d6ce; background: #fcfcfb; }
+.an-w i { display: block; width: 13px; background: #0b0b0b; border-radius: 3px; }
+.an-w.is-on { border-color: #0b0b0b; }
+.an-mini { width: 32px; padding: 0; display: grid; place-items: center; font-size: .9rem; }
+.rd-saved { font-size: .7rem; color: #86857e; min-width: 62px; text-align: right; }
+.rd-saved.is-saving { color: #1971c2; }
+.rd-saved.is-bad { color: #e03131; }
+
+/* ---- the marks themselves ----
+   The layer sits over the article and is transparent to the pointer
+   until a drawing tool is chosen: text has to stay selectable for the
+   highlighter, and the page has to stay scrollable always. */
+.rd-doc { position: relative; }
+/* Highlights go UNDER the words, ink OVER them — see annotate.js. */
+.an-layer { position: absolute; inset: 0; pointer-events: none; z-index: 1; }
+.an-ink-layer { position: absolute; inset: 0; pointer-events: none; z-index: 4; }
+/* `touch-action: pan-y` is what lets a finger scroll the page while the
+   pencil draws on the very same surface. */
+.an-ink-layer.is-pen, .an-ink-layer.is-erase { pointer-events: auto; touch-action: pan-y; cursor: crosshair; }
+.an-ink-layer.is-erase { cursor: cell; }
+.an-ink { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.an-ink-layer.is-erase .an-ink { pointer-events: auto; }
+/* Behind the words, not over them: a highlight that dims its own text
+   is a redaction. `mix-blend-mode: multiply` keeps the ink black. */
+.an-hl { position: absolute; border-radius: 2px; pointer-events: none;
+  mix-blend-mode: multiply; opacity: .55; }
+.rd-doc > *:not(.an-layer):not(.an-ink-layer) { position: relative; z-index: 2; }
+
+@media (max-width: 900px) {
+  .an-bar { gap: 8px; }
+  .an-colours { gap: 6px; }
+  .rd-saved { display: none; }
+}
+@media print { .an-bar { display: none; } }

@@ -1726,6 +1726,68 @@ const OSCE = (() => {
       </div>`;
   }
 
+  /* ---------------- the pencil case ----------------
+
+     Four tools, and the colours that belong to whichever is chosen. The
+     swatches are what anybody actually uses; the well beside them is the
+     platform's own colour picker, so "any colour at all" costs one input
+     rather than a colour wheel of our own.
+
+     On an iPad the pencil draws and the finger scrolls, always — so
+     there is no "drawing mode" to leave. Selecting the highlighter only
+     changes what happens when you let go of a selection. */
+  function annToolbar() {
+    const sw = (list, kind) => list.map(x =>
+      `<button type="button" class="an-sw" data-an-c="${kind}|${x.c}" style="--c:${x.c}"
+        title="${esc(x.name)}" aria-label="${esc(x.name)}"></button>`).join('');
+    return `
+      <div class="an-bar" id="an-bar">
+        <div class="an-tools" role="group" aria-label="Marking tools">
+          <button type="button" class="an-t is-on" data-an-t="read" title="Read — nothing is marked"
+            aria-label="Reading">👆</button>
+          <button type="button" class="an-t" data-an-t="hl" title="Highlighter — select text to mark it"
+            aria-label="Highlighter">🖍</button>
+          <button type="button" class="an-t" data-an-t="pen" title="Pen — draw with an Apple Pencil or a mouse; a finger still scrolls"
+            aria-label="Pen">✒️</button>
+          <button type="button" class="an-t" data-an-t="erase" title="Eraser — tap a mark to remove it"
+            aria-label="Eraser">🧽</button>
+        </div>
+        <div class="an-colours" id="an-colours">
+          <span class="an-hl-set">${sw(Annotate.HIGHLIGHTS, 'hl')}
+            <label class="an-well" title="Any colour"><input type="color" data-an-well="hl" value="#ffe066"></label></span>
+          <span class="an-pen-set" hidden>${sw(Annotate.PENS, 'pen')}
+            <label class="an-well" title="Any colour"><input type="color" data-an-well="pen" value="#12110f"></label>
+            <span class="an-widths">${Annotate.WIDTHS.map((w, i) =>
+              `<button type="button" class="an-w ${i === 1 ? 'is-on' : ''}" data-an-w="${w.w}"
+                title="${esc(w.name)}" aria-label="${esc(w.name)}"><i style="height:${Math.max(2, w.w)}px"></i></button>`).join('')}</span>
+          </span>
+        </div>
+        <div class="an-acts">
+          <button type="button" class="rd-btn an-mini" data-an-undo title="Undo" aria-label="Undo">↶</button>
+          <button type="button" class="rd-btn an-mini" data-an-redo title="Redo" aria-label="Redo">↷</button>
+          <button type="button" class="rd-btn an-mini" data-an-clear title="Clear every mark" aria-label="Clear every mark">⌫</button>
+        </div>
+      </div>`;
+  }
+
+  /** The pictures a question puts in front of the candidate, in the
+      article. Tapping one opens the same zoom viewer the rest of AUREUM
+      uses — there is one of those and this is not a second. */
+  function rdImages(q) {
+    const ims = imagesOf(q);
+    if (!ims.length) return '';
+    return `<div class="rd-imgs ${ims.length > 1 ? 'is-many' : ''}">
+      ${ims.map(im => `
+        <figure class="rd-img">
+          <button class="rd-img-b" data-zoom="${esc(im.url)}" data-cap="${esc(im.caption)}"
+            aria-label="${esc(im.caption || 'Enlarge the image')}">
+            <img src="${esc(im.url)}" alt="${esc(im.caption || 'Image shown with this question')}" loading="lazy">
+          </button>
+          ${im.caption ? `<figcaption>${esc(im.caption)}</figcaption>` : ''}
+        </figure>`).join('')}
+    </div>`;
+  }
+
   /** The scheme, set as an article. */
   function readingMode(st) {
     document.querySelector('.rd-veil')?.remove();
@@ -1733,18 +1795,24 @@ const OSCE = (() => {
     const total = marksOf(st);
     const pts = ptCount(st);
 
-    const pointList = q => {
+    /* EVERY BLOCK A MARK CAN ATTACH TO CARRIES A STABLE KEY.
+
+       Derived from the station's own structure — q3.p5 is the fifth
+       marking point of the third question — and never from position in
+       the DOM, so a highlight cannot move to a different sentence the
+       next time the page is drawn. See js/annotate.js. */
+    const pointList = (q, qi) => {
       const all = q.marking_points || [];
       if (!all.length) return '<p class="rd-none">No marking points are recorded for this question.</p>';
       let out = '', open = false;
-      all.forEach(p => {
+      all.forEach((p, pi) => {
         if (isHeading(p)) {
           if (open) { out += '</ul>'; open = false; }
-          out += `<h4 class="rd-sec">${esc(headText(p) || 'Section')}</h4>`;
+          out += `<h4 class="rd-sec" data-an="q${qi}.h${pi}">${esc(headText(p) || 'Section')}</h4>`;
           return;
         }
         if (!open) { out += '<ul class="rd-points">'; open = true; }
-        out += `<li>${esc(p)}</li>`;
+        out += `<li data-an="q${qi}.p${pi}">${esc(p)}</li>`;
       });
       if (open) out += '</ul>';
       return out;
@@ -1755,7 +1823,9 @@ const OSCE = (() => {
     wrap.innerHTML = `
       <div class="rd-bar">
         <span class="rd-bar-t">Reading mode</span>
+        ${typeof Annotate !== 'undefined' ? annToolbar() : ''}
         <div class="rd-bar-acts">
+          <span class="rd-saved" id="rd-saved"></span>
           <button class="rd-btn" data-rd-print type="button">Print / Save as PDF</button>
           <button class="rd-btn rd-x" data-rd-close type="button" aria-label="Close reading mode">✕</button>
         </div>
@@ -1763,10 +1833,10 @@ const OSCE = (() => {
       <div class="rd-scroll">
         <article class="rd-doc">
           <p class="rd-kicker">OSCE STATION · ${minsOf(st)} MINUTES · ${qs.length} QUESTION${qs.length === 1 ? '' : 'S'}</p>
-          <h1 class="rd-h1">${esc(st.topic || st.id)}</h1>
+          <h1 class="rd-h1" data-an="topic">${esc(st.topic || st.id)}</h1>
           ${st.created_by_name ? `<p class="rd-by">Written by ${esc(st.created_by_name)}</p>` : ''}
 
-          ${st.scenario ? `<p class="rd-stand">${esc(st.scenario)}</p>` : ''}
+          ${st.scenario ? `<p class="rd-stand" data-an="scenario">${esc(st.scenario)}</p>` : ''}
 
           <div class="rd-facts">
             <div><b>${qs.length}</b><span>questions</span></div>
@@ -1791,11 +1861,17 @@ const OSCE = (() => {
                 <span class="rd-q-n">Question ${i + 1}</span>
                 <span class="rd-q-m">${q.marks} marks</span>
               </div>
-              <h2 class="rd-q-t">${esc(q.prompt || '')}</h2>
-              ${q.reveal_before ? `<p class="rd-reveal"><b>Revealed first:</b> ${esc(q.reveal_before)}</p>` : ''}
-              ${(imagesOf(q) || []).length ? `<p class="rd-shown"><b>On the table:</b> ${
-                imagesOf(q).map(im => esc(im.caption || 'an image')).join('; ')}</p>` : ''}
-              ${pointList(q)}
+              <h2 class="rd-q-t" data-an="q${i}.prompt">${esc(q.prompt || '')}</h2>
+              ${q.reveal_before ? `<p class="rd-reveal" data-an="q${i}.reveal"><b>Revealed first:</b> ${esc(q.reveal_before)}</p>` : ''}
+              ${/* THE IMAGES THEMSELVES, NOT A NOTE THAT THERE ARE SOME.
+
+                    The first version printed "On the table: an image; an
+                    image" — which is worse than useless on a station
+                    whose first question is "interpret these scans". A
+                    scheme you are revising from has to show the thing
+                    the candidate is asked to look at. */''}
+              ${rdImages(q)}
+              ${pointList(q, i)}
             </section>`).join('')}
 
           <footer class="rd-foot">
@@ -1805,11 +1881,15 @@ const OSCE = (() => {
         </article>
       </div>`;
     document.body.appendChild(wrap);
+    wireLightbox(wrap);
     /* The page behind must not scroll under the article — on a phone
        that is how you end up reading two documents at once. */
     try { document.documentElement.classList.add('is-printlock'); } catch {}
 
     const shut = () => {
+      /* Anything not yet written goes now — closing the page must not be
+         a way to lose a mark. */
+      try { Annotate.unmount(); } catch {}
       wrap.remove(); releaseScroll();
       document.removeEventListener('keydown', onKey);
       window.removeEventListener('hashchange', shut);
@@ -1822,6 +1902,92 @@ const OSCE = (() => {
        the printer already knows about page breaks, the role-player page
        and the tick boxes, and two ways to put this on paper would drift. */
     wrap.querySelector('[data-rd-print]').addEventListener('click', () => printScheme(st));
+
+    /* ---------------- the marks ----------------
+
+       Mounted after the article is in the document, because every
+       position is measured from where the blocks actually are. The
+       document key names WHAT is annotated, not where it was opened
+       from, so the same marks are there whether this was reached from
+       the bank or from a circuit. */
+    if (typeof Annotate !== 'undefined') {
+      const bar = wrap.querySelector('#an-bar');
+      const saved = wrap.querySelector('#rd-saved');
+      const art = wrap.querySelector('.rd-doc');
+      const sayState = err => {
+        if (!saved) return;
+        if (err) { saved.className = 'rd-saved is-bad'; saved.textContent = String(err); return; }
+        const n = Annotate.count();
+        saved.className = 'rd-saved' + (Annotate.isDirty() ? ' is-saving' : '');
+        saved.textContent = !n ? '' : Annotate.isDirty() ? 'saving…'
+          : `${n} mark${n === 1 ? '' : 's'} saved`;
+      };
+      Annotate.mount(art, wrap.querySelector('.rd-scroll'), 'osce:' + st.id, sayState);
+
+      bar?.addEventListener('click', e => {
+        const t = e.target.closest('[data-an-t]');
+        if (t) {
+          bar.querySelectorAll('[data-an-t]').forEach(b => b.classList.toggle('is-on', b === t));
+          Annotate.setTool(t.dataset.anT);
+          /* The colours shown are the ones the chosen tool uses. Showing
+             both sets at once means half the swatches do nothing. */
+          bar.querySelector('.an-hl-set').hidden = t.dataset.anT === 'pen';
+          bar.querySelector('.an-pen-set').hidden = t.dataset.anT !== 'pen';
+          return;
+        }
+        const c = e.target.closest('[data-an-c]');
+        if (c) {
+          const [kind, col] = c.dataset.anC.split('|');
+          c.parentNode.querySelectorAll('[data-an-c]').forEach(x => x.classList.toggle('is-on', x === c));
+          if (kind === 'hl') Annotate.setHighlightColour(col); else Annotate.setPenColour(col);
+          return;
+        }
+        const w = e.target.closest('[data-an-w]');
+        if (w) {
+          w.parentNode.querySelectorAll('[data-an-w]').forEach(x => x.classList.toggle('is-on', x === w));
+          Annotate.setPenWidth(Number(w.dataset.anW));
+          return;
+        }
+        if (e.target.closest('[data-an-undo]')) { Annotate.undo(); return; }
+        if (e.target.closest('[data-an-redo]')) { Annotate.redo(); return; }
+        if (e.target.closest('[data-an-clear]')) {
+          const b = e.target.closest('[data-an-clear]');
+          /* Asked twice: this is the one control that throws work away. */
+          if (b.dataset.sure !== '1') {
+            b.dataset.sure = '1'; b.textContent = 'Sure?';
+            setTimeout(() => { if (b.dataset.sure === '1') { b.dataset.sure = ''; b.textContent = '⌫'; } }, 3500);
+            return;
+          }
+          b.dataset.sure = ''; b.textContent = '⌫';
+          Annotate.clearAll();
+        }
+      });
+      bar?.addEventListener('input', e => {
+        const w = e.target.closest('[data-an-well]');
+        if (!w) return;
+        /* The well is the platform's own picker, so "unlimited colours"
+           costs one input rather than a colour wheel of our own. */
+        if (w.dataset.anWell === 'hl') Annotate.setHighlightColour(w.value);
+        else Annotate.setPenColour(w.value);
+        w.closest('span')?.querySelectorAll('[data-an-c]').forEach(x => x.classList.remove('is-on'));
+      });
+
+      /* HIGHLIGHTING IS LETTING GO OF A SELECTION. No second press: on a
+         touch screen the selection is gone by the time a button has been
+         found, which is why every highlighter that works this way marks
+         on release. */
+      const onRelease = () => {
+        if (Annotate.getTool() !== 'hl') return;
+        setTimeout(() => Annotate.highlightSelection(), 10);
+      };
+      art.addEventListener('mouseup', onRelease);
+      art.addEventListener('touchend', onRelease);
+      /* Re-measured once the images have loaded: a picture that arrives
+         late moves everything below it, and every mark's position is
+         derived from where its block is now. */
+      art.querySelectorAll('img').forEach(im => im.addEventListener('load', () => Annotate.render()));
+    }
+
     requestAnimationFrame(() => wrap.classList.add('is-in'));
     return shut;
   }
