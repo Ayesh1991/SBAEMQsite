@@ -167,7 +167,13 @@ const swap = await page.evaluate(() => ({
 say('choosing the pen shows the pen colours and puts the highlighters away',
   swap.hlHidden && swap.penShown);
 say('  the ink layer takes the pointer only now', swap.takes === 'auto');
-say('  and a finger can still scroll the page while it does', /pan-y/.test(swap.touch), swap.touch);
+/* THE BUG THIS REPLACED. `touch-action: pan-y` looked like the way to
+   let a finger scroll a surface the pen draws on. The browser applies it
+   to the PEN as well, so a downward stroke was read as a scroll: the
+   page moved under the nib and the stroke was cancelled mid-line. Every
+   attempt at a circle came out as three broken arcs. */
+say('  and the pen owns the whole gesture, so nothing can scroll under the nib',
+  swap.touch === 'none', swap.touch);
 
 /* Scrolled into view first: a mouse cannot be moved to a point outside
    the window, so drawing "on" a block below the fold draws nothing. */
@@ -189,8 +195,69 @@ const inked = await page.evaluate(() => {
     paths: document.querySelectorAll('.an-ink path').length };
 });
 say('a stroke is recorded', inked.paths === 1 && inked.pts > 5, inked.pts + ' points');
+/* The other half of the broken arcs: `pointerleave` fires whenever the
+   nib crosses out of the layer's box — over an image, past the edge of
+   the column — and ending the stroke there cut it into pieces. */
+say('  and a nib crossing an edge does not end it',
+  !/pointerleave/.test((await (await fetch(B + '/js/annotate.js')).text())
+    .replace(/\/\*[\s\S]*?\*\//g, '')));
 say('  anchored to the block it was drawn on', !!inked.key, inked.key);
 say('  and stored as fractions of that block, so it moves with the text', inked.frac);
+
+/* A CIRCLE. The mark people actually make, the one that was impossible,
+   and the one that fails if anything at all interrupts a stroke. */
+const circle = await page.evaluate(async () => {
+  const scroller = document.querySelector('.rd-scroll');
+  const before = scroller.scrollTop;
+  const el = document.querySelector('[data-an="q0.p2"]');
+  el.scrollIntoView({ block: 'center' });
+  await new Promise(r => setTimeout(r, 250));
+  const b = el.getBoundingClientRect();
+  const cx = b.left + 260, cy = b.top + 8, rad = 55;
+  const layer = document.querySelector('.an-ink-layer');
+  const ev = (t, x, y) => new PointerEvent(t, { pointerType: 'pen', pointerId: 21, bubbles: true,
+    clientX: x, clientY: y, pressure: 0.6, isPrimary: true });
+  const start = scroller.scrollTop;
+  layer.dispatchEvent(ev('pointerdown', cx + rad, cy));
+  for (let a = 0; a <= 360; a += 6) {
+    const t = a * Math.PI / 180;
+    layer.dispatchEvent(ev('pointermove', cx + Math.cos(t) * rad, cy + Math.sin(t) * rad));
+    await new Promise(r => requestAnimationFrame(r));
+  }
+  layer.dispatchEvent(ev('pointerup', cx + rad, cy));
+  const m = Annotate._marks().filter(x => x.kind === 'ink').pop();
+  return { moved: scroller.scrollTop - start, pts: (m?.pts || []).length,
+    strokes: document.querySelectorAll('.an-ink path').length,
+    smooth: (document.querySelector('.an-ink path')?.getAttribute('d') || '').includes('Q') };
+});
+say('a circle drawn in one go stays ONE stroke', circle.pts > 40, circle.pts + ' points');
+say('  and the page does not move under it', circle.moved === 0, circle.moved + ' px of scroll');
+say('  the line is smoothed, not a polygon', circle.smooth);
+
+/* A touch is a finger: it must not draw — and it must still scroll,
+   which the layer now does itself because the browser no longer may. */
+const scrolled = await page.evaluate(async () => {
+  const scroller = document.querySelector('.rd-scroll');
+  /* Back to the top first: the circle above scrolled the article down
+     near its end, and a drag that asks for more scroll than is left
+     measures the clamp rather than the scrolling. */
+  scroller.scrollTop = 0;
+  await new Promise(r => setTimeout(r, 200));
+  const before = scroller.scrollTop;
+  const marksBefore = Annotate.count();
+  const layer = document.querySelector('.an-ink-layer');
+  const ev = (t, y) => new PointerEvent(t, { pointerType: 'touch', pointerId: 31, bubbles: true,
+    clientX: 520, clientY: y, isPrimary: true });
+  layer.dispatchEvent(ev('pointerdown', 760));
+  for (let i = 1; i <= 10; i++) { layer.dispatchEvent(ev('pointermove', 760 - i * 22)); await new Promise(r => setTimeout(r, 16)); }
+  layer.dispatchEvent(ev('pointerup', 540));
+  await new Promise(r => setTimeout(r, 420));
+  return { by: scroller.scrollTop - before, drew: Annotate.count() - marksBefore,
+    room: scroller.scrollHeight - scroller.clientHeight };
+});
+say('a finger scrolls the article, in pen mode, by the layer doing it itself',
+  scrolled.room > 0 && scrolled.by > 150, scrolled.by + ' px');
+say('  and draws nothing', scrolled.drew === 0);
 
 /* A touch is a finger: it must not draw. */
 const touched = await page.evaluate(spot => {

@@ -6741,9 +6741,12 @@ body.sc-open { overflow: hidden; }
 /* Highlights go UNDER the words, ink OVER them — see annotate.js. */
 .an-layer { position: absolute; inset: 0; pointer-events: none; z-index: 1; }
 .an-ink-layer { position: absolute; inset: 0; pointer-events: none; z-index: 4; }
-/* `touch-action: pan-y` is what lets a finger scroll the page while the
-   pencil draws on the very same surface. */
-.an-ink-layer.is-pen, .an-ink-layer.is-erase { pointer-events: auto; touch-action: pan-y; cursor: crosshair; }
+/* `touch-action: none` — the layer owns the whole gesture while a
+   drawing tool is chosen. `pan-y` looked right and was the bug: the
+   browser applied it to the PEN too, so a downward stroke scrolled the
+   page and was cancelled mid-line. A finger still scrolls, because
+   annotate.js moves the scroller itself. */
+.an-ink-layer.is-pen, .an-ink-layer.is-erase { pointer-events: auto; touch-action: none; cursor: crosshair; }
 .an-ink-layer.is-erase { cursor: cell; }
 .an-ink { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
 .an-ink-layer.is-erase .an-ink { pointer-events: auto; }
