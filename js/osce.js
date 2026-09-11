@@ -437,6 +437,31 @@ const OSCE = (() => {
   const voiceOn = () => { try { return localStorage.getItem(VOICE_KEY) !== '0'; } catch { return true; } };
   const setVoiceOn = v => { try { localStorage.setItem(VOICE_KEY, v ? '1' : '0'); } catch {} };
 
+  /* ---------------- WHICH voice ----------------
+
+     Two are available and they are not simply better and worse.
+
+     The STUDIO voice (Groq) sounds more like a person, and — this is the
+     part that is easy to miss — it is the only one that reaches the
+     RECORDING directly. The browser's speech synthesiser exposes no
+     audio stream that could be mixed into the tape; there is no API for
+     it. So with the browser voice the examiner is on the tape only if
+     the microphone hears the speaker, which is what the "record the
+     examiner's voice too" tick does by turning echo cancellation off.
+
+     The DEVICE voice is instant, free, works with no signal, never
+     queues behind a quota, and on a good iPad it is frankly clearer than
+     the studio one. That is a real preference and the owner of this site
+     holds it, so it is the DEFAULT — and the other is one tap away on
+     the brief screen, where the choice is made before the clock starts
+     rather than discovered in the middle of a station. */
+  const VSRC_KEY = 'aureum.osce.voicesrc';
+  const VSRC = { DEVICE: 'device', STUDIO: 'studio' };
+  const voiceSrc = () => { try { return localStorage.getItem(VSRC_KEY) === VSRC.STUDIO ? VSRC.STUDIO : VSRC.DEVICE; } catch { return VSRC.DEVICE; } };
+  const setVoiceSrc = v => { try { localStorage.setItem(VSRC_KEY, v === VSRC.STUDIO ? VSRC.STUDIO : VSRC.DEVICE); } catch {} };
+  /** Is the studio voice wanted AND available? Everything asks this, not groqOn. */
+  const studioVoice = () => voiceOn() && voiceSrc() === VSRC.STUDIO && groqOn('voice');
+
   /* Should the tape carry the examiner as well as the candidate?
 
      The browser's speech synthesiser gives no audio stream that could be
@@ -2401,6 +2426,23 @@ const OSCE = (() => {
             : `The examiner allows about ${st.reading_time_min || 1} minute to read. The ${minsOf(st)}-minute clock and the
                recording both start when you press the button — question 1 appears at the same moment.`}</p>
           <div class="os-mic" id="os-mic"></div>
+          ${/* CHOSEN BEFORE THE CLOCK, NOT DISCOVERED DURING IT.
+
+                Which voice reads the questions is a preference, not a
+                fault to be worked around, and it belongs here for the
+                same reason the microphone test does: this is the last
+                moment at which changing it costs nothing. */''}
+          <div class="os-vsrc" id="os-vsrc">
+            <div class="os-vsrc-row">
+              <span class="os-vsrc-l">The examiner's voice</span>
+              <div class="os-seg" id="os-vsrc-seg">
+                <button type="button" data-v="device">🔈 This device</button>
+                <button type="button" data-v="studio">🎙 Studio</button>
+                <button type="button" data-v="off">🔇 Off</button>
+              </div>
+            </div>
+            <p class="muted tiny" id="os-vsrc-say"></p>
+          </div>
           <p class="os-voiceline" id="os-voiceline"></p>
           <div class="os-preflight" id="os-pre">
             <button class="btn btn-ghost btn-sm" id="os-pre-go">🎙 Test the microphone first</button>
@@ -2532,6 +2574,44 @@ const OSCE = (() => {
         const ch = stage.querySelector('#os-brief-coach');
         if (ch) { ch.innerHTML = coachPicker(true); wireCoachPicker(ch); }
       }
+      /* The three-way choice, and what each one actually costs. The
+         trade-off is stated rather than implied: the studio voice is the
+         only one that reaches the tape by itself, and somebody who
+         switches away from it should know that before they do, not
+         afterwards when they play the recording back. */
+      {
+        const seg = stage.querySelector('#os-vsrc-seg');
+        const say = stage.querySelector('#os-vsrc-say');
+        const cur = () => !voiceOn() ? 'off' : voiceSrc() === VSRC.STUDIO ? 'studio' : 'device';
+        const paintV = () => {
+          const v = cur();
+          seg.querySelectorAll('button').forEach(b => b.classList.toggle('is-on', b.dataset.v === v));
+          say.innerHTML = v === 'off'
+            ? 'The questions appear on screen and nothing is read aloud.'
+            : v === 'studio'
+              ? `A recorded voice, closer to a person — and the only one mixed <strong>straight into the
+                 recording</strong>, so the tape carries both sides even through headphones. It needs a signal, and
+                 falls back to this device if the quota is spent.`
+              : `This device's own voice: instant, free, works with no signal. It reaches the recording only if the
+                 microphone hears the speaker — tick "record the examiner's voice too" below, or the tape will have
+                 your answers and not the questions.`;
+          /* Whatever was already fetched is irrelevant once the choice
+             changes; a stale clip would play the old voice for the first
+             question and the new one after it. */
+          if (v !== 'studio') { voices.clear(); nudges.clear(); voicesReady = false; }
+          paintVoiceLine(stage);
+        };
+        seg.addEventListener('click', e => {
+          const b = e.target.closest('[data-v]'); if (!b) return;
+          const v = b.dataset.v;
+          if (v === 'off') setVoiceOn(false);
+          else { setVoiceOn(true); setVoiceSrc(v === 'studio' ? VSRC.STUDIO : VSRC.DEVICE); }
+          paintV();
+          if (v === 'studio') prefetchVoices().then(() => paintVoiceLine(stage)).catch(() => {});
+        });
+        paintV();
+      }
+
       // fetched in the background while the scenario is being read, then the
       // brief says plainly which voice the candidate is going to hear
       prefetchVoices().then(() => paintVoiceLine(stage)).catch(() => paintVoiceLine(stage));
@@ -2560,13 +2640,25 @@ const OSCE = (() => {
       const el = stage.querySelector('#os-voiceline');
       if (!el) return;
       const r = groqReport();
+      el.hidden = false;
       if (voices.size) {
         el.className = 'os-voiceline is-groq';
         el.innerHTML = `🎙 <strong>A real examiner voice</strong> is ready${r.model ? ` (${esc(r.model)})` : ''} —
           and it is mixed straight into the recording, so the tape carries both sides even through headphones.`;
         return;
       }
-      if (!groqCfg().voice || groqCfg().enabled === false) { el.hidden = true; return; }
+      /* Nothing to report when the studio voice was not asked for: the
+         segmented control above has already said which voice will read,
+         and a second sentence explaining the absence of a thing nobody
+         chose is noise. */
+      if (!voiceOn() || voiceSrc() !== VSRC.STUDIO) { el.hidden = true; return; }
+      el.hidden = false;
+      if (!groqCfg().voice || groqCfg().enabled === false) {
+        el.className = 'os-voiceline';
+        el.innerHTML = `🔈 The studio voice is not switched on for this deployment, so this device's voice will read
+          the questions.`;
+        return;
+      }
       el.className = 'os-voiceline';
       /* A quota that resets in ninety seconds is a different fact from one
          that is gone for the day, and the candidate can act on the first:
@@ -2589,7 +2681,7 @@ const OSCE = (() => {
     function lineOf(q) { return (q.reveal_before ? q.reveal_before + '. ' : '') + q.prompt; }
 
     async function prefetchVoices() {
-      if (voicesReady || !groqOn('voice')) return;
+      if (voicesReady || !studioVoice()) return;
       voicesReady = true;
       for (const q of qs) {
         const clip = await groqVoice(lineOf(q));
@@ -2603,7 +2695,7 @@ const OSCE = (() => {
        over, cost six requests for a whole fifteen minutes — which is what
        makes the middle of the dial free. */
     async function prefetchNudges() {
-      if (promptLevel() <= 0 || !groqOn('voice')) return;
+      if (promptLevel() <= 0 || !studioVoice()) return;
       for (const line of PROMPT_WORDS) {
         if (nudges.has(line)) continue;
         const clip = await groqVoice(line);
@@ -2793,7 +2885,7 @@ const OSCE = (() => {
       /** Say it, onto the tape, and show it so the deaf case still works. */
       async function sayProbe(line) {
         showProbe(line);
-        const clip = nudges.get(line) || (groqOn('voice') ? await groqVoice(line) : null);
+        const clip = nudges.get(line) || (studioVoice() ? await groqVoice(line) : null);
         if (clip && live?.speakClip) { hush(); if (await live.speakClip(clip)) return; }
         speak(line, { rate: 1.0 });
       }
@@ -2824,7 +2916,7 @@ const OSCE = (() => {
       /* Prefetch stops at the first refusal, so a station that began during a
          one-minute ceiling had the browser voice for all fifteen. If the
          quota has come back by now, this question gets the real voice. */
-      if (!clip && q && groqOn('voice')) {
+      if (!clip && q && studioVoice()) {
         clip = await groqVoice(text || lineOf(q));
         // only the full line is worth keeping — "repeat" says less than that
         if (clip && text === lineOf(q)) voices.set(q.id, clip);
@@ -6547,6 +6639,7 @@ ${P} .os-pd-close{background:transparent;color:#fff;border:1px solid rgba(255,25
        second copy of every iPad workaround inside it, and the two would drift
        apart on the first Safari release that changed something. */
     makeCapture, toBase64, speak, groqVoice, voiceOn: () => groqOn('voice'), openPrintSheet, releaseScroll,
+    VSRC, voiceSrc, setVoiceSrc, studioVoice, speakOn: voiceOn, setSpeakOn: setVoiceOn,
     makeDoc, docAsText, allPoints, coachFor, coachWanted, COACH,
     // exposed for tests and for the circuit page's live redraw
     markState, onMarkChange, retryMark, shell, circuitNext,

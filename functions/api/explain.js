@@ -1783,13 +1783,24 @@ function buildAssistPrompt(body) {
     '',
     'THE PAGES THAT EXIST:',
     pages.length ? pages.map(p => `· ${String(p.title || '').slice(0, 80)} — ${String(p.route || '').slice(0, 60)}`).join('\n')
-      : '· (none supplied)'
+      : '· (none supplied)',
+    '',
+    'WHAT AUREUM ACTUALLY HOLDS ON THIS SUBJECT',
+    'The application searched its own banks before asking you, and whatever it found is given with the question.',
+    'If there is anything there, say so and name it — "there is a station on this" is worth more to them than a',
+    'paragraph of general revision. The application shows those items as links underneath your answer, so refer to',
+    'them by name and do not repeat their routes. If nothing was found, do not pretend anything was.'
   ].join('\n');
 
+  const found = Array.isArray(body.found) ? body.found.slice(0, 6) : [];
   const user = [
     history.length ? 'The conversation so far:\n' + history
       .map(h => `${h.role === 'user' ? 'Them' : 'You'}: ${String(h.text || '').slice(0, 600)}`).join('\n') + '\n'
       : '',
+    found.length ? 'What AUREUM holds that matches this question:\n' + found
+      .map(f => `· [${String(f.kind || '').toUpperCase()}] ${String(f.title || '').slice(0, 90)}`
+        + (f.about ? ` — ${String(f.about).slice(0, 120)}` : '')).join('\n') + '\n'
+      : 'AUREUM found nothing of its own that matches this question.\n',
     'Their question: ' + String(body.question || '').slice(0, 1200)
   ].filter(Boolean).join('\n');
 

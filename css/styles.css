@@ -6506,3 +6506,33 @@ body.sc-open { overflow: hidden; }
   .as-dock { right: 8px; left: 8px; width: auto; }
   .as-surface { max-height: 78vh; }
 }
+
+/* ============================================================
+   v102 — choosing the examiner's voice before the clock starts
+   ============================================================ */
+.os-vsrc { margin: 10px 0 4px; padding: 12px 14px; border-radius: 12px;
+  border: 1px solid var(--line); background: var(--panel); }
+.os-vsrc-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.os-vsrc-l { font-size: .82rem; font-weight: 600; }
+.os-seg { display: inline-flex; gap: 3px; padding: 3px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--surface-2); }
+.os-seg button { cursor: pointer; font: inherit; font-size: .74rem; padding: 6px 11px; border-radius: 999px;
+  border: 0; background: none; color: var(--muted); white-space: nowrap; }
+.os-seg button.is-on { background: color-mix(in srgb, var(--gold) 22%, transparent); color: var(--ink); font-weight: 600; }
+.os-vsrc p { margin: 8px 0 0; }
+
+/* the assistant's results, labelled by what they are */
+.as-hit-top { display: flex; align-items: baseline; gap: 7px; }
+.as-kind { flex: 0 0 auto; font-size: .58rem; letter-spacing: .09em; font-weight: 700;
+  padding: 2px 6px; border-radius: 5px; border: 1px solid var(--hairline); color: var(--ink-3); }
+.as-kind.is-osce { color: var(--gold); border-color: color-mix(in srgb, var(--gold) 40%, transparent); }
+.as-kind.is-essay { color: var(--teal); border-color: color-mix(in srgb, var(--teal) 40%, transparent); }
+.as-kind.is-sba { color: var(--ink-2); }
+.as-kind.is-case { color: var(--ink-2); }
+.as-hit em { display: block; font-style: normal; font-size: .68rem; color: var(--ink-3); margin-top: 3px; }
+.as-srcs-h { margin: 12px 0 6px; font-size: .68rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+
+@media (max-width: 560px) {
+  .os-vsrc-row { flex-direction: column; align-items: stretch; }
+  .os-seg { justify-content: space-between; }
+}
