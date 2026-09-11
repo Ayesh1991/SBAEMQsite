@@ -1516,3 +1516,35 @@ alter table public.osce_bucket enable row level security;
 drop policy if exists "osce bucket own" on public.osce_bucket;
 create policy "osce bucket own" on public.osce_bucket for all
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+/* ============================================================
+   v104 — highlights and ink, per person
+
+   What somebody marks on a scheme is theirs. Two candidates reading the
+   same station will highlight different lines, and neither should see
+   the other's — so this is one row per user per document, and the RLS
+   says exactly that.
+
+   `doc` is what is being annotated ('osce:ST-12'), not a foreign key:
+   the same store then works for an essay question or a case without a
+   second table, and an annotation whose subject has been unpublished is
+   simply never asked for rather than deleted by a cascade nobody
+   noticed.
+
+   `data` is the whole annotation set as one JSON document — highlights
+   and strokes together. They are read and written as a unit (you open a
+   document, you mark it, it saves), so a row per mark would be a great
+   many rows and a great many requests to show one page.
+   ============================================================ */
+create table if not exists public.annotations (
+  user_id    uuid not null references auth.users(id) on delete cascade,
+  doc        text not null,
+  data       jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, doc)
+);
+create index if not exists annotations_user_idx on public.annotations (user_id, updated_at desc);
+alter table public.annotations enable row level security;
+drop policy if exists "annotations own" on public.annotations;
+create policy "annotations own" on public.annotations for all
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);

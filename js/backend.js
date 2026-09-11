@@ -353,6 +353,15 @@ const Backend = (() => {
        at all for the ones they have not. See js/stars.js for why the two
        marks are one field and not two flags. */
     async function listOsceStars() { const e = sessionEmail(); if (!e) return []; return read('oscestars:' + e, []); }
+    /* ---- highlights and ink, per document ---- */
+    async function getAnnotations(doc) { const e = sessionEmail(); if (!e) return null; return read('annot:' + e, {})[doc] || null; }
+    async function saveAnnotations(doc, data) {
+      const e = sessionEmail(); if (!e) return null;
+      const all = read('annot:' + e, {});
+      if (data && (data.marks || []).length) all[doc] = data; else delete all[doc];
+      write('annot:' + e, all);
+      return data;
+    }
     /* ---- the simulator bucket ---- */
     async function listOsceBucket() { const e = sessionEmail(); if (!e) return []; return read('oscebucket:' + e, []); }
     async function setOsceBucket(stationId, inIt) {
@@ -863,6 +872,7 @@ const Backend = (() => {
       getOsceBlueprint, saveOsceBlueprint, tagOsceStations, listOsceDecks, saveOsceDeck, deleteOsceDeck,
       listOsceStars, setOsceStar,
       listOsceBucket, setOsceBucket, clearOsceBucket,
+      getAnnotations, saveAnnotations,
       listOsceAttempts, getOsceAttempt,
       saveOsceAttempt, deleteOsceAttempt, uploadOsceAudio, getOsceAudioUrl, sweepOsceAudio,
       /* case discussions — the SAME names in both backends, always */
@@ -1327,6 +1337,30 @@ const Backend = (() => {
        when a page draws two hundred cards, so this is one request and not
        one per card. Clearing a mark DELETES the row rather than writing an
        empty one, so the table only ever holds opinions that exist. */
+    /* ---- highlights and ink, per document ----
+       One row, read and written whole: a document's marks are opened,
+       changed and saved as a unit. */
+    async function getAnnotations(doc) {
+      await ensureClient(); const id = await uid(); if (!id) return null;
+      const { data, error } = await sb.from('annotations').select('data')
+        .eq('user_id', id).eq('doc', doc).maybeSingle();
+      if (error) return null;
+      return data?.data || null;
+    }
+    async function saveAnnotations(doc, payload) {
+      await ensureClient(); const id = await uid(); if (!id) throw new Error('Sign in first.');
+      /* Nothing left on the page means the row goes, rather than an
+         empty one sitting there for ever saying nothing. */
+      if (!payload || !(payload.marks || []).length) {
+        await sb.from('annotations').delete().eq('user_id', id).eq('doc', doc);
+        return null;
+      }
+      const { error } = await sb.from('annotations')
+        .upsert({ user_id: id, doc, data: payload, updated_at: new Date().toISOString() },
+          { onConflict: 'user_id,doc' });
+      if (error) throw new Error('Could not save your marks: ' + (error.message || error.code));
+      return payload;
+    }
     /* ---- the simulator bucket ----
        Ordered by when it went in, so a circuit sits them in the order
        they were collected. */
@@ -2326,6 +2360,7 @@ const Backend = (() => {
       getOsceBlueprint, saveOsceBlueprint, tagOsceStations, listOsceDecks, saveOsceDeck, deleteOsceDeck,
       listOsceStars, setOsceStar,
       listOsceBucket, setOsceBucket, clearOsceBucket,
+      getAnnotations, saveAnnotations,
       listOsceAttempts, getOsceAttempt,
       saveOsceAttempt, deleteOsceAttempt, uploadOsceAudio, getOsceAudioUrl, sweepOsceAudio,
       /* case discussions — the SAME names in both backends, always */
