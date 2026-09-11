@@ -6536,3 +6536,159 @@ body.sc-open { overflow: hidden; }
   .os-vsrc-row { flex-direction: column; align-items: stretch; }
   .os-seg { justify-content: space-between; }
 }
+
+/* ============================================================
+   v103 — the bucket, the tool row, and reading mode
+   ============================================================ */
+
+/* ---- the bucket, beside the star ---- */
+.os-card-marks { position: absolute; top: 10px; right: 10px; z-index: 2;
+  display: inline-flex; gap: 6px; align-items: center; opacity: .55; transition: opacity .16s; }
+.os-card:hover .os-card-marks, .os-card-marks:focus-within { opacity: 1; }
+.os-card-marks:has(.is-on) { opacity: 1; }
+.os-card .st-mark { position: static; opacity: 1; }
+.bk-mark { display: inline-flex; }
+.bk-b { display: inline-flex; align-items: center; gap: 6px; }
+.bk-b.is-on { color: var(--teal); border-color: var(--teal);
+  background: color-mix(in srgb, var(--teal) 15%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--teal) 22%, transparent); }
+
+/* the checkout */
+.os-bkbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px;
+  border-left: 3px solid var(--teal); }
+.os-bkbar-l { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.os-bkbar-l > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.os-bkbar-ico { display: grid; place-items: center; width: 40px; height: 40px; flex: 0 0 auto;
+  border-radius: 12px; color: var(--teal);
+  background: color-mix(in srgb, var(--teal) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--teal) 28%, transparent); }
+.os-bkbar-acts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.os-count.is-off { opacity: .4; pointer-events: none; }
+
+/* ---- the tool row on a station ---- */
+.os-tools { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+/* An icon with no surface is a picture, not a button. On the station
+   card's own background `--panel` is almost invisible, so these carry a
+   lighter surface, a real border and a hairline highlight — small and
+   quiet, but unmistakably pressable. */
+.os-tool { display: grid; place-items: center; width: 44px; height: 44px; cursor: pointer;
+  border-radius: 13px; color: var(--ink-2);
+  border: 1px solid color-mix(in srgb, var(--ink) 16%, transparent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--ink) 7%, transparent),
+    color-mix(in srgb, var(--ink) 3%, transparent));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--ink) 9%, transparent);
+  transition: color .16s, border-color .16s, background .16s, transform .12s; }
+.os-tool:hover { color: var(--ink); border-color: var(--gold); transform: translateY(-2px);
+  background: color-mix(in srgb, var(--gold) 14%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--gold) 22%, transparent),
+    0 4px 14px color-mix(in srgb, var(--gold) 12%, transparent); }
+.os-tool:active { transform: translateY(0) scale(.95); }
+.os-tool:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+.os-tool-ai { border-color: color-mix(in srgb, var(--violet, #a78bfa) 38%, var(--line)); }
+.os-tool-ai .ai-marks { display: inline-flex; align-items: center; gap: 2px; }
+.os-tool-ai .ai-marks svg, .os-tool-ai .ai-marks img { width: 13px; height: 13px; }
+
+/* ============================================================
+   reading mode — a page, not a screen
+
+   Deliberately NOT theme-aware. It is light whatever AUREUM is set to,
+   because this is the one part of the application meant to be read for
+   twenty minutes rather than operated, and because it is what it will
+   look like printed.
+   ============================================================ */
+.rd-veil { position: fixed; inset: 0; z-index: 3000; background: #f4f2ee;
+  display: flex; flex-direction: column; opacity: 0; transition: opacity .2s ease; }
+.rd-veil.is-in { opacity: 1; }
+.energy-saving .rd-veil { transition: none; opacity: 1; }
+.rd-bar { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 18px; background: #fcfcfb; border-bottom: 1px solid #e4e2dc; }
+.rd-bar-t { font-size: .68rem; letter-spacing: .16em; text-transform: uppercase; color: #86857e; font-weight: 700; }
+.rd-bar-acts { display: flex; gap: 8px; }
+.rd-btn { font: inherit; font-size: .78rem; cursor: pointer; padding: 7px 14px; border-radius: 999px;
+  border: 1px solid #d9d6ce; background: #fcfcfb; color: #0b0b0b; }
+.rd-btn:hover { border-color: #0b0b0b; }
+.rd-x { width: 34px; padding: 0; display: grid; place-items: center; }
+.rd-scroll { flex: 1 1 auto; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 0 16px 70px; }
+
+.rd-doc { max-width: 680px; margin: 0 auto; padding: 46px 0 0;
+  font-family: Georgia, 'Iowan Old Style', 'Times New Roman', serif;
+  color: #0b0b0b; font-size: 1.06rem; line-height: 1.62; }
+.rd-kicker { margin: 0 0 12px; font-family: system-ui, -apple-system, sans-serif;
+  font-size: .66rem; letter-spacing: .18em; text-transform: uppercase; color: #eb6834; font-weight: 700; }
+.rd-h1 { margin: 0 0 10px; font-size: clamp(1.9rem, 5vw, 2.7rem); line-height: 1.14;
+  letter-spacing: -.018em; font-weight: 700; }
+.rd-by { margin: 0 0 22px; font-family: system-ui, sans-serif; font-size: .8rem; color: #86857e; }
+/* the standfirst — the scenario, set large because it is what the
+   examiner actually reads out */
+.rd-stand { margin: 0 0 30px; font-size: 1.2rem; line-height: 1.55; color: #2e2d2a;
+  padding-left: 18px; border-left: 3px solid #eb6834; }
+
+.rd-facts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; margin: 0 0 30px;
+  background: #e4e2dc; border: 1px solid #e4e2dc; border-radius: 10px; overflow: hidden;
+  font-family: system-ui, sans-serif; }
+.rd-facts > div { background: #fcfcfb; padding: 14px 10px; text-align: center; }
+.rd-facts b { display: block; font-family: Georgia, serif; font-size: 1.5rem; line-height: 1.1; }
+.rd-facts span { display: block; margin-top: 3px; font-size: .62rem; letter-spacing: .09em;
+  text-transform: uppercase; color: #86857e; }
+
+/* the meter — one ratio against a limit */
+.rd-meter { margin: 0 0 28px; font-family: system-ui, sans-serif; }
+.rd-meter-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  font-size: .86rem; margin-bottom: 7px; }
+.rd-meter-top span { color: #52514e; font-variant-numeric: tabular-nums; }
+.rd-meter-track { height: 10px; border-radius: 5px; background: #cde2fb; overflow: hidden; }
+.rd-meter-track i { display: block; height: 100%; border-radius: 5px; background: #2a78d6; }
+.rd-meter-say { margin: 7px 0 0; font-size: .76rem; color: #86857e; }
+
+/* the figure */
+.rd-fig { margin: 0 0 32px; padding: 20px 20px 14px; background: #fcfcfb;
+  border: 1px solid #e4e2dc; border-radius: 12px; font-family: system-ui, sans-serif; }
+.rd-figcap { margin: 0 0 14px; display: flex; flex-direction: column; gap: 3px; }
+.rd-figcap strong { font-size: .92rem; }
+.rd-figcap span { font-size: .76rem; color: #86857e; }
+.rd-fig svg { display: block; overflow: hidden; }
+.rd-table { margin-top: 12px; font-size: .78rem; }
+.rd-table summary { cursor: pointer; color: #52514e; }
+.rd-table table { width: 100%; border-collapse: collapse; margin-top: 9px; }
+.rd-table th, .rd-table td { padding: 5px 7px; text-align: left; border-bottom: 1px solid #eeece6; }
+.rd-table th { font-size: .66rem; letter-spacing: .07em; text-transform: uppercase; color: #86857e; font-weight: 600; }
+.rd-table td { font-variant-numeric: tabular-nums; }
+
+.rd-role { margin: 0 0 30px; padding: 16px 18px; border-radius: 10px;
+  background: #fdf3ee; border: 1px solid #f2d7c7; }
+.rd-role h3 { margin: 0 0 6px; font-family: system-ui, sans-serif; font-size: .9rem; }
+.rd-role p { margin: 0; font-size: .94rem; color: #5a4436; }
+
+/* each question, as a section of the article */
+.rd-q { margin: 0 0 34px; padding-top: 24px; border-top: 1px solid #e4e2dc; }
+.rd-q-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  font-family: system-ui, sans-serif; margin-bottom: 8px; }
+.rd-q-n { font-size: .64rem; letter-spacing: .14em; text-transform: uppercase; color: #2a78d6; font-weight: 700; }
+.rd-q-m { font-size: .72rem; color: #86857e; font-variant-numeric: tabular-nums; }
+.rd-q-t { margin: 0 0 14px; font-size: 1.32rem; line-height: 1.32; font-weight: 700; letter-spacing: -.01em; }
+.rd-reveal, .rd-shown { margin: 0 0 12px; padding: 9px 13px; border-radius: 8px; background: #f4f2ee;
+  font-size: .9rem; color: #2e2d2a; }
+.rd-sec { margin: 18px 0 7px; font-family: system-ui, sans-serif; font-size: .68rem;
+  letter-spacing: .12em; text-transform: uppercase; color: #1baf7a; font-weight: 700; }
+.rd-points { margin: 0 0 4px; padding: 0; list-style: none; }
+.rd-points li { position: relative; padding: 5px 0 5px 26px; }
+.rd-points li::before { content: ''; position: absolute; left: 2px; top: 12px;
+  width: 7px; height: 7px; border-radius: 50%; background: #2a78d6; }
+.rd-none { color: #86857e; font-style: italic; }
+
+.rd-foot { margin: 44px 0 0; padding-top: 18px; border-top: 2px solid #0b0b0b;
+  font-family: system-ui, sans-serif; font-size: .74rem; color: #86857e; }
+.rd-foot p { margin: 0 0 3px; }
+
+@media (max-width: 620px) {
+  .rd-doc { padding-top: 30px; font-size: 1.02rem; }
+  .rd-facts { grid-template-columns: repeat(2, 1fr); }
+  .rd-stand { font-size: 1.08rem; }
+  .rd-fig { padding: 16px 12px 10px; }
+  .os-bkbar-acts .btn { flex: 1 1 auto; }
+}
+@media print {
+  .rd-veil { position: static; background: #fff; }
+  .rd-bar { display: none; }
+  .rd-scroll { overflow: visible; padding: 0; }
+}

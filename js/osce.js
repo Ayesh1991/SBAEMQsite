@@ -921,6 +921,40 @@ const OSCE = (() => {
   }
   const setModel = k => { try { localStorage.setItem(MODEL_KEY, k); } catch {} };
 
+  /* ================= the tool icons =================
+
+     Drawn, not emoji: 📋 and 📄 are a different picture on every
+     platform and these four sit in a row where they have to read as a
+     set. Each is 20×20 on a 24 grid, 1.6 stroke, currentColor — so they
+     take the button's colour and the hover with it.
+
+     The copy icon is the standard two-rectangles one rather than a page,
+     because that is the shape every application on the device already
+     uses for copy and nobody should have to learn ours. */
+  const ICONS = {
+    read: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true">
+      <path d="M12 6.4S10.2 4.8 6.9 4.8c-1.3 0-2.2.2-2.7.4v13c.5-.2 1.4-.4 2.7-.4 3.3 0 5.1 1.6 5.1 1.6"
+        stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M12 6.4s1.8-1.6 5.1-1.6c1.3 0 2.2.2 2.7.4v13c-.5-.2-1.4-.4-2.7-.4-3.3 0-5.1 1.6-5.1 1.6"
+        stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M12 6.4v13" stroke="currentColor" stroke-width="1.6"/>
+    </svg>`,
+    scheme: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true">
+      <rect x="5" y="3.6" width="14" height="16.8" rx="2.2" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M8.6 8.4h6.8M8.6 12h6.8M8.6 15.6h4.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    </svg>`,
+    hand: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true">
+      <path d="M4.6 7.2h6.2M4.6 12h6.2M4.6 16.8h4.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <path d="M13.6 15.2l5.2-5.2a1.7 1.7 0 0 1 2.4 2.4l-5.2 5.2-3 .6.6-3z"
+        stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+    </svg>`,
+    copy: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true">
+      <rect x="8.8" y="8.8" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M15.2 5.6a2 2 0 0 0-2-1.6H6.2a2 2 0 0 0-2 2v7a2 2 0 0 0 1.6 2"
+        stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    </svg>`
+  };
+
   /* ================= the bank (#/osce) ================= */
 
   async function renderBank(view, user, opts) {
@@ -936,7 +970,8 @@ const OSCE = (() => {
       /* The candidate's own ★ and ↓, fetched alongside everything else so
          the cards are drawn already marked. Held by the module, not
          returned here — every card asks it directly. */
-      (typeof Stars !== 'undefined') ? Stars.load().catch(() => null) : Promise.resolve(null)
+      (typeof Stars !== 'undefined') ? Stars.load().catch(() => null) : Promise.resolve(null),
+      (typeof Bucket !== 'undefined') ? Bucket.load().catch(() => null) : Promise.resolve(null)
     ]);
     /* ARRIVED FROM "THE GAP" ON THE PROGRESS PAGE.
        A module filter is not a bin and not a search: it cuts across both,
@@ -978,7 +1013,9 @@ const OSCE = (() => {
        drawn only when they have something in them: the first star of the
        day has to be able to make its chip appear without redrawing the
        page under the finger that pressed it. */
+    const bkN = (typeof Bucket !== 'undefined') ? Bucket.count() : 0;
     const bins = [{ id: '*', label: 'All stations', n: list.length }].concat(
+      [{ id: '@bucket', label: '🧺 Bucket', n: bkN, hide: !bkN }],
       [{ id: '@star', label: '★ Starred', n: starN.star, hide: !starN.star }],
       colls.filter(c => counts[c.id] || c.id === madeId).map(c => ({ id: c.id, label: c.label, n: counts[c.id] || 0 })),
       counts[''] ? [{ id: '', label: UNFILED.label, n: counts[''] }] : [],
@@ -1050,6 +1087,7 @@ const OSCE = (() => {
           phone and your laptop — but that needs the table on the database.</p>
       </div>` : ''}
       <div id="os-made"></div>
+      <div id="os-bucketbar"></div>
       <div id="os-starpack"></div>
 
       <div class="os-grid" id="os-grid" data-animate>${list.map(st => card(st, bestOf[st.id], colls)).join('')}</div>
@@ -1127,6 +1165,7 @@ const OSCE = (() => {
       bankView.q = input.value; bankView.bin = bin;
 
       const inBin = id => bin === '*' ? true
+        : bin === '@bucket' ? (typeof Bucket !== 'undefined' && Bucket.has(id))
         : bin === '@star' ? (typeof Stars !== 'undefined' && Stars.starred(id))
         : bin === '@low' ? (typeof Stars !== 'undefined' && Stars.low(id))
         : (byIdBank[id]?.collection || '') === bin;
@@ -1161,12 +1200,14 @@ const OSCE = (() => {
       none.hidden = shown > 0;
       none.textContent = raw ? `Nothing in the bank matches “${raw}”.`
         : wantBp ? `No station in ${bpName} is filed here. Try “All stations”, or write one.`
+        : bin === '@bucket' ? 'The bucket is empty. Drop stations in with the 🧺 on any card and sit them together.'
         : bin === '@star' ? 'Nothing starred yet. Tap the ★ on any station and it waits for you here.'
         : bin === '@low' ? 'Nothing marked less important yet.'
         : bin === madeId ? 'No stations have been created yet — yours would be the first.'
         : 'Nothing filed here yet.';
 
       paintSearchNote(res, shown, raw);
+      paintBucketBar();
       paintStarPack(shown);
       const nEl = body.querySelector('#os-bpfilter-n');
       if (nEl) nEl.textContent = `${shown} station${shown === 1 ? '' : 's'}`;
@@ -1192,6 +1233,57 @@ const OSCE = (() => {
       </div>`;
       noteHost.querySelector('#os-srch-all')?.addEventListener('click', () => { showAll = !showAll; run(); });
     }
+    /* ---------------- the bucket, and the way out of it ----------------
+
+       A cart with no checkout is a list. This is the checkout: it says
+       what is in it, how long it will take, and starts the circuit —
+       and it is drawn wherever you are in the bank, not only in the
+       bucket's own bin, because the whole point is that you fill it
+       while looking at something else. */
+    const bkBar = body.querySelector('#os-bucketbar');
+    function paintBucketBar() {
+      if (!bkBar || typeof Bucket === 'undefined') return;
+      const n = Bucket.count();
+      if (!n) { bkBar.innerHTML = ''; return; }
+      const mins = Bucket.ids().reduce((t, id) => t + minsOf(byIdBank[id] || {}), 0);
+      bkBar.innerHTML = `
+        <div class="card os-bkbar" data-animate>
+          <div class="os-bkbar-l">
+            <span class="os-bkbar-ico">${Bucket.ICON_IN}</span>
+            <div>
+              <strong>${n} station${n === 1 ? '' : 's'} in your bucket</strong>
+              <span class="muted tiny">${hours(mins)} of examining · sat in the order you collected them ·
+                each one leaves the bucket once you have sat it</span>
+            </div>
+          </div>
+          <div class="os-bkbar-acts">
+            <a class="btn btn-gold" href="#/osce/sim?bucket=1">▶ Sit them as a circuit</a>
+            <button class="btn btn-ghost btn-sm" id="os-bk-see">See what is in it</button>
+            <button class="btn btn-ghost btn-sm" id="os-bk-empty">Empty it</button>
+          </div>
+        </div>`;
+      bkBar.querySelector('#os-bk-see')?.addEventListener('click', () => {
+        bin = '@bucket';
+        body.querySelectorAll('.os-bin').forEach(x => x.classList.toggle('active', x.dataset.bin === bin));
+        run();
+      });
+      bkBar.querySelector('#os-bk-empty')?.addEventListener('click', async e => {
+        const b = e.currentTarget;
+        /* Asked twice, because emptying it is the one action here that
+           throws away a decision rather than making one. */
+        if (b.dataset.sure !== '1') {
+          b.dataset.sure = '1'; b.textContent = `Empty all ${n}? Tap again`;
+          setTimeout(() => { if (b.dataset.sure === '1') { b.dataset.sure = ''; b.textContent = 'Empty it'; } }, 4000);
+          return;
+        }
+        await Bucket.empty();
+        Bucket.paint(body); chip('@bucket', 0); paintBucketBar();
+        if (bin === '@bucket') { bin = '*';
+          body.querySelectorAll('.os-bin').forEach(x => x.classList.toggle('active', x.dataset.bin === bin)); }
+        run();
+      });
+    }
+
     /* ---------------- the revision pack ----------------
 
        What the ★ is FOR. A list of starred stations is a list; the thing
@@ -1246,17 +1338,27 @@ const OSCE = (() => {
        pressed inside the ★ bin drops the card out of the list it is in,
        which is the right behaviour and would be baffling anywhere else,
        so the whole strip is redrawn from the counts instead. */
+    /* One chip updater for both marks. An empty chip you are standing in
+       must not vanish under you — it would leave the page filtered to a
+       bin with no button to leave it by. */
+    const chip = (id, n) => {
+      const el = body.querySelector(`.os-bin[data-bin="${id}"]`);
+      if (!el) return;
+      el.querySelector('i').textContent = n;
+      el.hidden = !n && bin !== id;
+    };
+
+    if (typeof Bucket !== 'undefined') {
+      Bucket.wire(body, () => {
+        chip('@bucket', Bucket.count());
+        paintBucketBar();
+        if (bin === '@bucket') { packHost.dataset.n = ''; run(); }
+      });
+    }
+
     if (typeof Stars !== 'undefined') {
       Stars.wire(body, () => {
         const c = Stars.counts();
-        const chip = (id, n) => {
-          const el = body.querySelector(`.os-bin[data-bin="${id}"]`);
-          if (!el) return;
-          el.querySelector('i').textContent = n;
-          /* An empty chip you are standing in must not vanish under you —
-             it would leave the page filtered to a bin with no button. */
-          el.hidden = !n && bin !== id;
-        };
         chip('@star', c.star); chip('@low', c.low);
         if (bin === '@star' || bin === '@low') { packHost.dataset.n = ''; run(); }
       });
@@ -1294,7 +1396,13 @@ const OSCE = (() => {
     return `
       <a class="os-card" data-st="${esc(st.id)}" data-coll="${esc(st.collection || '')}"
          href="#/osce/station/${encodeURIComponent(st.id)}">
-        ${typeof Stars !== 'undefined' ? Stars.html(st.id, true) : ''}
+        ${/* The bucket sits to the LEFT of the star because the two mean
+              different things and the order says which is which: what you
+              are going to sit, then what you want to keep. */''}
+        <span class="os-card-marks">
+          ${typeof Bucket !== 'undefined' ? Bucket.html(st.id, true) : ''}
+          ${typeof Stars !== 'undefined' ? Stars.html(st.id, true) : ''}
+        </span>
         <div class="os-card-top">
           <span class="os-card-time">${minsOf(st)} min</span>
           ${st.image_count ? `<span class="os-card-img" title="${st.image_count} image${st.image_count === 1 ? '' : 's'} — a CTG, a partogram or a scan">🖼 ${st.image_count}</span>` : ''}
@@ -1330,6 +1438,7 @@ const OSCE = (() => {
               moment you learn it is worth revising is the moment you want
               to say so, not two taps later back in the bank. */
           typeof Stars !== 'undefined' ? `<div class="os-star-row" id="os-star-row">
+          ${typeof Bucket !== 'undefined' ? Bucket.html(st.id) : ''}
           ${Stars.html(st.id)}
           <span class="muted tiny os-star-say" id="os-star-say"></span>
         </div>` : ''}
@@ -1360,14 +1469,37 @@ const OSCE = (() => {
         <p class="muted tiny os-warn">You will answer <strong>out loud</strong>. The browser asks for the microphone
           when the station starts; the whole ${minsOf(st)} minutes is recorded and offered as a download at the end.
           Nothing is uploaded unless you ask for AI marking.</p>
+        ${/* ONE VERB, THEN FOUR TOOLS.
+
+              Start is the thing you came here to do, so it keeps its
+              words. The other four are tools you reach for knowing what
+              they are, and five sentences competing on one line made the
+              one that matters harder to find rather than easier. They
+              are icons with a tooltip and a spoken label — the label is
+              not optional: an icon-only button with no aria-label is a
+              button a screen reader cannot name.
+
+              "Add it to a simulator session" is gone. It went to a page
+              that then drew a round at random and had forgotten this
+              station entirely, which is not what it said. The bucket
+              does what it promised: see js/bucket.js. */''}
         <div class="os-brief-acts">
           <button class="btn btn-gold btn-lg" id="os-start">▶ Start the station</button>
-          <button class="btn btn-ghost" id="os-scheme">📋 Show scheme</button>
-          <button class="btn btn-ghost" id="os-hand" title="Mark somebody who is sitting in front of you, point by point">✍️ Mark by hand</button>
-          <button class="btn btn-ghost" id="os-copy"
-            title="Copy the scenario and the questions as plain text — WITHOUT the marking scheme — to paste into NotebookLM, Gemini or ChatGPT">📄 Copy the station</button>
-          ${typeof AiOsce !== 'undefined' && AiOsce.allowed(user) ? AiOsce.buttonHtml() : ''}
-          <a class="btn btn-ghost" href="#/osce/sim">Add it to a simulator session instead</a>
+          <div class="os-tools" role="group" aria-label="Tools for this station">
+            <button class="os-tool" id="os-read" type="button" aria-label="Reading mode"
+              title="Reading mode — the whole station as an article to read before the exam">${ICONS.read}</button>
+            <button class="os-tool" id="os-scheme" type="button" aria-label="Show the marking scheme"
+              title="Show the marking scheme">${ICONS.scheme}</button>
+            <button class="os-tool" id="os-hand" type="button" aria-label="Mark somebody by hand"
+              title="Mark somebody who is sitting in front of you, point by point">${ICONS.hand}</button>
+            <button class="os-tool" id="os-copy" type="button" aria-label="Copy the station"
+              title="Copy the scenario and the questions as plain text — WITHOUT the marking scheme — to paste into NotebookLM, Gemini or ChatGPT">${ICONS.copy}</button>
+            ${typeof AiOsce !== 'undefined' && AiOsce.allowed(user) ? `
+            <button class="os-tool os-tool-ai" id="os-aiosce" type="button" aria-label="Sit this station against a chat model"
+              title="OSCE in AI — sit this one against Claude, ChatGPT or Gemini">
+              <span class="ai-marks">${AiOsce.LOGOS.claude}${AiOsce.LOGOS.gpt}${AiOsce.LOGOS.gemini}</span>
+            </button>` : ''}
+          </div>
         </div>
         <p class="muted tiny">Most of these stations exist on paper too — open the scheme if you want to check this is
           the one you meant before you start the clock.</p>
@@ -1409,6 +1541,7 @@ const OSCE = (() => {
       location.hash = '#/osce/run/' + sid;
     });
     view.querySelector('#os-scheme').addEventListener('click', () => showScheme(st));
+    view.querySelector('#os-read')?.addEventListener('click', () => readingMode(st));
 
     /* The ★ / ↓ pair, and a line saying what each one will actually do —
        a mark whose consequence is invisible is a mark nobody presses. */
@@ -1418,14 +1551,23 @@ const OSCE = (() => {
       const sayIt = () => {
         if (!say) return;
         const m = Stars.of(st.id);
-        say.textContent = m === Stars.STAR
-          ? 'In your ★ revision list — and never skipped in a circuit.'
-          : m === Stars.LOW
-            ? 'A circuit will offer to skip this one, and can leave it out altogether.'
-            : 'Star it for the week before the exam, or lower it to keep it out of your circuits.';
+        const inBk = typeof Bucket !== 'undefined' && Bucket.has(st.id);
+        const n = (typeof Bucket !== 'undefined') ? Bucket.count() : 0;
+        say.innerHTML = inBk
+          ? `In your simulator bucket — <a class="link" href="#/osce/sim">sit ${n} station${n === 1 ? '' : 's'} as one circuit →</a>
+             It leaves the bucket once you have actually sat it.`
+          : m === Stars.STAR
+            ? 'In your ★ revision list — and never skipped in a circuit.'
+            : m === Stars.LOW
+              ? 'A circuit will offer to skip this one, and can leave it out altogether.'
+              : 'Drop it in the bucket to sit later, or star it for the week before the exam.';
       };
       Stars.load().then(() => { Stars.paint(row); sayIt(); }).catch(() => {});
       Stars.wire(row, sayIt);
+      if (typeof Bucket !== 'undefined') {
+        Bucket.load().then(() => { Bucket.paint(row); sayIt(); }).catch(() => {});
+        Bucket.wire(row, sayIt);
+      }
       sayIt();
     }
     view.querySelector('#os-hand')?.addEventListener('click', () => {
@@ -1457,6 +1599,231 @@ const OSCE = (() => {
       const p = q.get('p');
       AiOsce.openDialog(st, { model: q.get('m') || '', level: p == null ? null : Number(p) });
     }
+  }
+
+  /* ================= reading mode =================
+
+     A station is a form when you are sitting it and a DOCUMENT when you
+     are revising from it, and those want opposite things. The form wants
+     the app's dark chrome, the clock, the buttons. The document wants a
+     page: light, quiet, wide margins, serif prose, and nothing that
+     blinks.
+
+     So this is deliberately not themed with the rest of AUREUM. It is a
+     white page whatever the app is set to, because that is what reading
+     twenty minutes of scheme on a train at eleven at night is actually
+     comfortable on — and because it is what it will look like if it is
+     printed, which is the other way this gets used.
+
+     THE CHARTS EARN THEIR PLACE OR THEY ARE NOT DRAWN
+
+     One chart, from data the scheme actually carries: how the marks are
+     spread across the questions. It answers a question a candidate has
+     and cannot otherwise see — where the marks are, and therefore where
+     the minutes should go — and the suggested minutes are that same
+     division carried through, printed on the row rather than drawn a
+     second time in a second chart of the same shape.
+
+     A second chart of "points per question" was considered and dropped:
+     points and marks are different units, and the only honest ways to
+     show them together are two charts or one chart and a number. The
+     number is on the row. A station with one question gets no chart at
+     all — a one-bar bar chart is a stat tile pretending. */
+
+  const RD_PAL = {
+    ink: '#0b0b0b', ink2: '#52514e', ink3: '#86857e',
+    rule: '#e4e2dc', surface: '#fcfcfb', bar: '#2a78d6', barSoft: '#cde2fb', accent: '#eb6834'
+  };
+
+  /**
+   * Marks per question, as a horizontal bar chart.
+   * Single series, so no legend — the title names it. Direct-labelled,
+   * because a value on every row is right when there are five rows and
+   * wrong when there are fifty.
+   */
+  function rdMarksChart(st) {
+    const qs = qsOf(st).filter(q => Number(q.marks) > 0);
+    if (qs.length < 2) return '';                 // one bar is not a chart
+    const total = qs.reduce((n, q) => n + Number(q.marks || 0), 0) || 1;
+    const mins = minsOf(st);
+    const max = Math.max(...qs.map(q => Number(q.marks) || 0));
+    /* The right-hand reserve is measured from the LONGEST label this
+       station will actually draw, not guessed: "14 marks · 6 pts · ~4 min"
+       is wider than "5 marks · 4 pts · ~2 min" and a fixed guess let the
+       widest row run off the edge of the figure. ~6.15px per character at
+       12px in the system stack, rounded up. */
+    const longest = Math.max(...qs.map((q, i) => {
+      const m = Number(q.marks) || 0;
+      const pts = scorable(q.marking_points).length;
+      return `${m} marks · ${pts} pt${pts === 1 ? '' : 's'} · ~${Math.round((m / total) * mins)} min`.length;
+    }));
+    const ROW = 34, BAR = 18, PAD_T = 8, LABEL = 52;
+    const RIGHT = Math.ceil(longest * 6.2) + 18;
+    const w = 640, h = PAD_T + qs.length * ROW + 6;
+    const plot = w - LABEL - RIGHT;
+
+    const bars = qs.map((q, i) => {
+      const m = Number(q.marks) || 0;
+      const y = PAD_T + i * ROW;
+      const len = Math.max(2, (m / max) * plot);
+      const pts = scorable(q.marking_points).length;
+      const mn = Math.round((m / total) * mins);
+      return `
+        <text x="${LABEL - 12}" y="${y + BAR / 2 + 4}" text-anchor="end"
+          font-size="12" fill="${RD_PAL.ink2}">Q${i + 1}</text>
+        <rect x="${LABEL}" y="${y}" width="${len}" height="${BAR}" rx="4" fill="${RD_PAL.bar}"/>
+        ${/* Square at the baseline, rounded at the data end — the corner
+              radius must never read as part of the value. */''}
+        <rect x="${LABEL}" y="${y}" width="4" height="${BAR}" fill="${RD_PAL.bar}"/>
+        <text x="${LABEL + len + 10}" y="${y + BAR / 2 + 4}" font-size="12" fill="${RD_PAL.ink}">
+          <tspan font-weight="600">${m}</tspan><tspan fill="${RD_PAL.ink3}"> marks · ${pts} pt${pts === 1 ? '' : 's'} · ~${mn} min</tspan>
+        </text>`;
+    }).join('');
+
+    return `
+      <figure class="rd-fig">
+        <figcaption class="rd-figcap">
+          <strong>Where the marks are</strong>
+          <span>and therefore where the minutes should go — ${mins} minutes divided in the same proportion</span>
+        </figcaption>
+        <svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" role="img"
+          aria-label="Marks for each question: ${qs.map((q, i) => `question ${i + 1}, ${q.marks} marks`).join('; ')}">
+          <line x1="${LABEL}" y1="2" x2="${LABEL}" y2="${h - 4}" stroke="${RD_PAL.rule}" stroke-width="1"/>
+          ${bars}
+        </svg>
+        ${/* The table view, so the figure is never the only way to the
+              numbers — for a screen reader, for print, and for anyone who
+              simply wants to read them. */''}
+        <details class="rd-table">
+          <summary>The same figures as a table</summary>
+          <table>
+            <thead><tr><th>Question</th><th>Marks</th><th>Share</th><th>Points</th><th>Suggested</th></tr></thead>
+            <tbody>${qs.map((q, i) => {
+              const m = Number(q.marks) || 0;
+              return `<tr><td>Q${i + 1}</td><td>${m}</td><td>${Math.round((m / total) * 100)}%</td>
+                <td>${scorable(q.marking_points).length}</td><td>~${Math.round((m / total) * mins)} min</td></tr>`;
+            }).join('')}</tbody>
+          </table>
+        </details>
+      </figure>`;
+  }
+
+  /**
+   * The pass mark against the total: one ratio against a limit, which is
+   * a meter and not a chart. Same ramp, so the fill and the track are
+   * the same hue and only the fill reads as the value.
+   */
+  function rdPassMeter(st) {
+    const total = marksOf(st), pass = passOf(st);
+    if (!total || !pass) return '';
+    const pct = Math.round((pass / total) * 100);
+    return `
+      <div class="rd-meter">
+        <div class="rd-meter-top"><strong>${pass} of ${total} marks to pass</strong><span>${pct}%</span></div>
+        <div class="rd-meter-track"><i style="width:${Math.min(100, pct)}%"></i></div>
+        <p class="rd-meter-say">Every marking point below is worth the same share of its question, so
+          ${pass === total ? 'every point counts' : `missing more than ${total - pass} mark${total - pass === 1 ? '' : 's'} across the whole station is a fail`}.</p>
+      </div>`;
+  }
+
+  /** The scheme, set as an article. */
+  function readingMode(st) {
+    document.querySelector('.rd-veil')?.remove();
+    const qs = qsOf(st);
+    const total = marksOf(st);
+    const pts = ptCount(st);
+
+    const pointList = q => {
+      const all = q.marking_points || [];
+      if (!all.length) return '<p class="rd-none">No marking points are recorded for this question.</p>';
+      let out = '', open = false;
+      all.forEach(p => {
+        if (isHeading(p)) {
+          if (open) { out += '</ul>'; open = false; }
+          out += `<h4 class="rd-sec">${esc(headText(p) || 'Section')}</h4>`;
+          return;
+        }
+        if (!open) { out += '<ul class="rd-points">'; open = true; }
+        out += `<li>${esc(p)}</li>`;
+      });
+      if (open) out += '</ul>';
+      return out;
+    };
+
+    const wrap = document.createElement('div');
+    wrap.className = 'rd-veil';
+    wrap.innerHTML = `
+      <div class="rd-bar">
+        <span class="rd-bar-t">Reading mode</span>
+        <div class="rd-bar-acts">
+          <button class="rd-btn" data-rd-print type="button">Print / Save as PDF</button>
+          <button class="rd-btn rd-x" data-rd-close type="button" aria-label="Close reading mode">✕</button>
+        </div>
+      </div>
+      <div class="rd-scroll">
+        <article class="rd-doc">
+          <p class="rd-kicker">OSCE STATION · ${minsOf(st)} MINUTES · ${qs.length} QUESTION${qs.length === 1 ? '' : 'S'}</p>
+          <h1 class="rd-h1">${esc(st.topic || st.id)}</h1>
+          ${st.created_by_name ? `<p class="rd-by">Written by ${esc(st.created_by_name)}</p>` : ''}
+
+          ${st.scenario ? `<p class="rd-stand">${esc(st.scenario)}</p>` : ''}
+
+          <div class="rd-facts">
+            <div><b>${qs.length}</b><span>questions</span></div>
+            <div><b>${total}</b><span>marks</span></div>
+            <div><b>${pts}</b><span>marking points</span></div>
+            <div><b>${minsOf(st)}</b><span>minutes</span></div>
+          </div>
+
+          ${rdPassMeter(st)}
+          ${rdMarksChart(st)}
+
+          ${hasRole(st) ? `<div class="rd-role">
+            <h3>🎭 There is a role player</h3>
+            <p>Somebody is in the chair. This is a conversation, not a viva — and what the character is holding
+              back is part of the station. The brief is deliberately not reproduced here: reading it is being given
+              the station.</p>
+          </div>` : ''}
+
+          ${qs.map((q, i) => `
+            <section class="rd-q">
+              <div class="rd-q-head">
+                <span class="rd-q-n">Question ${i + 1}</span>
+                <span class="rd-q-m">${q.marks} marks</span>
+              </div>
+              <h2 class="rd-q-t">${esc(q.prompt || '')}</h2>
+              ${q.reveal_before ? `<p class="rd-reveal"><b>Revealed first:</b> ${esc(q.reveal_before)}</p>` : ''}
+              ${(imagesOf(q) || []).length ? `<p class="rd-shown"><b>On the table:</b> ${
+                imagesOf(q).map(im => esc(im.caption || 'an image')).join('; ')}</p>` : ''}
+              ${pointList(q)}
+            </section>`).join('')}
+
+          <footer class="rd-foot">
+            <p><strong>${esc(st.topic || st.id)}</strong> · the marking scheme as written, not a completed marking.</p>
+            <p>Read on ${esc(new Date().toLocaleDateString('en-GB', { dateStyle: 'long' }))}.</p>
+          </footer>
+        </article>
+      </div>`;
+    document.body.appendChild(wrap);
+    /* The page behind must not scroll under the article — on a phone
+       that is how you end up reading two documents at once. */
+    try { document.documentElement.classList.add('is-printlock'); } catch {}
+
+    const shut = () => {
+      wrap.remove(); releaseScroll();
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('hashchange', shut);
+    };
+    const onKey = e => { if (e.key === 'Escape') shut(); };
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('hashchange', shut);
+    wrap.querySelector('[data-rd-close]').addEventListener('click', shut);
+    /* Printing reuses the scheme printer rather than printing the veil:
+       the printer already knows about page breaks, the role-player page
+       and the tick boxes, and two ways to put this on paper would drift. */
+    wrap.querySelector('[data-rd-print]').addEventListener('click', () => printScheme(st));
+    requestAnimationFrame(() => wrap.classList.add('is-in'));
+    return shut;
   }
 
   /* ---------------- the scheme, in a dialog ----------------
@@ -1974,9 +2341,14 @@ const OSCE = (() => {
 
   /* ================= the simulator (#/osce/sim) ================= */
 
-  async function renderSim(view, user) {
+  async function renderSim(view, user, query) {
     const list = await stations().catch(() => []);   // cards only — the circuit needs names, not schemes
     if (typeof Stars !== 'undefined') { try { await Stars.load(); } catch {} }
+    if (typeof Bucket !== 'undefined') { try { await Bucket.load(); } catch {} }
+    /* Arriving from the bucket bar: the round is already decided, and the
+       page should open on it rather than on a draw nobody asked for. */
+    const wantBucket = /(^|&)bucket=1(&|$)/.test(String(query || '').replace(/^\?/, ''))
+      && typeof Bucket !== 'undefined' && Bucket.count() > 0;
     const modules = await OsceBlueprint.get().catch(() => []);
     let attempts = [];
     try { attempts = (await myAttempts()) || []; } catch {}
@@ -2012,7 +2384,12 @@ const OSCE = (() => {
 
         <h3 class="card-title" style="margin-top:22px">Which stations?</h3>
         <div class="os-pickmode" id="os-pickmode">
-          <button class="os-pick-b active" data-mode="blueprint">🗺 Across the blueprint</button>
+          ${/* The bucket goes FIRST when there is something in it: a
+                round somebody has already chosen beats every way of
+                choosing one for them. */''}
+          ${(typeof Bucket !== 'undefined' && Bucket.count())
+            ? `<button class="os-pick-b ${wantBucket ? 'active' : ''}" data-mode="bucket">🧺 My bucket (${Bucket.count()})</button>` : ''}
+          <button class="os-pick-b ${wantBucket ? '' : 'active'}" data-mode="blueprint">🗺 Across the blueprint</button>
           <button class="os-pick-b" data-mode="random">🎲 Surprise me</button>
           <button class="os-pick-b" data-mode="unseen">✦ Ones I haven't done</button>
           <button class="os-pick-b" data-mode="pick">☑ Let me choose</button>
@@ -2060,7 +2437,7 @@ const OSCE = (() => {
     FX.viewIn(view);
     if (!list.length) return;
 
-    let want = 9, mode = 'blueprint', chosen = new Set(), freshOnly = false, skipLow = true;
+    let want = 9, mode = wantBucket ? 'bucket' : 'blueprint', chosen = new Set(), freshOnly = false, skipLow = true;
     let done = new Set();
     attempts.forEach(a => done.add(a.station_id));
 
@@ -2093,6 +2470,14 @@ const OSCE = (() => {
     const dropLow = arr => { const l = lowSet(); return l.size ? arr.filter(s => !l.has(s.id)) : arr; };
 
     function pool() {
+      /* THE BUCKET IS NOT A DRAW. Everything in it, in the order it was
+         collected, and the count control does not apply — you chose
+         these one at a time and choosing them again by a number would be
+         the page overruling you. */
+      if (mode === 'bucket') {
+        const byId = {}; list.forEach(s => byId[s.id] = s);
+        return Bucket.ids().map(id => byId[id]).filter(Boolean);
+      }
       if (mode === 'pick') return list.filter(s => chosen.has(s.id));
       const bank = dropLow(list);
       const bankTagged = dropLow(tagged);
@@ -2109,6 +2494,11 @@ const OSCE = (() => {
       for (let i = bag.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [bag[i], bag[j]] = [bag[j], bag[i]]; }
       return bag.slice(0, want);
     }
+    /* Nothing to do, named rather than left as a bare `return` — the
+       bucket branch above exits early and a reader should see that
+       nothing was skipped by accident. */
+    const paintMadeNothing = () => {};
+
     function paint() {
       const p = pool();
       const mins = p.length * 15;
@@ -2116,6 +2506,22 @@ const OSCE = (() => {
       /* Say plainly when the tick cannot be honoured in full rather than
          quietly handing back a shorter circuit. */
       const short = freshOnly && p.length < want;
+      if (mode === 'bucket') {
+        sum.innerHTML = `<strong>${p.length}</strong> station${p.length === 1 ? '' : 's'} from your bucket ·
+          ${hours(p.length * 15)}`;
+        note.textContent = 'Everything in the bucket, in the order you collected it. How many is not a choice here — you already made it.';
+        bpNote.innerHTML = `<p class="muted tiny os-bp-warn">These leave the bucket one at a time, as you sit them.
+          End the round early and whatever you did not reach is still there tomorrow.</p>`;
+        pickHost.hidden = true; pickHost.innerHTML = '';
+        view.querySelector('#os-freshwrap').hidden = true;
+        const lw = view.querySelector('#os-lowwrap'); if (lw) lw.hidden = true;
+        view.querySelector('#os-count').classList.add('is-off');
+        view.querySelector('#os-sim-go').disabled = !p.length;
+        paintMadeNothing();
+        return;
+      }
+      view.querySelector('#os-count').classList.remove('is-off');
+      view.querySelector('#os-freshwrap').hidden = mode === 'pick';
       sum.innerHTML = p.length
         ? `<strong>${p.length}</strong> station${p.length === 1 ? '' : 's'} · ${hours(p.length * 15)}${
             short ? ` <span class="bad">— only ${p.length} new station${p.length === 1 ? '' : 's'} are left</span>` : ''}`
@@ -2190,7 +2596,9 @@ const OSCE = (() => {
       const b = e.target.closest('[data-mode]'); if (!b) return;
       mode = b.dataset.mode;
       view.querySelectorAll('.os-pick-b').forEach(x => x.classList.toggle('active', x === b));
-      view.querySelector('#os-freshwrap').hidden = mode === 'pick';
+      /* Which controls apply is decided in one place — paint() — rather
+         than half here and half there, or the bucket mode would re-show
+         the ticks it has just explained do not apply to it. */
       paint();
     });
     freshBox.addEventListener('change', () => { freshOnly = freshBox.checked; paint(); });
@@ -2213,8 +2621,14 @@ const OSCE = (() => {
          still blind — the flag belongs to the sitting, not to the tab it
          was started in. Choosing the stations yourself cannot be blind:
          you have already read the list. */
+      /* `fromBucket` travels with the session so that a station sat
+         tomorrow, from a circuit resumed on another device, still knows
+         to take itself out of the bucket. The alternative — checking the
+         bucket at sitting time — would empty it for a station that was
+         merely IN it while a different round was running. */
       await saveSession({ id: sid, stations: p.map(s => s.id), at: 0, phase: 'brief', answers: {}, elapsed: 0,
-        started: Date.now(), circuit: true, blind: mode !== 'pick' });
+        started: Date.now(), circuit: true, blind: mode !== 'pick' && mode !== 'bucket',
+        fromBucket: mode === 'bucket' });
       location.hash = '#/osce/run/' + sid;
     });
     paint();
@@ -3194,6 +3608,11 @@ const OSCE = (() => {
       const handOver = () => {
         const already = loadMarks(sid)[st.id];
         if (already) return;
+        /* SAT MEANS SAT. The bucket empties here and nowhere else — not
+           when the round starts, not when a station is skipped — because
+           this is the only moment that means the station is finished
+           with. See the header of js/bucket.js. */
+        if (s.fromBucket && typeof Bucket !== 'undefined') Bucket.done([st.id]).catch(() => {});
         if (spoken || rec?.blob) {
           saveMark(sid, st.id, { status: 'queued', at: Date.now() });
           queueMark({ sid, st, ans: Object.assign({}, ans), rec, session: { elapsed },
@@ -6644,7 +7063,7 @@ ${P} .os-pd-close{background:transparent;color:#fff;border:1px solid rgba(255,25
     // exposed for tests and for the circuit page's live redraw
     markState, onMarkChange, retryMark, shell, circuitNext,
     printResult, printScheme, __printPresets: PRINT_PRESETS,
-    reconcile, creditOf,
+    reconcile, creditOf, readingMode, ICONS,
     /* Lent to OSCE in AI so a tape recorded there is marked by exactly the
        same path as one recorded here — the same model picker, the same
        cost estimate, the same upload, the same pending queue. A second

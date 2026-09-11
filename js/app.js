@@ -35,7 +35,7 @@
        bare hash sent "Find a station in it" to the dashboard, because no
        pattern matched and the router fell through to its default. */
     { re: /^#\/osce(?:\?bp=([^&]*))?$/, fn: (bp, u) => OSCE.renderBank(view, u, { bp: bp || '' }) },
-    { re: /^#\/osce\/sim$/, fn: (u) => OSCE.renderSim(view, u) },
+    { re: /^#\/osce\/sim(?:\?(.*))?$/, fn: (q, u) => OSCE.renderSim(view, u, q || '') },
     { re: /^#\/osce\/mine$/, fn: (u) => OSCE.renderMine(view, u) },
     { re: /^#\/osce\/edit$/, fn: (u) => OSCE.renderEdit(view, null, u) },
     { re: /^#\/osce\/edit\/([^/]+)$/, fn: (id, u) => OSCE.renderEdit(view, id, u) },
