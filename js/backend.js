@@ -353,6 +353,20 @@ const Backend = (() => {
        at all for the ones they have not. See js/stars.js for why the two
        marks are one field and not two flags. */
     async function listOsceStars() { const e = sessionEmail(); if (!e) return []; return read('oscestars:' + e, []); }
+    /* ---- the simulator bucket ---- */
+    async function listOsceBucket() { const e = sessionEmail(); if (!e) return []; return read('oscebucket:' + e, []); }
+    async function setOsceBucket(stationId, inIt) {
+      const e = sessionEmail(); if (!e) return null;
+      const l = read('oscebucket:' + e, []).filter(x => x.stationId !== stationId);
+      if (inIt) l.push({ stationId, at: Date.now() });
+      write('oscebucket:' + e, l);
+      return l;
+    }
+    async function clearOsceBucket(ids) {
+      const e = sessionEmail(); if (!e) return;
+      const drop = ids && ids.length ? new Set(ids) : null;
+      write('oscebucket:' + e, drop ? read('oscebucket:' + e, []).filter(x => !drop.has(x.stationId)) : []);
+    }
     async function setOsceStar(stationId, mark, note) {
       const e = sessionEmail(); if (!e) return null;
       const l = read('oscestars:' + e, []).filter(x => x.stationId !== stationId);
@@ -848,6 +862,7 @@ const Backend = (() => {
       findUserByNo, createLiveStation, getLiveStation, peekLiveStation, saveLiveStation, dropLiveStation, myLiveStations, watchLiveStation,
       getOsceBlueprint, saveOsceBlueprint, tagOsceStations, listOsceDecks, saveOsceDeck, deleteOsceDeck,
       listOsceStars, setOsceStar,
+      listOsceBucket, setOsceBucket, clearOsceBucket,
       listOsceAttempts, getOsceAttempt,
       saveOsceAttempt, deleteOsceAttempt, uploadOsceAudio, getOsceAudioUrl, sweepOsceAudio,
       /* case discussions — the SAME names in both backends, always */
@@ -1312,6 +1327,30 @@ const Backend = (() => {
        when a page draws two hundred cards, so this is one request and not
        one per card. Clearing a mark DELETES the row rather than writing an
        empty one, so the table only ever holds opinions that exist. */
+    /* ---- the simulator bucket ----
+       Ordered by when it went in, so a circuit sits them in the order
+       they were collected. */
+    async function listOsceBucket() {
+      await ensureClient(); const id = await uid(); if (!id) return [];
+      const { data, error } = await sb.from('osce_bucket').select('station_id,created_at')
+        .eq('user_id', id).order('created_at', { ascending: true });
+      if (error) return [];
+      return (data || []).map(r => ({ stationId: r.station_id, at: new Date(r.created_at).getTime() }));
+    }
+    async function setOsceBucket(stationId, inIt) {
+      await ensureClient(); const id = await uid(); if (!id) throw new Error('Sign in first.');
+      if (!inIt) { await sb.from('osce_bucket').delete().eq('user_id', id).eq('station_id', stationId); return null; }
+      const { error } = await sb.from('osce_bucket')
+        .upsert({ user_id: id, station_id: stationId }, { onConflict: 'user_id,station_id' });
+      if (error) throw new Error('Could not save that: ' + (error.message || error.code));
+      return true;
+    }
+    async function clearOsceBucket(ids) {
+      await ensureClient(); const id = await uid(); if (!id) return;
+      let q = sb.from('osce_bucket').delete().eq('user_id', id);
+      if (ids && ids.length) q = q.in('station_id', ids);
+      await q;
+    }
     async function listOsceStars() {
       await ensureClient(); const id = await uid(); if (!id) return [];
       const { data, error } = await sb.from('osce_stars').select('station_id,mark,note,created_at').eq('user_id', id);
@@ -2286,6 +2325,7 @@ const Backend = (() => {
       findUserByNo, createLiveStation, getLiveStation, peekLiveStation, saveLiveStation, dropLiveStation, myLiveStations, watchLiveStation,
       getOsceBlueprint, saveOsceBlueprint, tagOsceStations, listOsceDecks, saveOsceDeck, deleteOsceDeck,
       listOsceStars, setOsceStar,
+      listOsceBucket, setOsceBucket, clearOsceBucket,
       listOsceAttempts, getOsceAttempt,
       saveOsceAttempt, deleteOsceAttempt, uploadOsceAudio, getOsceAudioUrl, sweepOsceAudio,
       /* case discussions — the SAME names in both backends, always */

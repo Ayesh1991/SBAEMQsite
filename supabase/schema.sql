@@ -1488,3 +1488,31 @@ alter table public.osce_stars enable row level security;
 drop policy if exists "osce stars own" on public.osce_stars;
 create policy "osce stars own" on public.osce_stars for all
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+/* ============================================================
+   v103 — the simulator bucket
+
+   A cart. Stations are dropped into it while browsing the bank and then
+   sat together as one circuit, which is how people actually revise: you
+   come across four stations worth doing over a morning, and you want
+   them kept until the morning.
+
+   Separate from osce_stars rather than a third value of its own `mark`,
+   because a station can perfectly well be starred AND queued — they are
+   different questions ("worth coming back to" and "doing next"), and one
+   row per user per station could only answer one of them.
+
+   `at` orders the bucket, so a circuit sits them in the order they were
+   collected rather than in whatever order the database returns.
+   ============================================================ */
+create table if not exists public.osce_bucket (
+  user_id    uuid not null references auth.users(id) on delete cascade,
+  station_id text not null,
+  created_at timestamptz not null default now(),
+  primary key (user_id, station_id)
+);
+create index if not exists osce_bucket_user_idx on public.osce_bucket (user_id, created_at);
+alter table public.osce_bucket enable row level security;
+drop policy if exists "osce bucket own" on public.osce_bucket;
+create policy "osce bucket own" on public.osce_bucket for all
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
