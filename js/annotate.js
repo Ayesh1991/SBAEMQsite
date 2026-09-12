@@ -266,15 +266,33 @@ const Annotate = (() => {
       fx: (clientX - r.left) / Math.max(1, r.width), fy: (clientY - r.top) / Math.max(1, r.height) };
   }
 
-  /** A stroke's points back in article coordinates, at today's layout. */
+  /**
+   * A stroke's points back in article coordinates, at today's layout,
+   * as a SMOOTHED path.
+   *
+   * Straight segments between samples are what a polyline gives, and on
+   * anything curved — a circle round a number is the commonest mark
+   * anybody makes — they read as a polygon. Each sample becomes the
+   * control point of a quadratic through the midpoints of its
+   * neighbours, which is one line of arithmetic and the difference
+   * between ink and a chart.
+   */
   function inkPath(m) {
     const el = blockOf(m.key);
     if (!el) return '';
     const r = el.getBoundingClientRect();
     const base = article.getBoundingClientRect();
     const ox = r.left - base.left, oy = r.top - base.top;
-    return m.pts.map(([fx, fy], i) =>
-      `${i ? 'L' : 'M'}${(ox + fx * r.width).toFixed(1)},${(oy + fy * r.height).toFixed(1)}`).join(' ');
+    const p = m.pts.map(([fx, fy]) => [ox + fx * r.width, oy + fy * r.height]);
+    if (!p.length) return '';
+    if (p.length < 3) return p.map((q, i) => `${i ? 'L' : 'M'}${q[0].toFixed(1)},${q[1].toFixed(1)}`).join(' ');
+    let d = `M${p[0][0].toFixed(1)},${p[0][1].toFixed(1)}`;
+    for (let i = 1; i < p.length - 1; i++) {
+      const mx = (p[i][0] + p[i + 1][0]) / 2, my = (p[i][1] + p[i + 1][1]) / 2;
+      d += ` Q${p[i][0].toFixed(1)},${p[i][1].toFixed(1)} ${mx.toFixed(1)},${my.toFixed(1)}`;
+    }
+    const last = p[p.length - 1];
+    return d + ` L${last[0].toFixed(1)},${last[1].toFixed(1)}`;
   }
 
   function paintInk() {
@@ -297,8 +315,21 @@ const Annotate = (() => {
   function onDown(e) {
     if (tool !== 'pen' && tool !== 'erase') return;
     /* THE PLATFORM'S OWN RULE. A finger is for scrolling, always — which
-       also means the palm resting on the glass is ignored for free. */
-    if (e.pointerType === 'touch') return;
+       also means the palm resting on the glass is ignored for free.
+
+       But the scrolling is now OURS to do. `touch-action: pan-y` looked
+       like the way to let a finger scroll a surface the pen draws on,
+       and it is the cause of the complaint that made this change: the
+       browser also applies it to the PEN, so a downward stroke was read
+       as a scroll, the page moved under the nib, and the stroke was
+       cancelled mid-line. Every attempt at a circle came out as three
+       broken arcs.
+
+       So the layer now takes the whole gesture (`touch-action: none`)
+       and a finger scrolls because this moves the scroller itself. To
+       the hand it is identical; to the pen it is the difference between
+       drawing and not. */
+    if (e.pointerType === 'touch') { startPan(e); return; }
     e.preventDefault();
     if (tool === 'erase') { eraseAt(e.clientX, e.clientY); return; }
     const a = inkAnchor(e.clientX, e.clientY);
@@ -315,11 +346,11 @@ const Annotate = (() => {
   }
 
   function onMove(e) {
+    if (e.pointerType === 'touch') { movePan(e); return; }
     if (!drawing) {
-      if (tool === 'erase' && e.buttons && e.pointerType !== 'touch') eraseAt(e.clientX, e.clientY);
+      if (tool === 'erase' && e.buttons) eraseAt(e.clientX, e.clientY);
       return;
     }
-    if (e.pointerType === 'touch') return;
     e.preventDefault();
     const el = blockOf(drawing.key);
     if (!el) return;
@@ -338,7 +369,8 @@ const Annotate = (() => {
     paintInk();
   }
 
-  function onUp() {
+  function onUp(e) {
+    if (e && e.pointerType === 'touch') { endPan(); return; }
     if (!drawing) return;
     /* A dot is a tap, not a stroke — usually the pencil being put down.
        Two points or fewer and it is dropped rather than left as a speck
@@ -350,6 +382,42 @@ const Annotate = (() => {
   }
 
   const round = n => Math.round(n * 10000) / 10000;
+
+  /* ---------------- scrolling, by hand ----------------
+
+     Only while a drawing tool is chosen. It has to feel exactly like the
+     browser's own, so it moves one-for-one with the finger and keeps
+     going when the finger leaves — a list that stops dead the moment you
+     let go feels broken even when every pixel is where you put it. */
+  let pan = null, glideRaf = null;
+
+  function startPan(e) {
+    cancelAnimationFrame(glideRaf); glideRaf = null;
+    pan = { id: e.pointerId, y: e.clientY, t: performance.now(), v: 0 };
+  }
+  function movePan(e) {
+    if (!pan || pan.id !== e.pointerId || !host) return;
+    const now = performance.now();
+    const dy = e.clientY - pan.y;
+    const dt = Math.max(1, now - pan.t);
+    /* Smoothed, so one jittery sample at the end of a flick does not
+       decide how far it glides. */
+    pan.v = pan.v * 0.6 + (dy / dt) * 0.4;
+    host.scrollTop -= dy;
+    pan.y = e.clientY; pan.t = now;
+  }
+  function endPan() {
+    const v0 = pan?.v || 0;
+    pan = null;
+    if (!host || Math.abs(v0) < 0.08) return;
+    let v = v0;
+    const step = () => {
+      v *= 0.94;                                  // about a second to rest
+      host.scrollTop -= v * 16;
+      glideRaf = Math.abs(v) > 0.02 ? requestAnimationFrame(step) : null;
+    };
+    glideRaf = requestAnimationFrame(step);
+  }
 
   function eraseAt(cx, cy) {
     /* The ink layer is under the finger, so asking what is at the point
@@ -425,7 +493,11 @@ const Annotate = (() => {
     ink.addEventListener('pointermove', onMove);
     ink.addEventListener('pointerup', onUp);
     ink.addEventListener('pointercancel', onUp);
-    ink.addEventListener('pointerleave', onUp);
+    /* NOT `pointerleave`. It fires whenever the nib crosses out of the
+       layer's box — over an image, past the edge of the column — and
+       ending the stroke there is the other half of why a circle came out
+       as several arcs. Pointer capture means up and cancel arrive here
+       wherever the pen finishes. */
 
     /* Re-measured on resize, because every mark's position is derived
        from where its block is NOW. Debounced — a rotation fires this
@@ -442,6 +514,7 @@ const Annotate = (() => {
   function unmount() {
     clearTimeout(saveTimer);
     if (dirty) save();
+    cancelAnimationFrame(glideRaf); glideRaf = null; pan = null;
     layer?.remove(); layer = null;
     ink?.remove(); ink = null; svg = null;
     article = null; host = null; marks = []; doc = '';
