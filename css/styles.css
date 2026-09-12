@@ -6762,3 +6762,12 @@ body.sc-open { overflow: hidden; }
   .rd-saved { display: none; }
 }
 @media print { .an-bar { display: none; } }
+
+/* ============================================================
+   v106 — underlines, and a highlighter with no lag
+   ============================================================ */
+/* An underline is a rule on the baseline, not a box behind the words. */
+.an-ul { position: absolute; border-radius: 1px; pointer-events: none; }
+.an-t-ul { font-family: Georgia, serif; font-weight: 700; font-size: .92rem; line-height: 1;
+  border-bottom: 2px solid currentColor; padding-bottom: 1px; }
+.an-ul-set { display: inline-flex; align-items: center; gap: 5px; }

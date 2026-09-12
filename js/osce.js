@@ -1745,8 +1745,10 @@ const OSCE = (() => {
         <div class="an-tools" role="group" aria-label="Marking tools">
           <button type="button" class="an-t is-on" data-an-t="read" title="Read — nothing is marked"
             aria-label="Reading">👆</button>
-          <button type="button" class="an-t" data-an-t="hl" title="Highlighter — select text to mark it"
+          <button type="button" class="an-t" data-an-t="hl" title="Highlighter — select text and it is marked as you drag"
             aria-label="Highlighter">🖍</button>
+          <button type="button" class="an-t" data-an-t="ul" title="Underline — select text to rule a line under it"
+            aria-label="Underline"><span class="an-t-ul">A</span></button>
           <button type="button" class="an-t" data-an-t="pen" title="Pen — draw with an Apple Pencil or a mouse; a finger still scrolls"
             aria-label="Pen">✒️</button>
           <button type="button" class="an-t" data-an-t="erase" title="Eraser — tap a mark to remove it"
@@ -1755,6 +1757,8 @@ const OSCE = (() => {
         <div class="an-colours" id="an-colours">
           <span class="an-hl-set">${sw(Annotate.HIGHLIGHTS, 'hl')}
             <label class="an-well" title="Any colour"><input type="color" data-an-well="hl" value="#ffe066"></label></span>
+          <span class="an-ul-set" hidden>${sw(Annotate.UNDERLINES, 'ul')}
+            <label class="an-well" title="Any colour"><input type="color" data-an-well="ul" value="#e03131"></label></span>
           <span class="an-pen-set" hidden>${sw(Annotate.PENS, 'pen')}
             <label class="an-well" title="Any colour"><input type="color" data-an-well="pen" value="#12110f"></label>
             <span class="an-widths">${Annotate.WIDTHS.map((w, i) =>
@@ -1930,16 +1934,21 @@ const OSCE = (() => {
           bar.querySelectorAll('[data-an-t]').forEach(b => b.classList.toggle('is-on', b === t));
           Annotate.setTool(t.dataset.anT);
           /* The colours shown are the ones the chosen tool uses. Showing
-             both sets at once means half the swatches do nothing. */
-          bar.querySelector('.an-hl-set').hidden = t.dataset.anT === 'pen';
-          bar.querySelector('.an-pen-set').hidden = t.dataset.anT !== 'pen';
+             all three sets at once means two thirds of the swatches do
+             nothing. */
+          const k = t.dataset.anT;
+          bar.querySelector('.an-hl-set').hidden = k !== 'hl';
+          bar.querySelector('.an-ul-set').hidden = k !== 'ul';
+          bar.querySelector('.an-pen-set').hidden = k !== 'pen';
           return;
         }
         const c = e.target.closest('[data-an-c]');
         if (c) {
           const [kind, col] = c.dataset.anC.split('|');
           c.parentNode.querySelectorAll('[data-an-c]').forEach(x => x.classList.toggle('is-on', x === c));
-          if (kind === 'hl') Annotate.setHighlightColour(col); else Annotate.setPenColour(col);
+          if (kind === 'hl') Annotate.setHighlightColour(col);
+          else if (kind === 'ul') Annotate.setUnderlineColour(col);
+          else Annotate.setPenColour(col);
           return;
         }
         const w = e.target.closest('[data-an-w]');
@@ -1968,17 +1977,26 @@ const OSCE = (() => {
         /* The well is the platform's own picker, so "unlimited colours"
            costs one input rather than a colour wheel of our own. */
         if (w.dataset.anWell === 'hl') Annotate.setHighlightColour(w.value);
+        else if (w.dataset.anWell === 'ul') Annotate.setUnderlineColour(w.value);
         else Annotate.setPenColour(w.value);
         w.closest('span')?.querySelectorAll('[data-an-c]').forEach(x => x.classList.remove('is-on'));
       });
 
-      /* HIGHLIGHTING IS LETTING GO OF A SELECTION. No second press: on a
+      /* MARKING IS LETTING GO OF A SELECTION. No second press: on a
          touch screen the selection is gone by the time a button has been
          found, which is why every highlighter that works this way marks
-         on release. */
+         on release.
+
+         And no timer. The selection is already final when these fire,
+         and the ten milliseconds that used to be waited here were ten
+         milliseconds of the lag that was reported. The words are
+         already wearing the colour by this point — the browser's own
+         selection is painted in it while the finger is still moving, see
+         annotate.js — so the commit has nothing left to reveal. */
       const onRelease = () => {
-        if (Annotate.getTool() !== 'hl') return;
-        setTimeout(() => Annotate.highlightSelection(), 10);
+        const t = Annotate.getTool();
+        if (t !== 'hl' && t !== 'ul') return;
+        Annotate.markSelection(t);
       };
       art.addEventListener('mouseup', onRelease);
       art.addEventListener('touchend', onRelease);
