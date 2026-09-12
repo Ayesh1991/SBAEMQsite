@@ -100,9 +100,10 @@ const tools = await page.evaluate(() => ({
     .every(b => (b.getAttribute('aria-label') || b.getAttribute('title') || '').length > 1)
 }));
 say('there is a pencil case', tools.bar);
-say('  read, highlight, pen, erase', tools.ts.join() === 'read,hl,pen,erase', tools.ts.join(', '));
-say('  four highlighters and four pens, plus a colour well for any colour at all',
-  tools.hlSwatches === 4 && tools.well === 2, tools.hlSwatches + ' swatches · ' + tools.well + ' wells');
+say('  read, highlight, underline, pen, erase',
+  tools.ts.join() === 'read,hl,ul,pen,erase', tools.ts.join(', '));
+say('  four highlighters, and a colour well on each of the three instruments',
+  tools.hlSwatches === 4 && tools.well === 3, tools.hlSwatches + ' swatches · ' + tools.well + ' wells');
 say('  and three pen widths', tools.widths === 3);
 say('  every control named', tools.named);
 
@@ -153,6 +154,71 @@ const multi = await page.evaluate(() => {
 });
 say('a selection across blocks becomes one mark per block',
   multi.length === 3 && multi.includes('q2.p0') && multi.includes('q2.p1'), multi.join(', '));
+
+/* ---------------------------------------------------------------- */
+sec('2b. IT HAPPENS AS THE FINGER MOVES, NOT AFTER IT STOPS');
+
+/* The complaint was a lag between letting go and the colour appearing.
+   Two causes: a timer, and a full re-measure of every mark on the page.
+   The timer is gone; this is the other half. */
+const live = await page.evaluate(() => {
+  const styleOf = () => document.querySelector('.rd-doc style')?.textContent || '';
+  const first = styleOf();
+  document.querySelectorAll('.an-hl-set [data-an-c]')[1].click();     // green
+  return { yellow: first, green: styleOf() };
+});
+say('the browser’s own selection wears the highlighter’s colour',
+  /::selection\{background:#ffe066/.test(live.yellow), live.yellow.slice(0, 46));
+say('  so changing the swatch changes what the drag looks like',
+  /::selection\{background:#8ce99a/.test(live.green), live.green.slice(0, 46));
+
+/* And the commit does not re-render the page. Proved by identity, not by
+   a stopwatch: the DOM nodes of the marks already on the page must be
+   the SAME nodes afterwards. Re-rendering would replace every one. */
+const incremental = await page.evaluate(() => {
+  const nodes = () => [...document.querySelectorAll('.an-hl')];
+  const before = nodes();
+  const el = document.querySelector('[data-an="q2.p1"]');
+  const r = document.createRange(); r.selectNodeContents(el);
+  const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+  Annotate.markSelection('hl');
+  const after = nodes();
+  return { kept: before.every(n => after.includes(n)), grew: after.length > before.length,
+    n: before.length + ' → ' + after.length };
+});
+say('committing a new mark leaves every existing one untouched',
+  incremental.kept && incremental.grew, incremental.n + ' rectangles');
+
+/* ---------------------------------------------------------------- */
+sec('2c. UNDERLINES');
+
+await page.click('[data-an-t="ul"]'); await page.waitForTimeout(200);
+const ul = await page.evaluate(() => {
+  const sets = {
+    hl: document.querySelector('.an-hl-set').hidden,
+    ul: document.querySelector('.an-ul-set').hidden,
+    pen: document.querySelector('.an-pen-set').hidden
+  };
+  const swatches = document.querySelectorAll('.an-ul-set [data-an-c]').length;
+  const sel = document.querySelector('.rd-doc style')?.textContent || '';
+  const el = document.querySelector('[data-an="q1.prompt"]');
+  const r = document.createRange(); r.selectNodeContents(el);
+  const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+  Annotate.markSelection('ul');
+  const box = document.querySelector('.an-ul');
+  const m = Annotate._marks().find(x => x.kind === 'ul');
+  return { sets, swatches, sel, drawn: document.querySelectorAll('.an-ul').length,
+    h: box?.style.height, colour: box?.style.background, kind: m?.kind, key: m?.key };
+});
+say('the underline has its own colours, and only its own are shown',
+  ul.swatches === 4 && ul.sets.ul === false && ul.sets.hl === true && ul.sets.pen === true,
+  ul.swatches + ' swatches');
+say('  the selection previews it as a wash of the same colour, not a highlight',
+  /::selection\{background:#e0313133/.test(ul.sel), ul.sel.slice(0, 46));
+say('underlining rules a line under the words', ul.drawn >= 1 && ul.kind === 'ul', ul.drawn + ' rules');
+say('  two pixels, on the baseline, in the chosen colour',
+  ul.h === '2px' && /224, 49, 49/.test(ul.colour || ''), ul.h + ' · ' + ul.colour);
+say('  anchored to the text like a highlight is', ul.key === 'q1.prompt', ul.key);
 
 /* ---------------------------------------------------------------- */
 sec('3. INK — THE PENCIL DRAWS, THE FINGER SCROLLS');
@@ -315,17 +381,20 @@ const saved = await page.evaluate(async () => {
   return { n: (d?.marks || []).length, kinds: [...new Set((d?.marks || []).map(m => m.kind))].sort() };
 });
 say('they are written to the backend', saved.n === n0, saved.n + ' marks stored');
-say('  highlights and ink together, as one document', saved.kinds.join() === 'hl,ink', saved.kinds.join(', '));
+say('  highlights, underlines and ink together, as one document',
+  saved.kinds.join() === 'hl,ink,ul', saved.kinds.join(', '));
 
 await page.click('[data-rd-close]'); await page.waitForTimeout(600);
 await open();
 const back = await page.evaluate(() => ({
   n: Annotate.count(),
   hl: document.querySelectorAll('.an-hl').length,
+  ul: document.querySelectorAll('.an-ul').length,
   ink: document.querySelectorAll('.an-ink path').length
 }));
 say('closing and reopening brings every mark back', back.n === n0, back.n + ' marks');
-say('  redrawn on the page', back.hl >= 1 && back.ink >= 1, back.hl + ' highlights · ' + back.ink + ' strokes');
+say('  redrawn on the page — all three kinds', back.hl >= 1 && back.ul >= 1 && back.ink >= 1,
+  back.hl + ' highlights · ' + back.ul + ' underlines · ' + back.ink + ' strokes');
 
 /* Another person on the same device sees a clean page — which is the
    whole claim of "per user". */

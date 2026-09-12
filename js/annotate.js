@@ -74,6 +74,16 @@ const Annotate = (() => {
     { id: 'b', name: 'Blue',   c: '#a5d8ff' },
     { id: 'p', name: 'Pink',   c: '#ffc9de' }
   ];
+  /* Underlines are a different instrument from highlighters and want
+     different colours: a highlighter is a wash you read through, an
+     underline is a line you read along, so it wants ink colours rather
+     than pastels. */
+  const UNDERLINES = [
+    { id: 'r', name: 'Red',   c: '#e03131' },
+    { id: 'u', name: 'Blue',  c: '#1971c2' },
+    { id: 'n', name: 'Green', c: '#2f9e44' },
+    { id: 'k', name: 'Black', c: '#12110f' }
+  ];
   const PENS = [
     { id: 'k', name: 'Black', c: '#12110f' },
     { id: 'r', name: 'Red',   c: '#e03131' },
@@ -92,8 +102,9 @@ const Annotate = (() => {
   let host = null;              // the scrolling container
   let article = null;           // the element the marks are anchored inside
   let marks = [];               // [{kind:'hl'|'ink', ...}]
-  let tool = 'read';            // read | hl | pen | erase
+  let tool = 'read';            // read | hl | ul | pen | erase
   let hlColour = HIGHLIGHTS[0].c;
+  let ulColour = UNDERLINES[0].c;
   let penColour = PENS[0].c;
   let penWidth = WIDTHS[1].w;
   let dirty = false, saving = null, saveTimer = null;
@@ -141,14 +152,52 @@ const Annotate = (() => {
     } catch { return { key: el.getAttribute('data-an'), offset: 0 }; }
   }
 
-  /* ================= highlights ================= */
+  /* ================= the live colour =================
+
+     THE LAG THE USER FELT, AND WHY IT IS GONE.
+
+     Marking a phrase used to be: drag (the browser paints its own blue
+     selection), let go, wait, and the yellow appears. The wait was a
+     10 ms timer plus a full re-measure of EVERY mark on the page —
+     `getClientRects()` forces layout, and with half a dozen marks on a
+     long article that is a visible pause at exactly the moment the eye
+     is waiting for feedback.
+
+     Both are gone, and the second change is the one that makes it feel
+     instant: the browser's own selection now wears the colour of the
+     chosen instrument. There is nothing to wait for, because the words
+     turn yellow AS THE FINGER MOVES — the commit on release then paints
+     the same colour in the same place and nothing appears to happen at
+     all, which is exactly right. A highlighter on paper does not lag
+     either.
+
+     One `<style>` element, rewritten when the colour changes. Not inline
+     styles: `::selection` is a pseudo-element and cannot be set any
+     other way. */
+  let selStyle = null;
+  function paintSelectionColour() {
+    if (!selStyle) return;
+    const live = tool === 'hl' || tool === 'ul';
+    if (!live) { selStyle.textContent = ''; return; }
+    /* A highlighter fills; an underline only marks the baseline, so its
+       preview is a wash of the same colour at a fraction of the strength
+       — enough to see what is about to be underlined, not so much that it
+       reads as a highlight. */
+    const c = tool === 'hl' ? hlColour : ulColour + '33';
+    selStyle.textContent = `.rd-doc ::selection{background:${c};color:#0b0b0b}`
+      + `.rd-doc ::-moz-selection{background:${c};color:#0b0b0b}`;
+  }
+
+  /* ================= highlights and underlines ================= */
 
   /**
    * Turn the current selection into a highlight. Returns false when
    * there is nothing to highlight or it spans blocks we cannot anchor
    * — a highlight that only half-exists is worse than none.
    */
-  function highlightSelection(colour) {
+  function markSelection(kind, colour) {
+    const k = kind === 'ul' ? 'ul' : 'hl';
+    const col = colour || (k === 'ul' ? ulColour : hlColour);
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || !sel.rangeCount) return false;
     const r = sel.getRangeAt(0);
@@ -173,7 +222,7 @@ const Annotate = (() => {
       const end = (i === to && from <= to) ? b.offset : (i === from && to < from) ? a.offset : text.length;
       const s = Math.max(0, Math.min(start, end)), e = Math.min(text.length, Math.max(start, end));
       if (e - s < 1) continue;
-      made.push({ id: uid(), kind: 'hl', key, start: s, end: e, c: colour || hlColour,
+      made.push({ id: uid(), kind: k, key, start: s, end: e, c: col,
         /* The quoted text travels with the mark so a scheme that has
            been edited since can be checked rather than silently
            highlighting the wrong words. */
@@ -182,32 +231,42 @@ const Annotate = (() => {
     if (!made.length) return false;
     marks.push(...made);
     sel.removeAllRanges();
-    render();
+    /* Only the new marks are painted. Re-rendering the page would
+       re-measure every mark on it, which is the pause this removed. */
+    made.forEach(paintMark);
     touch();
     return true;
   }
 
-  /** Paint every highlight for one block, over the top of its text. */
-  function paintHighlights() {
-    article.querySelectorAll('.an-hl').forEach(n => n.remove());
-    const byKey = {};
-    marks.filter(m => m.kind === 'hl').forEach(m => (byKey[m.key] = byKey[m.key] || []).push(m));
-    Object.keys(byKey).forEach(key => {
-      const el = blockOf(key);
-      if (!el) return;
-      const text = textOf(el);
-      byKey[key].forEach(m => {
-        if (m.start >= text.length) return;                  // the text has changed under it
-        const rects = rangeRects(el, m.start, Math.min(m.end, text.length));
-        rects.forEach(r => {
-          const box = document.createElement('span');
-          box.className = 'an-hl';
-          box.dataset.mark = m.id;
-          box.style.cssText = `left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px;background:${m.c}`;
-          layer.appendChild(box);
-        });
-      });
+  /** Kept as it was, so callers that only highlight need not change. */
+  const highlightSelection = colour => markSelection('hl', colour);
+  const underlineSelection = colour => markSelection('ul', colour);
+
+  /** One mark's rectangles, appended. The whole page is not touched. */
+  function paintMark(m) {
+    if (!layer || (m.kind !== 'hl' && m.kind !== 'ul')) return;
+    const el = blockOf(m.key);
+    if (!el) return;
+    const text = textOf(el);
+    if (m.start >= text.length) return;                    // the text has changed under it
+    rangeRects(el, m.start, Math.min(m.end, text.length)).forEach(r => {
+      const box = document.createElement('span');
+      box.className = m.kind === 'ul' ? 'an-ul' : 'an-hl';
+      box.dataset.mark = m.id;
+      /* An underline is drawn as a line ON the baseline rather than a
+         box behind the words: a 2px rule at the foot of the rectangle,
+         which is where a pen would put it. */
+      box.style.cssText = m.kind === 'ul'
+        ? `left:${r.x}px;top:${(r.y + r.h - 2.5).toFixed(1)}px;width:${r.w}px;height:2px;background:${m.c}`
+        : `left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px;background:${m.c}`;
+      layer.appendChild(box);
     });
+  }
+
+  /** Everything, from scratch. Only on load, on resize and after an erase. */
+  function paintTextMarks() {
+    layer.querySelectorAll('.an-hl,.an-ul').forEach(n => n.remove());
+    marks.forEach(paintMark);
   }
 
   /** The rectangles a character range occupies, in article coordinates. */
@@ -466,7 +525,7 @@ const Annotate = (() => {
 
   function render() {
     if (!article || !layer) return;
-    paintHighlights();
+    paintTextMarks();
     paintInk();
   }
 
@@ -488,6 +547,9 @@ const Annotate = (() => {
     ink.appendChild(svg);
     article.appendChild(layer);
     article.appendChild(ink);
+    selStyle = document.createElement('style');
+    article.appendChild(selStyle);
+    paintSelectionColour();
 
     ink.addEventListener('pointerdown', onDown);
     ink.addEventListener('pointermove', onMove);
@@ -515,6 +577,7 @@ const Annotate = (() => {
     clearTimeout(saveTimer);
     if (dirty) save();
     cancelAnimationFrame(glideRaf); glideRaf = null; pan = null;
+    selStyle?.remove(); selStyle = null;
     layer?.remove(); layer = null;
     ink?.remove(); ink = null; svg = null;
     article = null; host = null; marks = []; doc = '';
@@ -530,15 +593,17 @@ const Annotate = (() => {
        scrollable — which on an iPad is the difference between a document
        you can read and one you can only draw on. */
     if (ink) ink.className = 'an-ink-layer is-' + t;
+    paintSelectionColour();
     /* In pen or eraser mode the layer takes the pointer; in reading and
        highlighting modes it must not, or text could not be selected. */
     onState();
   }
   const getTool = () => tool;
-  const setHighlightColour = c => { hlColour = c; onState(); };
+  const setHighlightColour = c => { hlColour = c; paintSelectionColour(); onState(); };
+  const setUnderlineColour = c => { ulColour = c; paintSelectionColour(); onState(); };
   const setPenColour = c => { penColour = c; onState(); };
   const setPenWidth = w => { penWidth = w; onState(); };
-  const colours = () => ({ hl: hlColour, pen: penColour, w: penWidth });
+  const colours = () => ({ hl: hlColour, ul: ulColour, pen: penColour, w: penWidth });
   const count = () => marks.length;
   const isDirty = () => dirty;
 
@@ -566,9 +631,10 @@ const Annotate = (() => {
     render(); touch();
   }
 
-  return { HIGHLIGHTS, PENS, WIDTHS,
+  return { HIGHLIGHTS, UNDERLINES, PENS, WIDTHS,
     mount, unmount, render, save, load,
-    highlightSelection, setTool, getTool, setHighlightColour, setPenColour, setPenWidth,
+    markSelection, highlightSelection, underlineSelection,
+    setTool, getTool, setHighlightColour, setUnderlineColour, setPenColour, setPenWidth,
     colours, count, isDirty, undo, redo, clearAll,
     _marks: () => marks, _locate: locate };
 })();
