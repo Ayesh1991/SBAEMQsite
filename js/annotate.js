@@ -11,21 +11,26 @@
      INK belongs to a PLACE. An arrow drawn between two lines, a circle
      round a number, a note in the margin — these have no text to attach
      to, only a position. So they are anchored to the nearest BLOCK and
-     stored in that block's own coordinates as fractions. When the block
-     is drawn narrower or taller later, the ink is scaled with it and
-     stays where it was put, relative to the paragraph it was about.
+     stored in that block's own coordinates as fractions — BOTH AXES in
+     units of its WIDTH, never its height. Width is what does not change
+     when text reflows; measuring y against the height meant that a
+     paragraph wrapping to one more line, because the type got bigger,
+     stretched every stroke on it downwards. Handwriting came back drawn
+     out and spiky. With one unit for both axes a circle stays a circle
+     wherever it is shown.
 
    THE HARD PART, SAID PLAINLY
 
    Ink on reflowing text cannot be perfect. A paragraph that wraps to
    five lines on a phone and three on an iPad is a different shape, and
    no coordinate system makes a stroke drawn across the three-line
-   version land identically on the five-line one. Anchoring per block and
-   scaling both axes keeps it in the right paragraph and close to the
-   right line, which is what a person actually needs; pretending to more
-   accuracy than that would mean freezing the layout, and a document you
-   cannot read comfortably on a phone is worse than ink that has moved a
-   few millimetres.
+   version land identically on the five-line one. Anchoring per block
+   keeps it in the right paragraph and close to the right line, which is
+   what a person actually needs; pretending to more accuracy than that
+   would mean freezing the layout, and a document you cannot read
+   comfortably on a phone is worse than ink that has moved a few
+   millimetres. What it must never do is change SHAPE, and that is the
+   part a single unit for both axes guarantees.
 
    Highlights have no such problem — they are ranges in text — which is
    why the two are stored differently rather than as one "mark".
@@ -601,8 +606,12 @@ const Annotate = (() => {
     }
     if (!b) return null;
     const r = b.getBoundingClientRect();
+    /* BOTH AXES IN UNITS OF THE BLOCK'S WIDTH — not width for x and
+       height for y. See "the shape of a stroke" below: dividing y by the
+       height is what stretched the handwriting. */
+    const u = Math.max(1, r.width);
     return { key: b.getAttribute('data-an'), w: r.width, h: r.height,
-      fx: (clientX - r.left) / Math.max(1, r.width), fy: (clientY - r.top) / Math.max(1, r.height) };
+      fx: (clientX - r.left) / u, fy: (clientY - r.top) / u };
   }
 
   /** A stroke's points back in article coordinates, at today's layout. */
@@ -612,9 +621,24 @@ const Annotate = (() => {
     const r = el.getBoundingClientRect();
     const base = article.getBoundingClientRect();
     const ox = r.left - base.left, oy = r.top - base.top;
-    /* The third number is pressure. Strokes written before there was
-       one have two, and read as an even hand. */
-    return m.pts.map(([fx, fy, p]) => [ox + fx * r.width, oy + fy * r.height,
+    /* THE SHAPE OF A STROKE.
+
+       Both axes are in units of the block's WIDTH, so a stroke is
+       redrawn at the same shape wherever it is shown. Dividing y by the
+       block's HEIGHT — which is what this did — meant that anything
+       changing the height changed the writing: a paragraph that wraps to
+       one more line because the type got bigger is a taller box, and
+       every stroke on it was stretched down to fit. Writing that had
+       looked right while the hand was moving came back drawn out and
+       spiky, and on a short block, where the stroke's fractions are
+       large, the exaggeration was enormous.
+
+       Width is the sound reference because it is what does NOT change
+       when text reflows. `u` marks the strokes measured this way; those
+       saved before it are drawn as they were measured, or they would
+       move. */
+    const uy = m.u === 'w' ? r.width : r.height;
+    return m.pts.map(([fx, fy, p]) => [ox + fx * r.width, oy + fy * uy,
       typeof p === 'number' ? p : 0.5]);
   }
 
@@ -762,14 +786,17 @@ const Annotate = (() => {
     || performance.now() - penAt < PALM_GRACE);
 
   function onDown(e) {
-    if (tool === 'read') return;
     if (palm(e)) { e.preventDefault(); return; }
+    /* Counted BEFORE the tool is consulted, because pinching to change
+       the size of the type is not a marking gesture — it belongs to
+       reading, where it is wanted most. */
     if (e.pointerType === 'touch') {
       pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       /* A second finger is never a second mark. It is a pinch. */
       if (pointers.size === 2) { e.preventDefault(); startPinch(); return; }
       if (pointers.size > 2) { e.preventDefault(); return; }
     }
+    if (tool === 'read') return;
     if (e.pointerType !== 'touch') {
       if (nib(e)) penAt = performance.now();
       /* The palm landed first and is already scrolling. It stops now. */
@@ -796,7 +823,10 @@ const Annotate = (() => {
     const a = inkAnchor(e.clientX, e.clientY);
     if (!a) return;
     drawing = { id: uid(), kind: 'ink', key: a.key, c: penColour, w: penWidth,
-      pts: [[round(a.fx), round(a.fy), round(pressureOf(e))]], at: Date.now() };
+      /* `u: 'w'` says both axes are in units of the block's width.
+         Strokes saved before this carry no `u` and are drawn the way
+         they were measured, or they would move. */
+      u: 'w', pts: [[round(a.fx), round(a.fy), round(pressureOf(e))]], at: Date.now() };
     marks.push(drawing);
     live = svg.appendChild(document.createElementNS('http://www.w3.org/2000/svg', 'path'));
     inkAttrs(drawing, live);
@@ -814,12 +844,12 @@ const Annotate = (() => {
   const pressureOf = e => (e.pointerType === 'pen' && e.pressure > 0) ? e.pressure : 0.5;
 
   function onMove(e) {
-    if (tool === 'read') return;
     if (palm(e)) { e.preventDefault(); return; }
     if (e.pointerType === 'touch' && pointers.has(e.pointerId)) {
       pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (pinch && pointers.size >= 2) { e.preventDefault(); movePinch(); return; }
     }
+    if (tool === 'read') return;
     if (nib(e)) penAt = performance.now();
     if (tool === 'hl' || tool === 'ul') {
       if (moveMark(e)) { if (e.pointerType !== 'touch') e.preventDefault(); return; }
@@ -835,6 +865,7 @@ const Annotate = (() => {
     const el = blockOf(drawing.key);
     if (!el) return;
     const r = el.getBoundingClientRect();
+    const u = Math.max(1, r.width);
 
     /* EVERY SAMPLE, NOT EVERY FRAME. An Apple Pencil is read at up to
        240 Hz; `pointermove` is delivered at the refresh rate. The rest
@@ -846,11 +877,11 @@ const Annotate = (() => {
     const pts = (batch && batch.length ? batch : [e]);
     let added = false;
     for (const s of pts) {
-      const fx = (s.clientX - r.left) / Math.max(1, r.width);
-      const fy = (s.clientY - r.top) / Math.max(1, r.height);
+      const fx = (s.clientX - r.left) / u;
+      const fy = (s.clientY - r.top) / u;
       const last = drawing.pts[drawing.pts.length - 1];
       /* Samples closer than half a pixel are the digitiser's noise. */
-      if (Math.abs(fx - last[0]) * r.width < 0.5 && Math.abs(fy - last[1]) * r.height < 0.5) continue;
+      if (Math.abs(fx - last[0]) * u < 0.5 && Math.abs(fy - last[1]) * u < 0.5) continue;
       drawing.pts.push([round(fx), round(fy), round(pressureOf(s))]);
       added = true;
     }
