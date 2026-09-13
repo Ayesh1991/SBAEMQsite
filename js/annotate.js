@@ -587,6 +587,7 @@ const Annotate = (() => {
      pointer, and only while a drawing tool is chosen. */
   let layer = null, ink = null, svg = null, drawing = null, live = null;
   let pane = null;                 // the scrolling pane: every pointer in it is ours
+  let veil = null;                 // the whole reading overlay, bar included
 
   /** The block a point is over, and the point in that block's fractions. */
   function inkAnchor(clientX, clientY) {
@@ -787,6 +788,13 @@ const Annotate = (() => {
 
   function onDown(e) {
     if (palm(e)) { e.preventDefault(); return; }
+    /* A callout already on the screen is dismissed by the nib landing,
+       rather than staying over the page until something else clears
+       it. */
+    if (tool !== 'read') {
+      const sel = window.getSelection();
+      if (sel && !sel.isCollapsed) sel.removeAllRanges();
+    }
     /* Counted BEFORE the tool is consulted, because pinching to change
        the size of the type is not a marking gesture — it belongs to
        reading, where it is wanted most. */
@@ -1085,7 +1093,9 @@ const Annotate = (() => {
    * scrolling moves them for free).
    */
   function mount(art, scroller, key, onChange) {
-    article = art; host = scroller || art; pane = host; onState = onChange || (() => {});
+    article = art; host = scroller || art; pane = host;
+    veil = pane.closest('.rd-veil') || pane.parentElement;
+    onState = onChange || (() => {});
     tool = 'read';
     baseFont = parseFloat(getComputedStyle(article).fontSize) || 17;
     zoom = 1;
@@ -1115,6 +1125,18 @@ const Annotate = (() => {
        stroke in progress. That is the rest of the broken handwriting,
        and no amount of care inside the column could have fixed it.
        Every pointer in the pane is ours now. */
+    /* SAID THREE WAYS, ON PURPOSE. `user-select: none` is the rule, but
+       it is a hint about what MAY be selected, and iPadOS's text
+       interaction has reached round it. Refusing the selection as it
+       starts is the direct statement, and refusing the long-press menu
+       closes the last door. Neither costs anything while reading,
+       because both only apply with an instrument in hand. */
+    const refuse = e => { if (tool !== 'read') { e.preventDefault(); return false; } };
+    pane.addEventListener('selectstart', refuse);
+    pane.addEventListener('contextmenu', refuse);
+    veil?.addEventListener('selectstart', refuse);
+    veil?.addEventListener('contextmenu', refuse);
+
     pane.addEventListener('pointerdown', onDown);
     pane.addEventListener('pointermove', onMove);
     pane.addEventListener('pointerup', onUp);
@@ -1144,7 +1166,7 @@ const Annotate = (() => {
     marker = null; pending = null; loupe = null;
     drawing = null; live = null; penAt = 0;
     pointers.clear(); pinch = null;
-    pane?.classList.remove('is-marking'); pane = null;
+    pane?.classList.remove('is-marking'); pane = null; veil = null;
     article?.classList.remove('is-zooming');
     if (article) article.style.fontSize = '';
     zoom = 1;
@@ -1191,12 +1213,17 @@ const Annotate = (() => {
        between a pencil that writes and one that raises the Copy callout
        halfway through a word. In reading mode the text is selectable
        again, because then it is text to be read and copied. */
-    if (article) {
-      const off = t !== 'read' ? 'none' : '';
-      article.style.userSelect = off;
-      article.style.webkitUserSelect = off;
-      article.style.webkitTouchCallout = off;
-    }
+    const off = t !== 'read' ? 'none' : '';
+    /* BOTH, and the pane is the important one. The callout that kept
+       interrupting the writing belonged to a selection made by the palm
+       resting in the MARGIN beside the column — which is the pane, not
+       the document, and was still selectable. */
+    [article, pane].forEach(el => {
+      if (!el) return;
+      el.style.userSelect = off;
+      el.style.webkitUserSelect = off;
+      el.style.webkitTouchCallout = off;
+    });
     paintSelectionColour();
     /* In pen or eraser mode the layer takes the pointer; in reading and
        highlighting modes it must not, or text could not be selected. */

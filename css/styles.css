@@ -6832,6 +6832,28 @@ body.sc-open { overflow: hidden; }
 .rd-doc:has(.an-ink-layer.is-pen), .rd-doc:has(.an-ink-layer.is-erase) {
   -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
 }
+
+/* ============================================================
+   v111 — THE COLUMN WAS NOT THE ONLY THING WITH WORDS IN IT
+   ============================================================ */
+/* The Copy / Find Selection / Look Up callout kept appearing while
+   writing, at the TOP of the screen — nowhere near the nib. That is
+   where it belongs when the selected text is in the READING BAR, and
+   the bar was never covered: `user-select: none` had been put on the
+   document, and the document only. The hand resting in the margin
+   beside the column is on `.rd-scroll`, which was selectable too, and a
+   long press there is a text interaction that WebKit resolves against
+   the nearest selectable text it can find — the bar. The callout then
+   cancels the pen stroke in progress, which is why it distorted the
+   writing rather than merely appearing.
+   Nobody has ever wanted to select a toolbar. */
+.rd-bar, .rd-bar * { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+/* And while an instrument is held, nothing in the pane is selectable —
+   the margins beside the column included. In reading mode the document
+   goes back to being text you can select and copy. */
+.rd-scroll.is-marking, .rd-scroll.is-marking * {
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+}
 /* The band that follows the nib is drawn exactly as the committed mark
    is, so the moment of commit shows no change at all. */
 .an-live { pointer-events: none; }
