@@ -235,12 +235,14 @@ await page.click('[data-an-t="pen"]'); await page.waitForTimeout(250);
 const swap = await page.evaluate(() => ({
   hlHidden: document.querySelector('.an-hl-set').hidden,
   penShown: document.querySelector('.an-pen-set').hidden === false,
-  touch: getComputedStyle(document.querySelector('.an-ink-layer')).touchAction,
-  takes: getComputedStyle(document.querySelector('.an-ink-layer')).pointerEvents
+  /* v109: the PANE takes the gesture, not the layer. The layer only
+     covered the text column, and the hand rests beside it. */
+  touch: getComputedStyle(document.querySelector('.rd-scroll')).touchAction,
+  takes: document.querySelector('.rd-scroll').classList.contains('is-marking')
 }));
 say('choosing the pen shows the pen colours and puts the highlighters away',
   swap.hlHidden && swap.penShown);
-say('  the ink layer takes the pointer', swap.takes === 'auto');
+say('  the whole pane takes the pointer, not just the column', swap.takes === true);
 /* THE BUG THIS REPLACED. `touch-action: pan-y` looked like the way to
    let a finger scroll a surface the pen draws on. The browser applies it
    to the PEN as well, so a downward stroke was read as a scroll: the

@@ -306,9 +306,13 @@ sec('7. STAMPS');
 const stamp = await page.evaluate(async () => {
   const html = await (await fetch('/index.html')).text();
   const sw = await (await fetch('/sw.js')).text();
-  return { vs: [...new Set([...html.matchAll(/\?v=(\d+)/g)].map(m => m[1]))], sw: /aureum-v108/.test(sw) };
+  const vs = [...new Set([...html.matchAll(/\?v=(\d+)/g)].map(m => m[1]))];
+  /* The literal belongs to the newest release file only — see the
+     README. An older one that names its own number fails on every
+     release after it. */
+  return { vs, sw: vs.length === 1 && sw.includes("'aureum-v" + vs[0] + "'") };
 });
-say('one version across every asset', stamp.vs.join() === '108', stamp.vs.join(', '));
+say('one version across every asset', stamp.vs.length === 1, stamp.vs.join(', '));
 say('  the service worker agrees', stamp.sw);
 
 console.log('\nerrors on the page: ' + (bad.length ? '\n  ' + bad.join('\n  ') : 'none'));

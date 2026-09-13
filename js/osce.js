@@ -1830,6 +1830,12 @@ const OSCE = (() => {
         ${typeof Annotate !== 'undefined' ? annToolbar() : ''}
         <div class="rd-bar-acts">
           <span class="rd-saved" id="rd-saved"></span>
+          <span class="rd-zoom" role="group" aria-label="Text size">
+            <button class="rd-btn" data-rd-zoom="-1" type="button" title="Smaller text" aria-label="Smaller text">−</button>
+            <button class="rd-zoom-n rd-btn" data-rd-zoom="0" type="button"
+              title="Back to the normal size" aria-label="Text size, tap to reset">100%</button>
+            <button class="rd-btn" data-rd-zoom="1" type="button" title="Larger text" aria-label="Larger text">+</button>
+          </span>
           <button class="rd-btn" data-rd-print type="button">Print / Save as PDF</button>
           <button class="rd-btn rd-x" data-rd-close type="button" aria-label="Close reading mode">✕</button>
         </div>
@@ -1918,7 +1924,9 @@ const OSCE = (() => {
       const bar = wrap.querySelector('#an-bar');
       const saved = wrap.querySelector('#rd-saved');
       const art = wrap.querySelector('.rd-doc');
+      const zn = wrap.querySelector('[data-rd-zoom="0"]');
       const sayState = err => {
+        if (zn) zn.textContent = Math.round(Annotate.getZoom() * 100) + '%';
         if (!saved) return;
         if (err) { saved.className = 'rd-saved is-bad'; saved.textContent = String(err); return; }
         const n = Annotate.count();
@@ -1926,6 +1934,17 @@ const OSCE = (() => {
         saved.textContent = !n ? '' : Annotate.isDirty() ? 'saving…'
           : `${n} mark${n === 1 ? '' : 's'} saved`;
       };
+
+      /* Two fingers do this too, while an instrument is held — see the
+         zoom note in annotate.js. The buttons are here because a mouse
+         has no pinch and because the number is worth showing. */
+      wrap.querySelector('.rd-zoom')?.addEventListener('click', e => {
+        const b = e.target.closest('[data-rd-zoom]');
+        if (!b) return;
+        const d = Number(b.dataset.rdZoom);
+        if (!d) Annotate.setZoom(1); else Annotate.zoomBy(d * 0.1);
+        sayState();
+      });
       Annotate.mount(art, wrap.querySelector('.rd-scroll'), 'osce:' + st.id, sayState);
 
       bar?.addEventListener('click', e => {
