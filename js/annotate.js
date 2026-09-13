@@ -471,7 +471,7 @@ const Annotate = (() => {
     }
     beginMark(at, tool);
     showLoupe(e);
-    try { ink.setPointerCapture?.(e.pointerId); } catch {}
+    try { pane.setPointerCapture?.(e.pointerId); } catch {}
   }
 
   function moveMark(e) {
@@ -480,7 +480,7 @@ const Annotate = (() => {
       if (Math.abs(dx) + Math.abs(dy) < 8) return true;   // not yet decided
       if (Math.abs(dx) > Math.abs(dy) && pending.at.on) {
         beginMark(pending.at, tool);
-        try { ink.setPointerCapture?.(e.pointerId); } catch {}
+        try { pane.setPointerCapture?.(e.pointerId); } catch {}
       } else {
         /* Down the page, or begun off the text: this is a scroll, and it
            starts from where the finger first touched so nothing jumps. */
@@ -581,6 +581,7 @@ const Annotate = (() => {
      `ink` sits in front and holds the strokes. Only `ink` ever takes the
      pointer, and only while a drawing tool is chosen. */
   let layer = null, ink = null, svg = null, drawing = null, live = null;
+  let pane = null;                 // the scrolling pane: every pointer in it is ours
 
   /** The block a point is over, and the point in that block's fractions. */
   function inkAnchor(clientX, clientY) {
@@ -763,6 +764,12 @@ const Annotate = (() => {
   function onDown(e) {
     if (tool === 'read') return;
     if (palm(e)) { e.preventDefault(); return; }
+    if (e.pointerType === 'touch') {
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      /* A second finger is never a second mark. It is a pinch. */
+      if (pointers.size === 2) { e.preventDefault(); startPinch(); return; }
+      if (pointers.size > 2) { e.preventDefault(); return; }
+    }
     if (e.pointerType !== 'touch') {
       if (nib(e)) penAt = performance.now();
       /* The palm landed first and is already scrolling. It stops now. */
@@ -798,7 +805,7 @@ const Annotate = (() => {
        pointer id is not one the browser is tracking — which happens with
        synthetic events and has been seen on iPadOS — and an exception
        here would abandon the stroke that has just been started. */
-    try { ink.setPointerCapture?.(e.pointerId); } catch {}
+    try { pane.setPointerCapture?.(e.pointerId); } catch {}
   }
 
   /* A Pencil reports real pressure. A mouse reports 0.5 whether or not
@@ -807,7 +814,12 @@ const Annotate = (() => {
   const pressureOf = e => (e.pointerType === 'pen' && e.pressure > 0) ? e.pressure : 0.5;
 
   function onMove(e) {
+    if (tool === 'read') return;
     if (palm(e)) { e.preventDefault(); return; }
+    if (e.pointerType === 'touch' && pointers.has(e.pointerId)) {
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pinch && pointers.size >= 2) { e.preventDefault(); movePinch(); return; }
+    }
     if (nib(e)) penAt = performance.now();
     if (tool === 'hl' || tool === 'ul') {
       if (moveMark(e)) { if (e.pointerType !== 'touch') e.preventDefault(); return; }
@@ -851,6 +863,11 @@ const Annotate = (() => {
 
   function onUp(e) {
     if (e && nib(e)) penAt = performance.now();
+    if (e && e.pointerType === 'touch') {
+      pointers.delete(e.pointerId);
+      if (pinch) { if (pointers.size < 2) endPinch(); return; }
+    }
+    if (tool === 'read') return;
     if (tool === 'hl' || tool === 'ul') {
       const marked = endMark();
       /* A finger that turned out to be scrolling still has a glide to
@@ -860,17 +877,83 @@ const Annotate = (() => {
     }
     if (e && e.pointerType === 'touch') { if (!palm(e)) endPan(); return; }
     if (!drawing) return;
-    /* A dot is a tap, not a stroke — usually the pencil being put down.
-       Two points or fewer and it is dropped rather than left as a speck
-       nobody can see to erase. */
-    if (drawing.pts.length < 2) { marks = marks.filter(m => m !== drawing); live?.remove(); }
-    else if (live) inkAttrs(drawing, live);
+    /* A DOT IS A MARK. This used to throw away any stroke of fewer than
+       two points, on the reasoning that it was the pencil being put
+       down — and so it threw away the dot on every i, every full stop,
+       every tick and every short crossbar. Written words came back with
+       pieces missing. A finger cannot draw at all and the palm is
+       rejected outright, so a single point from a nib is something the
+       hand meant. */
+    if (live) inkAttrs(drawing, live);
     drawing = null; live = null;
     undone.length = 0;
     touch();
   }
 
   const round = n => Math.round(n * 10000) / 10000;
+
+  /* ================= zoom =================
+
+     ZOOMING THE TEXT, NOT THE PICTURE OF IT.
+
+     A pinch on a PDF magnifies the page: the words get bigger and so do
+     the margins, and past a certain point you are panning left and right
+     to read a line. That is what a PDF reader must do, because a PDF is
+     a fixed page. This is not a fixed page — it is a document — so a
+     pinch makes the TYPE bigger and the column re-wraps to fit. The text
+     never leaves the screen sideways, and there is nothing to pan.
+
+     It is also the reason the marks survive it. A highlight is anchored
+     to words and is simply re-measured at the new size; ink is anchored
+     to its block. Magnifying would have meant every rectangle and every
+     stroke needing the scale factor divided out of it in five places,
+     and one of them would have been missed. */
+  const ZOOM_MIN = 0.8, ZOOM_MAX = 2.2;
+  let zoom = 1, baseFont = 17, pinch = null;
+  const pointers = new Map();
+
+  function applyZoom(z, settle) {
+    const next = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+    if (!article) return;
+    zoom = next;
+    article.style.fontSize = (baseFont * zoom).toFixed(2) + 'px';
+    if (settle) {
+      /* Every mark's position was measured against the old type. They
+         are hidden while the fingers move — a stale highlight sliding
+         out from under its words looks broken — and re-measured once,
+         when the gesture is over. */
+      article.classList.remove('is-zooming');
+      forgetGeometry();
+      render();
+      onState();
+    } else article.classList.add('is-zooming');
+  }
+
+  const setZoom = z => applyZoom(z, true);
+  const getZoom = () => zoom;
+  const zoomBy = step => applyZoom(Math.round((zoom + step) * 20) / 20, true);
+
+  const spread = () => {
+    const [a, b] = [...pointers.values()];
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  };
+
+  /** Two fingers on the page: whatever else was happening, stops. */
+  function startPinch() {
+    if (drawing) { drawing = null; live = null; }
+    marker = null; pending = null;
+    clearLive(); hideLoupe();
+    cancelAnimationFrame(glideRaf); glideRaf = null; pan = null;
+    pinch = { d0: spread() || 1, z0: zoom };
+  }
+  function movePinch() {
+    if (!pinch) return;
+    const d = spread();
+    if (!d) return;
+    applyZoom(pinch.z0 * (d / pinch.d0), false);
+    onState();
+  }
+  function endPinch() { pinch = null; applyZoom(zoom, true); }
 
   /* ---------------- scrolling, by hand ----------------
 
@@ -971,8 +1054,10 @@ const Annotate = (() => {
    * scrolling moves them for free).
    */
   function mount(art, scroller, key, onChange) {
-    article = art; host = scroller || art; onState = onChange || (() => {});
+    article = art; host = scroller || art; pane = host; onState = onChange || (() => {});
     tool = 'read';
+    baseFont = parseFloat(getComputedStyle(article).fontSize) || 17;
+    zoom = 1;
     layer = document.createElement('div');
     layer.className = 'an-layer';
     ink = document.createElement('div');
@@ -990,10 +1075,19 @@ const Annotate = (() => {
     article.appendChild(selStyle);
     paintSelectionColour();
 
-    ink.addEventListener('pointerdown', onDown);
-    ink.addEventListener('pointermove', onMove);
-    ink.addEventListener('pointerup', onUp);
-    ink.addEventListener('pointercancel', onUp);
+    /* THE WHOLE PANE, NOT THE COLUMN.
+       The layer covers `.rd-doc`, which is a 680px column centred in a
+       pane that on an iPad is nearly twice as wide. The hand writing on
+       it rests to the RIGHT of that column — outside the layer, on
+       ordinary scrollable page — so the browser read the palm as a
+       scroll there, and a scroll beginning anywhere cancels the pen
+       stroke in progress. That is the rest of the broken handwriting,
+       and no amount of care inside the column could have fixed it.
+       Every pointer in the pane is ours now. */
+    pane.addEventListener('pointerdown', onDown);
+    pane.addEventListener('pointermove', onMove);
+    pane.addEventListener('pointerup', onUp);
+    pane.addEventListener('pointercancel', onUp);
     /* NOT `pointerleave`. It fires whenever the nib crosses out of the
        layer's box — over an image, past the edge of the column — and
        ending the stroke there is the other half of why a circle came out
@@ -1018,6 +1112,11 @@ const Annotate = (() => {
     cancelAnimationFrame(glideRaf); glideRaf = null; pan = null;
     marker = null; pending = null; loupe = null;
     drawing = null; live = null; penAt = 0;
+    pointers.clear(); pinch = null;
+    pane?.classList.remove('is-marking'); pane = null;
+    article?.classList.remove('is-zooming');
+    if (article) article.style.fontSize = '';
+    zoom = 1;
     forgetGeometry();
     selStyle?.remove(); selStyle = null;
     layer?.remove(); layer = null;
@@ -1040,6 +1139,13 @@ const Annotate = (() => {
        scrollable — which on an iPad is the difference between a document
        you can read and one you can only draw on. */
     if (ink) ink.className = 'an-ink-layer is-' + t;
+    /* The pane stops interpreting touches itself the moment an
+       instrument is picked up — anywhere in it, not only over the text
+       column. Scrolling is then ours to do, which is what lets a palm
+       rest on the margin without the page moving. */
+    pane?.classList.toggle('is-marking', t !== 'read');
+    pane?.classList.toggle('is-erase', t === 'erase');
+    pointers.clear(); pinch = null;
     /* THE ERASER COULD NOT RUB OUT A HIGHLIGHT. Every mark is
        `pointer-events: none` so that it never gets in the way of reading
        — and `elementsFromPoint`, which is how the eraser finds what is
@@ -1103,6 +1209,7 @@ const Annotate = (() => {
     markSelection, highlightSelection, underlineSelection,
     setTool, getTool, setHighlightColour, setUnderlineColour, setPenColour, setPenWidth,
     colours, count, isDirty, undo, redo, clearAll,
+    setZoom, getZoom, zoomBy, ZOOM_MIN, ZOOM_MAX,
     _marks: () => marks, _locate: locate,
     _wordAt: wordAt, _wordsOf: wordsOf, _marker: () => marker };
 })();

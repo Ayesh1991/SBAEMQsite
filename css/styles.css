@@ -6746,10 +6746,15 @@ body.sc-open { overflow: hidden; }
    browser applied it to the PEN too, so a downward stroke scrolled the
    page and was cancelled mid-line. A finger still scrolls, because
    annotate.js moves the scroller itself. */
-.an-ink-layer.is-pen, .an-ink-layer.is-erase { pointer-events: auto; touch-action: none; cursor: crosshair; }
-.an-ink-layer.is-erase { cursor: cell; }
+/* v109: the pane takes the pointer now, not this. Kept declaring
+   `touch-action` only so that a browser which somehow routes a gesture
+   here still cannot turn it into a scroll. */
+.an-ink-layer.is-pen, .an-ink-layer.is-erase { touch-action: none; }
 .an-ink { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
-.an-ink-layer.is-erase .an-ink { pointer-events: auto; }
+/* The eraser finds what is under the nib with `elementsFromPoint`, which
+   SKIPS anything that is pointer-events:none — so the strokes have to be
+   findable while it is the tool, exactly as the highlights do. */
+.an-ink-layer.is-erase, .an-ink-layer.is-erase .an-ink { pointer-events: auto; }
 /* Behind the words, not over them: a highlight that dims its own text
    is a redaction. `mix-blend-mode: multiply` keeps the ink black. */
 .an-hl { position: absolute; border-radius: 2px; pointer-events: none;
@@ -6758,6 +6763,14 @@ body.sc-open { overflow: hidden; }
 
 @media (max-width: 900px) {
   .an-bar { gap: 8px; }
+  /* The bar carries the pencil case, the size and the print button, and
+     on a phone they do not fit on one line. They wrap; nothing is cut
+     off the side, and the size control stays reachable because it is
+     needed MOST on a small screen. */
+  .rd-bar { flex-wrap: wrap; gap: 8px; padding: 8px 12px; }
+  .rd-bar-acts { flex-wrap: wrap; }
+  .rd-zoom .rd-btn { padding: 6px 9px; min-width: 30px; }
+  .rd-zoom .rd-zoom-n { min-width: 40px; }
   .an-colours { gap: 6px; }
   .rd-saved { display: none; }
 }
@@ -6782,7 +6795,28 @@ body.sc-open { overflow: hidden; }
    to a highlighter, and all of which had to finish before the colour
    could appear. `user-select: none` and `-webkit-touch-callout: none`
    are belt and braces for anything that reaches the text anyway. */
-.an-ink-layer.is-hl, .an-ink-layer.is-ul { pointer-events: auto; touch-action: none; }
+/* ============================================================
+   v109 — the pane owns the pointer, and the type zooms
+   ============================================================ */
+/* THE LAYER NO LONGER TAKES THE POINTER AT ALL. It covers `.rd-doc`,
+   which is a 680px column centred in a pane nearly twice as wide on an
+   iPad — and the hand writing on it rests to the RIGHT of that column,
+   on ordinary scrollable page, where the browser read the palm as a
+   scroll and cancelled the stroke in progress. The whole pane is the
+   surface now; the layers are only paint. */
+.rd-scroll.is-marking { touch-action: none; cursor: crosshair; }
+.rd-scroll.is-marking.is-erase { cursor: cell; }
+/* Marks are measured against the type. While a pinch is changing its
+   size they are hidden rather than left sliding out from under their
+   own words, and re-measured once when the fingers lift. */
+.rd-doc.is-zooming .an-layer, .rd-doc.is-zooming .an-ink-layer { opacity: 0; }
+.rd-doc .an-layer, .rd-doc .an-ink-layer { transition: opacity .12s ease; }
+.rd-zoom { display: inline-flex; align-items: center; gap: 2px; }
+.rd-zoom .rd-btn { padding: 6px 10px; min-width: 32px; }
+.rd-zoom .rd-zoom-n { font-size: .72rem; color: #86857e; min-width: 46px; text-align: center;
+  font-variant-numeric: tabular-nums; }
+
+.an-ink-layer.is-hl, .an-ink-layer.is-ul { touch-action: none; }
 /* v108 — AND THE SAME WHILE WRITING. This was applied only to the two
    marking tools, and the pen was left out; so iOS went on offering its
    text interaction under the nib, and writing across a line raised the

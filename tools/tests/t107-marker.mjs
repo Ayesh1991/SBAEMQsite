@@ -91,14 +91,14 @@ sec('1. THE MARKER OWNS THE GESTURE');
 
 await page.click('[data-an-t="hl"]'); await page.waitForTimeout(250);
 const owns = await page.evaluate(() => {
-  const l = document.querySelector('.an-ink-layer');
-  const cs = getComputedStyle(l);
+  const pane = document.querySelector('.rd-scroll');
+  const cs = getComputedStyle(pane);
   const doc = getComputedStyle(document.querySelector('.rd-doc'));
-  return { cls: l.className, takes: cs.pointerEvents, touch: cs.touchAction,
-    select: doc.userSelect || doc.webkitUserSelect };
+  return { cls: pane.className, takes: pane.classList.contains('is-marking'),
+    touch: cs.touchAction, select: doc.userSelect || doc.webkitUserSelect };
 });
-say('choosing the highlighter puts the layer above the words in the way',
-  owns.takes === 'auto', owns.cls + ' · ' + owns.takes);
+say('choosing the highlighter hands the whole pane over to the marker',
+  owns.takes, owns.cls);
 /* THE WHOLE POINT. If the browser may interpret the drag, it makes a
    text selection out of it — handles, magnifier, callout, and the
    colour only afterwards. It may not. */
