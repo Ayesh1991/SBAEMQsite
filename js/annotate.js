@@ -35,18 +35,29 @@
    On an iPad this has to follow the platform's own rule, because that is
    what people's hands already expect: THE PENCIL DRAWS, THE FINGER
    SCROLLS. So pointer events are filtered by `pointerType` — a `pen`
-   draws, a `touch` is left alone and the page scrolls under it, and the
-   palm resting on the glass is a touch. Nothing needs turning on and
-   nothing needs turning off between writing a note and scrolling to the
-   next question.
+   draws, a `touch` scrolls. Nothing needs turning on and nothing needs
+   turning off between writing a note and scrolling to the next question.
+
+   But "a finger scrolls" is NOT palm rejection, and treating it as
+   though it were is what made writing unusable. Writing means the hand
+   RESTS on the glass, and the heel of it is a touch: it began a scroll,
+   the page crept under the nib, and the stroke in progress was cut — so
+   the writing came back as fragments of letters rather than words. The
+   rule is therefore stronger: while the Pencil is down the hand does not
+   exist at all, a pen landing cancels a scroll the palm has already
+   started, and for a moment after the nib lifts the hand is still
+   ignored, because it lifts last. Every tablet does this.
 
    A mouse draws too, because a laptop has no pencil and the feature
-   should not be an iPad feature.
+   should not be an iPad feature. A mouse never arms palm rejection —
+   there is no hand on the glass to reject.
 
-   Pressure is read where the hardware reports it (`e.pressure`), so a
-   Pencil gives a line that thickens as it is pressed. A mouse reports a
-   constant 0.5 and gets a constant line, which is correct rather than a
-   fallback.
+   Pressure is read where the hardware reports it (`e.pressure`) and kept
+   FOR EVERY POINT, so the line thickens and thins where the hand did. A
+   `<path>` has one stroke-width and can only be one thickness, so a
+   stroke is drawn as a filled outline of the nib's two edges instead. A
+   mouse reports a constant 0.5 and gets an even line, which is correct
+   rather than a fallback.
 
    SAVING
 
@@ -569,7 +580,7 @@ const Annotate = (() => {
      So: `layer` sits behind the content and holds the highlights;
      `ink` sits in front and holds the strokes. Only `ink` ever takes the
      pointer, and only while a drawing tool is chosen. */
-  let layer = null, ink = null, svg = null, drawing = null;
+  let layer = null, ink = null, svg = null, drawing = null, live = null;
 
   /** The block a point is over, and the point in that block's fractions. */
   function inkAnchor(clientX, clientY) {
@@ -593,33 +604,111 @@ const Annotate = (() => {
       fx: (clientX - r.left) / Math.max(1, r.width), fy: (clientY - r.top) / Math.max(1, r.height) };
   }
 
-  /**
-   * A stroke's points back in article coordinates, at today's layout,
-   * as a SMOOTHED path.
-   *
-   * Straight segments between samples are what a polyline gives, and on
-   * anything curved — a circle round a number is the commonest mark
-   * anybody makes — they read as a polygon. Each sample becomes the
-   * control point of a quadratic through the midpoints of its
-   * neighbours, which is one line of arithmetic and the difference
-   * between ink and a chart.
-   */
-  function inkPath(m) {
+  /** A stroke's points back in article coordinates, at today's layout. */
+  function inkPoints(m) {
     const el = blockOf(m.key);
-    if (!el) return '';
+    if (!el || !article) return [];
     const r = el.getBoundingClientRect();
     const base = article.getBoundingClientRect();
     const ox = r.left - base.left, oy = r.top - base.top;
-    const p = m.pts.map(([fx, fy]) => [ox + fx * r.width, oy + fy * r.height]);
-    if (!p.length) return '';
-    if (p.length < 3) return p.map((q, i) => `${i ? 'L' : 'M'}${q[0].toFixed(1)},${q[1].toFixed(1)}`).join(' ');
-    let d = `M${p[0][0].toFixed(1)},${p[0][1].toFixed(1)}`;
+    /* The third number is pressure. Strokes written before there was
+       one have two, and read as an even hand. */
+    return m.pts.map(([fx, fy, p]) => [ox + fx * r.width, oy + fy * r.height,
+      typeof p === 'number' ? p : 0.5]);
+  }
+
+  /**
+   * Jitter, taken out. A pencil on glass is not a steady hand and the
+   * digitiser is not a perfect instrument; the samples wobble by a
+   * fraction of a millimetre and the eye reads that wobble as a shaky
+   * line. A three-point average along the stroke — position AND
+   * pressure — is the whole of what makes writing look written.
+   */
+  function smooth(p) {
+    if (p.length < 3) return p;
+    const out = [p[0]];
     for (let i = 1; i < p.length - 1; i++) {
-      const mx = (p[i][0] + p[i + 1][0]) / 2, my = (p[i][1] + p[i + 1][1]) / 2;
-      d += ` Q${p[i][0].toFixed(1)},${p[i][1].toFixed(1)} ${mx.toFixed(1)},${my.toFixed(1)}`;
+      out.push([(p[i - 1][0] + p[i][0] * 2 + p[i + 1][0]) / 4,
+        (p[i - 1][1] + p[i][1] * 2 + p[i + 1][1]) / 4,
+        (p[i - 1][2] + p[i][2] * 2 + p[i + 1][2]) / 4]);
     }
-    const last = p[p.length - 1];
-    return d + ` L${last[0].toFixed(1)},${last[1].toFixed(1)}`;
+    out.push(p[p.length - 1]);
+    return out;
+  }
+
+  /* How wide the nib is at one point. Pressure moves it between a third
+     and a half again of the chosen width — enough that a downstroke
+     reads as heavier than a hairline, never so much that a letter
+     changes shape. */
+  const halfWidth = (w, p) => (w / 2) * Math.max(0.38, Math.min(1.5, 0.45 + 0.85 * (p || 0.5)));
+
+  /**
+   * THE STROKE AS AN OUTLINE, NOT A LINE.
+   *
+   * A `<path>` has ONE stroke-width, so a stroke drawn that way can only
+   * have one thickness — and the code that set it from pressure set it
+   * from the LATEST sample, which means pressing harder at the end of a
+   * word retroactively thickened the whole word. A pen does not do that.
+   *
+   * So the nib's edges are traced instead: each sample is offset to
+   * either side by its own half-width, forward along one edge and back
+   * along the other, and the shape is filled. A round cap at each end,
+   * and the line thickens and thins exactly where the hand did.
+   */
+  function inkOutline(p, w) {
+    const n = p.length;
+    if (!n) return '';
+    if (n === 1) {
+      const r = halfWidth(w, p[0][2]);
+      const [x, y] = p[0];
+      return `M${(x - r).toFixed(1)},${y.toFixed(1)}a${r.toFixed(1)},${r.toFixed(1)} 0 1,0 ${(r * 2).toFixed(1)},0`
+        + `a${r.toFixed(1)},${r.toFixed(1)} 0 1,0 ${(-r * 2).toFixed(1)},0`;
+    }
+    const L = [], R = [];
+    for (let i = 0; i < n; i++) {
+      const a = p[Math.max(0, i - 1)], b = p[Math.min(n - 1, i + 1)];
+      let dx = b[0] - a[0], dy = b[1] - a[1];
+      const len = Math.hypot(dx, dy) || 1;
+      dx /= len; dy /= len;
+      const r = halfWidth(w, p[i][2]);
+      L.push([p[i][0] - dy * r, p[i][1] + dx * r]);
+      R.push([p[i][0] + dy * r, p[i][1] - dx * r]);
+    }
+    /* Each edge is drawn as quadratics through the midpoints of its own
+       points, which is what keeps a curve a curve rather than a row of
+       short straight segments. */
+    const run = q => {
+      let d = '';
+      for (let i = 1; i < q.length - 1; i++) {
+        const mx = (q[i][0] + q[i + 1][0]) / 2, my = (q[i][1] + q[i + 1][1]) / 2;
+        d += `Q${q[i][0].toFixed(1)},${q[i][1].toFixed(1)} ${mx.toFixed(1)},${my.toFixed(1)}`;
+      }
+      const last = q[q.length - 1];
+      return d + `L${last[0].toFixed(1)},${last[1].toFixed(1)}`;
+    };
+    const rEnd = halfWidth(w, p[n - 1][2]), rStart = halfWidth(w, p[0][2]);
+    const back = R.slice().reverse();
+    return `M${L[0][0].toFixed(1)},${L[0][1].toFixed(1)}`
+      + run(L)
+      + `A${rEnd.toFixed(1)},${rEnd.toFixed(1)} 0 0,1 ${back[0][0].toFixed(1)},${back[0][1].toFixed(1)}`
+      + run(back)
+      + `A${rStart.toFixed(1)},${rStart.toFixed(1)} 0 0,1 ${L[0][0].toFixed(1)},${L[0][1].toFixed(1)}Z`;
+  }
+
+  /** One stroke's SVG attributes, shared by the live path and a repaint. */
+  function inkAttrs(m, node) {
+    const d = inkOutline(smooth(inkPoints(m)), m.w);
+    node.setAttribute('d', d);
+    node.setAttribute('data-mark', m.id);
+    node.setAttribute('fill', m.c);
+    node.setAttribute('fill-rule', 'nonzero');
+    /* A hairline along the outline, in the same colour, closes the seams
+       where the two edges meet at a sharp turn. */
+    node.setAttribute('stroke', m.c);
+    node.setAttribute('stroke-width', '0.6');
+    node.setAttribute('stroke-linejoin', 'round');
+    if (m.hl) { node.setAttribute('fill-opacity', '.38'); node.setAttribute('stroke-opacity', '.38'); }
+    return node;
   }
 
   function paintInk() {
@@ -628,19 +717,57 @@ const Annotate = (() => {
     svg.setAttribute('viewBox', `0 0 ${base.width} ${article.scrollHeight}`);
     svg.style.width = base.width + 'px';
     svg.style.height = article.scrollHeight + 'px';
-    svg.innerHTML = marks.filter(m => m.kind === 'ink').map(m => {
-      const d = inkPath(m);
-      if (!d) return '';
-      return `<path d="${d}" data-mark="${m.id}" fill="none" stroke="${esc(m.c)}"
-        stroke-width="${m.w}" stroke-linecap="round" stroke-linejoin="round"
-        ${m.hl ? 'stroke-opacity=".38"' : ''}/>`;
-    }).join('');
+    svg.innerHTML = '';
+    live = null;
+    marks.filter(m => m.kind === 'ink').forEach(m => {
+      if (!m.pts?.length) return;
+      const node = inkAttrs(m, document.createElementNS('http://www.w3.org/2000/svg', 'path'));
+      svg.appendChild(node);
+      /* A re-draw in the middle of a stroke — a picture finishing
+         loading, say — must hand the stroke back its node, or the rest
+         of the line would not appear until the nib lifted. */
+      if (drawing && m === drawing) live = node;
+    });
   }
 
   /* ================= drawing ================= */
 
+  /* PALM REJECTION, PROPERLY.
+
+     "A finger scrolls" was the whole of the old rule, and on a desk it
+     is not enough. Writing means the hand RESTS on the glass, and the
+     heel of it is a touch: it started a scroll, the page crept under
+     the nib, and the browser — seeing a scroll begin — cancelled the
+     pen stroke that was in progress. That is why the writing came back
+     in fragments rather than words.
+
+     So while the Pencil is down, the hand does not exist. Not "is
+     ignored for drawing" — ignored entirely, including for scrolling.
+     A pen going down also cancels a scroll the palm has already begun,
+     because the palm lands first and the pen follows. And for a moment
+     after the stroke ends the hand is still ignored, because it lifts
+     after the nib does and would otherwise flick the page away.
+
+     Every tablet does this. It is not an optimisation; without it you
+     cannot write at all. */
+  const PALM_GRACE = 700;              // ms after the nib lifts
+  let penAt = 0;                       // when the pen was last in contact
+  /* Only a PEN arms the grace period. A mouse cannot rest a hand on the
+     glass, and on a touchscreen laptop a mouse merely passing over the
+     page must not switch the finger off. While any stroke is live the
+     hand is ignored whatever started it. */
+  const nib = e => e.pointerType === 'pen';
+  const palm = e => e.pointerType === 'touch' && (drawing || marker
+    || performance.now() - penAt < PALM_GRACE);
+
   function onDown(e) {
     if (tool === 'read') return;
+    if (palm(e)) { e.preventDefault(); return; }
+    if (e.pointerType !== 'touch') {
+      if (nib(e)) penAt = performance.now();
+      /* The palm landed first and is already scrolling. It stops now. */
+      cancelAnimationFrame(glideRaf); glideRaf = null; pan = null;
+    }
     /* The marker handles its own pointer rules — a pencil marks at once,
        a finger waits to see which gesture it is — so it is asked first
        and a touch is NOT handed to the scroller here. */
@@ -650,29 +777,22 @@ const Annotate = (() => {
       return;
     }
     if (tool !== 'pen' && tool !== 'erase') return;
-    /* THE PLATFORM'S OWN RULE. A finger is for scrolling, always — which
-       also means the palm resting on the glass is ignored for free.
-
-       But the scrolling is now OURS to do. `touch-action: pan-y` looked
-       like the way to let a finger scroll a surface the pen draws on,
-       and it is the cause of the complaint that made this change: the
-       browser also applies it to the PEN, so a downward stroke was read
-       as a scroll, the page moved under the nib, and the stroke was
-       cancelled mid-line. Every attempt at a circle came out as three
-       broken arcs.
-
-       So the layer now takes the whole gesture (`touch-action: none`)
-       and a finger scrolls because this moves the scroller itself. To
-       the hand it is identical; to the pen it is the difference between
-       drawing and not. */
+    /* A finger, with no pen in play, scrolls — and the scrolling is
+       OURS to do. `touch-action: pan-y` looked like the way to let a
+       finger scroll a surface the pen draws on, and it was the earlier
+       fault: the browser applied it to the PEN too, so a downward
+       stroke was read as a scroll and cancelled mid-line. The layer
+       takes the whole gesture instead. */
     if (e.pointerType === 'touch') { startPan(e); return; }
     e.preventDefault();
     if (tool === 'erase') { eraseAt(e.clientX, e.clientY); return; }
     const a = inkAnchor(e.clientX, e.clientY);
     if (!a) return;
     drawing = { id: uid(), kind: 'ink', key: a.key, c: penColour, w: penWidth,
-      pts: [[a.fx, a.fy]], at: Date.now() };
+      pts: [[round(a.fx), round(a.fy), round(pressureOf(e))]], at: Date.now() };
     marks.push(drawing);
+    live = svg.appendChild(document.createElementNS('http://www.w3.org/2000/svg', 'path'));
+    inkAttrs(drawing, live);
     /* Capture keeps the stroke coming to this layer even when the pencil
        leaves it mid-line. It THROWS rather than returning false when the
        pointer id is not one the browser is tracking — which happens with
@@ -681,7 +801,14 @@ const Annotate = (() => {
     try { ink.setPointerCapture?.(e.pointerId); } catch {}
   }
 
+  /* A Pencil reports real pressure. A mouse reports 0.5 whether or not
+     it is down, and gets an even line, which is right rather than a
+     fallback. */
+  const pressureOf = e => (e.pointerType === 'pen' && e.pressure > 0) ? e.pressure : 0.5;
+
   function onMove(e) {
+    if (palm(e)) { e.preventDefault(); return; }
+    if (nib(e)) penAt = performance.now();
     if (tool === 'hl' || tool === 'ul') {
       if (moveMark(e)) { if (e.pointerType !== 'touch') e.preventDefault(); return; }
       if (e.pointerType === 'touch') movePan(e);
@@ -696,21 +823,34 @@ const Annotate = (() => {
     const el = blockOf(drawing.key);
     if (!el) return;
     const r = el.getBoundingClientRect();
-    const fx = (e.clientX - r.left) / Math.max(1, r.width);
-    const fy = (e.clientY - r.top) / Math.max(1, r.height);
-    const last = drawing.pts[drawing.pts.length - 1];
-    /* Points closer than a pixel add nothing but bytes. */
-    if (Math.abs(fx - last[0]) * r.width < 1 && Math.abs(fy - last[1]) * r.height < 1) return;
-    drawing.pts.push([round(fx), round(fy)]);
-    /* A Pencil reports real pressure; a mouse reports 0.5 and gets a
-       constant line, which is right rather than a fallback. */
-    if (e.pointerType === 'pen' && e.pressure > 0) {
-      drawing.w = Math.max(penWidth * 0.45, Math.min(penWidth * 1.7, penWidth * (0.5 + e.pressure)));
+
+    /* EVERY SAMPLE, NOT EVERY FRAME. An Apple Pencil is read at up to
+       240 Hz; `pointermove` is delivered at the refresh rate. The rest
+       of the samples are not lost, they are HELD — and asking for them
+       is the difference between a written line and a run of chords
+       through it. Without this, fast handwriting comes out angular and
+       small letters lose their shape entirely. */
+    const batch = e.getCoalescedEvents ? e.getCoalescedEvents() : null;
+    const pts = (batch && batch.length ? batch : [e]);
+    let added = false;
+    for (const s of pts) {
+      const fx = (s.clientX - r.left) / Math.max(1, r.width);
+      const fy = (s.clientY - r.top) / Math.max(1, r.height);
+      const last = drawing.pts[drawing.pts.length - 1];
+      /* Samples closer than half a pixel are the digitiser's noise. */
+      if (Math.abs(fx - last[0]) * r.width < 0.5 && Math.abs(fy - last[1]) * r.height < 0.5) continue;
+      drawing.pts.push([round(fx), round(fy), round(pressureOf(s))]);
+      added = true;
     }
-    paintInk();
+    /* Only the live stroke is re-drawn. Rebuilding every stroke on the
+       page for each sample — which is what this used to do — is work
+       that grows with the length of the notes, and it is paid at
+       exactly the moment the hand is moving fastest. */
+    if (added && live) inkAttrs(drawing, live);
   }
 
   function onUp(e) {
+    if (e && nib(e)) penAt = performance.now();
     if (tool === 'hl' || tool === 'ul') {
       const marked = endMark();
       /* A finger that turned out to be scrolling still has a glide to
@@ -718,15 +858,16 @@ const Annotate = (() => {
       if (!marked && e && e.pointerType === 'touch') endPan();
       return;
     }
-    if (e && e.pointerType === 'touch') { endPan(); return; }
+    if (e && e.pointerType === 'touch') { if (!palm(e)) endPan(); return; }
     if (!drawing) return;
     /* A dot is a tap, not a stroke — usually the pencil being put down.
        Two points or fewer and it is dropped rather than left as a speck
        nobody can see to erase. */
-    if (drawing.pts.length < 2) marks = marks.filter(m => m !== drawing);
-    drawing = null;
+    if (drawing.pts.length < 2) { marks = marks.filter(m => m !== drawing); live?.remove(); }
+    else if (live) inkAttrs(drawing, live);
+    drawing = null; live = null;
     undone.length = 0;
-    paintInk(); touch();
+    touch();
   }
 
   const round = n => Math.round(n * 10000) / 10000;
@@ -876,6 +1017,7 @@ const Annotate = (() => {
     if (dirty) save();
     cancelAnimationFrame(glideRaf); glideRaf = null; pan = null;
     marker = null; pending = null; loupe = null;
+    drawing = null; live = null; penAt = 0;
     forgetGeometry();
     selStyle?.remove(); selStyle = null;
     layer?.remove(); layer = null;
@@ -907,6 +1049,17 @@ const Annotate = (() => {
        it, and only if it was the last thing done. They take the pointer
        while the eraser is chosen, and nothing else changes. */
     if (layer) layer.className = 'an-layer' + (t === 'erase' ? ' is-erase' : '');
+    /* Set here as well as in the stylesheet, and deliberately. The rule
+       there needs `:has()`; this needs nothing, and it is the difference
+       between a pencil that writes and one that raises the Copy callout
+       halfway through a word. In reading mode the text is selectable
+       again, because then it is text to be read and copied. */
+    if (article) {
+      const off = t !== 'read' ? 'none' : '';
+      article.style.userSelect = off;
+      article.style.webkitUserSelect = off;
+      article.style.webkitTouchCallout = off;
+    }
     paintSelectionColour();
     /* In pen or eraser mode the layer takes the pointer; in reading and
        highlighting modes it must not, or text could not be selected. */

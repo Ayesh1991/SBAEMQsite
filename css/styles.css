@@ -6783,7 +6783,14 @@ body.sc-open { overflow: hidden; }
    could appear. `user-select: none` and `-webkit-touch-callout: none`
    are belt and braces for anything that reaches the text anyway. */
 .an-ink-layer.is-hl, .an-ink-layer.is-ul { pointer-events: auto; touch-action: none; }
-.rd-doc:has(.an-ink-layer.is-hl), .rd-doc:has(.an-ink-layer.is-ul) {
+/* v108 — AND THE SAME WHILE WRITING. This was applied only to the two
+   marking tools, and the pen was left out; so iOS went on offering its
+   text interaction under the nib, and writing across a line raised the
+   grey selection bands, the blue handles and the Copy / Look Up callout
+   in the middle of a word — and cancelled the stroke doing it. No tool
+   that puts a nib on the glass wants the text selectable underneath. */
+.rd-doc:has(.an-ink-layer.is-hl), .rd-doc:has(.an-ink-layer.is-ul),
+.rd-doc:has(.an-ink-layer.is-pen), .rd-doc:has(.an-ink-layer.is-erase) {
   -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
 }
 /* The band that follows the nib is drawn exactly as the committed mark
