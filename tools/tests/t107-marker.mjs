@@ -286,6 +286,10 @@ say('  painting all the way through the stroke', penned.livePeak >= 1);
 const finger = await page.evaluate(async () => {
   const scroller = document.querySelector('.rd-scroll');
   const layer = document.querySelector('.an-ink-layer');
+  /* After the pencil, the hand is ignored for a moment — it lifts last,
+     and a palm flicking the page away as it goes is the thing that
+     ruins writing. So wait it out before asking what a finger does. */
+  await new Promise(q => setTimeout(q, 900));
   const ev = (t, id, x, y) => new PointerEvent(t, { pointerType: 'touch', pointerId: id,
     bubbles: true, clientX: x, clientY: y, isPrimary: true });
   const wait = () => new Promise(q => setTimeout(q, 16));
@@ -349,13 +353,16 @@ say('  redrawn on the page', back.hl >= 1 && back.ul >= 1, back.hl + ' highlight
 
 /* ---------------------------------------------------------------- */
 sec('7. STAMPS');
+/* The literal belongs to the NEWEST release file only. An older one
+   that names its own number fails on every release after it, which
+   teaches you to ignore it. */
 const stamp = await page.evaluate(async () => {
   const html = await (await fetch('/index.html')).text();
   const sw = await (await fetch('/sw.js')).text();
   const vs = [...new Set([...html.matchAll(/\?v=(\d+)/g)].map(m => m[1]))];
-  return { vs, sw: /aureum-v107/.test(sw) };
+  return { vs, sw: vs.length === 1 && sw.includes("'aureum-v" + vs[0] + "'") };
 });
-say('one version across every asset', stamp.vs.join() === '107', stamp.vs.join(', '));
+say('one version across every asset', stamp.vs.length === 1, stamp.vs.join(', '));
 say('  the service worker agrees', stamp.sw);
 
 console.log('\nerrors on the page: ' + (bad.length ? '\n  ' + bad.join('\n  ') : 'none'));

@@ -316,7 +316,10 @@ const scrolled = await page.evaluate(async () => {
      near its end, and a drag that asks for more scroll than is left
      measures the clamp rather than the scrolling. */
   scroller.scrollTop = 0;
-  await new Promise(r => setTimeout(r, 200));
+  /* And long enough after the last stroke that the hand is no longer
+     being rejected. A palm lifts AFTER the nib does, so for a moment
+     after a stroke a touch is ignored entirely — see t108. */
+  await new Promise(r => setTimeout(r, 900));
   const before = scroller.scrollTop;
   const marksBefore = Annotate.count();
   const layer = document.querySelector('.an-ink-layer');
@@ -356,11 +359,19 @@ const penned = await page.evaluate(spot => {
   layer.dispatchEvent(ev('pointerdown', spot.x, spot.y + 40, 0.4));
   for (let i = 1; i < 12; i++) layer.dispatchEvent(ev('pointermove', spot.x + i * 12, spot.y + 40, 0.9));
   layer.dispatchEvent(ev('pointerup', spot.x + 140, spot.y + 40, 0.9));
-  const m = Annotate._marks().filter(x => x.kind === 'ink').pop();
-  return { before, after: Annotate.count(), w: m?.w };
+  const ink = Annotate._marks().filter(x => x.kind === 'ink');
+  const m = ink[ink.length - 1];
+  return { before, after: Annotate.count(), w: m?.w,
+    /* Pressure is kept PER POINT now. A path has one stroke-width, so
+       setting it from the latest sample thickened the whole word when
+       you pressed harder at the end of it; the stroke is drawn as a
+       filled outline instead and each point carries its own. */
+    press: (m?.pts || []).map(q => q[2]) };
 }, spot);
 say('an Apple Pencil does', penned.after === penned.before + 1);
-say('  and pressing harder gives a thicker line', penned.w > 3, 'width ' + (penned.w || 0).toFixed(2));
+say('  and pressure is kept for every point, not one width for the stroke',
+  penned.press.length > 5 && penned.press[0] === 0.4 && penned.press[penned.press.length - 1] === 0.9,
+  penned.press[0] + ' → ' + penned.press[penned.press.length - 1] + ' over ' + penned.press.length + ' points');
 
 /* ---------------------------------------------------------------- */
 sec('4. UNDO, ERASE AND CLEAR');

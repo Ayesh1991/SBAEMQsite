@@ -61,3 +61,11 @@ Each prints `fails=0` and exits non-zero if anything failed.
 own array, not a copy. Reading the last entry with `pop()` REMOVES the
 mark you were about to assert about, and the assertion then fails while
 the code is perfectly correct. Use `slice()`, `filter()` or an index.
+
+## The version stamp
+
+Only the NEWEST release file should name the version as a literal. An
+older one that asserts its own number fails on every release after it,
+which teaches you to ignore a failing test — the worst thing a suite can
+teach. Older files assert instead that every asset agrees with every
+other and with the service worker.
