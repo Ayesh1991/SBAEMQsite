@@ -1745,9 +1745,9 @@ const OSCE = (() => {
         <div class="an-tools" role="group" aria-label="Marking tools">
           <button type="button" class="an-t is-on" data-an-t="read" title="Read — nothing is marked"
             aria-label="Reading">👆</button>
-          <button type="button" class="an-t" data-an-t="hl" title="Highlighter — select text and it is marked as you drag"
+          <button type="button" class="an-t" data-an-t="hl" title="Highlighter — drag along a line and the colour follows the nib"
             aria-label="Highlighter">🖍</button>
-          <button type="button" class="an-t" data-an-t="ul" title="Underline — select text to rule a line under it"
+          <button type="button" class="an-t" data-an-t="ul" title="Underline — drag along a line to rule under the words"
             aria-label="Underline"><span class="an-t-ul">A</span></button>
           <button type="button" class="an-t" data-an-t="pen" title="Pen — draw with an Apple Pencil or a mouse; a finger still scrolls"
             aria-label="Pen">✒️</button>
@@ -1982,20 +1982,17 @@ const OSCE = (() => {
         w.closest('span')?.querySelectorAll('[data-an-c]').forEach(x => x.classList.remove('is-on'));
       });
 
-      /* MARKING IS LETTING GO OF A SELECTION. No second press: on a
-         touch screen the selection is gone by the time a button has been
-         found, which is why every highlighter that works this way marks
-         on release.
-
-         And no timer. The selection is already final when these fire,
-         and the ten milliseconds that used to be waited here were ten
-         milliseconds of the lag that was reported. The words are
-         already wearing the colour by this point — the browser's own
-         selection is painted in it while the finger is still moving, see
-         annotate.js — so the commit has nothing left to reveal. */
+      /* A FALLBACK, AND ONLY THAT. Marking belongs to the module now:
+         the highlighter paints from the nib's own position while the
+         hand is still moving, and never selects any text — see "the
+         marker" in annotate.js. This catches the one case left, a
+         browser that reached the text anyway and made a selection, and
+         it costs nothing when there is none. */
       const onRelease = () => {
         const t = Annotate.getTool();
         if (t !== 'hl' && t !== 'ul') return;
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed) return;
         Annotate.markSelection(t);
       };
       art.addEventListener('mouseup', onRelease);

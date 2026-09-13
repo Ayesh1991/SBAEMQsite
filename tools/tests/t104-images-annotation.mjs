@@ -17,7 +17,13 @@
        nothing could be drawn at all.
 
    §5 is what makes the marks worth making: they are the person's, they
-   are stored, and they are there on the next device. */
+   are stored, and they are there on the next device.
+
+   MARKING BY DRAGGING IS NOT HERE. It moved to t107 when the
+   highlighter stopped being the browser's text selection and became a
+   marker that paints from the nib. What remains in this file is the
+   inventory, the two layers, the anchoring, and the programmatic entry
+   that is now only a fallback. */
 import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
 const B = process.argv[2] || 'http://127.0.0.1:8907';
 const bad = [];
@@ -156,20 +162,22 @@ say('a selection across blocks becomes one mark per block',
   multi.length === 3 && multi.includes('q2.p0') && multi.includes('q2.p1'), multi.join(', '));
 
 /* ---------------------------------------------------------------- */
-sec('2b. IT HAPPENS AS THE FINGER MOVES, NOT AFTER IT STOPS');
+sec('2b. THE FALLBACK, AND THE INCREMENTAL COMMIT');
 
-/* The complaint was a lag between letting go and the colour appearing.
-   Two causes: a timer, and a full re-measure of every mark on the page.
-   The timer is gone; this is the other half. */
+/* Marking no longer goes through the browser's text selection at all —
+   see t107, which is where that behaviour is asserted. What is left
+   here is the fallback for anything that reaches the text anyway: a
+   selection, if one is somehow made, still wears the instrument's
+   colour rather than the browser's blue. */
 const live = await page.evaluate(() => {
   const styleOf = () => document.querySelector('.rd-doc style')?.textContent || '';
   const first = styleOf();
   document.querySelectorAll('.an-hl-set [data-an-c]')[1].click();     // green
   return { yellow: first, green: styleOf() };
 });
-say('the browser’s own selection wears the highlighter’s colour',
+say('a selection made some other way still wears the highlighter’s colour',
   /::selection\{background:#ffe066/.test(live.yellow), live.yellow.slice(0, 46));
-say('  so changing the swatch changes what the drag looks like',
+say('  and follows the swatch',
   /::selection\{background:#8ce99a/.test(live.green), live.green.slice(0, 46));
 
 /* And the commit does not re-render the page. Proved by identity, not by
@@ -213,7 +221,7 @@ const ul = await page.evaluate(() => {
 say('the underline has its own colours, and only its own are shown',
   ul.swatches === 4 && ul.sets.ul === false && ul.sets.hl === true && ul.sets.pen === true,
   ul.swatches + ' swatches');
-say('  the selection previews it as a wash of the same colour, not a highlight',
+say('  and previews an underline as a wash, not a band',
   /::selection\{background:#e0313133/.test(ul.sel), ul.sel.slice(0, 46));
 say('underlining rules a line under the words', ul.drawn >= 1 && ul.kind === 'ul', ul.drawn + ' rules');
 say('  two pixels, on the baseline, in the chosen colour',
@@ -232,7 +240,7 @@ const swap = await page.evaluate(() => ({
 }));
 say('choosing the pen shows the pen colours and puts the highlighters away',
   swap.hlHidden && swap.penShown);
-say('  the ink layer takes the pointer only now', swap.takes === 'auto');
+say('  the ink layer takes the pointer', swap.takes === 'auto');
 /* THE BUG THIS REPLACED. `touch-action: pan-y` looked like the way to
    let a finger scroll a surface the pen draws on. The browser applies it
    to the PEN as well, so a downward stroke was read as a scroll: the

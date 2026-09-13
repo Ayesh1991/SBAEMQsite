@@ -6771,3 +6771,32 @@ body.sc-open { overflow: hidden; }
 .an-t-ul { font-family: Georgia, serif; font-weight: 700; font-size: .92rem; line-height: 1;
   border-bottom: 2px solid currentColor; padding-bottom: 1px; }
 .an-ul-set { display: inline-flex; align-items: center; gap: 5px; }
+
+/* ============================================================
+   v107 — the highlighter is a marker, not a text selection
+   ============================================================ */
+/* While the highlighter or the underline is chosen the layer above the
+   words takes the whole gesture, exactly as the pen does. That is what
+   stops iOS starting a text selection under the nib — the grey band, the
+   two handles, the magnifier and the Copy callout, none of which belong
+   to a highlighter, and all of which had to finish before the colour
+   could appear. `user-select: none` and `-webkit-touch-callout: none`
+   are belt and braces for anything that reaches the text anyway. */
+.an-ink-layer.is-hl, .an-ink-layer.is-ul { pointer-events: auto; touch-action: none; }
+.rd-doc:has(.an-ink-layer.is-hl), .rd-doc:has(.an-ink-layer.is-ul) {
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+}
+/* The band that follows the nib is drawn exactly as the committed mark
+   is, so the moment of commit shows no change at all. */
+.an-live { pointer-events: none; }
+/* A mark never gets in the way of reading — except while the eraser is
+   the tool, when it has to be findable by the point under the nib. */
+.an-layer.is-erase .an-hl, .an-layer.is-erase .an-ul { pointer-events: auto; }
+/* The word under the nib, held above it, because the hand covers the
+   line being marked. */
+.an-loupe { position: absolute; transform: translate(-50%, -100%);
+  pointer-events: none; z-index: 6;
+  font-family: Georgia, serif; font-size: .9rem; line-height: 1;
+  color: #f6f4ef; background: rgba(18, 17, 15, .9);
+  padding: 6px 10px; border-radius: 8px; white-space: nowrap;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .3); }
