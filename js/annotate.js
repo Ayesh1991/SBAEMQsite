@@ -154,26 +154,11 @@ const Annotate = (() => {
 
   /* ================= the live colour =================
 
-     THE LAG THE USER FELT, AND WHY IT IS GONE.
-
-     Marking a phrase used to be: drag (the browser paints its own blue
-     selection), let go, wait, and the yellow appears. The wait was a
-     10 ms timer plus a full re-measure of EVERY mark on the page —
-     `getClientRects()` forces layout, and with half a dozen marks on a
-     long article that is a visible pause at exactly the moment the eye
-     is waiting for feedback.
-
-     Both are gone, and the second change is the one that makes it feel
-     instant: the browser's own selection now wears the colour of the
-     chosen instrument. There is nothing to wait for, because the words
-     turn yellow AS THE FINGER MOVES — the commit on release then paints
-     the same colour in the same place and nothing appears to happen at
-     all, which is exactly right. A highlighter on paper does not lag
-     either.
-
-     One `<style>` element, rewritten when the colour changes. Not inline
-     styles: `::selection` is a pseudo-element and cannot be set any
-     other way. */
+     A FALLBACK NOW, NOT THE MECHANISM. See "the marker" below for what
+     actually happens when the highlighter is dragged. This only matters
+     where the marker cannot run — a browser without pointer events, or
+     text selected some other way — and it costs one `<style>` element.
+     `::selection` is a pseudo-element and cannot be set any other way. */
   let selStyle = null;
   function paintSelectionColour() {
     if (!selStyle) return;
@@ -286,6 +271,289 @@ const Annotate = (() => {
       .map(r => ({ x: r.left - base.left, y: r.top - base.top, w: r.width, h: r.height }));
   }
 
+  /* ================= where the words are =================
+
+     A map of every word in a block — its character range and the
+     rectangle it occupies — measured once and kept. It is what lets the
+     marker paint while the nib is still moving: finding the word under
+     the tip becomes arithmetic over numbers already in hand instead of a
+     hit test that asks the browser to lay the page out again.
+
+     Built a block at a time, the first time the nib goes near one, and
+     thrown away whenever the page is re-drawn or re-sized. */
+  const wordCache = new Map();
+  let boxCache = null;
+
+  const forgetGeometry = () => { wordCache.clear(); boxCache = null; };
+
+  /** Every annotatable block's box, in article coordinates. */
+  function boxes() {
+    if (boxCache) return boxCache;
+    const base = article.getBoundingClientRect();
+    boxCache = blocks().map(el => {
+      const r = el.getBoundingClientRect();
+      return { key: el.getAttribute('data-an'), y: r.top - base.top, h: r.height };
+    });
+    return boxCache;
+  }
+
+  /** One block's words: { s, e, t, x, y, w, h }, in article coordinates. */
+  function wordsOf(key) {
+    if (wordCache.has(key)) return wordCache.get(key);
+    const out = [];
+    const el = blockOf(key);
+    if (!el || !article) { wordCache.set(key, out); return out; }
+    const base = article.getBoundingClientRect();
+    const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    const rng = document.createRange();
+    let n = 0, t;
+    while ((t = walk.nextNode())) {
+      const s = t.nodeValue;
+      const re = /\S+/g;
+      let m;
+      while ((m = re.exec(s))) {
+        try {
+          rng.setStart(t, m.index);
+          rng.setEnd(t, m.index + m[0].length);
+        } catch { continue; }
+        /* A word that wraps has two rectangles; the first is the one the
+           nib will be over when it reaches the word. */
+        const r = [...rng.getClientRects()].find(q => q.width > 0 && q.height > 0);
+        if (!r) continue;
+        out.push({ s: n + m.index, e: n + m.index + m[0].length, t: m[0],
+          x: r.left - base.left, y: r.top - base.top, w: r.width, h: r.height });
+      }
+      n += s.length;
+    }
+    wordCache.set(key, out);
+    return out;
+  }
+
+  /**
+   * The word under a point — or, for a nib in the margin or between two
+   * lines, the nearest one. `near` limits the search to the blocks the
+   * point is actually in or beside, so a long document costs the same as
+   * a short one.
+   *
+   * `on` says whether the point is really ON the word rather than merely
+   * nearest to it. A pencil may be anywhere; a finger has to land on a
+   * word, because a finger that lands anywhere else is scrolling.
+   */
+  function wordAt(cx, cy) {
+    if (!article) return null;
+    const base = article.getBoundingClientRect();
+    const x = cx - base.left, y = cy - base.top;
+    const bs = boxes();
+    if (!bs.length) return null;
+    let near = bs.filter(b => y >= b.y - 24 && y <= b.y + b.h + 24);
+    if (!near.length) {
+      let best = null;
+      bs.forEach(b => {
+        const d = y < b.y ? b.y - y : y > b.y + b.h ? y - (b.y + b.h) : 0;
+        if (!best || d < best.d) best = { d, b };
+      });
+      near = best ? [best.b] : [];
+    }
+    let hit = null;
+    for (const b of near) {
+      const ws = wordsOf(b.key);
+      for (let i = 0; i < ws.length; i++) {
+        const w = ws[i];
+        const dy = y < w.y ? w.y - y : y > w.y + w.h ? y - (w.y + w.h) : 0;
+        const dx = x < w.x ? w.x - x : x > w.x + w.w ? x - (w.x + w.w) : 0;
+        /* The line comes first: the word nearest ALONG the line the nib
+           is on, never a closer word on the line above. */
+        const d = dy * 4000 + dx;
+        if (!hit || d < hit.d) hit = { d, key: b.key, i, on: dy === 0 && dx <= 6 };
+      }
+    }
+    return hit ? { key: hit.key, i: hit.i, on: hit.on } : null;
+  }
+
+  /** Anchor word → focus word, as one span per block between them. */
+  function spanOf(a, b) {
+    const keys = blocks().map(el => el.getAttribute('data-an'));
+    const ai = keys.indexOf(a.key), bi = keys.indexOf(b.key);
+    if (ai < 0 || bi < 0) return [];
+    const fwd = ai < bi || (ai === bi && a.i <= b.i);
+    const from = fwd ? { k: ai, i: a.i } : { k: bi, i: b.i };
+    const to = fwd ? { k: bi, i: b.i } : { k: ai, i: a.i };
+    const out = [];
+    for (let k = from.k; k <= to.k; k++) {
+      const ws = wordsOf(keys[k]);
+      if (!ws.length) continue;
+      const s = k === from.k ? from.i : 0;
+      const e = k === to.k ? to.i : ws.length - 1;
+      if (e < s || !ws[s] || !ws[e]) continue;
+      out.push({ key: keys[k], from: s, to: e, start: ws[s].s, end: ws[e].e });
+    }
+    return out;
+  }
+
+  /**
+   * A span's words merged into one band per line — which is what makes
+   * it read as a single stroke of a marker rather than a row of little
+   * boxes with the spaces missing.
+   */
+  function bandsOf(span) {
+    const ws = wordsOf(span.key);
+    const out = [];
+    for (let i = span.from; i <= span.to; i++) {
+      const w = ws[i];
+      if (!w) continue;
+      const last = out[out.length - 1];
+      if (last && Math.abs(last.y - w.y) < Math.max(4, w.h * 0.5)) {
+        const right = Math.max(last.x + last.w, w.x + w.w);
+        last.x = Math.min(last.x, w.x);
+        last.w = right - last.x;
+        last.h = Math.max(last.h, w.h);
+      } else out.push({ x: w.x, y: w.y, w: w.w, h: w.h });
+    }
+    return out;
+  }
+
+  /* ================= the marker =================
+
+     WHAT WAS WRONG, IN ONE SENTENCE: the highlighter was not a
+     highlighter, it was the browser's text selection with a colour put
+     on afterwards.
+
+     That is why it felt slow, and the delay was never the real
+     complaint. Dragging a pencil over a line of text on an iPad starts
+     iOS's own selection: the grey band appears, two round handles are
+     planted at the ends, a magnifier pops up, and when the finger lifts
+     the Copy / Define callout arrives — and only then, after all of
+     that, does the colour appear. Nothing in that sequence belongs to a
+     highlighter. A highlighter leaves colour behind the nib as it moves
+     and there is nothing else to it.
+
+     So the text is no longer selected at all. While the highlighter or
+     the underline is chosen, the layer above the words takes the whole
+     gesture, exactly as it already did for the pen, and the mark is
+     painted from the nib's own position: the word under the tip is found
+     in the map above and the band is drawn to it, every frame, in the
+     colour of the instrument. No selection, no handles, no callout, no
+     wait — and it snaps to whole words, so a pencil held at a natural
+     angle marks the phrase you meant rather than half of it.
+
+     A pencil marks wherever it lands. A FINGER is the hard case: it is
+     both the marking tool and the scrolling tool on a phone, and the
+     first movement decides which — along the line and it marks, down the
+     page and it scrolls. That is the gesture each one already is. */
+  let marker = null;      // { kind, c, a, b } while a stroke is live
+  let pending = null;     // a finger that has not yet declared itself
+  let loupe = null;
+
+  function beginMark(at, kind) {
+    marker = { kind, c: kind === 'ul' ? ulColour : hlColour, a: at, b: at };
+    paintLive();
+  }
+
+  function startMark(e) {
+    const at = wordAt(e.clientX, e.clientY);
+    if (!at) return;
+    /* A finger has not said yet whether it is marking or scrolling, so
+       nothing is drawn and nothing is scrolled until it moves. */
+    if (e.pointerType === 'touch') {
+      pending = { at, x: e.clientX, y: e.clientY, id: e.pointerId, e };
+      return;
+    }
+    beginMark(at, tool);
+    showLoupe(e);
+    try { ink.setPointerCapture?.(e.pointerId); } catch {}
+  }
+
+  function moveMark(e) {
+    if (pending && e.pointerId === pending.id) {
+      const dx = e.clientX - pending.x, dy = e.clientY - pending.y;
+      if (Math.abs(dx) + Math.abs(dy) < 8) return true;   // not yet decided
+      if (Math.abs(dx) > Math.abs(dy) && pending.at.on) {
+        beginMark(pending.at, tool);
+        try { ink.setPointerCapture?.(e.pointerId); } catch {}
+      } else {
+        /* Down the page, or begun off the text: this is a scroll, and it
+           starts from where the finger first touched so nothing jumps. */
+        startPan({ clientY: pending.y, pointerId: pending.id });
+        pending = null;
+        movePan(e);
+        return true;
+      }
+      pending = null;
+    }
+    if (!marker) return false;
+    const at = wordAt(e.clientX, e.clientY);
+    if (at && (at.key !== marker.b.key || at.i !== marker.b.i)) {
+      marker.b = at;
+      paintLive();
+    }
+    showLoupe(e);
+    return true;
+  }
+
+  function endMark() {
+    if (pending) {
+      /* Pressed and let go without moving: mark the one word, which is
+         how every reader behaves and is often what is wanted. */
+      if (pending.at.on) beginMark(pending.at, tool);
+      pending = null;
+    }
+    hideLoupe();
+    if (!marker) return false;
+    const m = marker;
+    marker = null;
+    const spans = spanOf(m.a, m.b);
+    clearLive();
+    const at = Date.now();
+    const made = [];
+    spans.forEach(sp => {
+      const el = blockOf(sp.key);
+      const text = textOf(el);
+      const s = Math.max(0, sp.start), e = Math.min(text.length, sp.end);
+      if (e - s < 1) return;
+      made.push({ id: uid(), kind: m.kind, key: sp.key, start: s, end: e, c: m.c,
+        quote: text.slice(s, e).slice(0, 120), at });
+    });
+    if (!made.length) return true;
+    marks.push(...made);
+    undone.length = 0;
+    made.forEach(paintMark);
+    touch();
+    return true;
+  }
+
+  const clearLive = () => layer?.querySelectorAll('.an-live').forEach(n => n.remove());
+
+  /** The stroke as it stands, re-drawn. Nothing else on the page moves. */
+  function paintLive() {
+    clearLive();
+    if (!marker || !layer) return;
+    const ul = marker.kind === 'ul';
+    spanOf(marker.a, marker.b).forEach(sp => bandsOf(sp).forEach(b => {
+      const n = document.createElement('span');
+      n.className = 'an-live ' + (ul ? 'an-ul' : 'an-hl');
+      n.style.cssText = ul
+        ? `left:${b.x}px;top:${(b.y + b.h - 2.5).toFixed(1)}px;width:${b.w}px;height:2px;background:${marker.c}`
+        : `left:${b.x}px;top:${b.y}px;width:${b.w}px;height:${b.h}px;background:${marker.c}`;
+      layer.appendChild(n);
+    }));
+  }
+
+  /* The hand covers the line it is marking. This is the word under the
+     nib, held just above it — the same thing the iPad shows for its own
+     selection, kept because it is the part of that behaviour worth
+     keeping. */
+  function showLoupe(e) {
+    if (!loupe || !marker || !article) return;
+    const w = wordsOf(marker.b.key)[marker.b.i];
+    if (!w) return;
+    const base = article.getBoundingClientRect();
+    loupe.textContent = w.t.slice(0, 24);
+    loupe.style.left = (e.clientX - base.left) + 'px';
+    loupe.style.top = (e.clientY - base.top - 30) + 'px';
+    loupe.hidden = false;
+  }
+  function hideLoupe() { if (loupe) loupe.hidden = true; }
+
   /* ================= ink ================= */
 
   /* TWO LAYERS, AND IT HAS TO BE TWO.
@@ -372,6 +640,15 @@ const Annotate = (() => {
   /* ================= drawing ================= */
 
   function onDown(e) {
+    if (tool === 'read') return;
+    /* The marker handles its own pointer rules — a pencil marks at once,
+       a finger waits to see which gesture it is — so it is asked first
+       and a touch is NOT handed to the scroller here. */
+    if (tool === 'hl' || tool === 'ul') {
+      if (e.pointerType !== 'touch') e.preventDefault();
+      startMark(e);
+      return;
+    }
     if (tool !== 'pen' && tool !== 'erase') return;
     /* THE PLATFORM'S OWN RULE. A finger is for scrolling, always — which
        also means the palm resting on the glass is ignored for free.
@@ -405,6 +682,11 @@ const Annotate = (() => {
   }
 
   function onMove(e) {
+    if (tool === 'hl' || tool === 'ul') {
+      if (moveMark(e)) { if (e.pointerType !== 'touch') e.preventDefault(); return; }
+      if (e.pointerType === 'touch') movePan(e);
+      return;
+    }
     if (e.pointerType === 'touch') { movePan(e); return; }
     if (!drawing) {
       if (tool === 'erase' && e.buttons) eraseAt(e.clientX, e.clientY);
@@ -429,6 +711,13 @@ const Annotate = (() => {
   }
 
   function onUp(e) {
+    if (tool === 'hl' || tool === 'ul') {
+      const marked = endMark();
+      /* A finger that turned out to be scrolling still has a glide to
+         finish; one that marked never started a pan. */
+      if (!marked && e && e.pointerType === 'touch') endPan();
+      return;
+    }
     if (e && e.pointerType === 'touch') { endPan(); return; }
     if (!drawing) return;
     /* A dot is a tap, not a stroke — usually the pencil being put down.
@@ -525,6 +814,11 @@ const Annotate = (() => {
 
   function render() {
     if (!article || !layer) return;
+    /* Every measurement in the word map is a position on the page as it
+       was; a re-draw or a re-size moves them, so they are forgotten
+       rather than trusted. */
+    forgetGeometry();
+    clearLive();
     paintTextMarks();
     paintInk();
   }
@@ -545,6 +839,10 @@ const Annotate = (() => {
     svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('class', 'an-ink');
     ink.appendChild(svg);
+    loupe = document.createElement('span');
+    loupe.className = 'an-loupe';
+    loupe.hidden = true;
+    ink.appendChild(loupe);
     article.appendChild(layer);
     article.appendChild(ink);
     selStyle = document.createElement('style');
@@ -577,6 +875,8 @@ const Annotate = (() => {
     clearTimeout(saveTimer);
     if (dirty) save();
     cancelAnimationFrame(glideRaf); glideRaf = null; pan = null;
+    marker = null; pending = null; loupe = null;
+    forgetGeometry();
     selStyle?.remove(); selStyle = null;
     layer?.remove(); layer = null;
     ink?.remove(); ink = null; svg = null;
@@ -587,12 +887,26 @@ const Annotate = (() => {
 
   function setTool(t) {
     tool = t;
+    /* Any stroke in the air is abandoned, not committed to the tool that
+       has just been put down. */
+    marker = null; pending = null;
+    clearLive(); hideLoupe();
+    forgetGeometry();
     /* The ink layer takes the pointer ONLY while a drawing tool is
        chosen. At every other moment it is transparent to it, so the text
        stays selectable for the highlighter and the page stays
        scrollable — which on an iPad is the difference between a document
        you can read and one you can only draw on. */
     if (ink) ink.className = 'an-ink-layer is-' + t;
+    /* THE ERASER COULD NOT RUB OUT A HIGHLIGHT. Every mark is
+       `pointer-events: none` so that it never gets in the way of reading
+       — and `elementsFromPoint`, which is how the eraser finds what is
+       under the nib, SKIPS such elements entirely. Ink was erasable
+       because its layer is told to take the pointer; the highlights and
+       the underlines were not, so the only way to remove one was to undo
+       it, and only if it was the last thing done. They take the pointer
+       while the eraser is chosen, and nothing else changes. */
+    if (layer) layer.className = 'an-layer' + (t === 'erase' ? ' is-erase' : '');
     paintSelectionColour();
     /* In pen or eraser mode the layer takes the pointer; in reading and
        highlighting modes it must not, or text could not be selected. */
@@ -636,5 +950,6 @@ const Annotate = (() => {
     markSelection, highlightSelection, underlineSelection,
     setTool, getTool, setHighlightColour, setUnderlineColour, setPenColour, setPenWidth,
     colours, count, isDirty, undo, redo, clearAll,
-    _marks: () => marks, _locate: locate };
+    _marks: () => marks, _locate: locate,
+    _wordAt: wordAt, _wordsOf: wordsOf, _marker: () => marker };
 })();

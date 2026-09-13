@@ -42,3 +42,22 @@ not in the list is a route nobody is watching.
 `t99-…` is the other kind: narrow and deep, one file per release, asserting
 the specific promises that release made. Name new ones after their version
 and what they cover.
+
+## Running them
+
+Serve the working copy and point each file at it:
+
+```
+python3 -m http.server 8907 --directory .
+node tools/tests/smoke.mjs
+node tools/tests/t107-marker.mjs          # or any other release file
+```
+
+Each prints `fails=0` and exits non-zero if anything failed.
+
+## One warning, learned the hard way
+
+`Annotate._marks()` — and any accessor like it — hands back the module's
+own array, not a copy. Reading the last entry with `pop()` REMOVES the
+mark you were about to assert about, and the assertion then fails while
+the code is perfectly correct. Use `slice()`, `filter()` or an index.
