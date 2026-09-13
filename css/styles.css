@@ -6804,6 +6804,11 @@ body.sc-open { overflow: hidden; }
    on ordinary scrollable page, where the browser read the palm as a
    scroll and cancelled the stroke in progress. The whole pane is the
    surface now; the layers are only paint. */
+/* `pan-y` even with no instrument in hand: one finger scrolls the pane
+   as it always did, and the browser does not turn two into a zoom of the
+   whole page — because two fingers change the size of the TYPE, and that
+   is wanted most while simply reading. */
+.rd-scroll { touch-action: pan-y; }
 .rd-scroll.is-marking { touch-action: none; cursor: crosshair; }
 .rd-scroll.is-marking.is-erase { cursor: cell; }
 /* Marks are measured against the type. While a pinch is changing its
