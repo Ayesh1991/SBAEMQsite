@@ -6759,7 +6759,11 @@ body.sc-open { overflow: hidden; }
    is a redaction. `mix-blend-mode: multiply` keeps the ink black. */
 .an-hl { position: absolute; border-radius: 2px; pointer-events: none;
   mix-blend-mode: multiply; opacity: .55; }
-.rd-doc > *:not(.an-layer):not(.an-ink-layer) { position: relative; z-index: 2; }
+/* THE NOTES LAYER HAS TO BE EXEMPT TOO. This rule is more specific than
+   a single class, so it overrode `.an-notes { position: absolute }` and
+   left the layer as a block of zero height in the flow — every note
+   marker then measured from the wrong origin and landed off the page. */
+.rd-doc > *:not(.an-layer):not(.an-ink-layer):not(.an-notes) { position: relative; z-index: 2; }
 
 @media (max-width: 900px) {
   .an-bar { gap: 8px; }
@@ -6868,3 +6872,44 @@ body.sc-open { overflow: hidden; }
   color: #f6f4ef; background: rgba(18, 17, 15, .9);
   padding: 6px 10px; border-radius: 8px; white-space: nowrap;
   box-shadow: 0 6px 18px rgba(0, 0, 0, .3); }
+
+/* ============================================================
+   v112 — sticky notes, and a selection that cannot survive
+   ============================================================ */
+/* A note is not a mark ON the words but a piece of paper stuck BESIDE
+   them. The marker on the page is small — a folded corner — and tapping
+   it opens the note. It takes the pointer itself, because a note you
+   cannot tap is a note you cannot read. */
+.an-notes { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
+.an-note { position: absolute; width: 18px; height: 18px; padding: 0;
+  border: 1px solid rgba(0, 0, 0, .18); border-radius: 3px 3px 8px 3px;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, .16); cursor: pointer; pointer-events: auto;
+  transform: translate(-2px, -2px); transition: transform .12s ease, box-shadow .12s ease; }
+.an-note:hover { transform: translate(-2px, -4px); box-shadow: 0 5px 10px rgba(0, 0, 0, .2); }
+/* A note with something written in it is ruled, so a full one can be
+   told from an empty one without opening it. */
+.an-note.has-text::after { content: ''; position: absolute; left: 3px; right: 5px; top: 5px; height: 1px;
+  background: rgba(0, 0, 0, .34); box-shadow: 0 3px 0 rgba(0, 0, 0, .26), 0 6px 0 rgba(0, 0, 0, .18); }
+
+.an-card { position: fixed; z-index: 3200; width: 300px;
+  border-radius: 12px; border: 1px solid rgba(0, 0, 0, .16);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, .24); padding: 8px; }
+.an-card-top { display: flex; align-items: center; gap: 6px; padding: 0 2px 6px; }
+.an-card-swatches { display: inline-flex; gap: 4px; margin-right: auto; }
+.an-card-c { width: 16px; height: 16px; padding: 0; border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, .35); cursor: pointer; }
+.an-card-c.is-on { box-shadow: 0 0 0 2px #fdfcf9, 0 0 0 3.5px #0b0b0b; }
+.an-card-x { border: 0; background: transparent; font-size: .95rem; line-height: 1;
+  padding: 3px 5px; border-radius: 6px; cursor: pointer; color: #3b3a36; }
+.an-card-x:hover { background: rgba(0, 0, 0, .08); }
+.an-card-t { display: block; width: 100%; box-sizing: border-box; min-height: 150px;
+  border: 0; background: transparent; resize: none; outline: none;
+  font-family: Georgia, 'Iowan Old Style', serif; font-size: .95rem; line-height: 1.5; color: #12110f;
+  -webkit-user-select: text !important; user-select: text !important; }
+.an-note-set { display: inline-flex; align-items: center; gap: 5px; }
+/* Typing needs a caret and the ability to select what you have written,
+   whatever the page says about selection while an instrument is held. */
+.rd-veil textarea, .rd-veil input {
+  -webkit-user-select: text !important; user-select: text !important; }
+@media (max-width: 520px) { .an-card { width: calc(100vw - 24px); } }
+@media print { .an-card { display: none; } }

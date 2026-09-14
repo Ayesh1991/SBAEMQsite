@@ -106,6 +106,15 @@ const Annotate = (() => {
     { id: 'u', name: 'Blue',  c: '#1971c2' },
     { id: 'n', name: 'Green', c: '#2f9e44' }
   ];
+  /* A sticky note is a different thing again: not a mark ON the words
+     but a piece of paper stuck BESIDE them, with as much written on it
+     as you like. Four colours, the ones a pad of them comes in. */
+  const NOTES = [
+    { id: 'y', name: 'Yellow', c: '#fff3b0' },
+    { id: 'p', name: 'Pink',   c: '#ffd9e3' },
+    { id: 'b', name: 'Blue',   c: '#cfe6ff' },
+    { id: 'g', name: 'Green',  c: '#d3f2d6' }
+  ];
   const WIDTHS = [
     { id: 'fine', name: 'Fine', w: 1.6 },
     { id: 'med',  name: 'Medium', w: 3 },
@@ -123,6 +132,7 @@ const Annotate = (() => {
   let ulColour = UNDERLINES[0].c;
   let penColour = PENS[0].c;
   let penWidth = WIDTHS[1].w;
+  let noteColour = NOTES[0].c;
   let dirty = false, saving = null, saveTimer = null;
   let onState = () => {};
   const undone = [];
@@ -458,6 +468,7 @@ const Annotate = (() => {
      page and it scrolls. That is the gesture each one already is. */
   let marker = null;      // { kind, c, a, b } while a stroke is live
   let pending = null;     // a finger that has not yet declared itself
+  let noteTap = null;     // where a note is about to be put
   let loupe = null;
 
   function beginMark(at, kind) {
@@ -586,8 +597,10 @@ const Annotate = (() => {
      `ink` sits in front and holds the strokes. Only `ink` ever takes the
      pointer, and only while a drawing tool is chosen. */
   let layer = null, ink = null, svg = null, drawing = null, live = null;
+  let notes = null, card = null;   // the note markers, and the open one
   let pane = null;                 // the scrolling pane: every pointer in it is ours
   let veil = null;                 // the whole reading overlay, bar included
+  let clearSel = null;             // the selection-killer, removed on unmount
 
   /** The block a point is over, and the point in that block's fractions. */
   function inkAnchor(clientX, clientY) {
@@ -804,7 +817,11 @@ const Annotate = (() => {
       if (pointers.size === 2) { e.preventDefault(); startPinch(); return; }
       if (pointers.size > 2) { e.preventDefault(); return; }
     }
+    /* A tap on a note opens it, whatever else is in hand — except the
+       eraser, which is how a note is thrown away. */
+    if (e.target?.closest?.('.an-note') && tool !== 'erase') return;
     if (tool === 'read') return;
+    if (tool === 'note') { e.preventDefault(); noteTap = { x: e.clientX, y: e.clientY, id: e.pointerId }; return; }
     if (e.pointerType !== 'touch') {
       if (nib(e)) penAt = performance.now();
       /* The palm landed first and is already scrolling. It stops now. */
@@ -859,6 +876,16 @@ const Annotate = (() => {
     }
     if (tool === 'read') return;
     if (nib(e)) penAt = performance.now();
+    if (tool === 'note') {
+      /* Moved rather than tapped: this was a scroll, not a place to put
+         a note. */
+      if (noteTap && e.pointerId === noteTap.id
+        && Math.abs(e.clientX - noteTap.x) + Math.abs(e.clientY - noteTap.y) > 10) {
+        const from = noteTap; noteTap = null;
+        if (e.pointerType === 'touch') { startPan({ clientY: from.y, pointerId: from.id }); movePan(e); }
+      } else if (!noteTap && e.pointerType === 'touch') movePan(e);
+      return;
+    }
     if (tool === 'hl' || tool === 'ul') {
       if (moveMark(e)) { if (e.pointerType !== 'touch') e.preventDefault(); return; }
       if (e.pointerType === 'touch') movePan(e);
@@ -907,6 +934,11 @@ const Annotate = (() => {
       if (pinch) { if (pointers.size < 2) endPinch(); return; }
     }
     if (tool === 'read') return;
+    if (tool === 'note') {
+      if (noteTap && (!e || e.pointerId === noteTap.id)) { const t = noteTap; noteTap = null; addNote(t.x, t.y); }
+      else if (e && e.pointerType === 'touch') endPan();
+      return;
+    }
     if (tool === 'hl' || tool === 'ul') {
       const marked = endMark();
       /* A finger that turned out to be scrolling still has a glide to
@@ -930,6 +962,140 @@ const Annotate = (() => {
   }
 
   const round = n => Math.round(n * 10000) / 10000;
+
+  /* ================= sticky notes =================
+
+     WHY A NOTE AND NOT MORE INK.
+
+     Handwriting on a document is the thing that has been hardest to get
+     right, and it depends on the hardware behaving: a nib the browser
+     reports faithfully, a hand the browser ignores. A note depends on
+     none of that. You tap where you want it, you type, and what you
+     typed is what is there — on a phone with no pencil, on a borrowed
+     iPad, in a hurry. It is the part of marking up a document that
+     cannot be spoiled by a gesture going astray, which is exactly why
+     it was asked for.
+
+     It is anchored like ink, to a block and in that block's own width,
+     so it stays beside the paragraph it is about. It holds as much text
+     as you care to write; the marker on the page is small, and tapping
+     it opens the note. */
+  function addNote(clientX, clientY) {
+    const a = inkAnchor(clientX, clientY);
+    if (!a) return null;
+    const m = { id: uid(), kind: 'note', key: a.key, u: 'w',
+      fx: round(a.fx), fy: round(a.fy), c: noteColour, text: '', at: Date.now() };
+    marks.push(m);
+    undone.length = 0;
+    paintNotes();
+    touch();
+    openNote(m.id);
+    return m;
+  }
+
+  /** Every note's marker, where its block is now. */
+  function paintNotes() {
+    if (!notes || !article) return;
+    notes.innerHTML = '';
+    marks.filter(m => m.kind === 'note').forEach(m => {
+      const el = blockOf(m.key);
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const base = article.getBoundingClientRect();
+      const u = Math.max(1, r.width);
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'an-note' + (m.text ? ' has-text' : '');
+      b.dataset.mark = m.id;
+      b.dataset.note = m.id;
+      b.style.cssText = `left:${(r.left - base.left + m.fx * u).toFixed(1)}px;`
+        + `top:${(r.top - base.top + m.fy * u).toFixed(1)}px;background:${m.c}`;
+      /* The first words of the note, so a page of them can be read
+         without opening every one. */
+      b.title = m.text ? m.text.slice(0, 80) : 'An empty note';
+      b.setAttribute('aria-label', b.title);
+      notes.appendChild(b);
+    });
+  }
+
+  /** Open one, as a card beside its marker. */
+  function openNote(id) {
+    closeNote();
+    const m = marks.find(x => x.id === id);
+    if (!m || !veil) return;
+    const marker = notes?.querySelector(`[data-note="${CSS.escape(id)}"]`);
+    card = document.createElement('div');
+    card.className = 'an-card';
+    card.dataset.id = id;
+    card.style.background = m.c;
+    card.innerHTML = `
+      <div class="an-card-top">
+        <span class="an-card-swatches">${NOTES.map(n =>
+          `<button type="button" class="an-card-c${n.c === m.c ? ' is-on' : ''}" data-note-c="${n.c}"
+            style="background:${n.c}" title="${esc(n.name)}" aria-label="${esc(n.name)}"></button>`).join('')}</span>
+        <button type="button" class="an-card-x" data-note-del aria-label="Delete this note" title="Delete this note">🗑</button>
+        <button type="button" class="an-card-x" data-note-done aria-label="Done" title="Done">✕</button>
+      </div>
+      <textarea class="an-card-t" placeholder="Write your note…"
+        aria-label="Note text">${esc(m.text || '')}</textarea>`;
+    veil.appendChild(card);
+
+    /* Beside the marker, and kept on the screen — a note that opens off
+       the bottom edge is a note you cannot type into. */
+    const r = marker ? marker.getBoundingClientRect() : { left: 60, bottom: 120, top: 120 };
+    const w = 300, h = 210;
+    const x = Math.max(12, Math.min(window.innerWidth - w - 12, r.left - 8));
+    const below = r.bottom + 8 + h < window.innerHeight;
+    const y = below ? r.bottom + 8 : Math.max(12, r.top - h - 8);
+    card.style.left = x + 'px';
+    card.style.top = y + 'px';
+
+    const ta = card.querySelector('.an-card-t');
+    ta.addEventListener('input', () => {
+      m.text = ta.value;
+      const b = notes?.querySelector(`[data-note="${CSS.escape(id)}"]`);
+      if (b) {
+        b.classList.toggle('has-text', !!m.text);
+        b.title = m.text ? m.text.slice(0, 80) : 'An empty note';
+        b.setAttribute('aria-label', b.title);
+      }
+      touch();
+    });
+    card.addEventListener('click', e => {
+      const c = e.target.closest('[data-note-c]');
+      if (c) { m.c = c.dataset.noteC; noteColour = m.c; card.style.background = m.c;
+        card.querySelectorAll('.an-card-c').forEach(b => b.classList.toggle('is-on', b === c));
+        paintNotes(); touch(); onState(); return; }
+      if (e.target.closest('[data-note-del]')) { deleteNote(id); return; }
+      if (e.target.closest('[data-note-done]')) { closeNote(); return; }
+    });
+    /* Focused, so the keyboard is already there — the note was opened to
+       be written in. */
+    setTimeout(() => ta.focus(), 30);
+  }
+
+  function closeNote() {
+    /* An empty note nobody typed into is not a note; it is a tap in the
+       wrong place, and leaving it would litter the page. */
+    const open = card?.dataset?.id;
+    card?.remove(); card = null;
+    if (open) {
+      const m = marks.find(x => x.id === open);
+      if (m && !m.text) { marks = marks.filter(x => x !== m); paintNotes(); touch(); }
+    }
+    onState();
+  }
+
+  function deleteNote(id) {
+    const m = marks.find(x => x.id === id);
+    if (!m) return;
+    marks = marks.filter(x => x !== m);
+    undone.push([m]);
+    card?.remove(); card = null;
+    paintNotes(); touch(); onState();
+  }
+
+  const noteCount = () => marks.filter(m => m.kind === 'note').length;
 
   /* ================= zoom =================
 
@@ -1084,6 +1250,7 @@ const Annotate = (() => {
     clearLive();
     paintTextMarks();
     paintInk();
+    paintNotes();
   }
 
   /**
@@ -1110,6 +1277,11 @@ const Annotate = (() => {
     loupe.className = 'an-loupe';
     loupe.hidden = true;
     ink.appendChild(loupe);
+    /* Notes sit ABOVE everything and take the pointer themselves: a
+       note you cannot tap is a note you cannot read. */
+    notes = document.createElement('div');
+    notes.className = 'an-notes';
+    article.appendChild(notes);
     article.appendChild(layer);
     article.appendChild(ink);
     selStyle = document.createElement('style');
@@ -1131,11 +1303,40 @@ const Annotate = (() => {
        starts is the direct statement, and refusing the long-press menu
        closes the last door. Neither costs anything while reading,
        because both only apply with an instrument in hand. */
-    const refuse = e => { if (tool !== 'read') { e.preventDefault(); return false; } };
-    pane.addEventListener('selectstart', refuse);
-    pane.addEventListener('contextmenu', refuse);
-    veil?.addEventListener('selectstart', refuse);
-    veil?.addEventListener('contextmenu', refuse);
+    const typing = () => {
+      const el = document.activeElement;
+      return !!el && (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT' || el.isContentEditable);
+    };
+    /* A note is typed into, and typing needs a caret and the ability to
+       select what you have written. Everything below leaves form fields
+       alone. */
+    const refuse = e => {
+      if (tool === 'read' || typing()) return;
+      e.preventDefault();
+      return false;
+    };
+    document.addEventListener('selectstart', refuse, true);
+    document.addEventListener('contextmenu', refuse, true);
+
+    /* AND THE ONE THAT CANNOT BE EVADED. However the selection came to
+       exist — a long press, a pencil gesture, something iPadOS does that
+       no rule here anticipated — it is emptied the moment it appears,
+       and the callout goes with it. The two above are still worth having
+       because preventing a thing is better than undoing it; this is the
+       one that makes the outcome certain. */
+    clearSel = () => {
+      if (tool === 'read' || typing()) return;
+      const sel = window.getSelection();
+      if (sel && !sel.isCollapsed) sel.removeAllRanges();
+    };
+    document.addEventListener('selectionchange', clearSel);
+
+    notes.addEventListener('click', e => {
+      const b = e.target.closest('.an-note');
+      if (!b) return;
+      if (tool === 'erase') { deleteNote(b.dataset.note); return; }
+      openNote(b.dataset.note);
+    });
 
     pane.addEventListener('pointerdown', onDown);
     pane.addEventListener('pointermove', onMove);
@@ -1164,9 +1365,17 @@ const Annotate = (() => {
     if (dirty) save();
     cancelAnimationFrame(glideRaf); glideRaf = null; pan = null;
     marker = null; pending = null; loupe = null;
-    drawing = null; live = null; penAt = 0;
+    drawing = null; live = null; penAt = 0; noteTap = null;
+    card?.remove(); card = null; notes = null;
     pointers.clear(); pinch = null;
     pane?.classList.remove('is-marking'); pane = null; veil = null;
+    if (clearSel) { document.removeEventListener('selectionchange', clearSel); clearSel = null; }
+    /* The root element is shared with the rest of AUREUM: leaving it
+       unselectable after reading mode closes would make every other page
+       uncopyable. */
+    document.documentElement.style.userSelect = '';
+    document.documentElement.style.webkitUserSelect = '';
+    document.documentElement.style.webkitTouchCallout = '';
     article?.classList.remove('is-zooming');
     if (article) article.style.fontSize = '';
     zoom = 1;
@@ -1183,7 +1392,8 @@ const Annotate = (() => {
     tool = t;
     /* Any stroke in the air is abandoned, not committed to the tool that
        has just been put down. */
-    marker = null; pending = null;
+    marker = null; pending = null; noteTap = null;
+    closeNote();
     clearLive(); hideLoupe();
     forgetGeometry();
     /* The ink layer takes the pointer ONLY while a drawing tool is
@@ -1214,11 +1424,15 @@ const Annotate = (() => {
        halfway through a word. In reading mode the text is selectable
        again, because then it is text to be read and copied. */
     const off = t !== 'read' ? 'none' : '';
-    /* BOTH, and the pane is the important one. The callout that kept
-       interrupting the writing belonged to a selection made by the palm
-       resting in the MARGIN beside the column — which is the pane, not
-       the document, and was still selectable. */
-    [article, pane].forEach(el => {
+    /* EVERYTHING, not this element and that one.
+
+       Twice now the callout has come from somewhere that was left
+       selectable: first the reading bar, then — in the last recording —
+       the document's own text, at the end of a line, with a selection
+       handle beside it. Naming the elements to protect is a game that
+       can only be lost, because the answer is always "and that one
+       too". The root element is the end of the list. */
+    [document.documentElement, article, pane].forEach(el => {
       if (!el) return;
       el.style.userSelect = off;
       el.style.webkitUserSelect = off;
@@ -1234,7 +1448,7 @@ const Annotate = (() => {
   const setUnderlineColour = c => { ulColour = c; paintSelectionColour(); onState(); };
   const setPenColour = c => { penColour = c; onState(); };
   const setPenWidth = w => { penWidth = w; onState(); };
-  const colours = () => ({ hl: hlColour, ul: ulColour, pen: penColour, w: penWidth });
+  const colours = () => ({ hl: hlColour, ul: ulColour, pen: penColour, w: penWidth, note: noteColour });
   const count = () => marks.length;
   const isDirty = () => dirty;
 
@@ -1262,12 +1476,15 @@ const Annotate = (() => {
     render(); touch();
   }
 
-  return { HIGHLIGHTS, UNDERLINES, PENS, WIDTHS,
+  const setNoteColour = c => { noteColour = c; onState(); };
+
+  return { HIGHLIGHTS, UNDERLINES, PENS, WIDTHS, NOTES,
     mount, unmount, render, save, load,
     markSelection, highlightSelection, underlineSelection,
     setTool, getTool, setHighlightColour, setUnderlineColour, setPenColour, setPenWidth,
     colours, count, isDirty, undo, redo, clearAll,
     setZoom, getZoom, zoomBy, ZOOM_MIN, ZOOM_MAX,
+    setNoteColour, noteCount, openNote, closeNote, deleteNote,
     _marks: () => marks, _locate: locate,
     _wordAt: wordAt, _wordsOf: wordsOf, _marker: () => marker };
 })();

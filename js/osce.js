@@ -1751,6 +1751,8 @@ const OSCE = (() => {
             aria-label="Underline"><span class="an-t-ul">A</span></button>
           <button type="button" class="an-t" data-an-t="pen" title="Pen — draw with an Apple Pencil or a mouse; a finger still scrolls"
             aria-label="Pen">✒️</button>
+          <button type="button" class="an-t" data-an-t="note" title="Sticky note — tap the page to leave a note you can type"
+            aria-label="Sticky note">📝</button>
           <button type="button" class="an-t" data-an-t="erase" title="Eraser — tap a mark to remove it"
             aria-label="Eraser">🧽</button>
         </div>
@@ -1759,6 +1761,8 @@ const OSCE = (() => {
             <label class="an-well" title="Any colour"><input type="color" data-an-well="hl" value="#ffe066"></label></span>
           <span class="an-ul-set" hidden>${sw(Annotate.UNDERLINES, 'ul')}
             <label class="an-well" title="Any colour"><input type="color" data-an-well="ul" value="#e03131"></label></span>
+          <span class="an-note-set" hidden>${sw(Annotate.NOTES, 'note')}
+            <label class="an-well" title="Any colour"><input type="color" data-an-well="note" value="#fff3b0"></label></span>
           <span class="an-pen-set" hidden>${sw(Annotate.PENS, 'pen')}
             <label class="an-well" title="Any colour"><input type="color" data-an-well="pen" value="#12110f"></label>
             <span class="an-widths">${Annotate.WIDTHS.map((w, i) =>
@@ -1958,6 +1962,7 @@ const OSCE = (() => {
           const k = t.dataset.anT;
           bar.querySelector('.an-hl-set').hidden = k !== 'hl';
           bar.querySelector('.an-ul-set').hidden = k !== 'ul';
+          bar.querySelector('.an-note-set').hidden = k !== 'note';
           bar.querySelector('.an-pen-set').hidden = k !== 'pen';
           return;
         }
@@ -1967,6 +1972,7 @@ const OSCE = (() => {
           c.parentNode.querySelectorAll('[data-an-c]').forEach(x => x.classList.toggle('is-on', x === c));
           if (kind === 'hl') Annotate.setHighlightColour(col);
           else if (kind === 'ul') Annotate.setUnderlineColour(col);
+          else if (kind === 'note') Annotate.setNoteColour(col);
           else Annotate.setPenColour(col);
           return;
         }
@@ -1997,6 +2003,7 @@ const OSCE = (() => {
            costs one input rather than a colour wheel of our own. */
         if (w.dataset.anWell === 'hl') Annotate.setHighlightColour(w.value);
         else if (w.dataset.anWell === 'ul') Annotate.setUnderlineColour(w.value);
+        else if (w.dataset.anWell === 'note') Annotate.setNoteColour(w.value);
         else Annotate.setPenColour(w.value);
         w.closest('span')?.querySelectorAll('[data-an-c]').forEach(x => x.classList.remove('is-on'));
       });
