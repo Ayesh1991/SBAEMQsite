@@ -106,10 +106,10 @@ const tools = await page.evaluate(() => ({
     .every(b => (b.getAttribute('aria-label') || b.getAttribute('title') || '').length > 1)
 }));
 say('there is a pencil case', tools.bar);
-say('  read, highlight, underline, pen, erase',
-  tools.ts.join() === 'read,hl,ul,pen,erase', tools.ts.join(', '));
-say('  four highlighters, and a colour well on each of the three instruments',
-  tools.hlSwatches === 4 && tools.well === 3, tools.hlSwatches + ' swatches · ' + tools.well + ' wells');
+say('  read, highlight, underline, pen, note, erase',
+  tools.ts.join() === 'read,hl,ul,pen,note,erase', tools.ts.join(', '));
+say('  four highlighters, and a colour well on each instrument that has colours',
+  tools.hlSwatches === 4 && tools.well === 4, tools.hlSwatches + ' swatches · ' + tools.well + ' wells');
 say('  and three pen widths', tools.widths === 3);
 say('  every control named', tools.named);
 
