@@ -6913,3 +6913,53 @@ body.sc-open { overflow: hidden; }
   -webkit-user-select: text !important; user-select: text !important; }
 @media (max-width: 520px) { .an-card { width: calc(100vw - 24px); } }
 @media print { .an-card { display: none; } }
+
+/* ============================================================
+   v113 — the card does the work, not the page behind it
+   ============================================================ */
+/* The day it went into AUREUM. Small, quiet, and at the top left, where
+   it is out of the way of everything that is about the station itself. */
+.os-card-when { position: absolute; top: 12px; left: 16px; z-index: 2;
+  font-size: .58rem; letter-spacing: .07em; text-transform: uppercase;
+  font-weight: 600; color: var(--muted); opacity: .7; }
+.os-card { padding-top: 28px; }
+
+/* Seven things, one row, on every card. They were all on the station's
+   own page already, behind a tap and a page of reading you have usually
+   done before; the card is where the decision is made, so this is where
+   the doing belongs. Pressing the card itself still opens the page. */
+/* `width: 100%` and not merely `stretch`: the bank card is laid out with
+   `place-items: center`, which shrink-wraps every child, and a row of
+   seven buttons huddled in the middle of the card is not a row. */
+.os-card-acts { display: flex; align-items: center; gap: 4px; margin-top: auto;
+  width: 100%; padding-top: 10px; border-top: 1px solid var(--hairline); }
+.os-cact { flex: 1 1 0; min-width: 0; height: 34px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--hairline); border-radius: 9px;
+  background: transparent; color: var(--ink); cursor: pointer;
+  transition: background .14s, border-color .14s, color .14s, transform .14s; }
+.os-cact:hover { border-color: var(--teal); color: var(--teal); transform: translateY(-1px); }
+.os-cact svg { width: 18px; height: 18px; }
+/* The play is the one you press most, so it is the one that looks like a
+   button rather than a tool. */
+.os-cact.is-go { background: var(--gold); border-color: var(--gold); color: #12110f; }
+.os-cact.is-go:hover { color: #12110f; filter: brightness(1.06); }
+.os-cact.os-tool-ai .ai-marks { display: inline-flex; align-items: center; gap: 2px; }
+.os-cact.os-tool-ai .ai-marks svg { width: 13px; height: 13px; }
+.os-cact:disabled { cursor: progress; }
+.os-cact.is-busy { opacity: .55; }
+/* A tick over the icon rather than in place of it: replacing the label of
+   an icon button paints its SVG source across the card. */
+.os-cact.is-done, .os-cact.is-bad { position: relative; }
+.os-cact.is-done > *, .os-cact.is-bad > * { opacity: 0; }
+.os-cact.is-done::after, .os-cact.is-bad::after { position: absolute; inset: 0;
+  display: grid; place-items: center; font-size: .95rem; }
+.os-cact.is-done::after { content: '✓'; color: var(--teal); }
+.os-cact.is-bad::after { content: '✗'; color: var(--bad, #e03131); }
+
+@media (max-width: 420px) {
+  .os-cact { height: 32px; }
+  .os-cact svg { width: 16px; height: 16px; }
+  .os-card-acts { gap: 3px; }
+}
+@media print { .os-card-acts { display: none; } }

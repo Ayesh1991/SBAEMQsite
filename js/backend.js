@@ -79,7 +79,11 @@ const Backend = (() => {
     'bp', 'edited_by', 'edited_at',
     // a created station is shown with its author's name on the card — the
     // whole point of the Created OSCE bank is knowing whose station it is
-    'created_by', 'created_by_name', 'created_on'];
+    'created_by', 'created_by_name', 'created_on',
+    // WHEN IT WAS PUT IN AUREUM. The row's own insert time, which is the
+    // one date nobody has to remember to set — `created_on` is written by
+    // whoever authored the station and is missing on most of the bank.
+    'created_at'];
   const osceCard = m => { const o = {}; OSCE_CARD_KEYS.forEach(k => { if (m[k] != null) o[k] = m[k]; }); return o; };
   /* ---------- Case discussions: the same card/document split ----------
      A case carries every phase's expectations and every viva question WITH
@@ -243,7 +247,11 @@ const Backend = (() => {
     async function publishOsceStation(meta) {
       const rec = withOsceCounts(meta);
       const e = sessionEmail(); if (e) { rec.edited_by = e; rec.edited_at = Date.now(); }
-      const l = read('oscestations', []); const i = l.findIndex(x => x.id === rec.id); if (i >= 0) l[i] = rec; else l.push(rec);
+      const l = read('oscestations', []); const i = l.findIndex(x => x.id === rec.id);
+      /* The date it went into AUREUM, set once and never moved by a later
+         edit — the cloud gets this from the row's own insert time. */
+      rec.created_at = (i >= 0 && l[i].created_at) || new Date().toISOString();
+      if (i >= 0) l[i] = rec; else l.push(rec);
       write('oscestations', l); return rec;
     }
     async function unpublishOsceStation(id) { write('oscestations', read('oscestations', []).filter(x => x.id !== id)); }
@@ -1060,7 +1068,8 @@ const Backend = (() => {
       'q_count:meta->q_count,points_count:meta->points_count,image_count:meta->image_count,' +
       'collection:meta->>collection,bp:meta->bp,' +
       'edited_by:meta->>edited_by,edited_at:meta->edited_at,' +
-      'created_by:meta->>created_by,created_by_name:meta->>created_by_name,created_on:meta->created_on';
+      'created_by:meta->>created_by,created_by_name:meta->>created_by_name,created_on:meta->created_on,' +
+      'created_at';
     let osceCardsOk = true;
     async function getOsceStations() {
       if (osceCardsOk) {

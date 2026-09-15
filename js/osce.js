@@ -952,6 +952,21 @@ const OSCE = (() => {
       <rect x="8.8" y="8.8" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.6"/>
       <path d="M15.2 5.6a2 2 0 0 0-2-1.6H6.2a2 2 0 0 0-2 2v7a2 2 0 0 0 1.6 2"
         stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+    </svg>`,
+    play: `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+      <path d="M8.4 5.6l10 6.4-10 6.4z" fill="currentColor"/>
+    </svg>`,
+    /* A QR code drawn as a QR code: three finders and a scatter of
+       modules. A camera glyph or a bare square would not say what happens
+       when it is pressed. */
+    qr: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true">
+      <rect x="3.5" y="3.5" width="6.4" height="6.4" rx="1.3" stroke="currentColor" stroke-width="1.5"/>
+      <rect x="14.1" y="3.5" width="6.4" height="6.4" rx="1.3" stroke="currentColor" stroke-width="1.5"/>
+      <rect x="3.5" y="14.1" width="6.4" height="6.4" rx="1.3" stroke="currentColor" stroke-width="1.5"/>
+      <rect x="5.9" y="5.9" width="1.7" height="1.7" fill="currentColor"/>
+      <rect x="16.5" y="5.9" width="1.7" height="1.7" fill="currentColor"/>
+      <rect x="5.9" y="16.5" width="1.7" height="1.7" fill="currentColor"/>
+      <path d="M14.1 14.1h2.2v2.2h-2.2zM18.3 14.1h2.2v2.2h-2.2zM16.3 18.3h2.2v2.2h-2.2z" fill="currentColor"/>
     </svg>`
   };
 
@@ -1090,7 +1105,7 @@ const OSCE = (() => {
       <div id="os-bucketbar"></div>
       <div id="os-starpack"></div>
 
-      <div class="os-grid" id="os-grid" data-animate>${list.map(st => card(st, bestOf[st.id], colls)).join('')}</div>
+      <div class="os-grid" id="os-grid" data-animate>${list.map(st => card(st, bestOf[st.id], colls, user)).join('')}</div>
       <p class="muted" id="os-none" hidden>No station mentions that.</p>`;
 
     const input = body.querySelector('#os-search');
@@ -1377,6 +1392,61 @@ const OSCE = (() => {
     if (bankView.q.trim()) { await loadDeep(); }
     run();
     grid.addEventListener('click', () => { bankView.top = window.scrollY; }, true);
+
+    /* THE SEVEN BUTTONS. Delegated, because the cards are re-ordered and
+       re-shown by the search rather than rebuilt, and a listener per card
+       per keystroke is a listener leak. */
+    grid.addEventListener('click', async e => {
+      const b = e.target.closest('[data-cact]');
+      if (!b) return;
+      /* The card is an anchor. Without this, every one of these would
+         also open the station's page underneath it — which is what the
+         bucket and the star already have to say. */
+      e.preventDefault(); e.stopPropagation();
+      const a = b.closest('.os-card');
+      const id = a?.dataset.st;
+      if (!id || b.disabled) return;
+      const act = b.dataset.cact;
+
+      if (act === 'play') {
+        const sid = 'os-' + Date.now().toString(36);
+        await saveSession({ id: sid, stations: [id], at: 0, phase: 'brief', answers: {}, elapsed: 0, started: Date.now() });
+        location.hash = '#/osce/run/' + sid;
+        return;
+      }
+      if (act === 'hand') { location.hash = '#/osce/mark/' + encodeURIComponent(id); return; }
+      if (act === 'qr') {
+        if (typeof QR === 'undefined') return;
+        QR.show({
+          hash: '#/osce/station/' + encodeURIComponent(id),
+          kicker: 'OPEN IT ON ANOTHER DEVICE',
+          title: a.dataset.topic || 'This station',
+          note: 'Whoever is preparing with you points a phone at this and lands on the same station.'
+        });
+        return;
+      }
+
+      /* The rest need the whole station — the questions, and for two of
+         them the marking scheme. The card does not carry either, so it is
+         fetched here, and the button says it is working: on a slow
+         connection this is a second or two, and a button that looks like
+         it did nothing gets pressed again.
+
+         The icon is left alone throughout. `copyOut` reports itself by
+         replacing a button's TEXT, which on an icon would paint the SVG
+         source across the card — so the state is a class instead, and the
+         tick is drawn in CSS. */
+      b.disabled = true; b.classList.add('is-busy');
+      let st = null;
+      try { st = await station(id); } catch {}
+      b.disabled = false; b.classList.remove('is-busy');
+      if (!st) { flashAct(b, false); return; }
+
+      if (act === 'read') readingMode(st);
+      else if (act === 'scheme') showScheme(st);
+      else if (act === 'copy') flashAct(b, await copyOut(stationAsText(st)));
+      else if (act === 'ai' && typeof AiOsce !== 'undefined') AiOsce.openDialog(st);
+    });
   }
 
   /* Where the candidate was in the bank, kept for the length of the visit.
@@ -1390,12 +1460,75 @@ const OSCE = (() => {
     scrollTimer = setTimeout(() => { window.scrollTo({ top: bankView.top, behavior: 'instant' }); bankView.top = 0; }, 40);
   }
 
-  function card(st, best, colls) {
+  /** The day a station went into AUREUM, short enough for a card. */
+  function addedOn(st) {
+    const raw = st.created_at || st.created_on;
+    if (!raw) return '';
+    const d = new Date(raw);
+    if (isNaN(d)) return '';
+    return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  }
+
+  /* ---------------- the seven things you can do with a station -------
+
+     Every one of these was already on the station's own page, behind one
+     more tap and a page of reading you have usually done before. The card
+     is where you are when you decide; this puts the decision and the doing
+     in the same place. Pressing the card itself still opens the page, as
+     it always did — a button stops the anchor, exactly as the bucket and
+     the star already do.
+
+     `need` says whether the whole station has to be fetched first. A card
+     carries the summary only, deliberately: the questions and the marking
+     scheme stay in the database until something actually needs them. */
+  const CARD_ACTS = [
+    { id: 'play',   need: false, cls: 'is-go',  label: 'Start the station',
+      title: 'Start the station — the clock starts straight away' },
+    { id: 'read',   need: true,  label: 'Reading mode',
+      title: 'Reading mode — the whole station as an article, to read and mark up' },
+    { id: 'scheme', need: true,  label: 'Show the marking scheme',
+      title: 'Show the marking scheme' },
+    { id: 'hand',   need: false, label: 'Mark somebody by hand',
+      title: 'Mark somebody who is sitting in front of you, point by point' },
+    { id: 'copy',   need: true,  label: 'Copy the station',
+      title: 'Copy the scenario and the questions as plain text — WITHOUT the marking scheme' },
+    { id: 'ai',     need: true,  cls: 'os-tool-ai', label: 'Sit it against a chat model',
+      title: 'OSCE in AI — sit this one against Claude, ChatGPT or Gemini' },
+    { id: 'qr',     need: false, label: 'Show the QR code',
+      title: 'Show the code — point a phone at it to land on this station' }
+  ];
+
+  /** A tick or a cross over an icon button, briefly. */
+  function flashAct(b, ok) {
+    b.classList.remove('is-done', 'is-bad');
+    b.classList.add(ok ? 'is-done' : 'is-bad');
+    setTimeout(() => { if (b.isConnected) b.classList.remove('is-done', 'is-bad'); }, 2000);
+  }
+
+  function cardActs(st, user) {
+    const ai = typeof AiOsce !== 'undefined' && AiOsce.allowed(user);
+    return `<div class="os-card-acts" role="group" aria-label="What to do with this station">
+      ${CARD_ACTS.filter(a => a.id !== 'ai' || ai).map(a => `
+        <button type="button" class="os-cact ${a.cls || ''}" data-cact="${a.id}"
+          title="${esc(a.title)}" aria-label="${esc(a.label)}">${
+          a.id === 'ai' ? `<span class="ai-marks">${AiOsce.LOGOS.claude}${AiOsce.LOGOS.gpt}${AiOsce.LOGOS.gemini}</span>`
+            : ICONS[a.id === 'play' ? 'play' : a.id === 'qr' ? 'qr' : a.id]}</button>`).join('')}
+    </div>`;
+  }
+
+  function card(st, best, colls, user) {
     const n = qCount(st);
     const cl = (colls || []).length ? collLabel(colls, st.collection || '') : '';
+    const when = addedOn(st);
     return `
       <a class="os-card" data-st="${esc(st.id)}" data-coll="${esc(st.collection || '')}"
+         data-topic="${esc(st.topic || st.id)}"
          href="#/osce/station/${encodeURIComponent(st.id)}">
+        ${/* The day it went into AUREUM. Small, and at the top left where
+              it is out of the way of everything that is about the station
+              itself — it says how old the bank's newest additions are,
+              which is the question it is there to answer. */''}
+        ${when ? `<span class="os-card-when" title="Added to AUREUM on ${esc(when)}">${esc(when)}</span>` : ''}
         ${/* The bucket sits to the LEFT of the star because the two mean
               different things and the order says which is which: what you
               are going to sit, then what you want to keep. */''}
@@ -1415,8 +1548,8 @@ const OSCE = (() => {
         ${st.created_by_name ? `<p class="os-card-by">✍️ written by ${esc(st.created_by_name)}</p>` : ''}
         <div class="os-card-foot">
           <span>${n} question${n === 1 ? '' : 's'} · ${marksOf(st)} marks</span>
-          <span class="os-card-go">Start →</span>
         </div>
+        ${cardActs(st, user)}
       </a>`;
   }
 
