@@ -94,7 +94,13 @@
     { re: /^#\/simulator\/result\/([^/]+)$/, fn: renderSimResult },
     { re: /^#\/dev(?:\/(papers|cards|users|blueprint|review|ai|essays|tearoom|cpd|osce|cases|settings))?$/, fn: renderDev }
   ];
-  const devOnly = user => !!(user && (user.email === cfg.developer.email || sessionStorage.getItem('aureum-dev') === '1'));
+  /* ADMIN BY ROLE, not by address. `isDeveloper` is computed in the
+     backend from the profile's role, with the owner's email kept as the
+     fallback the schema also keeps — so this keeps working on the first
+     run, before any role has been granted. The dev CODE is unchanged: it
+     is a way in on a borrowed laptop, not a role. */
+  const devOnly = user => !!(user && (user.isDeveloper || user.email === cfg.developer.email
+    || sessionStorage.getItem('aureum-dev') === '1'));
 
   // EGRESS: currentUser() reads the profiles row from Supabase on every
   // hashchange — dozens of reads while a user clicks around. Cache it in
@@ -202,7 +208,7 @@
 
   function renderNav(user) {
     const nav = document.getElementById('nav');
-    const isDev = user && (user.email === cfg.developer.email || sessionStorage.getItem('aureum-dev') === '1');
+    const isDev = devOnly(user);
     const simOn = isDev || (isPaid(user) && user?.featureFlags?.simulator && user?.prefs?.simulator);
     // the case section needs no `prefs` opt-in: it is granted one account
     // at a time, so the grant IS the decision

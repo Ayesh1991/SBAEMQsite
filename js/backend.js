@@ -215,10 +215,24 @@ const Backend = (() => {
       const email = sessionEmail(); const u = email ? users()[email] : null;
       return u ? publicUser(u) : null;
     }
+    /* THE SAME RULE THE DATABASE TRIGGER ENFORCES IN THE CLOUD, here.
+       A profile row is the user's own to write, so without this an editor
+       could hand `{ role: 'admin' }` to their own backend and take the
+       platform. The cloud was already covered by the trigger in
+       schema.sql; this is the local half of the same guard, and the two
+       backends have to behave the same or the rule is only as strong as
+       whichever one an attacker picks. */
+    const PROTECTED = ['role', 'status', 'feature_flags', 'featureFlags'];
+    function guardPatch(patch, me) {
+      const out = Object.assign({}, patch);
+      const amAdmin = me && (me.role === 'admin' || norm(me.email) === devEmail);
+      if (!amAdmin) PROTECTED.forEach(k => delete out[k]);
+      return out;
+    }
     async function updateProfile(patch) {
       const email = sessionEmail(); const all = users();
       if (!email || !all[email]) throw new Error('Not signed in.');
-      Object.assign(all[email], patch); write('users', all);
+      Object.assign(all[email], guardPatch(patch, all[email])); write('users', all);
       return publicUser(all[email]);
     }
 
@@ -596,7 +610,7 @@ const Backend = (() => {
     /* users & feature flags (developer) */
     async function listAllUsers() {
       const all = users();
-      return Object.values(all).map(u => ({ id: u.id, name: u.name, email: u.email, position: u.position, xp: read(pKey(u.email), blankProgress()).xp || 0, createdAt: u.createdAt, featureFlags: u.featureFlags || {} }));
+      return Object.values(all).map(u => ({ id: u.id, name: u.name, email: u.email, position: u.position, xp: read(pKey(u.email), blankProgress()).xp || 0, createdAt: u.createdAt, featureFlags: u.featureFlags || {}, role: u.role || (norm(u.email) === devEmail ? 'admin' : 'student'), status: u.status || 'approved' }));
     }
     async function setUserFeature(userId, flag, on) {
       const all = users(); const u = Object.values(all).find(x => x.id === userId || x.email === userId);
@@ -673,6 +687,12 @@ const Backend = (() => {
     async function setUserStatus(userId, status) {
       const all = users(); const u = Object.values(all).find(x => x.id === userId || x.email === userId);
       if (u) { u.status = status; write('users', all); }
+    }
+    async function setUserRole(userId, role) {
+      if (!['student', 'editor', 'admin'].includes(role)) throw new Error('Unknown role.');
+      const all = users(); const u = Object.values(all).find(x => x.id === userId || x.email === userId);
+      if (u) { u.role = role; write('users', all); }
+      return role;
     }
 
     /* peer-review proposals (local mirror) */
@@ -866,10 +886,20 @@ const Backend = (() => {
     /* AI (local mode has no server function — the app disables AI in local) */
     async function getAccessToken() { return null; }
 
-    function publicUser(u) { return { id: u.id, name: u.name, email: u.email, position: u.position, userNo: u.userNo || '', createdAt: u.createdAt, isDeveloper: norm(u.email) === devEmail, featureFlags: u.featureFlags || {}, prefs: u.prefs || {}, avatar: u.avatar || '', status: u.status || 'approved' }; }
+    function publicUser(u) {
+      /* The owner's address is the fallback here too, so a fresh local
+         store is never locked out of its own developer console. */
+      const role = u.role || (norm(u.email) === devEmail ? 'admin' : 'student');
+      return { id: u.id, name: u.name, email: u.email, position: u.position, userNo: u.userNo || '',
+        createdAt: u.createdAt, role,
+        isDeveloper: role === 'admin' || norm(u.email) === devEmail,
+        isEditor: role === 'editor' || role === 'admin' || norm(u.email) === devEmail,
+        featureFlags: u.featureFlags || {}, prefs: u.prefs || {}, avatar: u.avatar || '',
+        status: u.status || 'approved' };
+    }
 
     return { init, signUp, signIn, signOut, requestPasswordReset, updatePassword, onPasswordRecovery, currentUser, updateProfile,
-      getRegistrationOpen, setRegistrationOpen, setUserStatus, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
+      getRegistrationOpen, setRegistrationOpen, setUserStatus, setUserRole, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
       getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
@@ -986,7 +1016,13 @@ const Backend = (() => {
         position: prof?.position || data.user.user_metadata?.position || 'Registrar',
         examDate: prof?.exam_date || null,
         createdAt: data.user.created_at,
-        isDeveloper: norm(data.user.email) === devEmail,
+        /* ROLE, NOT ADDRESS. `isDeveloper` used to mean "is this one
+           email", which made the owner's inbox the platform's only key.
+           It now means admin — by role, or by that address as the
+           fallback the schema keeps so nobody can be locked out. */
+        role: prof?.role || 'student',
+        isDeveloper: prof?.role === 'admin' || norm(data.user.email) === devEmail,
+        isEditor: prof?.role === 'editor' || prof?.role === 'admin' || norm(data.user.email) === devEmail,
         featureFlags: prof?.feature_flags || {},
         prefs: prof?.prefs || {},
         avatar: prof?.avatar_url || '',
@@ -998,7 +1034,13 @@ const Backend = (() => {
     }
     async function updateProfile(patch) {
       await ensureClient(); const id = await uid(); if (!id) throw new Error('Not signed in.');
-      await sb.from('profiles').update(patch).eq('id', id);
+      /* The trigger in schema.sql reverts these anyway; stripping them
+         here means the write is honest rather than silently ignored —
+         and it keeps the two backends behaving identically. Granting a
+         role goes through setUserRole, which is an admin's call. */
+      const clean = Object.assign({}, patch);
+      ['role', 'status', 'feature_flags'].forEach(k => delete clean[k]);
+      await sb.from('profiles').update(clean).eq('id', id);
       return currentUser();
     }
 
@@ -1819,8 +1861,8 @@ const Backend = (() => {
     /* users & feature flags (developer — RLS "profiles dev read/update" policies) */
     async function listAllUsers() {
       await ensureClient();
-      const { data } = await sb.from('profiles').select('id,name,email,position,xp,created_at,feature_flags,prefs,status').order('created_at', { ascending: true });
-      return (data || []).map(r => ({ id: r.id, name: r.name, email: r.email, position: r.position, xp: r.xp || 0, createdAt: r.created_at, featureFlags: r.feature_flags || {}, prefs: r.prefs || {}, status: r.status || 'approved' }));
+      const { data } = await sb.from('profiles').select('id,name,email,position,xp,created_at,feature_flags,prefs,status,role').order('created_at', { ascending: true });
+      return (data || []).map(r => ({ id: r.id, name: r.name, email: r.email, position: r.position, xp: r.xp || 0, createdAt: r.created_at, featureFlags: r.feature_flags || {}, prefs: r.prefs || {}, status: r.status || 'approved', role: r.role || 'student' }));
     }
     async function setUserFeature(userId, flag, on) {
       await ensureClient();
@@ -2223,6 +2265,16 @@ const Backend = (() => {
       await ensureClient();
       await sb.from('app_config').upsert({ id: 'registration', data: { open: !!open }, updated_at: new Date().toISOString() });
     }
+    /** Promote or demote somebody. Admin only — the database enforces it
+        too, in the profiles trigger, because a check that lives only in
+        the browser is not a check. */
+    async function setUserRole(userId, role) {
+      await ensureClient();
+      if (!['student', 'editor', 'admin'].includes(role)) throw new Error('Unknown role.');
+      const { error } = await sb.from('profiles').update({ role }).eq('id', userId);
+      if (error) throw new Error(error.message || 'Could not change the role.');
+      return role;
+    }
     async function setUserStatus(userId, status) {
       await ensureClient();
       await sb.from('profiles').update({ status }).eq('id', userId);
@@ -2358,7 +2410,7 @@ const Backend = (() => {
     async function getAccessToken() { await ensureClient(); const { data } = await sb.auth.getSession(); return data.session?.access_token || null; }
 
     return { init, signUp, signIn, signOut, requestPasswordReset, updatePassword, onPasswordRecovery, currentUser, updateProfile,
-      getRegistrationOpen, setRegistrationOpen, setUserStatus, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
+      getRegistrationOpen, setRegistrationOpen, setUserStatus, setUserRole, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
       getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,

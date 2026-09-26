@@ -1546,6 +1546,17 @@ const DevConsole = (() => {
                   <p class="tiny muted">${u.featureFlags?.paid ? 'Paid — all granted features active.' : 'Unpaid — AI, Simulator and Flashcards disabled; 30 questions/day cap.'}</p>
                 </div>
                 <div class="dev-up-block">
+                  <h4>Role</h4>
+                  <select class="dev-role" data-urole="${ctx.esc(u.id)}"${isDev ? ' disabled' : ''}>
+                    <option value="student"${(u.role || 'student') === 'student' ? ' selected' : ''}>Student — sits papers</option>
+                    <option value="editor"${u.role === 'editor' ? ' selected' : ''}>Editor — writes content</option>
+                    <option value="admin"${u.role === 'admin' ? ' selected' : ''}>Admin — everything</option>
+                  </select>
+                  <p class="tiny muted">${isDev
+                    ? 'The owner’s account. Its role cannot be changed from here.'
+                    : 'An editor publishes stations, papers and corrections — and sees no money, no spend and nobody else’s account.'}</p>
+                </div>
+                <div class="dev-up-block">
                   <h4>Account status</h4>
                   ${u.status === 'pending' ? `<button class="btn btn-gold btn-sm" data-approve="${ctx.esc(u.id)}">✓ Approve</button>
                     <button class="btn btn-ghost btn-sm qr-danger" data-deny="${ctx.esc(u.id)}">Deny</button>`
@@ -1621,6 +1632,27 @@ const DevConsole = (() => {
       try { await ctx.Backend.setRegistrationOpen(e.target.checked);
         host.querySelector('#reg-state').textContent = e.target.checked ? 'OPEN' : 'CLOSED'; }
       catch (e2) { e.target.checked = !e.target.checked; alert('Could not save: ' + (e2.message || e2)); }
+    });
+    host.querySelectorAll('[data-urole]').forEach(sel => {
+      const was = sel.value;
+      sel.addEventListener('change', async () => {
+        /* Admin is the whole platform — money, every account, the console.
+           It is worth one sentence of friction. */
+        if (sel.value === 'admin' && !confirm('Make this person an ADMIN? They will see every account, all spending, and the developer console.')) {
+          sel.value = was; return;
+        }
+        sel.disabled = true;
+        try {
+          await ctx.Backend.setUserRole(sel.dataset.urole, sel.value);
+          msgEl.textContent = `✓ Role set to ${sel.value} — takes effect on their next page load.`;
+          msgEl.className = 'dev-row-msg good';
+        } catch (e) {
+          sel.value = was;
+          msgEl.textContent = 'Could not change the role: ' + (e.message || e);
+          msgEl.className = 'dev-row-msg bad';
+        }
+        sel.disabled = false;
+      });
     });
     host.querySelectorAll('[data-approve]').forEach(b => b.addEventListener('click', async () => {
       await ctx.Backend.setUserStatus(b.dataset.approve, 'approved'); await refreshUsers(view);
