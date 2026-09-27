@@ -6963,3 +6963,11 @@ body.sc-open { overflow: hidden; }
   .os-card-acts { gap: 3px; }
 }
 @media print { .os-card-acts { display: none; } }
+
+/* ============================================================
+   v114 — roles: an editor is a person, not an email address
+   ============================================================ */
+.dev-role { font: inherit; font-size: .82rem; width: 100%; padding: 7px 10px;
+  border-radius: 9px; border: 1px solid var(--hairline);
+  background: var(--surface); color: var(--ink); cursor: pointer; }
+.dev-role:disabled { opacity: .6; cursor: not-allowed; }

@@ -41,15 +41,70 @@ alter table public.profiles add column if not exists prefs jsonb default '{}'::j
 alter table public.profiles add column if not exists status text not null default 'approved';
 alter table public.profiles alter column status set default 'pending';
 
+-- ---------- 1b) ROLES ----------
+-- WHY THIS EXISTS, AND WHAT IT REPLACES.
+--
+-- Until now, forty-one policies in this file named one email address.
+-- That meant exactly one human being on Earth could publish a station,
+-- edit a paper or touch the curriculum — and adding a second author
+-- required editing this schema and re-running it. For one exam and one
+-- author that was fine. For several specialities, each with its own
+-- editors, it is the thing that makes growth impossible.
+--
+--   'student' — the default. Sits papers, keeps their own marks.
+--   'editor'  — writes CONTENT: stations, papers, curriculum, cases,
+--               decks, corrections. Cannot see money, spend, or anybody
+--               else's account.
+--   'admin'   — everything an editor can do, plus users, money, global
+--               configuration and the developer console.
+alter table public.profiles add column if not exists role text not null default 'student';
+alter table public.profiles drop constraint if exists profiles_role_check;
+alter table public.profiles add constraint profiles_role_check
+  check (role in ('student', 'editor', 'admin'));
+
+-- THE EMAIL IS KEPT AS A PERMANENT FALLBACK, ON PURPOSE.
+--
+-- If these helpers read the role ALONE, then the first time this file is
+-- run — before any profile row says 'admin' — nobody can write anything,
+-- including the person who would grant the first role. That is a locked
+-- door with the key inside. The owner's address stays as a second way in
+-- that no database state can take away.
+--
+-- SECURITY DEFINER is required, not decorative: these are called from
+-- inside the policies ON public.profiles, and a function that read that
+-- table under RLS would recurse. `set search_path` stops the definer's
+-- rights being aimed at a table somebody else planted.
+create or replace function public.is_admin() returns boolean
+  language sql stable security definer set search_path = public as $$
+  select coalesce((select role = 'admin' from public.profiles where id = auth.uid()), false)
+      or coalesce(auth.jwt() ->> 'email', '') = 'ayeshmantha@gmail.com';
+$$;
+
+create or replace function public.is_editor() returns boolean
+  language sql stable security definer set search_path = public as $$
+  select coalesce((select role in ('editor', 'admin') from public.profiles where id = auth.uid()), false)
+      or coalesce(auth.jwt() ->> 'email', '') = 'ayeshmantha@gmail.com';
+$$;
+
+-- The owner's own row is stamped admin, so the fallback above is a
+-- safety net rather than the mechanism.
+update public.profiles set role = 'admin'
+  where lower(email) = 'ayeshmantha@gmail.com' and role is distinct from 'admin';
+
 -- Users may update their own profile row (name, position, prefs…) but any
 -- attempt to change feature_flags OR status by a non-developer is silently
 -- reverted — those columns are the developer's alone.
+-- AND `role` ABOVE ALL. Without this line the whole scheme is theatre:
+-- "own profile update" lets anybody write their own row, so anybody could
+-- set their own role to 'admin' and take the platform. Privilege is
+-- granted downwards by an admin, never claimed upwards by its holder.
 create or replace function public.protect_feature_flags()
-returns trigger language plpgsql security definer as $$
+returns trigger language plpgsql security definer set search_path = public as $$
 begin
-  if coalesce(auth.jwt() ->> 'email', '') <> 'ayeshmantha@gmail.com' then
+  if not public.is_admin() then
     if new.feature_flags is distinct from old.feature_flags then new.feature_flags := old.feature_flags; end if;
     if new.status is distinct from old.status then new.status := old.status; end if;
+    if new.role is distinct from old.role then new.role := old.role; end if;
   end if;
   return new;
 end $$;
@@ -68,10 +123,10 @@ create policy "own profile insert" on public.profiles for insert with check (aut
 create policy "own profile update" on public.profiles for update using (auth.uid() = id);
 -- the developer can list every profile (Users panel) and grant feature flags
 create policy "profiles dev read" on public.profiles for select
-  using (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+  using (public.is_admin());
 create policy "profiles dev update" on public.profiles for update
-  using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
-  with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+  using  (public.is_admin())
+  with check (public.is_admin());
 
 -- Avatar + cross-device notification state. `notif_seen` holds the last-seen
 -- timestamps ({wall, chat}) so reading on the iPad clears the laptop too.
@@ -109,8 +164,8 @@ drop policy if exists "papers public read" on public.papers;
 drop policy if exists "papers dev write"   on public.papers;
 create policy "papers public read" on public.papers for select using (true);
 create policy "papers dev write" on public.papers for all
-  using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
-  with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+  using  (public.is_editor())
+  with check (public.is_editor());
 
 -- ---------- 4) IN-PROGRESS SESSIONS (resume half-finished papers) ----------
 create table if not exists public.sessions (
@@ -151,8 +206,8 @@ drop policy if exists "curriculum public read" on public.curriculum;
 drop policy if exists "curriculum dev write"   on public.curriculum;
 create policy "curriculum public read" on public.curriculum for select using (true);
 create policy "curriculum dev write" on public.curriculum for all
-  using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
-  with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+  using  (public.is_editor())
+  with check (public.is_editor());
 
 -- ---------- 7) AI EXPLANATION CACHE (generated once, reused by everyone) ----------
 create table if not exists public.ai_explanations (
@@ -183,7 +238,7 @@ create policy "own usage all" on public.ai_usage for all
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
 -- the developer can read everyone's AI usage (Users panel analytics)
 create policy "usage dev read" on public.ai_usage for select
-  using (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+  using (public.is_admin());
 
 -- atomically increment today's counter and return the new value
 create or replace function public.bump_ai_usage(p_limit integer)
@@ -230,8 +285,8 @@ drop policy if exists "qedits public read" on public.question_edits;
 drop policy if exists "qedits dev write"   on public.question_edits;
 create policy "qedits public read" on public.question_edits for select using (true);
 create policy "qedits dev write" on public.question_edits for all
-  using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
-  with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+  using  (public.is_editor())
+  with check (public.is_editor());
 
 -- ---------- 8d) USER QUESTION EDITS (each user's personal flag / note + simulator exclusion) ----------
 -- Everyone can flag an answer they think is wrong and add a private note,
@@ -262,10 +317,10 @@ create policy "own uqe all" on public.user_question_edits for all
 -- the developer sees every user's flags (Question review workshop) and can
 -- mark them resolved after fixing the question
 create policy "uqe dev read" on public.user_question_edits for select
-  using (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+  using (public.is_editor());
 create policy "uqe dev update" on public.user_question_edits for update
-  using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
-  with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+  using  (public.is_editor())
+  with check (public.is_editor());
 
 -- Any signed-in user can fetch the set of question keys currently flagged
 -- as wrong by ANY user and not yet resolved — the simulator keeps these out
@@ -288,8 +343,8 @@ drop policy if exists "decks public read" on public.flashcard_decks;
 drop policy if exists "decks dev write"   on public.flashcard_decks;
 create policy "decks public read" on public.flashcard_decks for select using (true);
 create policy "decks dev write" on public.flashcard_decks for all
-  using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
-  with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+  using  (public.is_editor())
+  with check (public.is_editor());
 
 -- ---------- 8f) FLASHCARD PROGRESS (per-user SM-2 schedule, saved card-by-card) ----------
 create table if not exists public.flashcard_progress (
@@ -321,8 +376,8 @@ drop policy if exists "config public read" on public.app_config;
 drop policy if exists "config dev write"   on public.app_config;
 create policy "config public read" on public.app_config for select using (true);
 create policy "config dev write" on public.app_config for all
-  using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
-  with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+  using  (public.is_admin())
+  with check (public.is_admin());
 
 -- ---------- 8h) MOCK RESULTS (adaptive simulator runs, per-user) ----------
 create table if not exists public.mock_results (
@@ -401,7 +456,7 @@ drop policy if exists "tokens dev read" on public.ai_token_usage;
 create policy "own tokens read" on public.ai_token_usage for select using (auth.uid() = user_id);
 -- the developer reads everyone's metered tokens (Users panel + invoices)
 create policy "tokens dev read" on public.ai_token_usage for select
-  using (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+  using (public.is_admin());
 
 -- Writes happen ONLY through this RPC (no insert/update policies above), so
 -- a client can never inflate or shrink its own meter. security definer +
@@ -436,6 +491,7 @@ returns jsonb language sql security definer stable as $$
     'all', greatest((select count(*) from public.profiles), 1),
     'simulator', greatest((select count(*) from public.profiles
         where coalesce((feature_flags ->> 'simulator')::boolean, false)
+           or role = 'admin'
            or lower(email) = 'ayeshmantha@gmail.com'), 1),
     'dev', 1
   );
@@ -509,7 +565,7 @@ drop policy if exists "own events insert" on public.question_events;
 drop policy if exists "events dev read"   on public.question_events;
 create policy "own events insert" on public.question_events for insert with check (auth.uid() = user_id);
 create policy "events dev read" on public.question_events for select
-  using (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+  using (public.is_editor());
 
 -- ---------- 8n) QUESTION TAGS (AI-assigned topic tags → precise selection) ----------
 create table if not exists public.question_tags (
@@ -527,8 +583,8 @@ drop policy if exists "qtags read"      on public.question_tags;
 drop policy if exists "qtags dev write" on public.question_tags;
 create policy "qtags read" on public.question_tags for select using (auth.role() = 'authenticated');
 create policy "qtags dev write" on public.question_tags for all
-  using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
-  with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+  using  (public.is_editor())
+  with check (public.is_editor());
 
 -- ---------- 8o) USER DECKS (personal flashcard decks, e.g. AI cards from wrong answers) ----------
 create table if not exists public.user_decks (
@@ -567,7 +623,7 @@ create policy "shared usage read" on public.ai_shared_usage for select using (au
 create or replace function public.log_ai_shared(p_feature text, p_provider text, p_model text, p_input integer, p_output integer)
 returns void language plpgsql security definer as $$
 begin
-  if auth.jwt() ->> 'email' <> 'ayeshmantha@gmail.com' then return; end if;
+  if not public.is_admin() then return; end if;
   insert into public.ai_shared_usage (feature, day, provider, model, calls, input_tokens, output_tokens)
   values (p_feature, current_date, p_provider, p_model, 1,
           greatest(coalesce(p_input, 0), 0), greatest(coalesce(p_output, 0), 0))
@@ -603,10 +659,10 @@ create policy "qep own insert" on public.question_edit_proposals for insert
   with check (auth.uid() = reviewer_id);
 create policy "qep own read" on public.question_edit_proposals for select using (auth.uid() = reviewer_id);
 create policy "qep dev read" on public.question_edit_proposals for select
-  using (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+  using (public.is_editor());
 create policy "qep dev update" on public.question_edit_proposals for update
-  using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
-  with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+  using  (public.is_editor())
+  with check (public.is_editor());
 
 -- Flagged questions WITH their (anonymous) reasons, for the peer-review tab:
 -- keys + notes only — flaggers' identities are visible to the developer alone.
@@ -633,8 +689,8 @@ drop policy if exists "essay papers read"  on public.essay_papers;
 drop policy if exists "essay papers write" on public.essay_papers;
 create policy "essay papers read" on public.essay_papers for select using (true);
 create policy "essay papers write" on public.essay_papers for all
-  using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
-  with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+  using  (public.is_editor())
+  with check (public.is_editor());
 
 -- ---------- 8s) ESSAY FEEDBACK (per-user corrected-answer reports) ----------
 -- The marking is done in a separate Claude project that returns a JSON
@@ -658,7 +714,7 @@ drop policy if exists "essay feedback dev read" on public.essay_feedback;
 create policy "own essay feedback all" on public.essay_feedback for all
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "essay feedback dev read" on public.essay_feedback for select
-  using (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+  using (public.is_admin());
 
 -- ---------- 8c) Tea-room discussions (shared among approved users) ----------
 -- "Discuss with friends": any question whose rationale is worth chewing over
@@ -928,8 +984,8 @@ drop policy if exists "cpd read"  on public.cpd_volumes;
 drop policy if exists "cpd write" on public.cpd_volumes;
 create policy "cpd read" on public.cpd_volumes for select using (true);
 create policy "cpd write" on public.cpd_volumes for all
-  using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
-  with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+  using  (public.is_editor())
+  with check (public.is_editor());
 
 -- Per-user answers. One row per user per question; the latest answer wins,
 -- so re-doing a topic simply overwrites and the score stays truthful.
@@ -972,8 +1028,8 @@ drop policy if exists "osce stations read"  on public.osce_stations;
 drop policy if exists "osce stations write" on public.osce_stations;
 create policy "osce stations read" on public.osce_stations for select using (true);
 create policy "osce stations write" on public.osce_stations for all
-  using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
-  with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+  using  (public.is_editor())
+  with check (public.is_editor());
 
 /* ---- one candidate's attempt at one station ---- */
 create table if not exists public.osce_attempts (
@@ -1014,8 +1070,8 @@ create policy "topups own read"   on public.credit_topups for select using (auth
 create policy "topups own insert" on public.credit_topups for insert
   with check (auth.uid() = user_id and status = 'pending');
 create policy "topups dev all"    on public.credit_topups for all
-  using  (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
-  with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+  using  (public.is_admin())
+  with check (public.is_admin());
 
 /* ============================================================
    v58 — OSCE recordings, kept for 24 hours
@@ -1118,7 +1174,7 @@ create policy "osce stations edit" on public.osce_stations for update
   to authenticated using (true) with check (true);
 
 create policy "osce stations remove" on public.osce_stations for delete
-  to authenticated using (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+  to authenticated using (public.is_editor());
 
 
 /* ============================================================
@@ -1170,7 +1226,7 @@ create policy "osce images add" on storage.objects for insert
 
 create policy "osce images remove" on storage.objects for delete
   to authenticated
-  using (bucket_id = 'osce-images' and auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+  using (bucket_id = 'osce-images' and public.is_editor());
 
 /* ============================================================
    v72 — OSCE flashcard decks
@@ -1272,8 +1328,8 @@ drop policy if exists "cases read"  on public.case_files;
 drop policy if exists "cases write" on public.case_files;
 create policy "cases read" on public.case_files for select using (true);
 create policy "cases write" on public.case_files for all
-  using      (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com')
-  with check (auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com');
+  using      (public.is_editor())
+  with check (public.is_editor());
 
 /* ---- one candidate's discussion of one case ----
    Written BEFORE marking as well as after: a discussion that could not be
@@ -1357,7 +1413,7 @@ drop policy if exists "osce stations remove" on public.osce_stations;
 
 create policy "osce stations remove" on public.osce_stations for delete
   to authenticated using (
-    auth.jwt() ->> 'email' = 'ayeshmantha@gmail.com'
+    public.is_editor()
     or (
       meta ->> 'collection' = 'created'
       and meta ->> 'created_by' = auth.uid()::text
