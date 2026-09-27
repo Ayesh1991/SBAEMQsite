@@ -72,8 +72,17 @@ say('the first track is seeded, live AND FREE, so today changes for nobody',
   /'pg-exit', 'obgyn', 10, true, true\)/.test(sql));
 say('  every existing account is enrolled in it, active',
   /select id, 'pgim-og-2', true, 'active' from public\.profiles/.test(sql));
+/* SIX of the seven content tables, not all seven. `curriculum` holds one
+   global row and was tagged here too, which v117 removed: a syllabus
+   tagged to one course leaves a candidate on every other course reading
+   no syllabus at all. It is `is_preview` instead — readable whatever the
+   entitlement — so this file checks both halves rather than a count that
+   would hide the exception. */
 say('  and every existing row of content is tagged with it',
-  (sql.match(/set tracks = '\{pgim-og-2\}', subject = 'obgyn'/g) || []).length === 7);
+  (sql.match(/set tracks = '\{pgim-og-2\}', subject = 'obgyn'/g) || []).length === 6);
+say('  except the syllabus, which belongs to no single course',
+  /update public\.curriculum set is_preview = true/.test(sql)
+  && !/update public\.curriculum set tracks/.test(sql));
 
 /* ---------------------------------------------------------------- */
 sec('2. THE TWO BACKENDS STILL AGREE');

@@ -1770,6 +1770,17 @@ create index if not exists case_files_tracks_idx on public.case_files using gin 
 -- track silently leaks out of a paid bank. Failing closed is right here,
 -- and it fails LOUDLY: an editor still sees the row and the console can
 -- say it is filed nowhere.
+--
+-- BOTH HALVES OF THAT ARE NOW BUILT, and until v117 only this one was.
+-- Nothing in AUREUM wrote `tracks`: every publish path upserted
+-- `{ id, meta }`, the column kept this default of '{}', and so every
+-- newly published paper, station, deck, essay paper, volume and case
+-- would have been visible to its author and to nobody else — failing
+-- closed, and in silence, on all new content. v117 adds the writer
+-- (contentTags() in js/backend.js, on every publish path in both
+-- backends) and the loudness (listUntagged()/fileUnder(), surfaced in the
+-- developer console). The policy below is unchanged, because the rule was
+-- right; what was missing was everything that made it true.
 drop policy if exists "papers public read" on public.papers;
 create policy "papers public read" on public.papers for select
   using (is_preview or public.can_read_tracks(tracks));
@@ -1807,12 +1818,23 @@ values ('pgim-og-2', 'PGIM MD (Obstetrics & Gynaecology) — Part 2', 'O&G Part 
 on conflict (id) do nothing;
 
 update public.papers set tracks = '{pgim-og-2}', subject = 'obgyn' where tracks = '{}';
-update public.curriculum set tracks = '{pgim-og-2}', subject = 'obgyn' where tracks = '{}';
 update public.flashcard_decks set tracks = '{pgim-og-2}', subject = 'obgyn' where tracks = '{}';
 update public.essay_papers set tracks = '{pgim-og-2}', subject = 'obgyn' where tracks = '{}';
 update public.cpd_volumes set tracks = '{pgim-og-2}', subject = 'obgyn' where tracks = '{}';
 update public.osce_stations set tracks = '{pgim-og-2}', subject = 'obgyn' where tracks = '{}';
 update public.case_files set tracks = '{pgim-og-2}', subject = 'obgyn' where tracks = '{}';
+
+-- THE SYLLABUS IS NOT COURSE CONTENT, and tagging it to one course was a
+-- mistake in v115. `curriculum` holds a SINGLE row, id = 'default', so it
+-- cannot be per-course until it is keyed by course — and while it is
+-- tagged 'pgim-og-2', a candidate on any other course reads no syllabus at
+-- all, which is a silent hole rather than a refusal they can see.
+--
+-- `is_preview` is the column added for precisely this: readable whatever
+-- the entitlement. Per-course curricula are their own change; this keeps
+-- the syllabus visible to everybody until then, and saveCustomCurriculum()
+-- writes the same flag so an edit cannot undo it.
+update public.curriculum set is_preview = true, tracks = '{}', subject = null;
 
 -- Everybody who already has an account is already studying for it.
 insert into public.enrolments (user_id, track_id, is_primary, status)

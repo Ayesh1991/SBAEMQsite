@@ -7012,3 +7012,15 @@ body.sc-open { overflow: hidden; }
   border-color: var(--gold, #c9a227); background: var(--gold-wash, rgba(201, 162, 39, .1)); }
 .os-course-note { margin: -8px 0 16px; }
 .os-course-note a { color: var(--gold, #c9a227); }
+
+/* ============================================================
+   v117 — content filed nowhere
+
+   A warning that is only ever drawn when there is something to warn
+   about. A permanent "0 items" panel is furniture, and furniture stops
+   being read — which is the whole failure this panel exists to prevent.
+   ============================================================ */
+.dev-unfiled { border-color: var(--warn, #e8a33d); }
+.dev-unfiled-list { margin: 10px 0 14px; padding-left: 20px; display: grid; gap: 5px; }
+.dev-unfiled-list li { font-size: .9rem; }
+.dev-unfiled .field { max-width: 380px; }

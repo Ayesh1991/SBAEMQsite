@@ -193,7 +193,16 @@ await page.evaluate(async () => {
   await Backend.publishOsceStation(st('t116-og', 'Postpartum haemorrhage', ['pgim-og-2'], 'obgyn'));
   await Backend.publishOsceStation(st('t116-paeds', 'Febrile convulsion', ['mbbs-final'], 'paediatrics'));
   await Backend.publishOsceStation(st('t116-surg', 'Acute abdomen', ['mbbs-final'], 'surgery'));
-  await Backend.publishOsceStation(st('t116-unfiled', 'Consent for laparoscopy', [], null));
+  /* THE UNFILED ONE IS WRITTEN BY HAND, and has to be as of v117.
+     Publishing cannot produce an untagged row any more — contentTags()
+     stamps the editor's own course on anything that arrives without one —
+     so a genuinely unfiled row is now only what it was always meant to
+     represent here: something that predates the tagging, or was written
+     straight into the table. Going through publish() would quietly tag it
+     and this section would be asserting nothing. */
+  const raw = JSON.parse(localStorage.getItem('aureum.oscestations') || '[]');
+  raw.push(st('t116-unfiled', 'Consent for laparoscopy', [], null));
+  localStorage.setItem('aureum.oscestations', JSON.stringify(raw));
 });
 await page.goto(B + '/index.html?r=' + Math.random() + '#/osce', { waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(2200);
@@ -352,9 +361,11 @@ const stamp = await page.evaluate(async () => {
   const h = await (await fetch('/index.html')).text();
   const sw = await (await fetch('/sw.js')).text();
   const vs = [...new Set([...h.matchAll(/\?v=(\d+)/g)].map(m => m[1]))];
-  return { vs, sw: /aureum-v116/.test(sw) };
+  /* The literal belongs to the newest release file only — see the
+     README. */
+  return { vs, sw: vs.length === 1 && sw.includes("'aureum-v" + vs[0] + "'") };
 });
-say('one version across every asset', stamp.vs.join() === '116', stamp.vs.join(', '));
+say('one version across every asset', stamp.vs.length === 1, stamp.vs.join(', '));
 say('  the service worker agrees', stamp.sw);
 
 console.log('\nerrors on the page: ' + (bad.length ? '\n  ' + bad.join('\n  ') : 'none'));
