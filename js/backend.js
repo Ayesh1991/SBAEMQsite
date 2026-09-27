@@ -83,7 +83,12 @@ const Backend = (() => {
     // WHEN IT WAS PUT IN AUREUM. The row's own insert time, which is the
     // one date nobody has to remember to set — `created_on` is written by
     // whoever authored the station and is missing on most of the bank.
-    'created_at'];
+    'created_at',
+    // WHICH EXAM AND WHICH SUBJECT. Both are columns, not meta — the
+    // read policy filters on `tracks`, and a policy cannot look inside
+    // jsonb it has not indexed. They travel on the card because the bank
+    // filters to the candidate's course before it draws anything.
+    'tracks', 'subject'];
   const osceCard = m => { const o = {}; OSCE_CARD_KEYS.forEach(k => { if (m[k] != null) o[k] = m[k]; }); return o; };
   /* ---------- Case discussions: the same card/document split ----------
      A case carries every phase's expectations and every viva question WITH
@@ -190,6 +195,15 @@ const Backend = (() => {
       dir[no] = { id: email, name };
       write('userdirectory', dir);
       write('users', all); write('session', { email });
+      /* AN EMPTY ENROLMENT LIST, WRITTEN ON PURPOSE.
+         myEnrolments() seeds anybody with no list at all onto the one
+         course that existed before courses did — the local mirror of the
+         cloud migration, and right for every account that predates this.
+         A brand-new account does not predate anything, and seeding it
+         would hand it an ACTIVE entitlement it never paid for and
+         overwrite the course it just chose on the form. Writing the empty
+         list is what tells the seed this account is new. */
+      write('enrolments:' + email, []);
       return { user: publicUser(all[email]), needsConfirmation: false };
     }
     async function signIn(email, password) {
@@ -1184,7 +1198,7 @@ const Backend = (() => {
       'collection:meta->>collection,bp:meta->bp,' +
       'edited_by:meta->>edited_by,edited_at:meta->edited_at,' +
       'created_by:meta->>created_by,created_by_name:meta->>created_by_name,created_on:meta->created_on,' +
-      'created_at';
+      'created_at,tracks,subject';
     let osceCardsOk = true;
     async function getOsceStations() {
       if (osceCardsOk) {

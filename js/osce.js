@@ -975,7 +975,7 @@ const OSCE = (() => {
   async function renderBank(view, user, opts) {
     view.innerHTML = shell('bank', `<div id="os-body"><p class="muted">Loading OSCE stations…</p></div>`);
     FX.viewIn(view);
-    const [list, past, colls, bpMods] = await Promise.all([
+    const [everything, past, colls, bpMods] = await Promise.all([
       stations().catch(() => []),
       myAttempts().catch(() => []),
       collections().catch(() => []),
@@ -986,8 +986,20 @@ const OSCE = (() => {
          the cards are drawn already marked. Held by the module, not
          returned here — every card asks it directly. */
       (typeof Stars !== 'undefined') ? Stars.load().catch(() => null) : Promise.resolve(null),
-      (typeof Bucket !== 'undefined') ? Bucket.load().catch(() => null) : Promise.resolve(null)
+      (typeof Bucket !== 'undefined') ? Bucket.load().catch(() => null) : Promise.resolve(null),
+      (typeof Course !== 'undefined') ? Course.load().catch(() => null) : Promise.resolve(null)
     ]);
+    /* THE COURSE FILTER, APPLIED ONCE AND AT THE TOP.
+       Everything below counts, bins, ranks and searches `list`, so cutting
+       the course out here means the chip counts, the statistics and the
+       search index all agree without a single one of them knowing that
+       courses exist. Filtering per-card instead would leave bins claiming
+       stations that are not on the page.
+
+       This is not the lock. The database already refused to send content
+       this candidate may not read — see can_read_tracks() in the schema.
+       What this removes is content they MAY read and are not sitting. */
+    const list = (typeof Course !== 'undefined') ? everything.filter(st => Course.fits(st)) : everything;
     /* ARRIVED FROM "THE GAP" ON THE PROGRESS PAGE.
        A module filter is not a bin and not a search: it cuts across both,
        and it is temporary — you came here to sit one station in it and
@@ -1036,6 +1048,10 @@ const OSCE = (() => {
       counts[''] ? [{ id: '', label: UNFILED.label, n: counts[''] }] : [],
       [{ id: '@low', label: '↓ Less important', n: starN.low, hide: !starN.low }]
     );
+    /* A subject remembered from another course is not a subject here: the
+       chip for it is not on the page, so honouring it would filter the
+       bank to nothing with no lit chip to explain why. */
+    let sub = (typeof Course !== 'undefined' && Course.subjects().includes(bankView.sub)) ? bankView.sub : '';
 
     if (!list.length) {
       body.innerHTML = `<div class="card" data-animate">
@@ -1091,6 +1107,30 @@ const OSCE = (() => {
           b.id === '@star' || b.id === '@low' ? ' os-bin-mine' : ''}" data-bin="${esc(b.id)}"${b.hide ? ' hidden' : ''}>
           ${esc(b.label)}<i>${b.n}</i></button>`).join('')}
       </div>` : ''}
+
+      ${/* SUBJECT, AND WHY IT IS A SECOND ROW AND NOT MORE CHIPS.
+            A bin says where a station came from; a subject says what it is
+            about. A final MBBS candidate wants both at once — "the
+            paediatrics ones, out of the PERA set" — and one row of chips
+            cannot express an AND. Two rows can, and a course with a single
+            subject draws no row at all. */
+        (typeof Course !== 'undefined') ? Course.subjectBar(sub) : ''}
+
+      ${/* WHAT THE FILTER TOOK, SAID OUT LOUD.
+            A bank that silently holds back stations is the failure mode of
+            every filter that is switched on somewhere else: the candidate
+            searches for a station they know exists, finds nothing, and
+            concludes the search is broken. It matters most to whoever
+            WRITES the stations — publish one tagged to a course you are
+            not on and it would vanish from your own bank with nothing to
+            explain it — so the line names the number and where to change
+            it, and appears only when something was actually removed. */
+        (everything.length > list.length) ? `<p class="muted tiny os-course-note" data-animate>
+          ${everything.length - list.length} station${everything.length - list.length > 1 ? 's' : ''}
+          belong${everything.length - list.length > 1 ? '' : 's'} to another course and
+          ${everything.length - list.length > 1 ? 'are' : 'is'} not shown here.
+          <a href="#/profile">Change your course</a> to see ${everything.length - list.length > 1 ? 'them' : 'it'}.
+        </p>` : ''}
 
       ${/* A star that cannot be saved must say so BEFORE it is pressed,
             not after. This is the only state in which the ★ is not
@@ -1177,7 +1217,7 @@ const OSCE = (() => {
       const raw = input.value.trim();
       clear.hidden = !raw;
       if (raw !== lastQ) { lastQ = raw; showAll = false; }
-      bankView.q = input.value; bankView.bin = bin;
+      bankView.q = input.value; bankView.bin = bin; bankView.sub = sub;
 
       const inBin = id => bin === '*' ? true
         : bin === '@bucket' ? (typeof Bucket !== 'undefined' && Bucket.has(id))
@@ -1188,7 +1228,8 @@ const OSCE = (() => {
          question about which shelf to look on — so they are applied
          BEFORE the ranking, not scored into it. Ranking within the wrong
          shelf would put a brilliant match you cannot see at the top. */
-      const pool = recs.filter(r => inBin(r.id) && (!wantBp || bpOf[r.id] === wantBp));
+      const inSub = id => typeof Course === 'undefined' || Course.fitsSubject(byIdBank[id], sub);
+      const pool = recs.filter(r => inBin(r.id) && inSub(r.id) && (!wantBp || bpOf[r.id] === wantBp));
 
       const res = Search.rank(pool, raw, { showAll });
       const order = {}; const where = {};
@@ -1387,6 +1428,12 @@ const OSCE = (() => {
       body.querySelectorAll('.os-bin').forEach(x => x.classList.toggle('active', x === b));
       run();
     });
+    body.querySelector('.tk-subs')?.addEventListener('click', e => {
+      const s = e.target.closest('[data-sub]'); if (!s) return;
+      sub = s.dataset.sub; bankView.top = 0;
+      body.querySelectorAll('.tk-sub').forEach(x => x.classList.toggle('is-on', x === s));
+      run();
+    });
     // the deep index is only needed when a search is actually in force, so a
     // restored one pays for it and a fresh visit still does not
     if (bankView.q.trim()) { await loadDeep(); }
@@ -1452,7 +1499,7 @@ const OSCE = (() => {
   /* Where the candidate was in the bank, kept for the length of the visit.
      Deliberately in memory rather than storage: coming back from a station
      should feel like going back, but a new session should start clean. */
-  const bankView = { q: '', bin: '*', top: 0 };
+  const bankView = { q: '', bin: '*', sub: '', top: 0 };
   let scrollTimer = null;
   function restoreScroll() {
     if (!bankView.top) return;

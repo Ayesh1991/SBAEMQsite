@@ -235,7 +235,13 @@
         ` : `<a href="#/auth" class="btn btn-primary btn-sm">Sign in</a>`}
       </div>`;
     nav.querySelector('#nav-logout')?.addEventListener('click', async () => {
-      await Backend.signOut(); sessionStorage.removeItem('aureum-dev'); location.hash = '#/';
+      await Backend.signOut(); sessionStorage.removeItem('aureum-dev');
+      /* WHOSE ENROLMENTS ARE THOSE. The course is held in memory for the
+         length of the visit, and a visit can contain two people — signing
+         out without forgetting it would show the next person this bank
+         filtered to the last person's course. */
+      try { Course.bust(); } catch {}
+      location.hash = '#/';
     });
     // mobile: hamburger dropdown (links collapse into a sheet under the bar)
     const burger = nav.querySelector('#nav-burger');
@@ -477,7 +483,7 @@
         </div>
       </section>`;
     FX.viewIn(view);
-    view.querySelector('#gate-signout').addEventListener('click', async () => { await Backend.signOut(); location.hash = '#/'; });
+    view.querySelector('#gate-signout').addEventListener('click', async () => { await Backend.signOut(); try { Course.bust(); } catch {} location.hash = '#/'; });
   }
 
   async function renderAuth() {
@@ -485,6 +491,13 @@
     let mode = 'signin';
     let regOpen = true;
     try { regOpen = await Backend.getRegistrationOpen(); } catch { regOpen = true; }
+    /* Which exams are open. With one, the picker draws nothing and the
+       sign-up form is exactly what it was — the whole point of asking
+       Course rather than hard-coding a list of courses here. */
+    try { await Course.load(); } catch { /* the form still works without it */ }
+    /* Empty today, and that is the intended answer: one exam is not a
+       choice, so the sign-up form is untouched until a second one opens. */
+    const coursePick = Course.picker('', 'course');
 
     function paint() {
       if (mode === 'signup' && !regOpen) {
@@ -546,7 +559,13 @@
                 <label class="field"><span>Your position</span>
                   <select name="position">
                     ${Progression.POSITIONS.map(p => `<option value="${p}">${p}</option>`).join('')}
-                  </select></label>` : ''}
+                  </select></label>
+                ${coursePick ? `
+                <div class="field" id="auth-course">
+                  <span>What are you preparing for?</span>
+                  ${coursePick}
+                  <p class="tiny muted">You can change this later in your profile.</p>
+                </div>` : ''}` : ''}
               <label class="field"><span>Email address</span>
                 <input type="email" name="email" autocomplete="email" placeholder="you@example.com" required></label>
               <label class="field"><span>Password</span>
@@ -561,6 +580,7 @@
           </div>
         </section>`;
       document.getElementById('auth-toggle').addEventListener('click', e => { e.preventDefault(); mode = mode === 'signin' ? 'signup' : 'signin'; paint(); FX.viewIn(view); });
+      Course.wirePicker(document.getElementById('auth-course'));
       document.getElementById('auth-forgot')?.addEventListener('click', e => { e.preventDefault(); mode = 'forgot'; paint(); FX.viewIn(view); });
       document.getElementById('auth-form').addEventListener('submit', async e => {
         e.preventDefault();
@@ -570,10 +590,20 @@
         try {
           if (mode === 'signup') {
             const { needsConfirmation } = await Backend.signUp({ name: f.get('name'), email: f.get('email'), password: f.get('password'), position: f.get('position') });
+            /* REMEMBERED, NOT WRITTEN YET. On a cloud deployment sign-up
+               ends with a verification email and no session, so there is
+               nobody to enrol — the enrolment is a row owned by a user
+               that does not exist to the database yet. The choice is kept
+               and claimed on the first real sign-in. */
+            Course.remember(f.get('course'));
             if (needsConfirmation) { showVerifyNotice(f.get('email')); return; }
+            await Course.claimPending();
             location.hash = '#/dashboard';
           } else {
             await Backend.signIn(f.get('email'), f.get('password'));
+            Course.bust();
+            await Course.load();
+            await Course.claimPending();
             location.hash = '#/dashboard';
           }
         } catch (err) {
@@ -1437,6 +1467,29 @@
     const tier = stats.tier;
     const webPref = (typeof AI !== 'undefined' && AI.webMode) ? AI.webMode() : 'tab';
 
+    /* THE COURSE CARD, and the reason it can be absent. With one exam on
+       the platform there is nothing to switch between, and a card saying
+       so is a control that does nothing — so the card is drawn only when
+       the choice is real. The current course is still named, because on a
+       platform with several a candidate needs to see which one they are
+       looking at without clicking anything. */
+    try { await Course.load(); } catch { /* the rest of the profile is unaffected */ }
+    const here = Course.current();
+    const coursePicker = Course.picker(Course.currentId(), 'profile-course');
+    const courseCard = coursePicker ? `
+        <div class="card" data-animate id="course-card">
+          <h3 class="card-title">Your course</h3>
+          <p class="muted">The exam you are preparing for. Everything in the banks is filtered to it —
+            change it here and the whole site follows.</p>
+          ${coursePicker}
+          <p class="save-note" id="course-note" hidden>Saved ✓</p>
+          <p class="form-error" id="course-err" role="alert" hidden></p>
+        </div>` : (here ? `
+        <div class="card" data-animate id="course-card">
+          <h3 class="card-title">Your course</h3>
+          <p class="muted">You are preparing for <strong>${esc(here.name)}</strong>.</p>
+        </div>` : '');
+
     view.innerHTML = `
       <section class="page narrow">
         <header data-animate>
@@ -1454,6 +1507,8 @@
           </div>
           <p class="save-note" id="pos-note" hidden>Saved ✓</p>
         </div>
+
+        ${courseCard}
 
         ${(!isPaid(user) && (isGranted(user, 'simulator') || isGranted(user, 'flashcards') || isGranted(user, 'cpd'))) ? `
         <div class="card" data-animate>
@@ -1693,6 +1748,38 @@
       await Backend.updateProfile({ position: btn.dataset.pos });
       const note = view.querySelector('#pos-note'); note.hidden = false; setTimeout(() => note.hidden = true, 1800);
     });
+
+    /* CHANGING COURSE IS ALLOWED TO FAIL, and must say so. The database
+       decides whether this person may enrol — a course that is not open
+       is refused there — so the radio is put back where it was rather
+       than left lit next to content that never arrives. */
+    const courseHost = view.querySelector('#course-card');
+    if (courseHost && courseHost.querySelector('input[type=radio]')) {
+      Course.wirePicker(courseHost);
+      courseHost.addEventListener('change', async e => {
+        const r = e.target.closest('input[type=radio]'); if (!r) return;
+        const was = Course.currentId();
+        const err = courseHost.querySelector('#course-err'); err.hidden = true;
+        courseHost.querySelectorAll('input[type=radio]').forEach(i => i.disabled = true);
+        try {
+          await Course.choose(r.value);
+          const note = courseHost.querySelector('#course-note');
+          note.hidden = false; setTimeout(() => note.hidden = true, 1800);
+        } catch (ex) {
+          err.textContent = ex.message; err.hidden = false;
+          /* Put the radio back by hand. Re-dispatching `change` would
+             re-enter this very handler and try to save again. */
+          const back = courseHost.querySelector(`input[value="${CSS.escape(was)}"]`);
+          if (back) {
+            back.checked = true;
+            courseHost.querySelectorAll('.tk-opt').forEach(o => o.classList.toggle('is-on', o.contains(back)));
+          }
+        } finally {
+          courseHost.querySelectorAll('input[type=radio]').forEach(i => i.disabled = false);
+        }
+      });
+    }
+
     view.querySelector('#export-data').addEventListener('click', () => {
       const blob = new Blob([JSON.stringify({ user: { name: user.name, email: user.email, position: user.position }, progress }, null, 2)], { type: 'application/json' });
       const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'aureum-progress.json'; a.click(); URL.revokeObjectURL(a.href);

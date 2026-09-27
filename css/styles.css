@@ -6971,3 +6971,44 @@ body.sc-open { overflow: hidden; }
   border-radius: 9px; border: 1px solid var(--hairline);
   background: var(--surface); color: var(--ink); cursor: pointer; }
 .dev-role:disabled { opacity: .6; cursor: not-allowed; }
+
+/* ============================================================
+   v116 — the course picker and the subject strip
+
+   Both draw NOTHING when there is only one answer, which is today: on a
+   platform with one exam the sign-up form and the bank look exactly as
+   they did. These rules are the shape the second course arrives in.
+   ============================================================ */
+
+/* THE PICKER. A radio group that does not look like radios — the label is
+   the target, the whole width of it, because this is chosen once on a
+   phone with a thumb. */
+.tk-pick { display: grid; gap: 14px; margin-top: 8px; }
+.tk-group { display: grid; gap: 7px; }
+.tk-stage { margin: 0; font-size: .7rem; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--muted); font-weight: 700; }
+.tk-opt { display: grid; grid-template-columns: auto 1fr; align-items: baseline;
+  gap: 2px 10px; padding: 11px 13px; border-radius: 12px; cursor: pointer;
+  border: 1px solid var(--hairline); background: var(--surface);
+  transition: border-color .16s ease, background .16s ease, box-shadow .16s ease; }
+.tk-opt:hover { border-color: var(--gold-soft, var(--hairline)); }
+.tk-opt input { grid-row: 1 / span 2; align-self: center; accent-color: var(--gold, #c9a227);
+  width: 17px; height: 17px; margin: 0; cursor: pointer; }
+.tk-opt-n { font-weight: 650; color: var(--ink); }
+.tk-opt-f { grid-column: 2; font-size: .8rem; color: var(--muted); }
+.tk-opt.is-on { border-color: var(--gold, #c9a227);
+  box-shadow: inset 0 0 0 1px var(--gold, #c9a227); }
+.tk-opt:has(input:disabled) { opacity: .6; cursor: progress; }
+
+/* THE SUBJECT STRIP. Deliberately the same shape as the bins above it —
+   they are two questions asked the same way, and looking different would
+   suggest one of them behaves differently. */
+.tk-subs { display: flex; flex-wrap: wrap; gap: 7px; margin: -4px 0 16px; }
+.tk-sub { font: inherit; font-size: .8rem; padding: 6px 13px; border-radius: 999px;
+  border: 1px solid var(--hairline); background: var(--surface); color: var(--muted);
+  cursor: pointer; transition: color .14s ease, border-color .14s ease, background .14s ease; }
+.tk-sub:hover { color: var(--ink); }
+.tk-sub.is-on { color: var(--ink); font-weight: 650;
+  border-color: var(--gold, #c9a227); background: var(--gold-wash, rgba(201, 162, 39, .1)); }
+.os-course-note { margin: -8px 0 16px; }
+.os-course-note a { color: var(--gold, #c9a227); }

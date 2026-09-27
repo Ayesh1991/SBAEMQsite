@@ -113,14 +113,29 @@ const fresh = async (name, email) => {
 await fresh('Dr Didula Ayeshmantha', 'ayeshmantha@gmail.com');
 const seeded = await page.evaluate(async () => {
   const t = await Backend.listTracks();
-  const mine = await Backend.myEnrolments();
-  return { tracks: t.map(x => x.id), first: t[0], mine };
+  /* AN ACCOUNT THAT PREDATES ALL OF THIS. The eight people already using
+     AUREUM have no enrolment row, because there was nothing to have one
+     in — and they must lose nothing. The cloud does this once, in the
+     schema; locally the absence of the key is the same signal, so
+     removing it is exactly how one of those accounts looks. */
+  localStorage.removeItem('aureum.enrolments:ayeshmantha@gmail.com');
+  const old = await Backend.myEnrolments();
+  return { tracks: t.map(x => x.id), first: t[0], old };
 });
 say('the one track that exists is there', seeded.tracks.join() === 'pgim-og-2', seeded.tracks.join(', '));
 say('  open, and free', seeded.first.isLive && seeded.first.isFree);
-say('  and the existing user is enrolled in it, active and primary',
-  seeded.mine.length === 1 && seeded.mine[0].status === 'active' && seeded.mine[0].isPrimary,
-  JSON.stringify(seeded.mine[0]));
+say('  and an account that predates courses is migrated onto it, active and primary',
+  seeded.old.length === 1 && seeded.old[0].status === 'active' && seeded.old[0].isPrimary,
+  JSON.stringify(seeded.old[0]));
+/* AND A BRAND-NEW ACCOUNT IS NOT MIGRATED, which is the other half of the
+   same rule: it predates nothing, so handing it an ACTIVE entitlement
+   would be giving away a course it never paid for. v116 writes it an
+   empty list at sign-up to say so. */
+await fresh('Dr Sanduni Rathnayake', 'sanduni@example.com');
+const brandNew = await page.evaluate(async () => await Backend.myEnrolments());
+say('  while a brand-new account is enrolled on trial, not migrated to active',
+  brandNew.length === 1 && brandNew[0].status === 'trial',
+  JSON.stringify(brandNew[0]));
 
 /* A second track, built but not yet opened — the phased plan in one row. */
 const built = await page.evaluate(async () => {
@@ -214,9 +229,12 @@ const stamp = await page.evaluate(async () => {
   const html = await (await fetch('/index.html')).text();
   const sw = await (await fetch('/sw.js')).text();
   const vs = [...new Set([...html.matchAll(/\?v=(\d+)/g)].map(m => m[1]))];
-  return { vs, sw: /aureum-v115/.test(sw) };
+  /* The literal belongs to the newest release file only — see the
+     README. What this file checks is that there is exactly ONE version
+     and the service worker is on it. */
+  return { vs, sw: vs.length === 1 && sw.includes("'aureum-v" + vs[0] + "'") };
 });
-say('one version across every asset', stamp.vs.join() === '115', stamp.vs.join(', '));
+say('one version across every asset', stamp.vs.length === 1, stamp.vs.join(', '));
 say('  the service worker agrees', stamp.sw);
 
 console.log('\nerrors on the page: ' + (bad.length ? '\n  ' + bad.join('\n  ') : 'none'));
