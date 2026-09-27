@@ -69,3 +69,18 @@ older one that asserts its own number fails on every release after it,
 which teaches you to ignore a failing test — the worst thing a suite can
 teach. Older files assert instead that every asset agrees with every
 other and with the service worker.
+
+## One global, one module
+
+Every module in `js/` is a top-level `const` on the same global object —
+there are forty-nine of them and no bundler to keep them apart. Two files
+declaring the same name is not a merge conflict and not a build error: the
+second one throws at load, or, if the file was overwritten rather than
+added, a whole subsystem simply stops existing and nothing appears on the
+console.
+
+v116 nearly shipped `Course` as `Track`, on top of the interaction logger
+that `quiz.js` and `ai.js` call on every answer. Before naming a new
+module, grep for the name — and if a release adds one, assert in that
+release's test file that BOTH modules are still there and still do their
+own job (`t116` §1 is the pattern).
