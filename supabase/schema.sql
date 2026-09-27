@@ -91,6 +91,122 @@ $$;
 update public.profiles set role = 'admin'
   where lower(email) = 'ayeshmantha@gmail.com' and role is distinct from 'admin';
 
+-- ---------- 1c) TRACKS AND ENROLMENTS ----------
+-- WHAT A TRACK IS: the exam somebody is preparing for. 'pgim-og-2',
+-- 'mbbs-final', 'pgim-med-1'. NOT the speciality, and NOT the collection
+-- a station came from — those are different questions and all three are
+-- true at once:
+--
+--   track      which exam is this for        pgim-og-2
+--   subject    which speciality is it about  obgyn
+--   collection where did it come from        PERA OSCE
+--
+-- THE ASYMMETRY THAT SHAPES THIS. A final MBBS candidate sits ONE exam
+-- covering FIVE subjects; a Part 2 candidate sits one exam in one
+-- speciality. So a person enrols in a TRACK, and `subject` filters
+-- within it — which is a filter for the undergraduate and a no-op for
+-- everybody else.
+create table if not exists public.tracks (
+  id         text primary key,            -- 'pgim-og-2'
+  name       text not null,               -- 'PGIM MD (Obstetrics & Gynaecology) — Part 2'
+  short      text not null,               -- 'O&G Part 2'
+  stage      text not null,               -- 'mbbs-final' | 'pg-entry' | 'pg-exit'
+  speciality text,                        -- 'obgyn'; null for mbbs-final (all five)
+  subjects   text[] not null default '{}',-- mbbs-final: the five
+  sort       int not null default 0,
+  -- BUILT BUT NOT OPENED. A track can be filled with content long before
+  -- anybody is allowed to choose it, which is how a new speciality is
+  -- prepared without a half-empty bank being visible to students.
+  is_live    boolean not null default false,
+  -- FREE means readable by anyone signed in, entitlement or not. The
+  -- track that exists today is free, so this whole file changes nothing
+  -- for anybody until a paid track is deliberately added.
+  is_free    boolean not null default false,
+  created_at timestamptz not null default now()
+);
+alter table public.tracks enable row level security;
+drop policy if exists "tracks read"  on public.tracks;
+drop policy if exists "tracks write" on public.tracks;
+-- Everyone may see the list: it is the menu you choose from.
+create policy "tracks read"  on public.tracks for select using (true);
+create policy "tracks write" on public.tracks for all
+  using (public.is_admin()) with check (public.is_admin());
+
+-- ENROLMENT IS NOT ENTITLEMENT, and keeping them apart is the whole of
+-- the security here. Choosing a track is the candidate's own business —
+-- they say what they are studying. Being allowed to READ that track's
+-- content is not, or anybody could self-enrol into every speciality and
+-- have the lot.
+--
+--   'trial'  chosen by the candidate. Sees free tracks and previews.
+--   'active' granted by payment or an admin. Sees everything in it.
+--   'lapsed' was active, ran out. Same sight as trial.
+create table if not exists public.enrolments (
+  user_id    uuid not null references auth.users(id) on delete cascade,
+  track_id   text not null references public.tracks(id) on delete cascade,
+  is_primary boolean not null default false,
+  status     text not null default 'trial',
+  valid_until timestamptz,                -- null = no expiry
+  started_at timestamptz not null default now(),
+  primary key (user_id, track_id)
+);
+alter table public.enrolments drop constraint if exists enrolments_status_check;
+alter table public.enrolments add constraint enrolments_status_check
+  check (status in ('trial', 'active', 'lapsed'));
+-- ONE primary per person, as a constraint rather than a hope.
+drop index if exists enrolments_one_primary;
+create unique index enrolments_one_primary on public.enrolments (user_id) where is_primary;
+create index if not exists enrolments_user_idx on public.enrolments (user_id);
+
+alter table public.enrolments enable row level security;
+drop policy if exists "enrolments own read"   on public.enrolments;
+drop policy if exists "enrolments own insert" on public.enrolments;
+drop policy if exists "enrolments own update" on public.enrolments;
+drop policy if exists "enrolments own delete" on public.enrolments;
+drop policy if exists "enrolments admin all"  on public.enrolments;
+create policy "enrolments own read" on public.enrolments for select using (auth.uid() = user_id);
+-- A candidate may enrol themselves, but only on TRIAL, and only in a
+-- track that is open. The same shape as "topups own insert" above: you
+-- may create the row, you may not create it already approved.
+create policy "enrolments own insert" on public.enrolments for insert
+  with check (auth.uid() = user_id and status = 'trial'
+              and exists (select 1 from public.tracks t where t.id = track_id and t.is_live));
+-- …and may change which one is primary, which is what the "change my
+-- course" button does. The trigger below stops the status coming with it.
+create policy "enrolments own update" on public.enrolments for update
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "enrolments own delete" on public.enrolments for delete using (auth.uid() = user_id);
+create policy "enrolments admin all" on public.enrolments for all
+  using (public.is_admin()) with check (public.is_admin());
+
+-- THE SAME LESSON THE ROLE COLUMN TAUGHT. The row is the candidate's own
+-- to update, so without this they could set their own status to 'active'
+-- and take every paid track. Entitlement is granted downwards.
+create or replace function public.protect_enrolment()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if not public.is_admin() then
+    if new.status is distinct from old.status then new.status := old.status; end if;
+    if new.valid_until is distinct from old.valid_until then new.valid_until := old.valid_until; end if;
+  end if;
+  return new;
+end $$;
+drop trigger if exists protect_enrolment on public.enrolments;
+create trigger protect_enrolment before update on public.enrolments
+  for each row execute function public.protect_enrolment();
+
+-- MAY THIS PERSON READ CONTENT TAGGED WITH THESE TRACKS?
+-- Editors may read everything — they cannot correct what they cannot see.
+create or replace function public.can_read_tracks(t text[]) returns boolean
+  language sql stable security definer set search_path = public as $$
+  select public.is_editor()
+      or exists (select 1 from public.tracks k where k.id = any(t) and k.is_free)
+      or exists (select 1 from public.enrolments e
+                 where e.user_id = auth.uid() and e.track_id = any(t)
+                   and e.status = 'active'
+                   and (e.valid_until is null or e.valid_until > now()));
+$$;
+
 -- Users may update their own profile row (name, position, prefs…) but any
 -- attempt to change feature_flags OR status by a non-developer is silently
 -- reverted — those columns are the developer's alone.
@@ -1604,3 +1720,101 @@ alter table public.annotations enable row level security;
 drop policy if exists "annotations own" on public.annotations;
 create policy "annotations own" on public.annotations for all
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+
+-- ---------- 30) TRACKS ON CONTENT ----------
+-- Three columns on every content table:
+--
+--   tracks[]    which exams this is for. An ARRAY, because one good SBA
+--               on pre-eclampsia serves final MBBS and Part 1 both, and
+--               content copied into two places is content corrected in
+--               one of them and left wrong in the other.
+--   subject     which speciality it is about — the filter a final MBBS
+--               candidate needs and a Part 2 candidate does not.
+--   is_preview  readable by anybody, entitlement or not. This is the
+--               sample that lets somebody see what they would be paying
+--               for before they pay for it.
+alter table public.papers add column if not exists tracks     text[] not null default '{}';
+alter table public.papers add column if not exists subject    text;
+alter table public.papers add column if not exists is_preview boolean not null default false;
+create index if not exists papers_tracks_idx on public.papers using gin (tracks);
+alter table public.curriculum add column if not exists tracks     text[] not null default '{}';
+alter table public.curriculum add column if not exists subject    text;
+alter table public.curriculum add column if not exists is_preview boolean not null default false;
+create index if not exists curriculum_tracks_idx on public.curriculum using gin (tracks);
+alter table public.flashcard_decks add column if not exists tracks     text[] not null default '{}';
+alter table public.flashcard_decks add column if not exists subject    text;
+alter table public.flashcard_decks add column if not exists is_preview boolean not null default false;
+create index if not exists flashcard_decks_tracks_idx on public.flashcard_decks using gin (tracks);
+alter table public.essay_papers add column if not exists tracks     text[] not null default '{}';
+alter table public.essay_papers add column if not exists subject    text;
+alter table public.essay_papers add column if not exists is_preview boolean not null default false;
+create index if not exists essay_papers_tracks_idx on public.essay_papers using gin (tracks);
+alter table public.cpd_volumes add column if not exists tracks     text[] not null default '{}';
+alter table public.cpd_volumes add column if not exists subject    text;
+alter table public.cpd_volumes add column if not exists is_preview boolean not null default false;
+create index if not exists cpd_volumes_tracks_idx on public.cpd_volumes using gin (tracks);
+alter table public.osce_stations add column if not exists tracks     text[] not null default '{}';
+alter table public.osce_stations add column if not exists subject    text;
+alter table public.osce_stations add column if not exists is_preview boolean not null default false;
+create index if not exists osce_stations_tracks_idx on public.osce_stations using gin (tracks);
+alter table public.case_files add column if not exists tracks     text[] not null default '{}';
+alter table public.case_files add column if not exists subject    text;
+alter table public.case_files add column if not exists is_preview boolean not null default false;
+create index if not exists case_files_tracks_idx on public.case_files using gin (tracks);
+
+-- READING IS NOW A DECISION, not `using (true)`.
+--
+-- UNTAGGED CONTENT IS INVISIBLE to everyone but an editor — deliberately.
+-- The alternative, showing it to all, means a station published without a
+-- track silently leaks out of a paid bank. Failing closed is right here,
+-- and it fails LOUDLY: an editor still sees the row and the console can
+-- say it is filed nowhere.
+drop policy if exists "papers public read" on public.papers;
+create policy "papers public read" on public.papers for select
+  using (is_preview or public.can_read_tracks(tracks));
+drop policy if exists "curriculum public read" on public.curriculum;
+create policy "curriculum public read" on public.curriculum for select
+  using (is_preview or public.can_read_tracks(tracks));
+drop policy if exists "decks public read" on public.flashcard_decks;
+create policy "decks public read" on public.flashcard_decks for select
+  using (is_preview or public.can_read_tracks(tracks));
+drop policy if exists "essay papers read" on public.essay_papers;
+create policy "essay papers read" on public.essay_papers for select
+  using (is_preview or public.can_read_tracks(tracks));
+drop policy if exists "cpd read" on public.cpd_volumes;
+create policy "cpd read" on public.cpd_volumes for select
+  using (is_preview or public.can_read_tracks(tracks));
+drop policy if exists "osce stations read" on public.osce_stations;
+create policy "osce stations read" on public.osce_stations for select
+  using (is_preview or public.can_read_tracks(tracks));
+drop policy if exists "cases read" on public.case_files;
+create policy "cases read" on public.case_files for select
+  using (is_preview or public.can_read_tracks(tracks));
+
+-- ---------- 31) THE FIRST TRACK ----------
+-- Everything in the bank today is PGIM O&G Part 2, and everyone with an
+-- account is preparing for it. After this runs, every one of them sees
+-- exactly what they saw before.
+--
+-- IT IS SEEDED FREE ON PURPOSE. The machinery above is live from the
+-- moment this file runs, but nothing is behind it until a track is
+-- deliberately made paid. Shipping the mechanism and flipping the switch
+-- are two decisions, and they should not be made on the same day.
+insert into public.tracks (id, name, short, stage, speciality, sort, is_live, is_free)
+values ('pgim-og-2', 'PGIM MD (Obstetrics & Gynaecology) — Part 2', 'O&G Part 2',
+        'pg-exit', 'obgyn', 10, true, true)
+on conflict (id) do nothing;
+
+update public.papers set tracks = '{pgim-og-2}', subject = 'obgyn' where tracks = '{}';
+update public.curriculum set tracks = '{pgim-og-2}', subject = 'obgyn' where tracks = '{}';
+update public.flashcard_decks set tracks = '{pgim-og-2}', subject = 'obgyn' where tracks = '{}';
+update public.essay_papers set tracks = '{pgim-og-2}', subject = 'obgyn' where tracks = '{}';
+update public.cpd_volumes set tracks = '{pgim-og-2}', subject = 'obgyn' where tracks = '{}';
+update public.osce_stations set tracks = '{pgim-og-2}', subject = 'obgyn' where tracks = '{}';
+update public.case_files set tracks = '{pgim-og-2}', subject = 'obgyn' where tracks = '{}';
+
+-- Everybody who already has an account is already studying for it.
+insert into public.enrolments (user_id, track_id, is_primary, status)
+  select id, 'pgim-og-2', true, 'active' from public.profiles
+on conflict (user_id, track_id) do nothing;

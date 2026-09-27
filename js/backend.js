@@ -688,6 +688,78 @@ const Backend = (() => {
       const all = users(); const u = Object.values(all).find(x => x.id === userId || x.email === userId);
       if (u) { u.status = status; write('users', all); }
     }
+    /* ---- tracks & enrolments ----
+       The local store mirrors the cloud's rules, not just its shape: a
+       candidate enrols themselves on TRIAL and cannot make it 'active',
+       because the two backends have to behave the same or the rule is
+       only as strong as whichever one is asked. */
+    const seedTracks = () => {
+      const t = read('tracks', null);
+      if (t && t.length) return t;
+      const one = [{ id: 'pgim-og-2', name: 'PGIM MD (Obstetrics & Gynaecology) — Part 2',
+        short: 'O&G Part 2', stage: 'pg-exit', speciality: 'obgyn', subjects: [],
+        sort: 10, isLive: true, isFree: true }];
+      write('tracks', one); return one;
+    };
+    async function listTracks() { return seedTracks().slice().sort((a, b) => (a.sort || 0) - (b.sort || 0)); }
+    async function saveTrack(t) {
+      const l = seedTracks(); const i = l.findIndex(x => x.id === t.id);
+      if (i >= 0) l[i] = Object.assign({}, l[i], t); else l.push(t);
+      write('tracks', l); return t;
+    }
+    const enKey = () => 'enrolments:' + (sessionEmail() || '');
+    async function myEnrolments() {
+      if (!sessionEmail()) return [];
+      const l = read(enKey(), null);
+      if (l) return l;
+      /* Everyone already here is studying the one track that exists. */
+      const seeded = [{ trackId: 'pgim-og-2', isPrimary: true, status: 'active', validUntil: null }];
+      write(enKey(), seeded); return seeded;
+    }
+    async function enrol(trackId) {
+      const tracks = seedTracks();
+      const t = tracks.find(x => x.id === trackId);
+      if (!t || !t.isLive) throw new Error('That course is not open yet.');
+      const l = await myEnrolments();
+      if (!l.some(e => e.trackId === trackId)) {
+        /* TRIAL, never active — the same refusal the database makes. */
+        l.push({ trackId, isPrimary: false, status: 'trial', validUntil: null });
+        write(enKey(), l);
+      }
+      return l;
+    }
+    async function setPrimaryTrack(trackId) {
+      const l = await myEnrolments();
+      if (!l.some(e => e.trackId === trackId)) await enrol(trackId);
+      const l2 = await myEnrolments();
+      l2.forEach(e => { e.isPrimary = e.trackId === trackId; });
+      write(enKey(), l2); return l2;
+    }
+    async function grantEnrolment(userId, trackId, status, validUntil) {
+      const me = await currentUser();
+      if (!me || !me.isDeveloper) throw new Error('Only an admin may grant a course.');
+      const all = users(); const u = Object.values(all).find(x => x.id === userId || x.email === userId);
+      if (!u) throw new Error('No such account.');
+      const k = 'enrolments:' + u.email;
+      const l = read(k, []);
+      const row = l.find(e => e.trackId === trackId);
+      if (row) { row.status = status; row.validUntil = validUntil || null; }
+      else l.push({ trackId, isPrimary: !l.length, status, validUntil: validUntil || null });
+      write(k, l); return l;
+    }
+    /** May this account read content tagged with these tracks? */
+    async function canReadTracks(list) {
+      const t = (list || []);
+      if (!t.length) { const me = await currentUser(); return !!(me && me.isEditor); }
+      const me = await currentUser();
+      if (me && me.isEditor) return true;
+      const tracks = seedTracks();
+      if (t.some(id => tracks.find(x => x.id === id)?.isFree)) return true;
+      const mine = await myEnrolments();
+      return mine.some(e => t.includes(e.trackId) && e.status === 'active'
+        && (!e.validUntil || new Date(e.validUntil) > new Date()));
+    }
+
     async function setUserRole(userId, role) {
       if (!['student', 'editor', 'admin'].includes(role)) throw new Error('Unknown role.');
       const all = users(); const u = Object.values(all).find(x => x.id === userId || x.email === userId);
@@ -899,7 +971,8 @@ const Backend = (() => {
     }
 
     return { init, signUp, signIn, signOut, requestPasswordReset, updatePassword, onPasswordRecovery, currentUser, updateProfile,
-      getRegistrationOpen, setRegistrationOpen, setUserStatus, setUserRole, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
+      getRegistrationOpen, setRegistrationOpen, setUserStatus, setUserRole,
+      listTracks, saveTrack, myEnrolments, enrol, setPrimaryTrack, grantEnrolment, canReadTracks, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
       getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
@@ -2265,6 +2338,71 @@ const Backend = (() => {
       await ensureClient();
       await sb.from('app_config').upsert({ id: 'registration', data: { open: !!open }, updated_at: new Date().toISOString() });
     }
+    /* ---- tracks & enrolments ---- */
+    async function listTracks() {
+      await ensureClient();
+      const { data, error } = await sb.from('tracks')
+        .select('id,name,short,stage,speciality,subjects,sort,is_live,is_free').order('sort');
+      if (error) throw new Error(error.message || 'Could not read the courses.');
+      return (data || []).map(r => ({ id: r.id, name: r.name, short: r.short, stage: r.stage,
+        speciality: r.speciality, subjects: r.subjects || [], sort: r.sort || 0,
+        isLive: !!r.is_live, isFree: !!r.is_free }));
+    }
+    async function saveTrack(t) {
+      await ensureClient();
+      const row = { id: t.id, name: t.name, short: t.short, stage: t.stage,
+        speciality: t.speciality || null, subjects: t.subjects || [], sort: t.sort || 0,
+        is_live: !!t.isLive, is_free: !!t.isFree };
+      const { error } = await sb.from('tracks').upsert(row);
+      if (error) throw new Error(error.message || 'Could not save the course.');
+      return t;
+    }
+    async function myEnrolments() {
+      await ensureClient(); const id = await uid(); if (!id) return [];
+      const { data } = await sb.from('enrolments')
+        .select('track_id,is_primary,status,valid_until').eq('user_id', id);
+      return (data || []).map(r => ({ trackId: r.track_id, isPrimary: !!r.is_primary,
+        status: r.status, validUntil: r.valid_until }));
+    }
+    /** Enrol yourself. TRIAL only — the database refuses anything else. */
+    async function enrol(trackId) {
+      await ensureClient(); const id = await uid(); if (!id) throw new Error('Sign in first.');
+      const { error } = await sb.from('enrolments')
+        .insert({ user_id: id, track_id: trackId, status: 'trial' });
+      if (error && !/duplicate key/i.test(error.message || '')) {
+        throw new Error(error.message || 'That course is not open yet.');
+      }
+      return myEnrolments();
+    }
+    async function setPrimaryTrack(trackId) {
+      await ensureClient(); const id = await uid(); if (!id) throw new Error('Sign in first.');
+      const mine = await myEnrolments();
+      if (!mine.some(e => e.trackId === trackId)) await enrol(trackId);
+      /* Clear then set: the unique index allows exactly one primary, so
+         the old one has to go first or the write is rejected. */
+      await sb.from('enrolments').update({ is_primary: false }).eq('user_id', id).eq('is_primary', true);
+      const { error } = await sb.from('enrolments')
+        .update({ is_primary: true }).eq('user_id', id).eq('track_id', trackId);
+      if (error) throw new Error(error.message || 'Could not change the course.');
+      return myEnrolments();
+    }
+    /** Grant or withdraw paid access. Admin only — the database agrees. */
+    async function grantEnrolment(userId, trackId, status, validUntil) {
+      await ensureClient();
+      if (!['trial', 'active', 'lapsed'].includes(status)) throw new Error('Unknown status.');
+      const { error } = await sb.from('enrolments').upsert({
+        user_id: userId, track_id: trackId, status, valid_until: validUntil || null
+      }, { onConflict: 'user_id,track_id' });
+      if (error) throw new Error(error.message || 'Could not grant the course.');
+      return status;
+    }
+    async function canReadTracks(list) {
+      await ensureClient();
+      const { data, error } = await sb.rpc('can_read_tracks', { t: list || [] });
+      if (error) return false;
+      return !!data;
+    }
+
     /** Promote or demote somebody. Admin only — the database enforces it
         too, in the profiles trigger, because a check that lives only in
         the browser is not a check. */
@@ -2410,7 +2548,8 @@ const Backend = (() => {
     async function getAccessToken() { await ensureClient(); const { data } = await sb.auth.getSession(); return data.session?.access_token || null; }
 
     return { init, signUp, signIn, signOut, requestPasswordReset, updatePassword, onPasswordRecovery, currentUser, updateProfile,
-      getRegistrationOpen, setRegistrationOpen, setUserStatus, setUserRole, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
+      getRegistrationOpen, setRegistrationOpen, setUserStatus, setUserRole,
+      listTracks, saveTrack, myEnrolments, enrol, setPrimaryTrack, grantEnrolment, canReadTracks, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
       getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
