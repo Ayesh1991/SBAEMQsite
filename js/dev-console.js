@@ -60,6 +60,7 @@ const DevConsole = (() => {
           <h1 class="page-title">Mission control</h1>
           <p class="muted">Backend: <strong>${ctx.Backend.mode === 'cloud' ? 'Supabase (shared)' : 'local (this browser)'}</strong> — pick a workspace.</p>
         </header>
+        <div id="dev-unfiled"></div>
         <div class="dev-hub" data-animate>
           <a class="dev-hub-card" href="#/dev/papers" style="--hub-accent:linear-gradient(135deg,#5eead4,#3987e5)">
             <span class="dev-hub-ico">📄</span>
@@ -173,6 +174,79 @@ const DevConsole = (() => {
     put('#hub-flags', flagN); put('#hub-ai', aiN); put('#hub-essays', essayN);
     put('#hub-osce', osceN); put('#hub-wallet', walN);
     put('#hub-cpd', cpdN);
+    paintUnfiled(view.querySelector('#dev-unfiled'));
+  }
+
+  /* ---------------- content filed nowhere ----------------
+
+     THE LOUD HALF OF A FAIL-CLOSED RULE. Reading content is decided by
+     `is_preview or can_read_tracks(tracks)`, and an empty `tracks` passes
+     only for an editor — so a row filed nowhere is visible to whoever
+     wrote it and to no candidate at all. That is the right way round: the
+     alternative leaks paid content. But a rule that fails closed and says
+     nothing is indistinguishable from a bank that has lost your work, and
+     the person who needs telling is the only person who can still see it.
+
+     So this panel exists, and it is drawn ONLY when there is something in
+     it. A permanent "0 items filed nowhere" would be furniture, and
+     furniture stops being read. */
+  async function paintUnfiled(host) {
+    if (!host) return;
+    let rows = [];
+    try { rows = (await ctx.Backend.listUntagged()) || []; } catch { host.innerHTML = ''; return; }
+    if (!rows.length) { host.innerHTML = ''; return; }
+    let live = [];
+    try { await Course.load(); live = Course.live(); } catch { /* handled below */ }
+
+    const byTable = {};
+    rows.forEach(r => { (byTable[r.table] = byTable[r.table] || []).push(r); });
+    const { esc } = ctx;
+    host.innerHTML = `
+      <div class="card dev-unfiled" data-animate>
+        <h3 class="card-title">⚠ ${rows.length} item${rows.length > 1 ? 's' : ''} filed under no course</h3>
+        <p class="muted">Content with no course is readable by editors and by <strong>nobody else</strong> —
+          it will not appear in any candidate's bank. That is deliberate, so that nothing leaks out of a paid
+          course by accident, but it means these need filing before anyone can see them.</p>
+        <ul class="dev-unfiled-list">
+          ${Object.keys(byTable).map(t => `<li><strong>${esc(byTable[t][0].label)}</strong> ×${byTable[t].length}
+            <span class="muted tiny">${esc(byTable[t].slice(0, 4).map(r => r.title).join(', '))}${byTable[t].length > 4 ? ' …' : ''}</span></li>`).join('')}
+        </ul>
+        ${live.length ? `
+          <label class="field"><span>File all of them under</span>
+            <select class="dev-role" id="unfiled-track">
+              ${live.map(t => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join('')}
+            </select></label>
+          <p class="muted tiny">An item that already has a course is not touched. If some of these belong
+            somewhere else, file the bulk here and move the rest from their own editor.</p>
+          <button class="btn btn-gold btn-sm" id="unfiled-go">File ${rows.length} item${rows.length > 1 ? 's' : ''}</button>
+          <p class="form-error" id="unfiled-err" role="alert" hidden></p>
+        ` : `<p class="muted">No course is open yet, so there is nowhere to file these. Create one first.</p>`}
+      </div>`;
+    host.querySelector('#unfiled-go')?.addEventListener('click', async e => {
+      const btn = e.currentTarget, err = host.querySelector('#unfiled-err');
+      const id = host.querySelector('#unfiled-track').value;
+      err.hidden = true; btn.disabled = true; btn.textContent = 'Filing…';
+      try {
+        /* The subject comes from the course when the course has one
+           speciality, and is left alone when it has five — guessing which
+           of five subjects a paper is about would be worse than leaving
+           it unset, because a wrong subject hides it from the right chip. */
+        const sub = Course.byId(id)?.speciality || null;
+        let n = 0;
+        for (const t of Object.keys(byTable)) {
+          n += await ctx.Backend.fileUnder(t, byTable[t].map(r => r.id), [id], sub);
+        }
+        /* Every bank caches its listing, and the rows that just became
+           readable are not in those copies. */
+        try { ctx.Data.bustPapers?.(); } catch {}
+        try { if (typeof OSCE !== 'undefined') OSCE.bustStations?.(); } catch {}
+        btn.textContent = `Filed ${n}`;
+        setTimeout(() => paintUnfiled(host), 700);
+      } catch (ex) {
+        err.textContent = ex.message; err.hidden = false;
+        btn.disabled = false; btn.textContent = 'Try again';
+      }
+    });
   }
 
   const backLink = `<a class="link muted dev-back" href="#/dev">← Developer</a>`;
@@ -193,6 +267,8 @@ const DevConsole = (() => {
 
         <div class="dev-toolbar" data-animate>
           <button class="btn btn-gold" id="dev-scan">Scan Drive for new papers</button>
+          <label class="wl-f" style="max-width:260px" id="pp-track-wrap" hidden><span>Course</span>
+            <select class="sel" id="pp-import-track"></select></label>
           <span class="dev-status" id="dev-status"></span>
         </div>
 
@@ -257,6 +333,7 @@ const DevConsole = (() => {
     view.querySelector('#dev-scan').addEventListener('click', scan);
     view.querySelector('#dev-paste-btn').addEventListener('click', stagePasted);
     wireCurriculumManager(view);
+    await fillCoursePicker(view, '#pp-track-wrap', '#pp-import-track');
     await refreshPublished(view);
     ctx.FX.viewIn(view);
   }
@@ -819,6 +896,10 @@ const DevConsole = (() => {
       topicId: els.topSel.value,
       sba: ctx.Data.countSBA(paper),
       emq: ctx.Data.countEMQ(paper),
+      /* Which course, when the toolbar is asking. Left off when it is not:
+         contentTags() then stamps the editor's own course, so a paper
+         cannot reach the database filed nowhere. */
+      ...(pickedCourse('#pp-import-track') ? { tracks: [pickedCourse('#pp-import-track')] } : {}),
       content: paper                          // inline content (no file on disk)
     };
   }
@@ -2725,6 +2806,12 @@ const DevConsole = (() => {
           <button class="btn btn-gold" id="os-scan">Scan Drive for OSCE stations</button>
           <label class="wl-f" style="max-width:220px"><span>Import into</span>
             <select class="sel" id="os-import-coll"></select></label>
+          ${/* WHICH COURSE, asked only when there is more than one. With a
+                single course open the answer is forced and the control is
+                one more thing to get wrong — contentTags() fills it in
+                from the editor's own course either way. */''}
+          <label class="wl-f" style="max-width:260px" id="os-track-wrap" hidden><span>Course</span>
+            <select class="sel" id="os-import-track"></select></label>
           <span class="dev-status" id="os-status"></span>
         </div>
         <div id="os-list" data-animate></div>
@@ -2750,7 +2837,31 @@ const DevConsole = (() => {
     await wireGuide(view);
     await wireBlueprint(view);
     wireTagger(view);
+    await fillCoursePicker(view, '#os-track-wrap', '#os-import-track');
     await refreshOscePublished(view);
+  }
+
+  /* Fill — and reveal — a "Course" picker on an importer's toolbar.
+     Hidden while one course is open, because then it is not a question:
+     contentTags() in backend.js stamps the editor's own course on
+     everything they publish, so the control only earns its space once
+     there is a second answer. */
+  async function fillCoursePicker(view, wrapSel, selSel) {
+    const wrap = view.querySelector(wrapSel), sel = view.querySelector(selSel);
+    if (!wrap || !sel || typeof Course === 'undefined') return;
+    try { await Course.load(); } catch { return; }
+    const live = Course.live();
+    if (live.length < 2) return;
+    const mine = Course.currentId();
+    sel.innerHTML = live.map(t =>
+      `<option value="${ctx.esc(t.id)}"${t.id === mine ? ' selected' : ''}>${ctx.esc(t.short)}</option>`).join('');
+    wrap.hidden = false;
+  }
+
+  /** What the toolbar's course picker says, or nothing if it is not shown. */
+  function pickedCourse(selSel) {
+    const sel = document.querySelector(selSel);
+    return (sel && !sel.closest('[hidden]')) ? (sel.value || '') : '';
   }
 
   /* ---- the station-writing instructions ----
@@ -3255,6 +3366,10 @@ const DevConsole = (() => {
         // whatever the "Import into" picker says at the moment Publish is
         // pressed — so a scan can be filed row by row into different bins
         d.collection = document.getElementById('os-import-coll')?.value || '';
+        /* And which course, if the toolbar is asking. An explicit answer
+           always wins; with the control hidden the backend stamps the
+           editor's own course. */
+        const tk = pickedCourse('#os-import-track'); if (tk) d.tracks = [tk];
         await ctx.Backend.publishOsceStation(d);
         if (typeof OSCE !== 'undefined') { OSCE.bustStations(); OSCE.bustCollections?.(); }
         msg.textContent = '✓ Published to the OSCE tab.'; msg.className = 'dev-row-msg good';
@@ -3269,6 +3384,7 @@ const DevConsole = (() => {
     const errs = validateOsce(d); if (errs.length) { out.innerHTML = `<p class="bad">${errs.map(ctx.esc).join('<br>')}</p>`; return; }
     d.id = osceId(d);
     if (d.collection == null) d.collection = document.getElementById('os-import-coll')?.value || '';
+    if (!d.tracks) { const tk = pickedCourse('#os-import-track'); if (tk) d.tracks = [tk]; }
     try { await ctx.Backend.publishOsceStation(d); if (typeof OSCE !== 'undefined') OSCE.bustStations();
       out.innerHTML = `<p class="good">✓ Published “${ctx.esc(d.topic)}”.</p>`;
       await refreshOscePublished(document.getElementById('view'));

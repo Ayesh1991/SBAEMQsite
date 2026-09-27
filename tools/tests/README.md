@@ -84,3 +84,17 @@ that `quiz.js` and `ai.js` call on every answer. Before naming a new
 module, grep for the name — and if a release adds one, assert in that
 release's test file that BOTH modules are still there and still do their
 own job (`t116` §1 is the pattern).
+
+## When a release makes an old fixture impossible
+
+v117 made it impossible to publish content without a course tag. Two older
+files broke — not because either release was wrong, but because they had
+built their fixtures through the very path that changed: t116 created its
+"unfiled" station with `publishOsceStation()`, which now stamps a course on
+anything that arrives without one, and t115 counted seven tagging statements
+in the schema where there are now six.
+
+That is the suite working. When a release closes off a state, the files that
+depended on that state must say how the state is reached NOW — t116 writes
+its untagged row straight into storage, which is the only way one can exist
+any more, and says so — rather than being relaxed until they pass.

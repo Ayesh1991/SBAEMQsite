@@ -72,6 +72,47 @@ const Backend = (() => {
         .join(' ').toLowerCase().slice(0, 4000)
     });
   }
+  /* ---------- WHICH COURSE IS THIS CONTENT FOR? ----------
+
+     v115 gave every content table a `tracks` column and made reading a
+     decision: the policy is `is_preview or can_read_tracks(tracks)`, and
+     `can_read_tracks('{}')` is true only for an editor. That was a
+     deliberate choice — an untagged station showing to everybody is a
+     station leaking out of a paid bank — and it was argued for on the
+     grounds that it fails LOUDLY, because an editor still sees the row.
+
+     WHAT WAS MISSING WAS THE OTHER HALF. Nothing in AUREUM ever wrote
+     that column. Every publish path upserted `{ id, meta }` and the
+     column kept its default of `'{}'`, so every newly published station,
+     paper, deck, essay paper, volume and case would have been invisible
+     to every candidate and visible only to its author — failing closed,
+     and in total silence, on all new content.
+
+     This is that other half. It runs on every publish, in both backends,
+     so a piece of content cannot be created untagged by forgetting
+     anything.
+
+     AN EXISTING TAG IS NEVER OVERWRITTEN. An admin correcting somebody
+     else's paediatrics station while enrolled in O&G must not quietly
+     move it into their own course. The default fills a blank; it does not
+     take a decision back. */
+  async function contentTags(rec) {
+    let tracks = Array.isArray(rec.tracks) ? rec.tracks.filter(Boolean)
+      : (rec.tracks ? [String(rec.tracks)] : []);
+    let subject = rec.subject || null;
+    if (typeof Course !== 'undefined') {
+      try {
+        await Course.load();
+        if (!tracks.length) { const id = Course.currentId(); if (id) tracks = [id]; }
+        /* A one-speciality course answers `subject` by itself: every Part 2
+           O&G station is about O&G. A course with five subjects cannot, so
+           the field stays null and the editor is asked. */
+        if (!subject && tracks.length === 1) subject = Course.byId(tracks[0])?.speciality || null;
+      } catch { /* a failed read must not stop somebody publishing */ }
+    }
+    return { tracks, subject };
+  }
+
   const OSCE_CARD_KEYS = ['id', 'topic', 'scenario', 'station_time_min', 'reading_time_min',
     'total_marks', 'pass_mark', 'pass_mark_percent', 'q_count', 'points_count', 'image_count', 'collection',
     // the blueprint tag travels on the card: the circuit builder and the
@@ -274,6 +315,7 @@ const Backend = (() => {
     async function getOsceStation(id) { return read('oscestations', []).find(x => x.id === id) || null; }
     async function publishOsceStation(meta) {
       const rec = withOsceCounts(meta);
+      Object.assign(rec, await contentTags(rec));
       const e = sessionEmail(); if (e) { rec.edited_by = e; rec.edited_at = Date.now(); }
       const l = read('oscestations', []); const i = l.findIndex(x => x.id === rec.id);
       /* The date it went into AUREUM, set once and never moved by a later
@@ -429,6 +471,7 @@ const Backend = (() => {
     async function getCase(id) { return read('cases', []).find(x => x.id === id) || null; }
     async function publishCase(meta) {
       const rec = withCaseCounts(meta);
+      Object.assign(rec, await contentTags(rec));
       const e = sessionEmail(); if (e) { rec.edited_by = e; rec.edited_at = Date.now(); }
       const l = read('cases', []); const i = l.findIndex(x => x.id === rec.id);
       if (i >= 0) l[i] = rec; else l.push(rec);
@@ -529,6 +572,10 @@ const Backend = (() => {
     async function getPaperContent(id) { const p = read('published', []).find(x => x.id === id); return p ? (p.content || null) : null; }
     async function getPaperContents() { return read('published', []).map(p => ({ id: p.id, content: p.content || null })); }
     async function publishPaper(meta) {
+      /* The same stamp as the cloud. Local mode is where the two-person
+         flows get tested, and a rule that only one backend applies is a
+         rule that gets tested on the wrong one. */
+      Object.assign(meta, await contentTags(meta));
       const list = read('published', []); const i = list.findIndex(p => p.id === meta.id);
       if (i >= 0) list[i] = meta; else list.push(meta); write('published', list); return meta;
     }
@@ -598,7 +645,7 @@ const Backend = (() => {
 
     /* flashcards — decks are global (developer-published); SRS progress is per-user */
     async function getFlashcardDecks() { return read('decks', []); }
-    async function publishFlashcardDeck(meta) { const l = read('decks', []); const i = l.findIndex(d => d.id === meta.id); if (i >= 0) l[i] = meta; else l.push(meta); write('decks', l); return meta; }
+    async function publishFlashcardDeck(meta) { Object.assign(meta, await contentTags(meta)); const l = read('decks', []); const i = l.findIndex(d => d.id === meta.id); if (i >= 0) l[i] = meta; else l.push(meta); write('decks', l); return meta; }
     async function unpublishFlashcardDeck(id) { write('decks', read('decks', []).filter(d => d.id !== id)); }
     const cpKey = e => 'cardprog.' + e;
     async function getCardProgress(deckId) { const e = sessionEmail(); if (!e) return {}; return read(cpKey(e), {})[deckId] || {}; }
@@ -774,6 +821,52 @@ const Backend = (() => {
         && (!e.validUntil || new Date(e.validUntil) > new Date()));
     }
 
+    /* ---------- CONTENT FILED NOWHERE ----------
+       v115 chose to make untagged content invisible to everyone but an
+       editor, and justified it on the grounds that it fails LOUDLY —
+       "an editor still sees the row and the console can say it is filed
+       nowhere". This is the part that says so. Without it the choice is
+       not fail-loud, it is fail-silent, which is the worst of both. */
+    const TAGGED = [
+      { table: 'papers', key: 'published', label: 'Paper', title: r => r.title || r.name || r.id },
+      { table: 'osce_stations', key: 'oscestations', label: 'OSCE station', title: r => r.topic || r.id },
+      { table: 'flashcard_decks', key: 'decks', label: 'Flashcard deck', title: r => r.title || r.name || r.id },
+      { table: 'essay_papers', key: 'essaypapers', label: 'Essay paper', title: r => r.title || r.name || r.id },
+      { table: 'cpd_volumes', key: 'cpdvolumes', label: 'CPD volume', title: r => r.title || r.name || r.id },
+      { table: 'case_files', key: 'cases', label: 'Case', title: r => r.title || r.topic || r.id }
+    ];
+    async function listUntagged() {
+      const me = await currentUser();
+      if (!me || !me.isEditor) throw new Error('Only an editor may look for untagged content.');
+      const out = [];
+      TAGGED.forEach(t => read(t.key, []).forEach(r => {
+        if (!(Array.isArray(r.tracks) ? r.tracks.filter(Boolean).length : 0)) {
+          out.push({ table: t.table, label: t.label, id: r.id, title: String(t.title(r) || r.id) });
+        }
+      }));
+      return out;
+    }
+    /** File content under a course. `ids` null/empty = every untagged row in that table. */
+    async function fileUnder(table, ids, trackIds, subject) {
+      const me = await currentUser();
+      if (!me || !me.isEditor) throw new Error('Only an editor may file content.');
+      const t = TAGGED.find(x => x.table === table);
+      if (!t) throw new Error('Unknown content table: ' + table);
+      const tracks = (trackIds || []).filter(Boolean);
+      if (!tracks.length) throw new Error('Choose at least one course to file it under.');
+      const want = ids && ids.length ? new Set(ids) : null;
+      const l = read(t.key, []); let n = 0;
+      l.forEach(r => {
+        const untagged = !(Array.isArray(r.tracks) ? r.tracks.filter(Boolean).length : 0);
+        if (want ? want.has(r.id) : untagged) {
+          r.tracks = tracks.slice();
+          if (subject) r.subject = subject;
+          n++;
+        }
+      });
+      write(t.key, l); return n;
+    }
+
     async function setUserRole(userId, role) {
       if (!['student', 'editor', 'admin'].includes(role)) throw new Error('Unknown role.');
       const all = users(); const u = Object.values(all).find(x => x.id === userId || x.email === userId);
@@ -808,12 +901,13 @@ const Backend = (() => {
 
     /* essay papers (dev-published) + per-user essay feedback */
     async function getEssayPapers() { return read('essaypapers', []); }
-    async function publishEssayPaper(meta) { const l = read('essaypapers', []); const i = l.findIndex(x => x.id === meta.id); if (i >= 0) l[i] = meta; else l.push(meta); write('essaypapers', l); return meta; }
+    async function publishEssayPaper(meta) { Object.assign(meta, await contentTags(meta)); const l = read('essaypapers', []); const i = l.findIndex(x => x.id === meta.id); if (i >= 0) l[i] = meta; else l.push(meta); write('essaypapers', l); return meta; }
     async function unpublishEssayPaper(id) { write('essaypapers', read('essaypapers', []).filter(x => x.id !== id)); }
 
     /* ---- CPD (TOG true/false) ---- */
     async function getCpdVolumes() { return read('cpdvolumes', []); }
     async function publishCpdVolume(meta) {
+      Object.assign(meta, await contentTags(meta));
       const l = read('cpdvolumes', []); const i = l.findIndex(x => x.id === meta.id);
       if (i >= 0) l[i] = meta; else l.push(meta); write('cpdvolumes', l); return meta;
     }
@@ -986,7 +1080,7 @@ const Backend = (() => {
 
     return { init, signUp, signIn, signOut, requestPasswordReset, updatePassword, onPasswordRecovery, currentUser, updateProfile,
       getRegistrationOpen, setRegistrationOpen, setUserStatus, setUserRole,
-      listTracks, saveTrack, myEnrolments, enrol, setPrimaryTrack, grantEnrolment, canReadTracks, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
+      listTracks, saveTrack, myEnrolments, enrol, setPrimaryTrack, grantEnrolment, canReadTracks, listUntagged, fileUnder, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
       getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
@@ -1235,7 +1329,8 @@ const Backend = (() => {
         const { data } = await sb.auth.getUser();
         if (data?.user) { rec.edited_by = data.user.email || data.user.id; rec.edited_at = Date.now(); }
       } catch { /* the save matters more than the signature */ }
-      const { error } = await sb.from('osce_stations').upsert({ id: rec.id, meta: rec });
+      const { error } = await sb.from('osce_stations')
+        .upsert(Object.assign({ id: rec.id, meta: rec }, await contentTags(rec)));
       if (error) throw new Error(error.message || 'Could not save that station.');
       return rec;
     }
@@ -1562,7 +1657,8 @@ const Backend = (() => {
         const { data } = await sb.auth.getUser();
         if (data?.user) { rec.edited_by = data.user.email || data.user.id; rec.edited_at = Date.now(); }
       } catch {}
-      const { error } = await sb.from('case_files').upsert({ id: rec.id, meta: rec });
+      const { error } = await sb.from('case_files')
+        .upsert(Object.assign({ id: rec.id, meta: rec }, await contentTags(rec)));
       if (error) throw new Error(error.message || 'Could not save that case.');
       return rec;
     }
@@ -1810,7 +1906,7 @@ const Backend = (() => {
         () => sb.from('papers').select('id,meta').order('id')))
         .map(r => ({ id: r.id, content: r.meta?.content || null }));
     }
-    async function publishPaper(meta) { await ensureClient(); await sb.from('papers').upsert({ id: meta.id, meta }); return meta; }
+    async function publishPaper(meta) { await ensureClient(); await sb.from('papers').upsert(Object.assign({ id: meta.id, meta }, await contentTags(meta))); return meta; }
     async function unpublishPaper(id) { await ensureClient(); await sb.from('papers').delete().eq('id', id); }
 
     /* exam date */
@@ -1831,7 +1927,14 @@ const Backend = (() => {
 
     /* custom curriculum */
     async function getCustomCurriculum() { await ensureClient(); const { data } = await sb.from('curriculum').select('data').eq('id', 'default').single(); return data?.data || { categories: [] }; }
-    async function saveCustomCurriculum(data) { await ensureClient(); await sb.from('curriculum').upsert({ id: 'default', data, updated_at: new Date().toISOString() }); }
+    /* THE SYLLABUS IS THE ONE THING THAT IS NOT COURSE CONTENT — not yet.
+       This table holds a SINGLE row, `id = 'default'`, so it cannot be
+       per-course until it is keyed by course, and tagging the one row to
+       one course would leave every other course with no syllabus at all.
+       `is_preview` is the column v115 added for exactly this: readable
+       whatever the entitlement. Per-course curricula are their own change,
+       and this line is what keeps the syllabus visible until then. */
+    async function saveCustomCurriculum(data) { await ensureClient(); await sb.from('curriculum').upsert({ id: 'default', data, is_preview: true, updated_at: new Date().toISOString() }); }
 
     /* AI saves (chats, charts, infographics, mind maps, summaries) */
     const newId = () => 'ai-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -1895,7 +1998,7 @@ const Backend = (() => {
     async function getFlashcardDecks() {
       return (await catalogue('the flashcard decks', () => sb.from('flashcard_decks').select('id,meta').order('id'))).map(r => r.meta);
     }
-    async function publishFlashcardDeck(meta) { await ensureClient(); await sb.from('flashcard_decks').upsert({ id: meta.id, meta }); return meta; }
+    async function publishFlashcardDeck(meta) { await ensureClient(); await sb.from('flashcard_decks').upsert(Object.assign({ id: meta.id, meta }, await contentTags(meta))); return meta; }
     async function unpublishFlashcardDeck(id) { await ensureClient(); await sb.from('flashcard_decks').delete().eq('id', id); }
     async function getCardProgress(deckId) {
       await ensureClient(); const id = await uid(); if (!id) return {};
@@ -2417,6 +2520,51 @@ const Backend = (() => {
       return !!data;
     }
 
+    /* ---------- CONTENT FILED NOWHERE ----------
+       The loud half of v115's fail-closed choice: an editor can find every
+       row that no candidate can see, and file it in one action. Editors
+       read everything (can_read_tracks returns true for is_editor), so
+       these selects reach the rows a candidate's would not.
+
+       The title comes out of `meta` and the id out of the column, so a
+       listing of two hundred strays does not ship two hundred stations. */
+    const TAGGED = [
+      { table: 'papers', label: 'Paper', title: 'meta->>title' },
+      { table: 'osce_stations', label: 'OSCE station', title: 'meta->>topic' },
+      { table: 'flashcard_decks', label: 'Flashcard deck', title: 'meta->>title' },
+      { table: 'essay_papers', label: 'Essay paper', title: 'meta->>title' },
+      { table: 'cpd_volumes', label: 'CPD volume', title: 'meta->>title' },
+      { table: 'case_files', label: 'Case', title: 'meta->>title' }
+    ];
+    async function listUntagged() {
+      await ensureClient();
+      const out = [];
+      for (const t of TAGGED) {
+        try {
+          const { data, error } = await sb.from(t.table)
+            .select('id,title:' + t.title).eq('tracks', '{}').order('id').limit(500);
+          if (error) continue;   // a table this deployment has not created yet
+          (data || []).forEach(r => out.push({ table: t.table, label: t.label,
+            id: r.id, title: String(r.title || r.id) }));
+        } catch { /* one missing table must not hide the others */ }
+      }
+      return out;
+    }
+    /** File content under a course. `ids` null/empty = every untagged row in that table. */
+    async function fileUnder(table, ids, trackIds, subject) {
+      await ensureClient();
+      if (!TAGGED.some(x => x.table === table)) throw new Error('Unknown content table: ' + table);
+      const tracks = (trackIds || []).filter(Boolean);
+      if (!tracks.length) throw new Error('Choose at least one course to file it under.');
+      const patch = { tracks };
+      if (subject) patch.subject = subject;
+      let q = sb.from(table).update(patch);
+      q = (ids && ids.length) ? q.in('id', ids) : q.eq('tracks', '{}');
+      const { data, error } = await q.select('id');
+      if (error) throw new Error(error.message || 'Could not file that content.');
+      return (data || []).length;
+    }
+
     /** Promote or demote somebody. Admin only — the database enforces it
         too, in the profiles trigger, because a check that lives only in
         the browser is not a check. */
@@ -2485,14 +2633,14 @@ const Backend = (() => {
     async function getEssayPapers() {
       return (await catalogue('the essay papers', () => sb.from('essay_papers').select('id,meta').order('id'))).map(r => r.meta);
     }
-    async function publishEssayPaper(meta) { await ensureClient(); await sb.from('essay_papers').upsert({ id: meta.id, meta }); return meta; }
+    async function publishEssayPaper(meta) { await ensureClient(); await sb.from('essay_papers').upsert(Object.assign({ id: meta.id, meta }, await contentTags(meta))); return meta; }
     async function unpublishEssayPaper(id) { await ensureClient(); await sb.from('essay_papers').delete().eq('id', id); }
 
     /* ---- CPD (TOG true/false) ---- */
     async function getCpdVolumes() {
       return (await catalogue('the CPD volumes', () => sb.from('cpd_volumes').select('id,meta').order('id'))).map(r => r.meta);
     }
-    async function publishCpdVolume(meta) { await ensureClient(); await sb.from('cpd_volumes').upsert({ id: meta.id, meta }); return meta; }
+    async function publishCpdVolume(meta) { await ensureClient(); await sb.from('cpd_volumes').upsert(Object.assign({ id: meta.id, meta }, await contentTags(meta))); return meta; }
     async function unpublishCpdVolume(id) { await ensureClient(); await sb.from('cpd_volumes').delete().eq('id', id); }
     async function getCpdProgress() {
       await ensureClient(); const id = await uid(); if (!id) return {};
@@ -2563,7 +2711,7 @@ const Backend = (() => {
 
     return { init, signUp, signIn, signOut, requestPasswordReset, updatePassword, onPasswordRecovery, currentUser, updateProfile,
       getRegistrationOpen, setRegistrationOpen, setUserStatus, setUserRole,
-      listTracks, saveTrack, myEnrolments, enrol, setPrimaryTrack, grantEnrolment, canReadTracks, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
+      listTracks, saveTrack, myEnrolments, enrol, setPrimaryTrack, grantEnrolment, canReadTracks, listUntagged, fileUnder, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
       getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
