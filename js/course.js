@@ -122,6 +122,29 @@ const Course = (() => {
   };
   const subjectName = id => SUBJECT_NAMES[id] || id;
 
+  /**
+   * What the people on a course are called.
+   *
+   * "Registrar / Senior Registrar" was hard-coded when there was one exam,
+   * and it is wrong for every course that is not a PGIM one: a final MBBS
+   * candidate is a student, and being asked to choose between two
+   * postgraduate training grades is a question with no true answer. The
+   * grade is decoration — greeting and invoice, gating nothing — but a
+   * form that cannot be answered honestly is the first thing a new
+   * candidate meets.
+   *
+   * An empty list means the course has not said, so the app's own list
+   * stands. That is what every row holds until somebody edits it, so this
+   * changes nothing for the course that exists today.
+   */
+  function positionsFor(id) {
+    const own = (byId(id)?.positions || []).filter(Boolean);
+    if (own.length) return own.slice();
+    return (typeof Progression !== 'undefined' && Progression.POSITIONS)
+      ? Progression.POSITIONS.slice() : [];
+  }
+  const positions = () => positionsFor(currentId());
+
   const STAGE_NAMES = {
     'mbbs-final': 'Undergraduate',
     'pg-entry': 'Postgraduate — entry',
@@ -237,6 +260,7 @@ const Course = (() => {
 
   return { load, bust, live, all, byId, mine, current, currentId, statusOf, isActive,
     fits, fitsSubject, subjects, hasSubjects, subjectName, stageName, choose,
+    positions, positionsFor,
     remember, claimPending,
     picker, wirePicker, subjectBar,
     _state: () => ({ tracks: _tracks, mine: _mine }) };

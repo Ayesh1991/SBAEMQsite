@@ -69,7 +69,10 @@ say('  and a preview is readable whatever the entitlement',
 
 /* THE MIGRATION. Everyone already here keeps exactly what they had. */
 say('the first track is seeded, live AND FREE, so today changes for nobody',
-  /'pg-exit', 'obgyn', 10, true, true\)/.test(sql));
+  /* Anchored on the two flags, not on the end of the line: v118 added a
+     `positions` column after them, and a regex that insists on the closing
+     bracket is asserting the column list, not the thing it cares about. */
+  /'pg-exit', 'obgyn', 10, true, true/.test(sql));
 say('  every existing account is enrolled in it, active',
   /select id, 'pgim-og-2', true, 'active' from public\.profiles/.test(sql));
 /* SIX of the seven content tables, not all seven. `curriculum` holds one

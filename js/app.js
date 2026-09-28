@@ -92,7 +92,7 @@
     { re: /^#\/mistakes$/, fn: renderMistakes },
     { re: /^#\/mistakes\/deck\/([^/]+)$/, fn: renderMistakeDeck },
     { re: /^#\/simulator\/result\/([^/]+)$/, fn: renderSimResult },
-    { re: /^#\/dev(?:\/(papers|cards|users|blueprint|review|ai|essays|tearoom|cpd|osce|cases|settings))?$/, fn: renderDev }
+    { re: /^#\/dev(?:\/(papers|cards|users|blueprint|review|ai|essays|tearoom|cpd|osce|cases|settings|courses))?$/, fn: renderDev }
   ];
   /* ADMIN BY ROLE, not by address. `isDeveloper` is computed in the
      backend from the profile's role, with the owner's email kept as the
@@ -498,6 +498,7 @@
     /* Empty today, and that is the intended answer: one exam is not a
        choice, so the sign-up form is untouched until a second one opens. */
     const coursePick = Course.picker('', 'course');
+    const posOptions = list => (list || []).map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('');
 
     function paint() {
       if (mode === 'signup' && !regOpen) {
@@ -556,16 +557,26 @@
               ${mode === 'signup' ? `
                 <label class="field"><span>Full name</span>
                   <input type="text" name="name" autocomplete="name" placeholder="Dr. Nimali Perera" required></label>
-                <label class="field"><span>Your position</span>
-                  <select name="position">
-                    ${Progression.POSITIONS.map(p => `<option value="${p}">${p}</option>`).join('')}
-                  </select></label>
+                ${/* THE COURSE IS ASKED BEFORE THE GRADE, because the grade
+                      depends on it: a final MBBS candidate is a student, not
+                      a registrar, and the list below is the chosen course's
+                      own. Asking in the other order would offer somebody two
+                      postgraduate grades and then let them say they are an
+                      undergraduate. */''}
                 ${coursePick ? `
                 <div class="field" id="auth-course">
                   <span>What are you preparing for?</span>
                   ${coursePick}
                   <p class="tiny muted">You can change this later in your profile.</p>
-                </div>` : ''}` : ''}
+                </div>` : ''}
+                <label class="field"><span>Your position</span>
+                  ${/* Until a course is chosen there is no true answer, so
+                        the list is not guessed. Showing the first course's
+                        grades to somebody who has not picked a course is
+                        how a final MBBS student ends up a registrar. */''}
+                  <select name="position" id="auth-position"${coursePick ? ' disabled' : ''}>
+                    ${coursePick ? '<option value="">Choose your course first</option>' : posOptions(Course.positions())}
+                  </select></label>` : ''}
               <label class="field"><span>Email address</span>
                 <input type="email" name="email" autocomplete="email" placeholder="you@example.com" required></label>
               <label class="field"><span>Password</span>
@@ -580,7 +591,14 @@
           </div>
         </section>`;
       document.getElementById('auth-toggle').addEventListener('click', e => { e.preventDefault(); mode = mode === 'signin' ? 'signup' : 'signin'; paint(); FX.viewIn(view); });
-      Course.wirePicker(document.getElementById('auth-course'));
+      const courseHost = document.getElementById('auth-course');
+      Course.wirePicker(courseHost);
+      /* The grade list belongs to the course, so it follows the radio. */
+      courseHost?.addEventListener('change', e => {
+        const r = e.target.closest('input[type=radio]'); if (!r) return;
+        const sel = document.getElementById('auth-position');
+        if (sel) { sel.innerHTML = posOptions(Course.positionsFor(r.value)); sel.disabled = false; }
+      });
       document.getElementById('auth-forgot')?.addEventListener('click', e => { e.preventDefault(); mode = 'forgot'; paint(); FX.viewIn(view); });
       document.getElementById('auth-form').addEventListener('submit', async e => {
         e.preventDefault();
@@ -1461,6 +1479,10 @@
     if (typeof Calc !== 'undefined') Calc.panel(view.querySelector('#tools-host'), { only });
   }
 
+  /* Set by the course switcher and read once by the repaint it triggers —
+     the only way a confirmation survives the redraw that earns it. */
+  let courseSaved = false;
+
   async function renderProfile(user) {
     const progress = await Backend.getProgress();
     const stats = Progression.summarise(progress);
@@ -1482,7 +1504,7 @@
           <p class="muted">The exam you are preparing for. Everything in the banks is filtered to it —
             change it here and the whole site follows.</p>
           ${coursePicker}
-          <p class="save-note" id="course-note" hidden>Saved ✓</p>
+          <p class="save-note" id="course-note"${courseSaved ? '' : ' hidden'}>Saved ✓</p>
           <p class="form-error" id="course-err" role="alert" hidden></p>
         </div>` : (here ? `
         <div class="card" data-animate id="course-card">
@@ -1500,10 +1522,13 @@
 
         <div class="card" data-animate>
           <h3 class="card-title">Position</h3>
-          <p class="muted">Your training grade for the PGIM programme.</p>
+          ${/* Whose programme, said by the course rather than assumed. The
+                old copy named PGIM on every account, including the ones
+                that are not on a PGIM course at all. */''}
+          <p class="muted">Your grade on ${here ? esc(here.short) : 'your course'}.</p>
           <div class="position-picker" id="position-picker">
-            ${Progression.POSITIONS.map(p => `
-              <button class="pos-btn ${user.position === p ? 'active' : ''}" data-pos="${p}">${p}</button>`).join('')}
+            ${Course.positions().map(p => `
+              <button class="pos-btn ${user.position === p ? 'active' : ''}" data-pos="${esc(p)}">${esc(p)}</button>`).join('')}
           </div>
           <p class="save-note" id="pos-note" hidden>Saved ✓</p>
         </div>
@@ -1753,6 +1778,14 @@
        decides whether this person may enrol — a course that is not open
        is refused there — so the radio is put back where it was rather
        than left lit next to content that never arrives. */
+    /* Shown by the repaint that the switch caused, then spent — so a later
+       visit to the profile does not claim something was just saved. */
+    if (courseSaved) {
+      courseSaved = false;
+      const n = view.querySelector('#course-note');
+      if (n) setTimeout(() => { n.hidden = true; }, 2400);
+    }
+
     const courseHost = view.querySelector('#course-card');
     if (courseHost && courseHost.querySelector('input[type=radio]')) {
       Course.wirePicker(courseHost);
@@ -1763,8 +1796,17 @@
         courseHost.querySelectorAll('input[type=radio]').forEach(i => i.disabled = true);
         try {
           await Course.choose(r.value);
-          const note = courseHost.querySelector('#course-note');
-          note.hidden = false; setTimeout(() => note.hidden = true, 1800);
+          /* Repaint the page rather than just this card: the grade list
+             belongs to the course too, and leaving "Registrar / Senior
+             Registrar" on screen under a course that has neither is the
+             same wrong answer in a smaller place.
+
+             The confirmation is carried ACROSS the repaint rather than
+             shown before it. A "Saved ✓" that a redraw wipes half a second
+             later is worse than none: the candidate sees the page flicker
+             and cannot tell whether it took. */
+          courseSaved = true;
+          route();
         } catch (ex) {
           err.textContent = ex.message; err.hidden = false;
           /* Put the radio back by hand. Re-dispatching `change` would

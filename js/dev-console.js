@@ -45,6 +45,7 @@ const DevConsole = (() => {
     if (section === 'cases') return renderCasesSection(view);
     if (section === 'settings') return renderSettingsSection(view);
     if (section === 'cpd') return renderCpdSection(view);
+    if (section === 'courses') return renderCoursesSection(view);
     return renderHub(view);
   }
 
@@ -128,6 +129,12 @@ const DevConsole = (() => {
             <p>The dollar rate, the prepaid wallet, and the top-up requests waiting for your approval.</p>
             <span class="dev-hub-count" id="hub-wallet">…</span>
           </a>
+          <a class="dev-hub-card" href="#/dev/courses" style="--hub-accent:linear-gradient(135deg,#e8a33d,#e879b9)">
+            <span class="dev-hub-ico">🎓</span>
+            <h3>Courses</h3>
+            <p>The exams AUREUM prepares people for. Open a new one, fill it with content before anybody can choose it, and set what its candidates are called.</p>
+            <span class="dev-hub-count" id="hub-courses">…</span>
+          </a>
           <a class="dev-hub-card" href="#/dev/cpd" style="--hub-accent:linear-gradient(135deg,#5eead4,#818cf8)">
             <span class="dev-hub-ico">📖</span>
             <h3>CPD importer</h3>
@@ -174,6 +181,13 @@ const DevConsole = (() => {
     put('#hub-flags', flagN); put('#hub-ai', aiN); put('#hub-essays', essayN);
     put('#hub-osce', osceN); put('#hub-wallet', walN);
     put('#hub-cpd', cpdN);
+    let courseN = '—';
+    try {
+      await Course.load(true);
+      const all = Course.all(), live = Course.live().length;
+      courseN = all.length ? `${live} open · ${all.length - live} being built` : 'run schema.sql';
+    } catch { courseN = 'run schema.sql'; }
+    put('#hub-courses', courseN);
     paintUnfiled(view.querySelector('#dev-unfiled'));
   }
 
@@ -648,6 +662,9 @@ const DevConsole = (() => {
   /* ---------------- section: users ---------------- */
 
   async function renderUsersSection(view) {
+    /* The per-user panel lists a row per course, so the courses have to be
+       in hand before the first one is drawn. */
+    try { await Course.load(); } catch { /* the rest of the page still works */ }
     view.innerHTML = `
       <section class="page">
         ${backLink}
@@ -1638,6 +1655,27 @@ const DevConsole = (() => {
                     : 'An editor publishes stations, papers and corrections — and sees no money, no spend and nobody else’s account.'}</p>
                 </div>
                 <div class="dev-up-block">
+                  <h4>Course access</h4>
+                  ${/* ENROLMENT IS NOT ENTITLEMENT. A candidate enrols
+                        themselves — saying what they are studying is their
+                        own business — but only an admin can make it
+                        ACTIVE, which is what actually opens a paid
+                        course's content. This is the only place that can
+                        be done, and until now there was none. */''}
+                  ${(Course.live().length ? Course.live() : Course.all()).map(t => {
+                    const e = (u.enrolments || []).find(x => x.trackId === t.id);
+                    const now = e?.status || '';
+                    return `
+                    <label class="dev-up-flag">
+                      <select class="dev-role dev-enrol" data-uenrol="${ctx.esc(u.id)}" data-track="${ctx.esc(t.id)}">
+                        ${[['', '— no enrolment —'], ['trial', 'Trial'],
+                           ['active', 'Active — content open'], ['expired', 'Expired']].map(([v, l]) =>
+                          `<option value="${v}"${now === v ? ' selected' : ''}>${l}</option>`).join('')}
+                      </select>
+                      <span class="tiny muted">${ctx.esc(t.short)}${e?.isPrimary ? ' · their main course' : ''}${t.isFree ? ' · free, so open to anyone signed in' : ''}</span>
+                    </label>`; }).join('') || '<p class="tiny muted">No courses yet.</p>'}
+                </div>
+                <div class="dev-up-block">
                   <h4>Account status</h4>
                   ${u.status === 'pending' ? `<button class="btn btn-gold btn-sm" data-approve="${ctx.esc(u.id)}">✓ Approve</button>
                     <button class="btn btn-ghost btn-sm qr-danger" data-deny="${ctx.esc(u.id)}">Deny</button>`
@@ -1730,6 +1768,29 @@ const DevConsole = (() => {
         } catch (e) {
           sel.value = was;
           msgEl.textContent = 'Could not change the role: ' + (e.message || e);
+          msgEl.className = 'dev-row-msg bad';
+        }
+        sel.disabled = false;
+      });
+    });
+
+    /* COURSE ACCESS. `grantEnrolment` is admin-only in both backends and
+       in the database — it is the difference between somebody saying what
+       they are studying and being allowed to read it. */
+    host.querySelectorAll('[data-uenrol]').forEach(sel => {
+      const was = sel.value;
+      sel.addEventListener('change', async () => {
+        sel.disabled = true;
+        try {
+          await ctx.Backend.grantEnrolment(sel.dataset.uenrol, sel.dataset.track,
+            sel.value || 'expired', null);
+          msgEl.textContent = sel.value
+            ? `✓ ${sel.dataset.track}: ${sel.value}.`
+            : `✓ ${sel.dataset.track}: access removed.`;
+          msgEl.className = 'dev-row-msg good';
+        } catch (e) {
+          sel.value = was;
+          msgEl.textContent = 'Could not change course access: ' + (e.message || e);
           msgEl.className = 'dev-row-msg bad';
         }
         sel.disabled = false;
@@ -4329,6 +4390,188 @@ const DevConsole = (() => {
     const sba = all.filter(q => String(q.qtype || 'TF').toUpperCase() === 'SBA').length;
     return { secs, qs: all.length, sba };
   };
+
+  /* ---------------- section: courses ----------------
+
+     THE ONE PLACE A SECOND EXAM CAN BE BORN. Until this existed, tracks
+     and enrolments were real in the database and unreachable from the
+     app: a course could only be created by typing SQL, which meant that
+     in practice there would only ever be one, and every candidate — final
+     MBBS student included — would sign up to PGIM O&G Part 2 and be
+     called a registrar.
+
+     BUILDING AND OPENING ARE DIFFERENT DECISIONS, and the form keeps them
+     apart. A course that is not open can be filled with content for
+     months; nobody can choose it, and nothing tagged to it reaches
+     anybody. That is how a new speciality is prepared without a
+     half-finished bank being visible to students. */
+  const STAGES = [
+    { id: 'mbbs-final', label: 'Undergraduate — final MBBS' },
+    { id: 'pg-entry', label: 'Postgraduate — entry (Part 1 / selection)' },
+    { id: 'pg-exit', label: 'Postgraduate — exit (Part 2 / final)' }
+  ];
+  const SUBJECTS = ['medicine', 'surgery', 'paediatrics', 'obgyn', 'psychiatry', 'anaesthesiology'];
+
+  async function renderCoursesSection(view) {
+    const { esc } = ctx;
+    view.innerHTML = `
+      <section class="page">
+        <header data-animate>
+          ${backLink}
+          <p class="kicker">COURSES</p>
+          <h1 class="page-title">The exams AUREUM prepares people for</h1>
+          <p class="muted">Every piece of content belongs to one or more of these, and every candidate is on one.
+            A course can be built and filled long before it is opened — until <strong>Open</strong> is ticked
+            nobody can choose it and nothing tagged to it reaches anybody.</p>
+        </header>
+        <div id="co-list" data-animate><p class="muted">Loading…</p></div>
+        <div class="card" data-animate>
+          <details class="dev-collapse" id="co-new-wrap">
+            <summary><span class="card-title">Open a new course</span><span class="dc-caret">▸</span></summary>
+            <div id="co-form"></div>
+          </details>
+        </div>
+      </section>`;
+    ctx.FX.viewIn(view);
+    await paintCourses(view);
+    view.querySelector('#co-form').innerHTML = courseForm(null);
+    wireCourseForm(view, view.querySelector('#co-form'), null);
+  }
+
+  function courseForm(t) {
+    const { esc } = ctx;
+    const v = t || { id: '', name: '', short: '', stage: 'pg-exit', speciality: '',
+      subjects: [], sort: 10, isLive: false, isFree: false, positions: [] };
+    return `
+      <div class="co-form">
+        <label class="field"><span>Short code</span>
+          <input type="text" class="sel" data-cf="id" value="${esc(v.id)}" placeholder="mbbs-final"
+            ${t ? 'readonly' : ''}>
+          <span class="tiny muted">${t ? 'The code cannot change — content is tagged with it.'
+            : 'Lower case, no spaces. Content is tagged with this forever, so choose it once.'}</span></label>
+        <label class="field"><span>Full name</span>
+          <input type="text" class="sel" data-cf="name" value="${esc(v.name)}"
+            placeholder="Final MBBS — Sri Lanka"></label>
+        <label class="field"><span>Short name — what a candidate sees on a chip</span>
+          <input type="text" class="sel" data-cf="short" value="${esc(v.short)}" placeholder="Final MBBS"></label>
+        <label class="field"><span>Stage</span>
+          <select class="sel" data-cf="stage">
+            ${STAGES.map(s => `<option value="${s.id}"${v.stage === s.id ? ' selected' : ''}>${esc(s.label)}</option>`).join('')}
+          </select></label>
+        <label class="field"><span>Speciality — one word, or blank when the course covers several</span>
+          <input type="text" class="sel" data-cf="speciality" value="${esc(v.speciality || '')}" placeholder="obgyn">
+          <span class="tiny muted">When a course has one speciality, content published to it takes this as its
+            subject automatically.</span></label>
+        <div class="field"><span>Subjects — tick several and candidates get a subject filter in every bank</span>
+          <div class="co-subs">
+            ${SUBJECTS.map(s => `<label class="co-sub"><input type="checkbox" data-cf-sub="${s}"
+              ${(v.subjects || []).includes(s) ? 'checked' : ''}> ${esc(s)}</label>`).join('')}
+          </div></div>
+        <label class="field"><span>What its candidates are called — one per line</span>
+          <textarea class="dev-textarea co-pos" data-cf="positions" rows="3"
+            placeholder="Registrar&#10;Senior Registrar">${esc((v.positions || []).join('\n'))}</textarea>
+          <span class="tiny muted">Leave empty to use the app's own list. A final MBBS candidate is a student,
+            not a registrar — this is where that is said.</span></label>
+        <label class="field"><span>Order in the list</span>
+          <input type="number" class="sel" data-cf="sort" value="${Number(v.sort) || 0}"></label>
+        <div class="pref-toggles">
+          <label class="pref-toggle">
+            <span><strong>Open</strong><br><span class="muted tiny">Candidates can choose it. Leave off while
+              you are still filling it with content.</span></span>
+            <label class="dev-flag"><input type="checkbox" data-cf="isLive" ${v.isLive ? 'checked' : ''}><span></span></label>
+          </label>
+          <label class="pref-toggle">
+            <span><strong>Free</strong><br><span class="muted tiny">Readable by anyone signed in, with no
+              entitlement. Untick and only an <em>active</em> enrolment opens it.</span></span>
+            <label class="dev-flag"><input type="checkbox" data-cf="isFree" ${v.isFree ? 'checked' : ''}><span></span></label>
+          </label>
+        </div>
+        <button class="btn btn-gold" data-cf-save>${t ? 'Save changes' : 'Create course'}</button>
+        <p class="dev-row-msg" data-cf-msg></p>
+      </div>`;
+  }
+
+  function wireCourseForm(view, host, existing) {
+    host.querySelector('[data-cf-save]').addEventListener('click', async e => {
+      const btn = e.currentTarget, msg = host.querySelector('[data-cf-msg]');
+      const g = k => host.querySelector(`[data-cf="${k}"]`);
+      const t = {
+        id: String(g('id').value || '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-'),
+        name: g('name').value.trim(),
+        short: g('short').value.trim(),
+        stage: g('stage').value,
+        speciality: g('speciality').value.trim() || null,
+        subjects: [...host.querySelectorAll('[data-cf-sub]')].filter(x => x.checked).map(x => x.dataset.cfSub),
+        positions: g('positions').value.split('\n').map(s => s.trim()).filter(Boolean),
+        sort: Number(g('sort').value) || 0,
+        isLive: g('isLive').checked,
+        isFree: g('isFree').checked
+      };
+      /* A course with no id, name or short name is three blank chips and a
+         bank nobody can identify. Refuse it here rather than storing it. */
+      if (!t.id || !t.name || !t.short) {
+        msg.textContent = 'A course needs a code, a name and a short name.';
+        msg.className = 'dev-row-msg bad'; return;
+      }
+      if (!existing && Course.byId(t.id)) {
+        msg.textContent = `There is already a course called “${t.id}”. Edit it above instead.`;
+        msg.className = 'dev-row-msg bad'; return;
+      }
+      btn.disabled = true; msg.textContent = 'Saving…'; msg.className = 'dev-row-msg muted';
+      try {
+        await ctx.Backend.saveTrack(t);
+        Course.bust(); await Course.load();
+        msg.textContent = '✓ Saved.'; msg.className = 'dev-row-msg good';
+        await paintCourses(view);
+        if (!existing) {
+          /* The blank form is put back for the next course — which wipes
+             the message that was in it, so the confirmation is moved
+             somewhere that survives the reset. */
+          host.innerHTML = courseForm(null);
+          wireCourseForm(view, host, null);
+          const m2 = host.querySelector('[data-cf-msg]');
+          m2.textContent = `✓ “${t.short}” created${t.isLive ? ' and open' : ' — tick Open when it is ready'}.`;
+          m2.className = 'dev-row-msg good';
+          view.querySelector('#co-new-wrap').open = false;
+        }
+      } catch (err) {
+        msg.textContent = err.message || String(err); msg.className = 'dev-row-msg bad';
+      } finally { btn.disabled = false; }
+    });
+  }
+
+  async function paintCourses(view) {
+    const { esc } = ctx;
+    const host = view.querySelector('#co-list');
+    let all = [];
+    try { Course.bust(); await Course.load(); all = Course.all(); }
+    catch (e) { host.innerHTML = `<p class="bad">${esc(e.message || e)}</p>`; return; }
+    if (!all.length) {
+      host.innerHTML = `<div class="card"><p class="muted">No courses yet — run
+        <code>supabase/schema.sql</code>, which seeds the first one.</p></div>`;
+      return;
+    }
+    host.innerHTML = all.map(t => `
+      <div class="card co-card">
+        <details class="dev-collapse">
+          <summary>
+            <span class="card-title">${esc(t.short)}
+              <span class="co-pill ${t.isLive ? 'is-live' : ''}">${t.isLive ? 'Open' : 'Being built'}</span>
+              ${t.isFree ? `<span class="co-pill">Free</span>` : `<span class="co-pill is-paid">Paid</span>`}</span>
+            <span class="dc-caret">▸</span>
+          </summary>
+          <p class="muted">${esc(t.name)} · <code>${esc(t.id)}</code>
+            ${(t.subjects || []).length ? ` · ${t.subjects.length} subjects` : ''}
+            ${(t.positions || []).length ? ` · ${esc(t.positions.join(', '))}` : ''}</p>
+          <div data-co-edit="${esc(t.id)}"></div>
+        </details>
+      </div>`).join('');
+    all.forEach(t => {
+      const slot = host.querySelector(`[data-co-edit="${CSS.escape(t.id)}"]`);
+      slot.innerHTML = courseForm(t);
+      wireCourseForm(view, slot, t);
+    });
+  }
 
   async function renderCpdSection(view) {
     const { esc } = ctx;
