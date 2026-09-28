@@ -671,7 +671,11 @@ const Backend = (() => {
     /* users & feature flags (developer) */
     async function listAllUsers() {
       const all = users();
-      return Object.values(all).map(u => ({ id: u.id, name: u.name, email: u.email, position: u.position, xp: read(pKey(u.email), blankProgress()).xp || 0, createdAt: u.createdAt, featureFlags: u.featureFlags || {}, role: u.role || (norm(u.email) === devEmail ? 'admin' : 'student'), status: u.status || 'approved' }));
+      /* Enrolments travel with the account. The console has to show which
+         course each person is on and whether their access is live, and
+         asking per row would be one read per user on a page that lists
+         every user. */
+      return Object.values(all).map(u => ({ id: u.id, name: u.name, email: u.email, position: u.position, xp: read(pKey(u.email), blankProgress()).xp || 0, createdAt: u.createdAt, featureFlags: u.featureFlags || {}, role: u.role || (norm(u.email) === devEmail ? 'admin' : 'student'), status: u.status || 'approved', enrolments: read('enrolments:' + u.email, []) }));
     }
     async function setUserFeature(userId, flag, on) {
       const all = users(); const u = Object.values(all).find(x => x.id === userId || x.email === userId);
@@ -759,7 +763,8 @@ const Backend = (() => {
       if (t && t.length) return t;
       const one = [{ id: 'pgim-og-2', name: 'PGIM MD (Obstetrics & Gynaecology) — Part 2',
         short: 'O&G Part 2', stage: 'pg-exit', speciality: 'obgyn', subjects: [],
-        sort: 10, isLive: true, isFree: true }];
+        sort: 10, isLive: true, isFree: true,
+        positions: ['Registrar', 'Senior Registrar'] }];
       write('tracks', one); return one;
     };
     async function listTracks() { return seedTracks().slice().sort((a, b) => (a.sort || 0) - (b.sort || 0)); }
@@ -2052,7 +2057,16 @@ const Backend = (() => {
     async function listAllUsers() {
       await ensureClient();
       const { data } = await sb.from('profiles').select('id,name,email,position,xp,created_at,feature_flags,prefs,status,role').order('created_at', { ascending: true });
-      return (data || []).map(r => ({ id: r.id, name: r.name, email: r.email, position: r.position, xp: r.xp || 0, createdAt: r.created_at, featureFlags: r.feature_flags || {}, prefs: r.prefs || {}, status: r.status || 'approved', role: r.role || 'student' }));
+      /* One read for every enrolment on the platform rather than one per
+         user: the console lists every account on one page, and a query
+         per row is how a user list becomes a minute long. */
+      let enr = [];
+      try { const r = await sb.from('enrolments').select('user_id,track_id,is_primary,status,valid_until'); enr = r.data || []; }
+      catch { /* an older database without the table still lists its users */ }
+      const byUser = {};
+      enr.forEach(e => (byUser[e.user_id] = byUser[e.user_id] || []).push({
+        trackId: e.track_id, isPrimary: !!e.is_primary, status: e.status, validUntil: e.valid_until }));
+      return (data || []).map(r => ({ id: r.id, name: r.name, email: r.email, position: r.position, xp: r.xp || 0, createdAt: r.created_at, featureFlags: r.feature_flags || {}, prefs: r.prefs || {}, status: r.status || 'approved', role: r.role || 'student', enrolments: byUser[r.id] || [] }));
     }
     async function setUserFeature(userId, flag, on) {
       await ensureClient();
@@ -2459,17 +2473,17 @@ const Backend = (() => {
     async function listTracks() {
       await ensureClient();
       const { data, error } = await sb.from('tracks')
-        .select('id,name,short,stage,speciality,subjects,sort,is_live,is_free').order('sort');
+        .select('id,name,short,stage,speciality,subjects,sort,is_live,is_free,positions').order('sort');
       if (error) throw new Error(error.message || 'Could not read the courses.');
       return (data || []).map(r => ({ id: r.id, name: r.name, short: r.short, stage: r.stage,
         speciality: r.speciality, subjects: r.subjects || [], sort: r.sort || 0,
-        isLive: !!r.is_live, isFree: !!r.is_free }));
+        isLive: !!r.is_live, isFree: !!r.is_free, positions: r.positions || [] }));
     }
     async function saveTrack(t) {
       await ensureClient();
       const row = { id: t.id, name: t.name, short: t.short, stage: t.stage,
         speciality: t.speciality || null, subjects: t.subjects || [], sort: t.sort || 0,
-        is_live: !!t.isLive, is_free: !!t.isFree };
+        is_live: !!t.isLive, is_free: !!t.isFree, positions: t.positions || [] };
       const { error } = await sb.from('tracks').upsert(row);
       if (error) throw new Error(error.message || 'Could not save the course.');
       return t;

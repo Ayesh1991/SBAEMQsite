@@ -124,6 +124,19 @@ create table if not exists public.tracks (
   is_free    boolean not null default false,
   created_at timestamptz not null default now()
 );
+-- WHAT THE PEOPLE ON THIS COURSE ARE CALLED.
+--
+-- "Registrar / Senior Registrar" was hard-coded in progression.js when
+-- there was one exam, and it is wrong for every course that is not a PGIM
+-- one: a final MBBS candidate is a student, and offering them a choice
+-- between two postgraduate training grades is asking a question with no
+-- true answer. The grade is decoration — it appears in the dashboard
+-- greeting and on an invoice and gates nothing — but a form that cannot
+-- be answered honestly is the first thing a new candidate meets.
+--
+-- So it belongs to the course, not to the platform. Empty means "use
+-- whatever the app ships", which is what every row has until it is edited.
+alter table public.tracks add column if not exists positions text[] not null default '{}';
 alter table public.tracks enable row level security;
 drop policy if exists "tracks read"  on public.tracks;
 drop policy if exists "tracks write" on public.tracks;
@@ -1812,10 +1825,14 @@ create policy "cases read" on public.case_files for select
 -- moment this file runs, but nothing is behind it until a track is
 -- deliberately made paid. Shipping the mechanism and flipping the switch
 -- are two decisions, and they should not be made on the same day.
-insert into public.tracks (id, name, short, stage, speciality, sort, is_live, is_free)
+insert into public.tracks (id, name, short, stage, speciality, sort, is_live, is_free, positions)
 values ('pgim-og-2', 'PGIM MD (Obstetrics & Gynaecology) — Part 2', 'O&G Part 2',
-        'pg-exit', 'obgyn', 10, true, true)
+        'pg-exit', 'obgyn', 10, true, true, '{Registrar,"Senior Registrar"}')
 on conflict (id) do nothing;
+-- And for the row that already exists from an earlier run of this file:
+-- the two grades it has always offered, now owned by the course.
+update public.tracks set positions = '{Registrar,"Senior Registrar"}'
+  where id = 'pgim-og-2' and positions = '{}';
 
 update public.papers set tracks = '{pgim-og-2}', subject = 'obgyn' where tracks = '{}';
 update public.flashcard_decks set tracks = '{pgim-og-2}', subject = 'obgyn' where tracks = '{}';
