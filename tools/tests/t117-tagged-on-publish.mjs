@@ -78,7 +78,10 @@ say('the syllabus is no longer tagged to one course',
   !/update public\.curriculum set tracks = '\{pgim-og-2\}'/.test(sql));
 say('  it is readable whatever the entitlement',
   /update public\.curriculum set is_preview = true/.test(sql));
-say('  and an edit cannot undo that', /curriculum'\)\.upsert\(\{ id: 'default', data, is_preview: true/.test(js));
+/* The key became the COURSE id in v119 — the assertion is that every
+   curriculum write still carries is_preview, not that there is one row. */
+say('  and an edit cannot undo that',
+  /curriculum'\)\.upsert\(\{ id: trackId \|\| 'default', data, is_preview: true/.test(js));
 /* The policy itself is UNCHANGED. The rule was right; what was missing
    was everything that made it true. */
 say('the read policy still fails closed on untagged content',

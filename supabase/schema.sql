@@ -1853,6 +1853,29 @@ update public.case_files set tracks = '{pgim-og-2}', subject = 'obgyn' where tra
 -- writes the same flag so an edit cannot undo it.
 update public.curriculum set is_preview = true, tracks = '{}', subject = null;
 
+-- ---------- 32) ONE CURRICULUM PER COURSE ----------
+-- v117 made this table's single row `id = 'default'` readable by everybody,
+-- which was right while there was one syllabus. There cannot be one
+-- syllabus: it IS the exam's shape. A final MBBS paper classified against
+-- Obstetrics and Gynaecology is misfiled, and a Part 1 tree with Anatomy
+-- and Physiology in it would show those to every Part 2 candidate as two
+-- more categories beside the ten they actually sit.
+--
+-- So the row key becomes the COURSE id, and the tree a candidate sees is
+-- their own course's. The bundled data/syllabus.json is the base for
+-- 'pgim-og-2' alone and says so in its own `track` field; every other
+-- course starts from an empty tree, which is the honest state of a course
+-- whose syllabus nobody has written yet.
+--
+-- THE OWNER'S OWN ADDITIONS ARE NOT LOST. Whatever was in 'default' was
+-- added to the one course that existed, so it becomes that course's tree.
+-- 'default' is left where it is as the fallback the app still reads when no
+-- course can be resolved at all.
+insert into public.curriculum (id, data, is_preview)
+  select 'pgim-og-2', data, true from public.curriculum where id = 'default'
+on conflict (id) do nothing;
+update public.curriculum set is_preview = true where is_preview is not true;
+
 -- Everybody who already has an account is already studying for it.
 insert into public.enrolments (user_id, track_id, is_primary, status)
   select id, 'pgim-og-2', true, 'active' from public.profiles

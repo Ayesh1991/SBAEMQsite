@@ -12,7 +12,8 @@
 
 const Data = (() => {
   let manifest = null;      // { papers: [...] }
-  let syllabus = null;      // { categories: [...] }
+  let syllabus = null;      // { categories: [...] } — the CURRENT course's
+  let loadedFor = null;     // which course `syllabus` belongs to
   const fileCache = new Map();
 
   async function fetchJSON(url) {
@@ -21,18 +22,74 @@ const Data = (() => {
     return res.json();
   }
 
+  /* ---------- A SYLLABUS BELONGS TO ONE EXAM ----------
+
+     Until v119 there was one tree for the platform, and it was the O&G
+     Part 2 tree. That is the one thing that cannot be shared between
+     exams: a final MBBS paper classified against Obstetrics and
+     Gynaecology is misfiled, and a Part 1 tree with Anatomy and Physiology
+     in it would have shown those to every Part 2 candidate as two more
+     categories beside the ten they actually sit.
+
+     THE BUNDLED FILE IS NOT THE PLATFORM'S TREE, it is one course's, and
+     data/syllabus.json now says which with a `track` field. It is the base
+     for that course and for nobody else; every other course is built from
+     its own row in the database, which starts empty — an empty tree is the
+     honest state of a course nobody has written a syllabus for yet, and it
+     is visibly empty rather than quietly full of the wrong subjects.
+
+     Cached per course, because switching course has to change the tree and
+     one cached tree is how the old behaviour would survive the change. */
+  const trees = new Map();
+  let bundled = null;
+
+  /* THE COURSE HAS TO BE KNOWN BEFORE THE TREE CAN BE CHOSEN, and on a
+     fresh page load it is not: Course reads the enrolments asynchronously,
+     and asking it first would get '' — which falls back to the bundled O&G
+     base and draws the wrong library for everybody. Resolving it here
+     rather than at each of the six call sites is the difference between
+     fixing it and fixing it five times. */
+  const currentTrack = async () => {
+    try {
+      if (typeof Course === 'undefined') return '';
+      await Course.load();
+      return Course.currentId() || '';
+    } catch { return ''; }
+  };
+
+  /**
+   * One course's tree. Does NOT become the current one — the developer
+   * console reads another course's tree while importing into it, and that
+   * must not repoint the library the owner is also looking at.
+   */
+  async function syllabusFor(trackId, force) {
+    const key = trackId || '';
+    if (!force && trees.has(key)) return trees.get(key);
+    if (!bundled) bundled = await fetchJSON('data/syllabus.json');
+    /* The bundled tree is the base only for the course it names. With no
+       course resolved at all — signed out, or a deployment that has not run
+       the schema — it is still the base, so nothing that worked before
+       courses existed starts showing an empty library. */
+    const base = (!key || key === (bundled.track || 'pgim-og-2'))
+      ? JSON.parse(JSON.stringify(bundled))
+      : { version: bundled.version, track: key, categories: [] };
+    let custom = null;
+    try { custom = await Backend.getCustomCurriculum(trackId); } catch { /* optional */ }
+    if (custom && Array.isArray(custom.categories)) mergeCurriculum(base, custom);
+    trees.set(key, base);
+    return base;
+  }
+
+  /** The tree for the course this candidate is on. */
   async function loadSyllabus(force) {
-    if (!syllabus || force) {
-      const base = await fetchJSON('data/syllabus.json');
-      // deep-clone so merges don't accumulate across reloads
-      const merged = JSON.parse(JSON.stringify(base));
-      let custom = null;
-      try { custom = await Backend.getCustomCurriculum(); } catch { /* optional */ }
-      if (custom && Array.isArray(custom.categories)) mergeCurriculum(merged, custom);
-      syllabus = merged;
-    }
+    const key = await currentTrack();
+    if (syllabus && !force && loadedFor === key) return syllabus;
+    syllabus = await syllabusFor(key, force);
+    loadedFor = key;
     return syllabus;
   }
+  /** Drop every cached tree — after a course switch, or an edit to one. */
+  function bustSyllabus() { trees.clear(); syllabus = null; loadedFor = null; }
 
   /** Merge developer-added categories/sections/topics on top of the static tree. */
   function mergeCurriculum(base, custom) {
@@ -282,7 +339,7 @@ const Data = (() => {
   }
 
   return {
-    loadSyllabus, loadManifest, publishedPapers, bustPapers, reloadPapers, papersProblem,
+    loadSyllabus, syllabusFor, bustSyllabus, loadManifest, publishedPapers, bustPapers, reloadPapers, papersProblem,
     categoryById, topicPath, classifyByTag,
     countSBA, countEMQ, validatePaper, flatten, looksLettered, loadPaper, primeContent
   };

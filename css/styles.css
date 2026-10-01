@@ -7043,3 +7043,14 @@ body.sc-open { overflow: hidden; }
 .co-pill.is-live { border-color: var(--gold, #c9a227); color: var(--gold, #c9a227); }
 .co-pill.is-paid { border-color: var(--warn, #e8a33d); color: var(--warn, #e8a33d); }
 .dev-enrol { max-width: 260px; }
+
+/* ============================================================
+   v119 — one syllabus per course
+   ============================================================ */
+.curr-course-wrap { display: grid; gap: 5px; margin: 4px 0 18px; }
+.curr-bulk { margin-top: 18px; }
+.curr-bulk .dev-textarea { font-size: .8rem; }
+/* The empty library is a real state, not an error — it reads as a card
+   like any other rather than as a warning. */
+.lib-nosyl { max-width: 640px; }
+.lib-nosyl a { color: var(--gold, #c9a227); }

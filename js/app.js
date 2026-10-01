@@ -882,6 +882,11 @@
     window.__aureumUser = user;
     const [syllabus, papers, progress] = await Promise.all([Data.loadSyllabus(), Data.publishedPapers(), Backend.getProgress()]);
     const pStats = Progression.paperStats(progress);
+    /* Named in the empty states, because "no syllabus yet" is only useful
+       when it says whose. */
+    let hereName = 'this course';
+    try { await Course.load(); hereName = Course.current()?.short || hereName; } catch {}
+    const isDev = devOnly(user);
 
     const byTopic = {};
     for (const p of papers) (byTopic[p.topicId] || (byTopic[p.topicId] = [])).push(p);
@@ -932,8 +937,29 @@
         <div id="lib-results" class="lib-results" hidden></div>
 
         <div id="lib-tree">
+          ${/* A BLANK PAGE IS NOT AN ANSWER. Since v119 the syllabus belongs
+                to the course, so a course nobody has written one for has no
+                categories to draw — and a question bank showing a search box
+                over nothing looks broken rather than new. Both empty states
+                say which one they are, and name the course. */''}
+          ${!cats.length ? `
+            <div class="card lib-nosyl" data-animate>
+              <h3 class="card-title">No syllabus for ${esc(hereName)} yet</h3>
+              <p class="muted">A paper is filed under a topic, so this course needs its curriculum before
+                anything can appear here. Nothing is missing and nothing has been lost — this course has
+                simply not been built yet.</p>
+              ${isDev ? `<p class="muted tiny">Build it in <a href="#/dev/papers">Developer → SBA/EMQ importer → Manage curriculum</a>,
+                 choosing this course at the top.</p>`
+                : `<p class="muted tiny">If you expected content here, the course you are on may not be the one
+                   you meant — you can change it in <a href="#/profile">your profile</a>.</p>`}
+            </div>` : !liveCats.length ? `
+            <div class="card lib-nosyl" data-animate>
+              <h3 class="card-title">No papers published for ${esc(hereName)} yet</h3>
+              <p class="muted">The curriculum is here — ${cats.length} categor${cats.length === 1 ? 'y' : 'ies'} —
+                but no paper has been filed under any of its topics.</p>
+            </div>` : ''}
           ${liveCats.map(({ cat, paperN, topicN }) => chapterCard(cat, paperN, topicN, byTopic, pStats)).join('')}
-          ${cats.filter(c => c.paperN === 0).length ? `
+          ${liveCats.length && cats.filter(c => c.paperN === 0).length ? `
             <p class="lib-empty muted">More categories unlock as papers are published:
               ${cats.filter(c => c.paperN === 0).map(c => esc(c.cat.title)).join(' · ')}.</p>` : ''}
         </div>
