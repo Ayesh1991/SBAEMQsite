@@ -72,7 +72,7 @@ const Hooks = (() => {
   async function build(force) {
     if (force && typeof Cache !== 'undefined') Cache.bust(KEY);
     const loader = async () => {
-      const papers = await Data.publishedPapers();
+      const papers = await Data.myPapers();
       // this feature needs every question, so pull the bank once rather than
       // one request per paper
       await Data.primeContent();

@@ -25,7 +25,15 @@ const Essay = (() => {
     const list = (typeof Cache !== 'undefined')
       ? await Cache.wrap('essay-papers', 15 * 60 * 1000, loader, { keepIfEmptied: true })
       : await loader();
-    return list.slice().sort(byPaperOrder);
+    /* Scoped to the candidate's course. Filtered AFTER the cache so one
+       cached read serves whichever course they switch to, and an untagged
+       paper is still shown — see Course.fits: the database decides what may
+       be read, this decides what is worth showing. */
+    const mine = (typeof Course !== 'undefined')
+      ? await (async () => { try { await Course.load(); return list.filter(p => Course.fits(p)); }
+                             catch { return list; } })()
+      : list;
+    return mine.slice().sort(byPaperOrder);
   }
   function bustPapers() { if (typeof Cache !== 'undefined') Cache.bust('essay-papers'); }
 

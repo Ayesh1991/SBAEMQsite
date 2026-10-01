@@ -418,7 +418,7 @@
 
     try {
       await Data.loadSyllabus();
-      const papers = await Data.publishedPapers();
+      const papers = await Data.myPapers();
       let sba = 0, emq = 0;
       papers.forEach(p => { sba += (p.sba || 0); emq += (p.emq || 0); });
       const host = document.getElementById('hero-stats');
@@ -654,7 +654,7 @@
     await Data.loadSyllabus();
     const progress = await Backend.getProgress();
     let publishedCount = 0;
-    try { publishedCount = (await Data.publishedPapers()).length; } catch { /* decorative */ }
+    try { publishedCount = (await Data.myPapers()).length; } catch { /* decorative */ }
     let reviewDue = [];
     try { reviewDue = await ReviewQueue.dueItems(); } catch { /* optional */ }
     let writing = null;
@@ -880,7 +880,9 @@
 
   async function renderLibrary(user) {
     window.__aureumUser = user;
-    const [syllabus, papers, progress] = await Promise.all([Data.loadSyllabus(), Data.publishedPapers(), Backend.getProgress()]);
+    /* myPapers, not publishedPapers: the bank a candidate browses is their
+       own course's. The console still lists everything — see Data.myPapers. */
+    const [syllabus, papers, progress] = await Promise.all([Data.loadSyllabus(), Data.myPapers(), Backend.getProgress()]);
     const pStats = Progression.paperStats(progress);
     /* Named in the empty states, because "no syllabus yet" is only useful
        when it says whose. */
@@ -2193,6 +2195,10 @@
     }
     if (!flags.length) { host.innerHTML = `<p class="muted card" style="padding:20px">🎉 Nothing is flagged right now — the bank is clean. Flag any question you doubt while practising and it will appear here.</p>`; return; }
 
+    /* A TITLE DICTIONARY, NOT A BANK LISTING — so it stays unfiltered. This
+       list is read by the owner and may hold flags against any course's
+       paper; filtering it would show those rows a raw id instead of a
+       title, which is worse than showing a title from elsewhere. */
     const papers = await Data.publishedPapers();
     const titleOf = pid => papers.find(p => p.id === pid)?.title || pid;
     host.innerHTML = flags.map((f, i) => {

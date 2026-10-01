@@ -1876,6 +1876,26 @@ insert into public.curriculum (id, data, is_preview)
 on conflict (id) do nothing;
 update public.curriculum set is_preview = true where is_preview is not true;
 
+-- ---------- 33) ONE BLUEPRINT PER COURSE ----------
+-- A blueprint is the SHAPE OF ONE EXAM: how many SBAs, how many EMQs, how
+-- long, and what each topic is worth. None of that transfers. A final MBBS
+-- mock built from the Part 2 weights is a Part 2 paper wearing another
+-- name, and an anatomy candidate handed thirty O&G SBAs has been given
+-- somebody else's exam.
+--
+-- So app_config gains one row per course, 'blueprint:<course id>', and the
+-- blueprint that was uploaded for the one course that existed becomes that
+-- course's own. The bare 'blueprint' row stays as the fallback the app
+-- reads when no course can be resolved, so nothing uploaded is lost.
+--
+-- The bundled data/blueprint.md names its course in its own front matter
+-- (`track: pgim-og-2`) and is the fallback for that course alone — without
+-- that, every new course would silently inherit Part 2's paper shape, which
+-- is the failure this release exists to prevent.
+insert into public.app_config (id, data)
+  select 'blueprint:pgim-og-2', data from public.app_config where id = 'blueprint'
+on conflict (id) do nothing;
+
 -- Everybody who already has an account is already studying for it.
 insert into public.enrolments (user_id, track_id, is_primary, status)
   select id, 'pgim-og-2', true, 'active' from public.profiles

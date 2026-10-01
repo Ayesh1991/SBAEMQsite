@@ -152,7 +152,10 @@ const Backend = (() => {
     });
   }
   const CASE_CARD_KEYS = ['id', 'topic', 'vignette', 'minutes', 'phase_count', 'q_count',
-    'point_count', 'sources', 'collection', 'search', 'edited_by', 'edited_at'];
+    'point_count', 'sources', 'collection', 'search', 'edited_by', 'edited_at',
+    // which exam and which speciality — the bank filters on these before it
+    // draws anything, so a card without them cannot be filtered at all
+    'tracks', 'subject'];
   const caseCard = m => { const o = {}; CASE_CARD_KEYS.forEach(k => { if (m[k] != null) o[k] = m[k]; }); return o; };
   /* A discussion CARD. The revision note and the model answers are the bulk
      of one of these files, and the list page needs neither — it needs to
@@ -672,8 +675,17 @@ const Backend = (() => {
     async function listAllCardProgress() { const e = sessionEmail(); if (!e) return {}; return read(cpKey(e), {}); }
 
     /* blueprint — single global doc (developer-editable) */
-    async function getBlueprint() { return read('blueprint', null); }
-    async function saveBlueprint(doc) { write('blueprint', doc); return doc; }
+    /* One blueprint per course — the exam's shape transfers to no other
+       exam. The unkeyed row is the pre-v121 one and is read as the course
+       that existed, so an uploaded blueprint is not lost. */
+    const bpKey = t => t ? 'blueprint:' + t : 'blueprint';
+    async function getBlueprint(trackId) {
+      const own = read(bpKey(trackId), null);
+      if (own) return own;
+      if (!trackId || trackId === 'pgim-og-2') return read('blueprint', null);
+      return null;
+    }
+    async function saveBlueprint(doc, trackId) { write(bpKey(trackId), doc); return doc; }
 
     /* adaptive-simulator mock results — per-user */
     const mKey = e => 'mocks.' + e;
@@ -1666,7 +1678,8 @@ const Backend = (() => {
     /* ---- case discussions ---- */
     async function getCases() {
       await ensureClient();
-      return (await catalogue('the cases', () => sb.from('case_files').select('id,meta').order('id'))).map(r => caseCard(r.meta));
+      return (await catalogue('the cases', () => sb.from('case_files').select('id,meta,tracks,subject').order('id')))
+        .map(r => Object.assign(caseCard(r.meta), { tracks: r.tracks || [], subject: r.subject || null }));
     }
     async function getCase(id) {
       await ensureClient();
@@ -1898,7 +1911,11 @@ const Backend = (() => {
     const CARD_SELECT = 'id,' +
       'title:meta->>title,source:meta->>source,driveKey:meta->>driveKey,file:meta->>file,' +
       'categoryId:meta->>categoryId,sectionId:meta->>sectionId,topicId:meta->>topicId,' +
-      'sba:meta->sba,emq:meta->emq';
+      /* `tf` joined v120 and `tracks`/`subject` are columns, not meta — the
+         read policy filters on `tracks`, so a policy cannot look inside
+         jsonb it has no index on. Without them on the card, the bank has
+         nothing to filter by and a true/false paper shows no T/F badge. */
+      'sba:meta->sba,emq:meta->emq,tf:meta->tf,tracks,subject';
     let cardSelectOk = true;          // set false once if the server will not project
     const numOr0 = v => (v == null || v === '') ? 0 : (Number(v) || 0);
 
@@ -1907,7 +1924,7 @@ const Backend = (() => {
         try {
           const rows = await catalogue('the question bank',
             () => sb.from('papers').select(CARD_SELECT).order('id'));
-          return rows.map(r => ({ ...r, sba: numOr0(r.sba), emq: numOr0(r.emq) }));
+          return rows.map(r => ({ ...r, sba: numOr0(r.sba), emq: numOr0(r.emq), tf: numOr0(r.tf) }));
         } catch (e) {
           // only a REJECTED PROJECTION falls back; a genuine read failure must surface
           if (!/failed to parse|unexpected|selector|42601|PGRST100|PGRST20/i.test(String(e.message || e))) throw e;
@@ -2057,8 +2074,20 @@ const Backend = (() => {
     }
 
     /* blueprint — single global doc (dev-editable) */
-    async function getBlueprint() { await ensureClient(); const { data } = await sb.from('app_config').select('data').eq('id', 'blueprint').single(); return data?.data || null; }
-    async function saveBlueprint(doc) { await ensureClient(); await sb.from('app_config').upsert({ id: 'blueprint', data: doc, updated_at: new Date().toISOString() }); return doc; }
+    /* app_config rows: 'blueprint:<course>', with the bare 'blueprint' row
+       read as the course that existed before courses did. */
+    const bpId = t => t ? 'blueprint:' + t : 'blueprint';
+    async function getBlueprint(trackId) {
+      await ensureClient();
+      const ids = [bpId(trackId)];
+      if (!trackId || trackId === 'pgim-og-2') ids.push('blueprint');
+      for (const id of ids) {
+        const { data } = await sb.from('app_config').select('data').eq('id', id).maybeSingle();
+        if (data?.data) return data.data;
+      }
+      return null;
+    }
+    async function saveBlueprint(doc, trackId) { await ensureClient(); await sb.from('app_config').upsert({ id: bpId(trackId), data: doc, updated_at: new Date().toISOString() }); return doc; }
 
     /* adaptive-simulator mock results — per-user */
     async function saveMockResult(result) {
@@ -2681,7 +2710,12 @@ const Backend = (() => {
 
     /* essay papers (dev-published, everyone reads) */
     async function getEssayPapers() {
-      return (await catalogue('the essay papers', () => sb.from('essay_papers').select('id,meta').order('id'))).map(r => r.meta);
+      /* `tracks` and `subject` are columns beside `meta`, so they have to be
+         selected and folded in or the bank cannot tell which course an
+         essay paper belongs to. */
+      return (await catalogue('the essay papers',
+        () => sb.from('essay_papers').select('id,meta,tracks,subject').order('id')))
+        .map(r => Object.assign({}, r.meta, { tracks: r.tracks || [], subject: r.subject || null }));
     }
     async function publishEssayPaper(meta) { await ensureClient(); await sb.from('essay_papers').upsert(Object.assign({ id: meta.id, meta }, await contentTags(meta))); return meta; }
     async function unpublishEssayPaper(id) { await ensureClient(); await sb.from('essay_papers').delete().eq('id', id); }

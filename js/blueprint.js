@@ -97,6 +97,10 @@ const Blueprint = (() => {
     const paper = doc.paper || {};
     return {
       id: doc.blueprint || 'blueprint',
+      /* Which course's exam this describes. Carried through normalise so a
+         stored blueprint still knows, and so the bundled file can be
+         refused as a fallback for a course it does not belong to. */
+      track: doc.track || '',
       version: doc.version || 1,
       updated: doc.updated || '',
       paper: {
@@ -149,22 +153,51 @@ const Blueprint = (() => {
     return null;
   }
 
-  async function load() {
+  /* ---------- ONE BLUEPRINT PER COURSE ----------
+
+     A blueprint is the SHAPE OF ONE EXAM: how many SBAs, how many EMQs,
+     how long, what each topic is worth. None of that transfers. A final
+     MBBS mock built from the Part 2 weights is a Part 2 paper wearing
+     another name, and an anatomy candidate given thirty O&G SBAs has been
+     handed somebody else's exam.
+
+     So the stored row is keyed by course, and the bundled data/blueprint.md
+     is the fallback for the course it NAMES and for no other — otherwise
+     every new course would silently inherit Part 2's paper. A course with
+     no blueprint has an empty one, which the simulator reports rather than
+     building a mock out of nothing. */
+  const trackNow = async () => {
+    try {
+      if (typeof Course === 'undefined') return '';
+      await Course.load();
+      return Course.currentId() || '';
+    } catch { return ''; }
+  };
+  const keyFor = t => t ? KEY + ':' + t : KEY;
+  const EMPTY = () => ({ sba: [], emq: [], priority: [], paper: {}, notes: '' });
+
+  async function load(trackId) {
+    const t = trackId === undefined ? await trackNow() : (trackId || '');
     const loader = async () => {
       let doc = null;
-      try { doc = await Backend.getBlueprint?.(); } catch { doc = null; }
+      try { doc = await Backend.getBlueprint?.(t); } catch { doc = null; }
       if (doc && (doc.sba?.length || doc.emq?.length)) return doc;   // already-normalised stored doc
       const bundled = await fetchBundled();
-      return bundled || { sba: [], emq: [], priority: [], paper: {}, notes: '' };
+      /* THE BUNDLED FILE IS ONE COURSE'S. With no course resolved at all it
+         still applies, so a deployment that has never run the schema keeps
+         the simulator it had before courses existed. */
+      if (bundled && (!t || !bundled.track || bundled.track === t)) return bundled;
+      return EMPTY();
     };
-    return (typeof Cache !== 'undefined') ? Cache.wrap(KEY, TTL, loader) : loader();
+    return (typeof Cache !== 'undefined') ? Cache.wrap(keyFor(t), TTL, loader) : loader();
   }
 
-  async function save(doc) {
+  async function save(doc, trackId) {
     const normalised = doc.sba ? doc : normalise(doc);
-    try { await Backend.saveBlueprint?.(normalised); } catch { /* dev only */ }
+    const t = trackId === undefined ? await trackNow() : (trackId || '');
+    try { await Backend.saveBlueprint?.(normalised, t); } catch { /* dev only */ }
     if (typeof Cache !== 'undefined') {
-      Cache.set(KEY, normalised);
+      Cache.set(keyFor(t), normalised);
       // Everything derived from the blueprint must be rebuilt, or the maps and
       // the next paper would keep quoting the buckets/areas you just changed.
       ['coverage-index', 'sim-qindex', 'sim-qtags', 'sim-qstats'].forEach(k => Cache.bust(k));
@@ -172,7 +205,16 @@ const Blueprint = (() => {
     try { window.dispatchEvent(new CustomEvent('aureum:blueprint-changed', { detail: normalised })); } catch {}
     return normalised;
   }
-  function bust() { if (typeof Cache !== 'undefined') Cache.bust(KEY); }
+  /* Busting one course's copy is never enough: a course switch has to drop
+     them all, and the caller that switches does not know which are cached. */
+  function bust(trackId) {
+    if (typeof Cache === 'undefined') return;
+    if (trackId) { Cache.bust(keyFor(trackId)); return; }
+    Cache.bust(KEY);
+    try {
+      (typeof Course !== 'undefined' ? Course.all() : []).forEach(t => Cache.bust(keyFor(t.id)));
+    } catch { /* the unkeyed one is busted either way */ }
+  }
 
   /* ---------- planning helpers ---------- */
 

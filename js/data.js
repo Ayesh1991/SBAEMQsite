@@ -151,10 +151,39 @@ const Data = (() => {
       problem = { kind: 'failed', message: `Could not load the question bank: ${e.message || e}` };
     }
     const byId = new Map();
-    for (const p of fromManifest) byId.set(p.id, p);
+    /* THE BUNDLED BANK BELONGS TO ONE COURSE, and data/manifest.json names
+       which. Without this stamp those papers reach the filter with no
+       `tracks` at all, count as unfiled — which errs towards showing them —
+       and a final MBBS candidate is handed five O&G Part 2 papers. An entry
+       that names its own course keeps it. */
+    const manifestTrack = manifest.track || '';
+    for (const p of fromManifest) {
+      byId.set(p.id, (manifestTrack && !(p.tracks || []).length)
+        ? { ...p, tracks: [manifestTrack] } : p);
+    }
     for (const p of fromBackend) byId.set(p.id, p);      // backend overrides/extends
     return [...byId.values()];
   }
+  /**
+   * The papers for the course this candidate is on.
+   *
+   * WHY NOT INSIDE publishedPapers(). That one is also what the developer
+   * console lists, and an editor has to see every paper on the platform —
+   * including the ones belonging to courses they are not studying for, which
+   * are exactly the ones they are most likely to be fixing. Filtering at
+   * the source would hide an editor's own work from them.
+   *
+   * AND IT IS NOT THE SECURITY. The database already refused to send a
+   * paper this account may not read, in the policy that calls
+   * can_read_tracks(). This removes what they MAY read and are not sitting.
+   */
+  async function myPapers() {
+    const all = await publishedPapers();
+    if (typeof Course === 'undefined') return all;
+    try { await Course.load(); } catch { return all; }
+    return all.filter(p => Course.fits(p));
+  }
+
   /** Call after publishing/unpublishing so the next read re-fetches from Supabase. */
   function bustPapers() { if (typeof Cache !== 'undefined') Cache.bust(PAPERS_KEY); }
   /** Throw away every cached copy and re-read the bank from Supabase. */
@@ -437,7 +466,7 @@ const Data = (() => {
   }
 
   return {
-    loadSyllabus, syllabusFor, bustSyllabus, loadManifest, publishedPapers, bustPapers, reloadPapers, papersProblem,
+    loadSyllabus, syllabusFor, bustSyllabus, loadManifest, publishedPapers, myPapers, bustPapers, reloadPapers, papersProblem,
     categoryById, topicPath, classifyByTag,
     countSBA, countEMQ, countTF, validatePaper, flatten, looksLettered, loadPaper, primeContent
   };

@@ -1,7 +1,8 @@
 {
   "version": 2,
   "updated": "2026-07-10",
-  "note": "Published papers. Each entry attaches a paper file to a syllabus topic. hasSBA/hasEMQ drive the badges on paper cards. Add entries via the developer console or by hand.",
+  "track": "pgim-og-2",
+  "note": "Published papers, and they belong to ONE COURSE: this bundled bank is the PGIM MD (O&G) Part 2's, which `track` names. From v121 publishedPapers() stamps every entry here with it, so a final MBBS or Part 1 candidate is not shown five O&G papers — a bundled paper with no course would otherwise count as unfiled and be shown to everybody. Each entry attaches a paper file to a syllabus topic. hasSBA/hasEMQ drive the badges on paper cards. Add entries via the developer console or by hand.",
   "papers": [
     {
       "id": "p-hypertensive-disorders",

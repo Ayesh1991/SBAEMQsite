@@ -65,7 +65,13 @@ const Cases = (() => {
   let _cases = null;
   async function cases() {
     if (_cases) return _cases;
-    _cases = await Backend.getCases();
+    const all = await Backend.getCases();
+    /* One course's cases. A long case written for final MBBS is not a
+       harder Part 2 case, it is a different exam. */
+    if (typeof Course !== 'undefined') {
+      try { await Course.load(); _cases = all.filter(c => Course.fits(c)); }
+      catch { _cases = all; }
+    } else _cases = all;
     return _cases;
   }
   function bustCases() { _cases = null; }
