@@ -1,5 +1,12 @@
 ---
 blueprint: pgim-mrcog-part2
+# WHOSE EXAM THIS IS. Like data/syllabus.json, this bundled file is one
+# course's blueprint and not the platform's: the paper shape and the topic
+# weights of the PGIM MD (O&G) Part 2. From v121 it is the fallback for
+# that course alone — a final MBBS or a Part 1 mock built from these
+# weights would be a Part 2 paper wearing another name. Every other course
+# keeps its own blueprint in the database, uploaded in the developer tab.
+track: pgim-og-2
 version: 2
 updated: 2026-07-16
 source_papers:

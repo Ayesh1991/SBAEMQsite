@@ -48,7 +48,10 @@ const Simulator = (() => {
   async function buildIndex(force) {
     if (force && typeof Cache !== 'undefined') Cache.bust(IDX_KEY);
     const loader = async () => {
-      const papers = await Data.publishedPapers();
+      /* THE MOCK POOL IS ONE COURSE'S. A final MBBS mock containing Part 2
+         questions is not a hard mock, it is the wrong exam — and the
+         blueprint it is built from is now that course's too. */
+      const papers = await Data.myPapers();
       // this feature needs every question, so pull the bank once rather than
       // one request per paper
       await Data.primeContent();
@@ -1236,6 +1239,30 @@ const Simulator = (() => {
       bp = b; hist = h; index = enrich(raw, stats, tags);
     }
     catch (e) { view.innerHTML = `<section class="page narrow"><p class="bad">Could not prepare the mock: ${esc(e.message || e)}</p><a class="btn btn-ghost" href="#/simulator">Back</a></section>`; return; }
+
+    /* NO BLUEPRINT, NO ADAPTIVE MOCK — and it has to say so.
+       Since v121 the blueprint belongs to the course, and a course nobody
+       has written one for has none. Sampling "the blueprint" with no buckets
+       would fall straight through to the top-up and hand out thirty
+       arbitrary questions dressed as a blueprint-shaped paper, which is the
+       one thing this engine must never do: a mock whose weighting is a lie
+       is worse than no mock, because the result is believed. */
+    if (!((bp?.sba || []).length || (bp?.emq || []).length)) {
+      const who = (() => { try { return Course.current()?.short || 'this course'; } catch { return 'this course'; } })();
+      view.innerHTML = `<section class="page narrow" data-animate>
+        <header><p class="kicker">ADAPTIVE SIMULATOR</p>
+        <h1 class="page-title">No blueprint for ${esc(who)} yet</h1></header>
+        <div class="card">
+          <p class="muted">The daily mock is sampled from a blueprint — how many questions from each topic, and
+            what each is worth. ${esc(who)} does not have one yet, so there is nothing to sample against, and
+            a paper built without it would look blueprint-shaped while being arbitrary.</p>
+          <p class="muted">You can still <a href="#/simulator/design">design your own paper</a> by choosing
+            topics, and every paper in the library works as normal.</p>
+        </div>
+        <a class="btn btn-ghost" href="#/simulator">← Back</a></section>`;
+      FX.viewIn(view);
+      return;
+    }
 
     // ---- pre-mock weakness chooser ----
     // Weak areas from previous mocks: tick the ones you've STUDIED (they'll

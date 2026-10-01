@@ -53,7 +53,10 @@ const Coverage = (() => {
   async function buildIndex(force) {
     if (force && typeof Cache !== 'undefined') Cache.bust(IDX_KEY);
     const loader = async () => {
-      const [papers] = await Promise.all([Data.publishedPapers()]);
+      /* The coverage map measures THIS candidate's bank against THIS
+         course's blueprint. Counting another course's papers towards it
+         would report coverage they cannot sit. */
+      const [papers] = await Promise.all([Data.myPapers()]);
       // the index covers every question in the bank, so pull the content once
       // rather than issuing one request per paper
       await Data.primeContent();

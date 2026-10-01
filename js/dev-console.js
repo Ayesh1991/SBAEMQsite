@@ -444,7 +444,18 @@ const DevConsole = (() => {
 
   /* ---------------- section: exam blueprint ---------------- */
 
+  /* WHICH COURSE'S BLUEPRINT IS OPEN. '' means the editor's own course,
+     which is what every call did before there was more than one. A blueprint
+     is the shape of ONE exam, so editing it without saying which exam is
+     the mistake this picker exists to make impossible. */
+  let bpTrack = '';
+  const bpLoad = () => Blueprint.load(bpTrack || undefined);
+  const bpSave = doc => Blueprint.save(doc, bpTrack || undefined);
+
   async function renderBlueprintSection(view) {
+    try { await Course.load(); } catch {}
+    const courses = (() => { try { return Course.all(); } catch { return []; } })();
+    if (!courses.some(c => c.id === bpTrack)) bpTrack = '';
     view.innerHTML = `
       <section class="page">
         ${backLink}
@@ -453,9 +464,16 @@ const DevConsole = (() => {
           <h1 class="page-title">Exam blueprint</h1>
           <p class="muted">Drives which topics the daily mock samples. Upload the blueprint Markdown
             (YAML front-matter) or JSON. Stored on the server and used across devices; the bundled
-            <code>data/blueprint.md</code> is the fallback.</p>
+            <code>data/blueprint.md</code> is the fallback <em>for the course it names</em> —
+            every other course starts with no blueprint, because a paper shape transfers to no
+            other exam.</p>
         </header>
         <div class="card" data-animate>
+          ${courses.length ? `
+          <label class="field curr-course-wrap" style="max-width:380px"><span>Blueprint for</span>
+            <select class="sel" id="bp-course">
+              ${courses.map(t => `<option value="${ctx.esc(t.id)}"${t.id === (bpTrack || Course.currentId()) ? ' selected' : ''}>${ctx.esc(t.short)}</option>`).join('')}
+            </select></label>` : ''}
           <div class="dev-toolbar">
             <label class="btn btn-ghost" style="cursor:pointer">⬆ Upload file
               <input type="file" id="bp-file" accept=".md,.markdown,.json,.txt" hidden>
@@ -472,6 +490,15 @@ const DevConsole = (() => {
     view.querySelector('#bp-file').addEventListener('change', uploadBlueprint);
     view.querySelector('#bp-edit').addEventListener('click', () => openBlueprintStudio(view));
     view.querySelector('#bp-coverage').addEventListener('click', () => runCoverage(view));
+    view.querySelector('#bp-course')?.addEventListener('change', e => {
+      bpTrack = e.target.value;
+      /* A half-edited blueprint belongs to the course it was opened for, so
+         switching course puts the Studio away rather than carrying the edit
+         across and saving it to the wrong exam. */
+      bpEdit = null;
+      view.querySelector('#bp-studio').innerHTML = '';
+      refreshBlueprint(view);
+    });
     bpEdit = null;
     await refreshBlueprint(view);
     ctx.FX.viewIn(view);
@@ -537,7 +564,7 @@ const DevConsole = (() => {
   async function runCoverage(view) {
     const status = view.querySelector('#bp-status');
     status.textContent = 'Scanning the bank…'; status.className = 'dev-status';
-    let doc; try { doc = bpEdit || await Blueprint.load(); } catch { doc = null; }
+    let doc; try { doc = bpEdit || await bpLoad(); } catch { doc = null; }
     if (!doc) { status.innerHTML = '<span class="bad">No blueprint loaded.</span>'; return; }
     try {
       bpCoverage = await computeCoverage(doc);
@@ -1235,7 +1262,7 @@ const DevConsole = (() => {
       if (/\.json$/i.test(file.name)) { const raw = JSON.parse(text); doc = raw.sba ? raw : Blueprint.normalise(raw); }
       else doc = Blueprint.parseFrontMatter(text);
       if (!(doc.sba || []).length && !(doc.emq || []).length) throw new Error('No blueprint_sba / blueprint_emq buckets found in the file.');
-      await Blueprint.save(doc);
+      await bpSave(doc);
       status.innerHTML = `<span class="good">✓ Saved — ${doc.sba.length} SBA topics, ${doc.emq.length} EMQ themes.</span>`;
       bpEdit = null; bpCoverage = null;
       const v = document.getElementById('view'); v.querySelector('#bp-studio').innerHTML = '';
@@ -1245,8 +1272,17 @@ const DevConsole = (() => {
   }
   async function refreshBlueprint(view) {
     const host = view.querySelector('#bp-summary');
-    let doc; try { doc = await Blueprint.load(); } catch { doc = null; }
-    if (!doc || (!(doc.sba || []).length && !(doc.emq || []).length)) { host.innerHTML = `<p class="muted">No blueprint loaded yet — the bundled default is used until you upload one, or press <strong>Edit in Studio</strong> to build one.</p>`; return; }
+    let doc; try { doc = await bpLoad(); } catch { doc = null; }
+    if (!doc || (!(doc.sba || []).length && !(doc.emq || []).length)) {
+      /* An empty blueprint is the normal state of a new course, and saying
+         so plainly is the difference between "not built yet" and "broken".
+         The simulator refuses to build a mock without one. */
+      const who = (() => { try { return Course.byId(bpTrack)?.short || Course.current()?.short || 'this course'; } catch { return 'this course'; } })();
+      host.innerHTML = `<p class="muted">No blueprint for <strong>${ctx.esc(who)}</strong> yet — the daily mock
+        cannot be built until it has one. Upload the Markdown above, or press <strong>Edit in Studio</strong>
+        to build one by hand.</p>`;
+      return;
+    }
     const sbaW = doc.sba.reduce((s, b) => s + b.weight, 0), emqW = doc.emq.reduce((s, b) => s + b.weight, 0);
     host.innerHTML = `<div class="bp-summary">
       <p class="good">Blueprint v${doc.version || 1}${doc.updated ? ' · ' + ctx.esc(doc.updated) : ''} loaded.</p>
@@ -1265,7 +1301,7 @@ const DevConsole = (() => {
   const bpSum = arr => (arr || []).reduce((s, b) => s + (Number(b.weight) || 0), 0);
 
   async function openBlueprintStudio(view) {
-    let doc; try { doc = await Blueprint.load(); } catch { doc = null; }
+    let doc; try { doc = await bpLoad(); } catch { doc = null; }
     doc = doc || {};
     // Repair legacy rows: areas saved as objects by the old parser are
     // flattened back to readable strings instead of showing [object Object].
@@ -1637,7 +1673,7 @@ const DevConsole = (() => {
     bpEdit.updated = new Date().toISOString().slice(0, 10);
     status.textContent = 'Saving…'; status.className = 'dev-status';
     try {
-      await Blueprint.save(JSON.parse(JSON.stringify(bpEdit)));   // persists + busts cache → next mock uses it
+      await bpSave(JSON.parse(JSON.stringify(bpEdit)));   // persists + busts cache → next mock uses it
       status.innerHTML = `<span class="good">✓ Saved v${bpEdit.version} — the next mock uses it.</span>`;
       await refreshBlueprint(view);
     } catch (e) { status.innerHTML = `<span class="bad">${ctx.esc(e.message || e)}</span>`; }

@@ -62,11 +62,28 @@ const Course = (() => {
   }
   const bust = () => {
     _tracks = _mine = _loaded = null;
-    /* The syllabus is the course's, so forgetting the course has to forget
-       the tree with it — otherwise the next person, or the next course,
-       reads the last one's categories. */
-    try { Data.bustSyllabus?.(); } catch {}
+    /* Everything scoped to a course has to be forgotten with it, or the
+       next person — or the next course — reads the last one's. */
+    forgetCourseScoped();
   };
+
+  /**
+   * Drop every cached thing that belongs to a course: the syllabus tree, the
+   * exam blueprint, the paper/essay/case banks, and the derived indexes the
+   * simulator and the coverage map build from them.
+   *
+   * ONE LIST, IN ONE PLACE. These caches are spread over six modules, and
+   * the failure when one is missed is the worst kind — not an error, just
+   * the previous course's content sitting on the page looking plausible.
+   */
+  function forgetCourseScoped() {
+    try { Data.bustSyllabus?.(); } catch {}
+    try { Data.bustPapers?.(); } catch {}
+    try { Blueprint.bust?.(); } catch {}
+    try { Essay.bustPapers?.(); } catch {}
+    try { Cases.bustCases?.(); } catch {}
+    try { if (typeof Cache !== 'undefined') ['coverage-index', 'sim-qindex', 'sim-qtags', 'sim-qstats'].forEach(k => Cache.bust(k)); } catch {}
+  }
 
   /** Every course a candidate may choose right now. */
   const live = () => (_tracks || []).filter(t => t.isLive);
@@ -201,10 +218,11 @@ const Course = (() => {
   async function choose(id) {
     await Backend.setPrimaryTrack(id);
     _mine = await Backend.myEnrolments();
-    /* A different exam is a different syllabus — the library, the coverage
-       map and the paper classifier all read it, and all of them would
-       otherwise keep showing the course just left. */
-    try { Data.bustSyllabus?.(); } catch {}
+    /* A different exam is a different syllabus, a different blueprint and a
+       different bank — the library, the coverage map, the simulator and the
+       paper classifier all read them, and all of them would otherwise keep
+       showing the course just left. */
+    forgetCourseScoped();
     return current();
   }
 
