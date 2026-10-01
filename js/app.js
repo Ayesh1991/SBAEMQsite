@@ -76,8 +76,8 @@
     { re: /^#\/library\/cpd\/([^/]+)\/([^/]+)$/, fn: (v, sec, u) => cpdGate(u) && CPD.renderTopic(view, v, sec, u) },
     { re: /^#\/library\/cpd\/([^/]+)$/, fn: (v, u) => cpdGate(u) && CPD.renderVolume(view, v, u) },
     { re: /^#\/paper\/([^/]+)$/, fn: renderPaper },
-    { re: /^#\/quiz\/([^/]+)\/(SBA|EMQ)\/(exam|study)$/, fn: renderQuiz },
-    { re: /^#\/quiz\/([^/]+)\/(SBA|EMQ)\/(exam|study)\/fresh$/, fn: (p, k, m, u) => renderQuiz(p, k, m, u, true) },
+    { re: /^#\/quiz\/([^/]+)\/(SBA|EMQ|TF)\/(exam|study)$/, fn: renderQuiz },
+    { re: /^#\/quiz\/([^/]+)\/(SBA|EMQ|TF)\/(exam|study)\/fresh$/, fn: (p, k, m, u) => renderQuiz(p, k, m, u, true) },
     { re: /^#\/results\/([^/]+)$/, fn: renderResults },
     { re: /^#\/profile$/, fn: renderProfile },
     { re: /^#\/studio$/, fn: renderStudio },
@@ -906,7 +906,8 @@
           <p class="kicker">THEORY · QUESTION BANK</p>
           <h1 class="page-title">Choose a paper</h1>
           <p class="muted">Browse the curriculum, or search a topic or paper. Each paper is marked
-            <span class="chip chip-sba">SBA</span> and, where present, <span class="chip chip-emq">EMQ</span>.</p>
+            <span class="chip chip-sba">SBA</span> and, where present, <span class="chip chip-emq">EMQ</span>
+            and <span class="chip chip-tf">T/F</span>.</p>
         </header>
 
         <div class="lib-search" data-animate>
@@ -1201,8 +1202,12 @@
     return `
       <a class="paper-card" href="#/paper/${encodeURIComponent(p.id)}" style="--card-accent:${m.grad}">
         <div class="paper-badges">
-          <span class="chip chip-sba">SBA ${p.sba || 0}</span>
+          ${/* A paper of pure true/false has no SBA count to show, and a
+                 "SBA 0" chip on it is a worse answer than no chip. */''}
+          ${p.sba ? `<span class="chip chip-sba">SBA ${p.sba}</span>` : ''}
           ${p.emq ? `<span class="chip chip-emq">EMQ ${p.emq}</span>` : ''}
+          ${p.tf ? `<span class="chip chip-tf">T/F ${p.tf}</span>` : ''}
+          ${(!p.sba && !p.emq && !p.tf) ? `<span class="chip chip-sba">SBA 0</span>` : ''}
           ${!attempted ? `<span class="chip chip-new">NEW</span>` : ''}
         </div>
         <h4>${esc(p.title)}</h4>
@@ -1220,7 +1225,7 @@
   async function renderPaper(paperId, user) {
     const loaded = await Data.loadPaper(paperId);
     const { meta, paper, path } = loaded;
-    const sbaN = Data.countSBA(paper), emqN = Data.countEMQ(paper);
+    const sbaN = Data.countSBA(paper), emqN = Data.countEMQ(paper), tfN = Data.countTF(paper);
     const progress = await Backend.getProgress();
     const pStats = Progression.paperStats(progress);
 
@@ -1258,6 +1263,7 @@
         <div class="run-grid">
           ${sbaN ? runCard('SBA', sbaN, bestFor('SBA'), paperId, sessions, seenIn('SBA')) : ''}
           ${emqN ? runCard('EMQ', emqN, bestFor('EMQ'), paperId, sessions, seenIn('EMQ')) : ''}
+          ${tfN ? runCard('TF', tfN, bestFor('TF'), paperId, sessions, seenIn('TF')) : ''}
         </div>
         <p class="muted mode-note">
           <strong>Exam mode</strong> is timed and shows feedback at the end.
@@ -1284,6 +1290,10 @@
       location.hash = '#/quiz/' + key.split(':').map(encodeURIComponent).join('/');
     }));
   }
+
+  /* The kind is 'TF' everywhere it is stored — in the question key, in the
+     route, in the progress row — and "T/F" only where it is read. */
+  const kindLabel = k => k === 'TF' ? 'T/F' : k;
 
   function runCard(kind, n, best, paperId, sessions, seen = 0) {
     const fresh = Math.max(0, n - seen);
@@ -1312,7 +1322,7 @@
     return `
       <div class="run-card" data-kind="${kind}">
         <div class="run-head">
-          <span class="chip chip-${kind.toLowerCase()}">${kind}</span>
+          <span class="chip chip-${kind.toLowerCase()}">${kindLabel(kind)}</span>
           <span class="run-count">${n} question${n > 1 ? 's' : ''}</span>
           ${seen > 0 ? `<span class="run-seen" title="Answered before, here or in a mock">${seen} seen</span>` : ''}
         </div>

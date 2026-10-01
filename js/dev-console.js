@@ -298,8 +298,10 @@ const DevConsole = (() => {
         <div class="card" data-animate>
           <details class="dev-collapse">
             <summary><span class="card-title">Manual import (paste JSON)</span><span class="dc-caret">▸</span></summary>
-            <p class="muted">Paste a single paper's JSON (ogr-paper-v1) to validate and publish it directly.</p>
-            <textarea id="dev-paste" class="dev-textarea" placeholder='{ "schema": "ogr-paper-v1", "topic": "…", "sba": [...], "emq": [...] }'></textarea>
+            <p class="muted">Paste a single paper's JSON (ogr-paper-v1) to validate and publish it directly.
+              A paper may carry <strong>sba</strong>, <strong>emq</strong> and <strong>tf</strong> (true/false)
+              in any combination — see <code>docs/JSON_FORMAT.md</code>.</p>
+            <textarea id="dev-paste" class="dev-textarea" placeholder='{ "schema": "ogr-paper-v1", "topic": "…", "sba": [...], "emq": [...], "tf": [...] }'></textarea>
             <button class="btn btn-primary" id="dev-paste-btn" style="margin-top:12px">Validate &amp; stage</button>
             <div id="dev-paste-result"></div>
           </details>
@@ -965,7 +967,7 @@ const DevConsole = (() => {
 
   function newFileRow(f, i) {
     const suggest = f.classification || ctx.Data.classifyByTag(f.paper ? (f.paper.folderTag || f.paper.topic) : ((f.folder || '').split(' / ').pop() || String(f.title || '').replace(/\.json$/i, '')));
-    const badges = f.counts ? `<span class="chip chip-sba">SBA ${f.counts.sba}</span> ${f.counts.emq ? `<span class="chip chip-emq">EMQ ${f.counts.emq}</span>` : ''}` : '';
+    const badges = f.counts ? `${f.counts.sba ? `<span class="chip chip-sba">SBA ${f.counts.sba}</span> ` : ''}${f.counts.emq ? `<span class="chip chip-emq">EMQ ${f.counts.emq}</span> ` : ''}${f.counts.tf ? `<span class="chip chip-tf">T/F ${f.counts.tf}</span>` : ''}` : '';
     return `
       <div class="dev-row card" data-i="${i}">
         <div class="dev-row-head">
@@ -1058,6 +1060,7 @@ const DevConsole = (() => {
       topicId: els.topSel.value,
       sba: ctx.Data.countSBA(paper),
       emq: ctx.Data.countEMQ(paper),
+      tf: ctx.Data.countTF(paper),
       /* Which course, when the toolbar is asking. Left off when it is not:
          contentTags() then stamps the editor's own course, so a paper
          cannot reach the database filed nowhere. */
@@ -1078,12 +1081,16 @@ const DevConsole = (() => {
     catch (e) { out.innerHTML = `<p class="bad">Invalid JSON: ${ctx.esc(e.message)}</p>`; return; }
     const errors = ctx.Data.validatePaper(paper);
     if (errors.length) { out.innerHTML = `<p class="bad">${errors.map(ctx.esc).join('<br>')}</p>`; return; }
-    const f = { key: 'paste-' + slug(paper.topic || 'paper'), title: (paper.topic || 'Pasted paper') + '.json', folder: 'manual', paper, counts: { sba: ctx.Data.countSBA(paper), emq: ctx.Data.countEMQ(paper) } };
+    const f = { key: 'paste-' + slug(paper.topic || 'paper'), title: (paper.topic || 'Pasted paper') + '.json', folder: 'manual', paper, counts: { sba: ctx.Data.countSBA(paper), emq: ctx.Data.countEMQ(paper), tf: ctx.Data.countTF(paper) } };
     stagedNew = [f];
     const list = document.getElementById('dev-list');
     list.innerHTML = newFileRow(f, 0);
     wireRow(f, 0, list);
-    out.innerHTML = `<p class="good">Valid ogr-paper-v1 · ${f.counts.sba} SBA / ${f.counts.emq} EMQ — classify and publish above.</p>`;
+    out.innerHTML = `<p class="good">Valid ogr-paper-v1 · ${[
+      f.counts.sba ? f.counts.sba + ' SBA' : '',
+      f.counts.emq ? f.counts.emq + ' EMQ' : '',
+      f.counts.tf ? f.counts.tf + ' true/false' : ''
+    ].filter(Boolean).join(' / ')} — classify and publish above.</p>`;
     list.scrollIntoView({ behavior: 'smooth' });
   }
 
@@ -2095,7 +2102,7 @@ const DevConsole = (() => {
     } else if (Number.isInteger(pd.answer)) q.answer = pd.answer;
     if (loc.type === 'sba' && pd.lead != null) q.lead = pd.lead;
     if (loc.type === 'emq' && pd.theme) loc.block.theme = pd.theme;
-    const meta = { ...loaded.meta, content: loaded.paper, sba: ctx.Data.countSBA(loaded.paper), emq: ctx.Data.countEMQ(loaded.paper) };
+    const meta = { ...loaded.meta, content: loaded.paper, sba: ctx.Data.countSBA(loaded.paper), emq: ctx.Data.countEMQ(loaded.paper), tf: ctx.Data.countTF(loaded.paper) };
     delete meta.file;
     await ctx.Backend.publishPaper(meta);
     ctx.Data.bustPapers?.();
@@ -2192,7 +2199,7 @@ const DevConsole = (() => {
       </div>`;
     const val = f => hostEl.querySelector(`[data-f="${f}"]`)?.value;
     async function republish(reason) {
-      const meta = { ...loaded.meta, content: loaded.paper, sba: ctx.Data.countSBA(loaded.paper), emq: ctx.Data.countEMQ(loaded.paper) };
+      const meta = { ...loaded.meta, content: loaded.paper, sba: ctx.Data.countSBA(loaded.paper), emq: ctx.Data.countEMQ(loaded.paper), tf: ctx.Data.countTF(loaded.paper) };
       delete meta.file;                              // backend copy overrides any bundled file
       await ctx.Backend.publishPaper(meta);
       ctx.Data.bustPapers?.();
@@ -2585,7 +2592,7 @@ const DevConsole = (() => {
     for (const pid of Object.keys(byPaper)) {
       let loaded; try { loaded = await ctx.Data.loadPaper(pid); } catch { continue; }
       const flat = {};
-      ['SBA', 'EMQ'].forEach(kind => ctx.Data.flatten(loaded.paper, kind).forEach(q => flat[`${pid}:${kind}:${q.number}`] = q));
+      ['SBA', 'EMQ', 'TF'].forEach(kind => ctx.Data.flatten(loaded.paper, kind).forEach(q => flat[`${pid}:${kind}:${q.number}`] = q));
       byPaper[pid].forEach(r => { const q = flat[r.qkey]; if (q) out.push({ key: r.qkey, kind: q.kind, theme: q.theme || '', stem: q.stem, lead: q.lead || '', options: q.options, rationale: q.rationale || '' }); });
     }
     return out;
@@ -2700,6 +2707,7 @@ const DevConsole = (() => {
       const paper = meta.content;
       ctx.Data.flatten(paper, 'SBA').forEach(q => recs.push({ paperId: meta.id, qkey: `${meta.id}:SBA:${q.number}` }));
       ctx.Data.flatten(paper, 'EMQ').forEach(q => recs.push({ paperId: meta.id, qkey: `${meta.id}:EMQ:${q.number}` }));
+      ctx.Data.flatten(paper, 'TF').forEach(q => recs.push({ paperId: meta.id, qkey: `${meta.id}:TF:${q.number}` }));
       for (let i = 0; i < recs.length; i += 10) { try { await tagRecords(recs.slice(i, i + 10)); } catch { /* runner catches up */ } }
       if (typeof Cache !== 'undefined') Cache.bust('sim-qtags');
     } catch { /* tagging failures never block publishing; the runner catches up */ }
@@ -4892,7 +4900,7 @@ const DevConsole = (() => {
       folder: f.folder || '',
       owner: f.owner || '',
       paper: f.paper || null,                       // present in snapshot / if function inlines content
-      counts: f.counts || (f.paper ? { sba: ctx.Data.countSBA(f.paper), emq: ctx.Data.countEMQ(f.paper) } : null),
+      counts: f.counts || (f.paper ? { sba: ctx.Data.countSBA(f.paper), emq: ctx.Data.countEMQ(f.paper), tf: ctx.Data.countTF(f.paper) } : null),
       classification: f.classification || null
     };
   }

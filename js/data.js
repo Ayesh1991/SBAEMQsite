@@ -203,6 +203,54 @@ const Data = (() => {
 
   /* ---------- paper parsing (ogr-paper-v1) ---------- */
 
+  /* ---------- TRUE / FALSE ----------
+
+     A final MBBS paper is true/false AND single-best-answer in one sitting,
+     marked together. The engine for true/false already existed in cpd.js —
+     `qtype`, the T/F keys, the reasoning and the memory hook — but it lived
+     inside the CPD section, with its own volumes table and its own progress
+     store, so a true/false question could not be part of a PAPER: not in
+     the library, not in a mock, not in the simulator.
+
+     IT IS MODELLED AS ITS OWN ARRAY FOR AUTHORING AND FLATTENED INTO THE
+     ORDINARY QUESTION SHAPE FOR EVERYTHING ELSE — `options: ['True',
+     'False']` with a 0/1 answer. That is not a trick: a true/false item IS
+     a single-best-answer with two options, so marking, elimination,
+     flagging, notes, the review queue and the progress store all keep
+     working untouched, and the only thing that changes is how two buttons
+     are drawn. Writing a parallel T/F path through all of that would have
+     been the same behaviour implemented twice, and the second copy is the
+     one that gets the bug.
+
+     A BLOCK IS A LEAD-IN WITH STATEMENTS, which is how the paper reads:
+     "Regarding pre-eclampsia:" followed by five statements each marked
+     true or false. A bare statement with no lead-in is accepted too,
+     because that is also how papers get typed. */
+  const tfBlocks = paper => (paper.tf || paper.truefalse || []);
+  const tfStatements = block => Array.isArray(block.statements) ? block.statements
+    : Array.isArray(block.stems) ? block.stems
+    : [block];
+  function countTF(paper) {
+    return tfBlocks(paper).reduce((n, b) => n + tfStatements(b).length, 0);
+  }
+  /**
+   * The index of the correct option for a true/false statement.
+   *
+   * A NUMBER IS REFUSED, deliberately and loudly — see validatePaper. `0`
+   * could mean "the first option, True" or "the value false", and the two
+   * readings are opposites. Guessing would invert the mark on every
+   * statement in the file and look exactly like a candidate getting them
+   * all wrong.
+   */
+  function tfAnswerIndex(v) {
+    if (v === true) return 0;
+    if (v === false) return 1;
+    const s = String(v).trim().toLowerCase();
+    if (s === 'true' || s === 't' || s === 'yes' || s === 'y') return 0;
+    if (s === 'false' || s === 'f' || s === 'no' || s === 'n') return 1;
+    return -1;
+  }
+
   function countSBA(paper) { return (paper.sba || paper.questions || []).length; }
   function countEMQ(paper) {
     const blocks = paper.emq || paper.themes || [];
@@ -216,8 +264,11 @@ const Data = (() => {
     if (!title) errors.push('Missing "topic" (or "title").');
     const sba = paper.sba || paper.questions || [];
     const emq = paper.emq || paper.themes || [];
-    if (!Array.isArray(sba) && !Array.isArray(emq)) errors.push('Needs an "sba" and/or "emq" array.');
-    if ((sba.length + emq.length) === 0) errors.push('Paper has no SBA or EMQ content.');
+    const tf = tfBlocks(paper);
+    if (!Array.isArray(sba) && !Array.isArray(emq) && !Array.isArray(tf)) {
+      errors.push('Needs an "sba", "emq" and/or "tf" array.');
+    }
+    if ((sba.length + emq.length + tf.length) === 0) errors.push('Paper has no SBA, EMQ or true/false content.');
 
     sba.forEach((q, i) => {
       if (!q.stem) errors.push(`SBA ${i + 1}: missing "stem".`);
@@ -225,6 +276,26 @@ const Data = (() => {
       if (!Number.isInteger(q.answer) || q.answer < 0 || q.answer >= (q.options || []).length) {
         errors.push(`SBA ${i + 1}: "answer" must be a valid 0-based option index.`);
       }
+    });
+    /* TRUE/FALSE. The one rule worth spelling out is the answer: it must be
+       a boolean (or the words), never a number. `0` reads as both "the
+       first option, True" and "the value false", and the two are
+       opposites — accepting it would invert the mark on every statement in
+       the file and look exactly like a candidate who got them all wrong.
+       Refusing at import is the only place this is cheap to fix. */
+    tf.forEach((block, bi) => {
+      const stmts = tfStatements(block);
+      if (!stmts.length) errors.push(`True/false block ${bi + 1}: has no statements.`);
+      stmts.forEach((st, si) => {
+        const where = `True/false ${bi + 1}.${si + 1}`;
+        if (!st.stem) errors.push(`${where}: missing "stem".`);
+        if (typeof st.answer === 'number') {
+          errors.push(`${where}: "answer" must be true or false, not a number — ` +
+            `a number is ambiguous (is 0 the first option, or the value false?) and guessing would invert the mark.`);
+        } else if (tfAnswerIndex(st.answer) < 0) {
+          errors.push(`${where}: "answer" must be true or false (got ${JSON.stringify(st.answer)}).`);
+        }
+      });
     });
     emq.forEach((b, bi) => {
       if (!Array.isArray(b.options) || b.options.length < 3) errors.push(`EMQ theme ${bi + 1}: needs an option list (3+).`);
@@ -240,7 +311,7 @@ const Data = (() => {
 
   /**
    * Turn a paper into a flat renderable question list, filtered by kind.
-   * kind = 'SBA' | 'EMQ' | 'ALL'
+   * kind = 'SBA' | 'EMQ' | 'TF' | 'ALL'
    * SBA options get lettered by the UI. EMQ options in ogr-paper-v1 already
    * carry their "A. " prefix, so we flag preLettered to avoid double letters.
    */
@@ -248,6 +319,7 @@ const Data = (() => {
     const out = [];
     const wantSBA = kind === 'SBA' || kind === 'ALL';
     const wantEMQ = kind === 'EMQ' || kind === 'ALL';
+    const wantTF = kind === 'TF' || kind === 'ALL';
 
     if (wantSBA) {
       (paper.sba || paper.questions || []).forEach((q, i) => {
@@ -281,6 +353,32 @@ const Data = (() => {
             rationale: s.rationale || s.explanation || '',
             hook: s.hook || '',
             reference: s.reference || paper.source || ''
+          });
+        });
+      });
+    }
+    /* TF LAST, AND THAT MATTERS. `number` counts up through `out`, so a
+       kind inserted earlier would renumber every EMQ after it — and the
+       number is half of the question key (`paper:EMQ:7`) that every mark,
+       note, flag and review item is filed under. Every caller passes an
+       explicit kind, so each kind numbers from 1 and none of this can
+       reach the others; appending is belt and braces for the unused
+       'ALL'. */
+    if (wantTF) {
+      tfBlocks(paper).forEach(block => {
+        tfStatements(block).forEach(st => {
+          out.push({
+            kind: 'TF',
+            number: out.length + 1,
+            lead: block.lead || block.theme || st.lead || '',
+            stem: st.stem,
+            options: ['True', 'False'],
+            // two named options need no A/B in front of them
+            preLettered: true,
+            answer: tfAnswerIndex(st.answer),
+            rationale: st.rationale || st.explanation || '',
+            hook: st.hook || '',
+            reference: st.reference || paper.source || ''
           });
         });
       });
@@ -341,6 +439,6 @@ const Data = (() => {
   return {
     loadSyllabus, syllabusFor, bustSyllabus, loadManifest, publishedPapers, bustPapers, reloadPapers, papersProblem,
     categoryById, topicPath, classifyByTag,
-    countSBA, countEMQ, validatePaper, flatten, looksLettered, loadPaper, primeContent
+    countSBA, countEMQ, countTF, validatePaper, flatten, looksLettered, loadPaper, primeContent
   };
 })();

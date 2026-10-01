@@ -82,7 +82,8 @@ const Hooks = (() => {
       for (const p of papers) {
         let loaded; try { loaded = await Data.loadPaper(p.id); } catch { continue; }
         const paperTitle = loaded.paper.topic || loaded.meta.title || p.title;
-        for (const kind of ['SBA', 'EMQ']) {
+        /* A true/false statement carries a hook like any other question. */
+        for (const kind of ['SBA', 'EMQ', 'TF']) {
           for (const q of Data.flatten(loaded.paper, kind)) {
             if (!q.hook || !String(q.hook).trim()) continue;      // only real hooks
             const qkey = `${p.id}:${kind}:${q.number}`;

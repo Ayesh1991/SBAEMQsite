@@ -232,9 +232,16 @@ const Quiz = (() => {
             ${q.kind === 'EMQ' && q.theme ? `
               <div class="emq-theme"><h3>${esc(q.theme)}</h3>${q.instruction ? `<p>${esc(q.instruction)}</p>` : ''}</div>` : ''}
             <p class="q-number">Question ${index + 1} of ${total}</p>
+            ${/* A TRUE/FALSE LEAD-IN GOES ABOVE ITS STATEMENT, because that
+                  is the sentence the statement completes — "Regarding
+                  pre-eclampsia:" then "Proteinuria is required for
+                  diagnosis". Printed underneath it reads as an
+                  afterthought, and on the fifth statement of a block the
+                  candidate has lost the thing they are answering about. */''}
+            ${q.kind === 'TF' && q.lead ? `<p class="q-tf-lead">${esc(q.lead)}</p>` : ''}
             <p class="q-stem">${esc(q.stem)}</p>
-            ${q.lead ? `<p class="q-lead">${esc(q.lead)}</p>` : ''}
-            <div class="q-options ${q.kind === 'EMQ' ? 'q-options-emq' : ''}" id="q-options">
+            ${q.kind !== 'TF' && q.lead ? `<p class="q-lead">${esc(q.lead)}</p>` : ''}
+            <div class="q-options ${q.kind === 'EMQ' ? 'q-options-emq' : ''}${q.kind === 'TF' ? ' q-options-tf' : ''}" id="q-options">
               ${q.options.map((opt, i) => optionHTML(q, i, opt)).join('')}
             </div>
             <div id="q-feedback"></div>
@@ -290,9 +297,13 @@ const Quiz = (() => {
     if (struck && !revealed) cls += ' struck';
     if (revealed) { if (i === q.answer) cls += ' correct'; else if (chosen) cls += ' incorrect'; }
     const letter = q.preLettered ? '' : `<span class="q-letter">${LETTERS[i]}</span>`;
+    /* ELIMINATION NEEDS SOMETHING TO ELIMINATE. Striking one of two options
+       is just answering, with an extra step and no record of it, so the
+       scissors are not offered on a true/false statement. */
+    const canStrike = q.kind !== 'TF';
     const mark = revealed ? (i === q.answer ? '<span class="opt-mark good">✓</span>' : (chosen ? '<span class="opt-mark bad">✗</span>' : '')) : '';
     // CBT elimination: strike out options you've ruled out (exam mode only)
-    const strike = (!revealed && state.mode === 'exam')
+    const strike = (!revealed && state.mode === 'exam' && canStrike)
       ? `<span class="q-strikebtn" data-strike="${i}" title="${struck ? 'Un-strike' : 'Strike out this option (elimination)'}" role="button">✂</span>` : '';
     return `<button class="${cls}" data-idx="${i}" ${revealed ? 'disabled' : ''}>${letter}<span class="q-text">${esc(opt)}</span>${mark}${strike}</button>`;
   }

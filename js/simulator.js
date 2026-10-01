@@ -312,7 +312,11 @@ const Simulator = (() => {
     for (const pid of Object.keys(byPaper)) {
       let loaded; try { loaded = await Data.loadPaper(pid); } catch { continue; }
       const flat = {};
-      ['SBA', 'EMQ'].forEach(kind => Data.flatten(loaded.paper, kind).forEach(q => flat[`${pid}:${kind}:${q.number}`] = q));
+      /* The mock BUILDER still draws only SBA and EMQ — the blueprint has
+         no true/false weights, and giving it some is its own release. This
+         is the lookup that turns a mock's keys back into questions, so it
+         has to know every kind a key can name. */
+      ['SBA', 'EMQ', 'TF'].forEach(kind => Data.flatten(loaded.paper, kind).forEach(q => flat[`${pid}:${kind}:${q.number}`] = q));
       byPaper[pid].forEach(r => { const q = flat[r.qkey]; if (q) dict[r.qkey] = { ...q, _qkey: r.qkey, _paperTitle: r.paperTitle, bucket: r.bucket, difficulty: r.difficulty }; });
     }
     return dict;
