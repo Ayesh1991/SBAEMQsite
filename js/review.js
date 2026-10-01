@@ -54,7 +54,9 @@ const ReviewQueue = (() => {
     const dict = {};
     for (const pid of Object.keys(byPaper)) {
       let loaded; try { loaded = await Data.loadPaper(pid); } catch { continue; }
-      ['SBA', 'EMQ'].forEach(kind => Data.flatten(loaded.paper, kind).forEach(q => {
+      /* TF included: a true/false statement you got wrong is exactly the
+         kind of thing a review queue exists for. */
+      ['SBA', 'EMQ', 'TF'].forEach(kind => Data.flatten(loaded.paper, kind).forEach(q => {
         dict[`${pid}:${kind}:${q.number}`] = { ...q, _qkey: `${pid}:${kind}:${q.number}`, _paperTitle: loaded.paper.topic || loaded.meta.title };
       }));
     }
