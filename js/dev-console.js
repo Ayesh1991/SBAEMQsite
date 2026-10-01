@@ -310,6 +310,15 @@ const DevConsole = (() => {
             <summary><span class="card-title">Manage curriculum</span><span class="dc-caret">▸</span></summary>
           <p class="muted">Add a new category, a section inside a category, or a topic inside a section
             (including <strong>Mock Paper 1, 2, 3…</strong>). New entries appear as targets when you index papers.</p>
+          ${/* WHOSE SYLLABUS. A tree belongs to one exam — Anatomy and
+                Physiology are a Part 1 candidate's categories and nobody
+                else's — so every edit below has to be aimed at a course
+                before it is made. This is the only control on the page that
+                is shown even with one course open, because what it edits is
+                not obvious from the rows underneath it. */''}
+          <label class="field curr-course-wrap" style="max-width:380px"><span>Editing the syllabus for</span>
+            <select class="sel" id="curr-course"></select>
+            <span class="tiny muted" id="curr-course-note"></span></label>
           <div class="curr-mgr">
             <div class="curr-row">
               <label>New category
@@ -340,14 +349,49 @@ const DevConsole = (() => {
             </div>
             <p class="curr-msg" id="curr-msg"></p>
           </div>
+          <details class="dev-collapse curr-bulk">
+            <summary><span class="card-title">Paste a whole tree</span><span class="dc-caret">▸</span></summary>
+            <p class="muted">A new course needs a syllabus before a single paper can be filed, and typing
+              Anatomy, Physiology, Pathology, Microbiology and Genetics one topic at a time is a hundred
+              clicks. Paste the tree instead — it <strong>merges</strong>, so running it twice adds nothing
+              and nothing already there is removed.</p>
+            <textarea id="curr-json" class="dev-textarea" rows="10"
+              placeholder='{ "categories": [ { "id": "anatomy", "title": "Anatomy", "sections": [ { "id": "pelvis", "title": "Pelvic anatomy", "topics": [ { "id": "bony-pelvis", "title": "Bony pelvis" } ] } ] } ] }'></textarea>
+            <p class="muted tiny">Ids may be left out and will be made from the titles. A topic may carry
+              <code>tags</code>; without them its own title is the tag, which is what the Drive folder
+              matcher looks for.</p>
+            <button class="btn btn-primary" id="curr-json-btn" style="margin-top:10px">Merge into this course</button>
+            <p class="curr-msg" id="curr-json-msg"></p>
+          </details>
           </details>
         </div>
       </section>`;
 
     view.querySelector('#dev-scan').addEventListener('click', scan);
     view.querySelector('#dev-paste-btn').addEventListener('click', stagePasted);
-    wireCurriculumManager(view);
+    await wireCurriculumManager(view);
     await fillCoursePicker(view, '#pp-track-wrap', '#pp-import-track');
+    /* A PAPER IS CLASSIFIED AGAINST THE COURSE IT IS BEING IMPORTED INTO,
+       not against the one the editor happens to be studying for. The row
+       dropdowns read the module-wide `syllabus`, so changing the toolbar's
+       course repoints it and redraws any rows already staged — otherwise a
+       final MBBS paper would be filed under Obstetrics because that is what
+       the owner's own library shows. */
+    view.querySelector('#pp-import-track')?.addEventListener('change', async e => {
+      const status = view.querySelector('#dev-status');
+      try {
+        syllabus = await ctx.Data.syllabusFor(e.target.value, false);
+        if (status) status.innerHTML = (syllabus.categories || []).length
+          ? `Classifying against <strong>${ctx.esc(e.target.selectedOptions[0].textContent)}</strong>.`
+          : `<span class="bad">${ctx.esc(e.target.selectedOptions[0].textContent)} has no syllabus yet — build one under “Manage curriculum” before importing.</span>`;
+      } catch { /* the previous tree stays in force */ }
+      /* Re-draw the staged rows so their dropdowns hold the new tree. */
+      const list = view.querySelector('#dev-list');
+      if (stagedNew.length && list) {
+        list.innerHTML = stagedNew.map((f, i) => newFileRow(f, i)).join('');
+        stagedNew.forEach((f, i) => wireRow(f, i, list));
+      }
+    });
     await refreshPublished(view);
     ctx.FX.viewIn(view);
   }
@@ -686,26 +730,64 @@ const DevConsole = (() => {
 
   function slugify(s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40); }
 
-  function wireCurriculumManager(view) {
+  async function wireCurriculumManager(view) {
     const catSel = view.querySelector('#curr-sec-cat');
     const tCatSel = view.querySelector('#curr-top-cat');
     const tSecSel = view.querySelector('#curr-top-sec');
     const msg = view.querySelector('#curr-msg');
     const say = (t, ok) => { msg.textContent = t; msg.className = 'curr-msg ' + (ok ? 'good' : 'bad'); };
 
+    /* WHICH COURSE'S TREE IS BEING EDITED. Everything below reads and
+       writes `tree`, never the module-wide `syllabus` — that one belongs to
+       the course the EDITOR is personally on, and editing a different
+       course's syllabus must not be confused with it. */
+    const courseSel = view.querySelector('#curr-course');
+    const courseNote = view.querySelector('#curr-course-note');
+    let tree = { categories: [] };
+    try { await Course.load(); } catch {}
+    const courses = Course.all();
+    courseSel.innerHTML = courses.length
+      ? courses.map(t => `<option value="${ctx.esc(t.id)}"${t.id === Course.currentId() ? ' selected' : ''}>${ctx.esc(t.short)}</option>`).join('')
+      : `<option value="">(no courses — run schema.sql)</option>`;
+
+    const editing = () => courseSel.value || '';
+    async function loadTree() {
+      try { tree = await ctx.Data.syllabusFor(editing(), true); }
+      catch { tree = { categories: [] }; }
+      const n = (tree.categories || []).length;
+      const tops = (tree.categories || []).reduce((a, c) =>
+        a + (c.sections || []).reduce((b, x) => b + (x.topics || []).length, 0), 0);
+      /* An empty tree is the normal state of a course nobody has written a
+         syllabus for, and saying so plainly is the difference between "this
+         is new" and "this is broken". */
+      courseNote.textContent = n
+        ? `${n} categor${n === 1 ? 'y' : 'ies'} · ${tops} topic${tops === 1 ? '' : 's'}`
+        : 'No syllabus yet — nothing can be filed under this course until it has one.';
+      refillCategories();
+    }
+    courseSel.addEventListener('change', loadTree);
+
     function refillCategories() {
-      const opts = syllabus.categories.map(c => `<option value="${c.id}">${ctx.esc(c.title)}</option>`).join('');
+      const opts = (tree.categories || []).map(c => `<option value="${c.id}">${ctx.esc(c.title)}</option>`).join('');
       catSel.innerHTML = opts; tCatSel.innerHTML = opts; refillTopicSections();
     }
     function refillTopicSections() {
-      const cat = syllabus.categories.find(c => c.id === tCatSel.value);
+      const cat = (tree.categories || []).find(c => c.id === tCatSel.value);
       tSecSel.innerHTML = (cat?.sections || []).map(s => `<option value="${s.id}">${ctx.esc(s.title)}</option>`).join('');
     }
     tCatSel.addEventListener('change', refillTopicSections);
-    refillCategories();
+    await loadTree();
 
-    // custom curriculum accumulator (persisted via backend)
-    async function loadCustom() { try { return await ctx.Backend.getCustomCurriculum(); } catch { return { categories: [] }; } }
+    /* The stored additions for the course being edited — not the merged
+       tree. The bundled file is read-only; only what was added goes back. */
+    async function loadCustom() { try { return await ctx.Backend.getCustomCurriculum(editing()); } catch { return { categories: [] }; } }
+    /** Save, then re-read both the edited tree and the editor's own. */
+    async function commit(custom) {
+      await ctx.Backend.saveCustomCurriculum(custom, editing());
+      ctx.Data.bustSyllabus();
+      syllabus = await ctx.Data.loadSyllabus(true);
+      await loadTree();
+    }
     function findOrAddCat(custom, id, title) {
       let c = custom.categories.find(x => x.id === id);
       if (!c) { c = { id, title, sections: [] }; custom.categories.push(c); }
@@ -723,40 +805,103 @@ const DevConsole = (() => {
       const id = 'cat-' + slugify(title);
       const custom = await loadCustom();
       findOrAddCat(custom, id, title);
-      await ctx.Backend.saveCustomCurriculum(custom);
-      await ctx.Data.loadSyllabus(true); syllabus = await ctx.Data.loadSyllabus();
+      await commit(custom);
       view.querySelector('#curr-cat-title').value = '';
-      refillCategories(); say(`Added category “${title}”.`, true);
+      say(`Added category “${title}” to ${courseSel.value}.`, true);
     });
 
     view.querySelector('#curr-add-sec').addEventListener('click', async () => {
       const catId = catSel.value; const title = view.querySelector('#curr-sec-title').value.trim();
       if (!title) return say('Enter a section title.', false);
-      const cat = syllabus.categories.find(c => c.id === catId);
+      const cat = (tree.categories || []).find(c => c.id === catId);
+      if (!cat) return say('Add a category first — there is nothing to put a section in.', false);
       const id = 'sec-' + slugify(title);
       const custom = await loadCustom();
       const cCat = findOrAddCat(custom, cat.id, cat.title);
       findOrAddSec(cCat, id, title);
-      await ctx.Backend.saveCustomCurriculum(custom);
-      await ctx.Data.loadSyllabus(true); syllabus = await ctx.Data.loadSyllabus();
+      await commit(custom);
       view.querySelector('#curr-sec-title').value = '';
-      refillCategories(); say(`Added section “${title}” to ${cat.title}.`, true);
+      say(`Added section “${title}” to ${cat.title}.`, true);
     });
 
     view.querySelector('#curr-add-top').addEventListener('click', async () => {
       const catId = tCatSel.value, secId = tSecSel.value, title = view.querySelector('#curr-top-title').value.trim();
       if (!title) return say('Enter a topic title.', false);
-      const cat = syllabus.categories.find(c => c.id === catId);
-      const sec = cat.sections.find(s => s.id === secId);
+      const cat = (tree.categories || []).find(c => c.id === catId);
+      const sec = (cat?.sections || []).find(s => s.id === secId);
+      if (!cat || !sec) return say('Add a category and a section first.', false);
       const id = 'top-' + slugify(title);
       const custom = await loadCustom();
       const cCat = findOrAddCat(custom, cat.id, cat.title);
       const cSec = findOrAddSec(cCat, sec.id, sec.title);
       if (!(cSec.topics = cSec.topics || []).find(t => t.id === id)) cSec.topics.push({ id, title, tags: [title] });
-      await ctx.Backend.saveCustomCurriculum(custom);
-      await ctx.Data.loadSyllabus(true); syllabus = await ctx.Data.loadSyllabus();
+      await commit(custom);
       view.querySelector('#curr-top-title').value = '';
-      refillTopicSections(); say(`Added topic “${title}” to ${sec.title}.`, true);
+      say(`Added topic “${title}” to ${sec.title}.`, true);
+    });
+
+    /* ---- a whole tree at once ----
+       A new course has no syllabus, and nothing can be filed under it until
+       it has one. Building Anatomy, Physiology, Pathology, Microbiology and
+       Genetics three clicks at a time is the kind of work that does not get
+       done, so the same shape can be pasted. It MERGES: ids already present
+       are left alone, so a second paste is a no-op and nothing is lost. */
+    view.querySelector('#curr-json-btn').addEventListener('click', async e => {
+      const ta = view.querySelector('#curr-json');
+      const m = view.querySelector('#curr-json-msg');
+      const tell = (t, ok) => { m.textContent = t; m.className = 'curr-msg ' + (ok ? 'good' : 'bad'); };
+      let doc;
+      try { doc = JSON.parse(ta.value); }
+      catch (err) { return tell('That is not valid JSON: ' + err.message, false); }
+      const cats = Array.isArray(doc) ? doc : (doc.categories || doc.tree || null);
+      if (!Array.isArray(cats) || !cats.length) {
+        return tell('Needs a "categories" array with at least one category.', false);
+      }
+      /* Ids may be left out — a syllabus is written as titles, and making
+         somebody invent a slug for every one of eighty topics is how the
+         tree ends up with typos in its keys. */
+      let nc = 0, ns = 0, nt = 0;
+      const clean = [];
+      for (const c of cats) {
+        const title = String(c.title || c.name || '').trim();
+        if (!title) return tell('Every category needs a "title".', false);
+        const cat = { id: String(c.id || 'cat-' + slugify(title)), title, sections: [] };
+        nc++;
+        for (const sx of (c.sections || [])) {
+          const st = String(sx.title || sx.name || '').trim();
+          if (!st) return tell(`Category “${title}”: every section needs a "title".`, false);
+          const sec = { id: String(sx.id || 'sec-' + slugify(st)), title: st, topics: [] };
+          ns++;
+          for (const tx of (sx.topics || [])) {
+            const tt = String(tx.title || tx.name || '').trim();
+            if (!tt) return tell(`Section “${st}”: every topic needs a "title".`, false);
+            sec.topics.push({ id: String(tx.id || 'top-' + slugify(tt)), title: tt,
+              tags: Array.isArray(tx.tags) && tx.tags.length ? tx.tags : [tt] });
+            nt++;
+          }
+          cat.sections.push(sec);
+        }
+        clean.push(cat);
+      }
+      e.currentTarget.disabled = true; tell('Merging…', true);
+      try {
+        const custom = await loadCustom();
+        for (const cat of clean) {
+          const cCat = findOrAddCat(custom, cat.id, cat.title);
+          for (const sec of cat.sections) {
+            const cSec = findOrAddSec(cCat, sec.id, sec.title);
+            cSec.topics = cSec.topics || [];
+            for (const top of sec.topics) {
+              if (!cSec.topics.find(x => x.id === top.id)) cSec.topics.push(top);
+            }
+          }
+        }
+        await commit(custom);
+        ta.value = '';
+        tell(`✓ Merged ${nc} categor${nc === 1 ? 'y' : 'ies'}, ${ns} section${ns === 1 ? '' : 's'} and ${nt} topic${nt === 1 ? '' : 's'} into ${courseSel.value}.`, true);
+      } catch (err) {
+        tell(err.message || String(err), false);
+      } finally { e.currentTarget.disabled = false; }
     });
   }
 

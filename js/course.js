@@ -60,7 +60,13 @@ const Course = (() => {
     })();
     return _loaded;
   }
-  const bust = () => { _tracks = _mine = _loaded = null; };
+  const bust = () => {
+    _tracks = _mine = _loaded = null;
+    /* The syllabus is the course's, so forgetting the course has to forget
+       the tree with it — otherwise the next person, or the next course,
+       reads the last one's categories. */
+    try { Data.bustSyllabus?.(); } catch {}
+  };
 
   /** Every course a candidate may choose right now. */
   const live = () => (_tracks || []).filter(t => t.isLive);
@@ -195,6 +201,10 @@ const Course = (() => {
   async function choose(id) {
     await Backend.setPrimaryTrack(id);
     _mine = await Backend.myEnrolments();
+    /* A different exam is a different syllabus — the library, the coverage
+       map and the paper classifier all read it, and all of them would
+       otherwise keep showing the course just left. */
+    try { Data.bustSyllabus?.(); } catch {}
     return current();
   }
 

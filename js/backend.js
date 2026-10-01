@@ -601,8 +601,27 @@ const Backend = (() => {
     async function listAllNotes() { const e = sessionEmail(); if (!e) return []; const n = read(nKey(e), {}); return Object.entries(n).map(([question_key, body]) => ({ question_key, body })); }
 
     /* custom curriculum */
-    async function getCustomCurriculum() { return read('curriculum', { categories: [] }); }
-    async function saveCustomCurriculum(data) { write('curriculum', data); }
+    /* ---------- ONE CURRICULUM PER COURSE ----------
+       Until v119 there was a single tree for the whole platform, which was
+       the O&G Part 2 tree: adding "Anatomy" for a Part 1 course would have
+       shown it to every Part 2 candidate as a sixth category beside
+       Obstetrics and Gynaecology. A syllabus is the one thing that cannot
+       be shared between exams — it IS the exam's shape.
+
+       The legacy key is read as `pgim-og-2`'s own tree when that course has
+       no row of its own, so nothing the owner added before this is lost. */
+    const currKey = t => 'curriculum:' + (t || 'default');
+    async function getCustomCurriculum(trackId) {
+      const own = read(currKey(trackId), null);
+      if (own) return own;
+      /* The pre-v119 single tree belonged to the course that existed. */
+      if (!trackId || trackId === 'pgim-og-2' || trackId === 'default') {
+        const legacy = read('curriculum', null);
+        if (legacy) return legacy;
+      }
+      return { categories: [] };
+    }
+    async function saveCustomCurriculum(data, trackId) { write(currKey(trackId), data); }
 
     /* AI saves (chats, charts, infographics, mind maps, summaries) */
     const aKey = e => 'aisaves.' + e;
@@ -1931,7 +1950,19 @@ const Backend = (() => {
     async function listAllNotes() { await ensureClient(); const id = await uid(); if (!id) return []; const { data } = await sb.from('notes').select('question_key, body').eq('user_id', id); return data || []; }
 
     /* custom curriculum */
-    async function getCustomCurriculum() { await ensureClient(); const { data } = await sb.from('curriculum').select('data').eq('id', 'default').single(); return data?.data || { categories: [] }; }
+    /* One row per course, keyed by the course id. Reading falls back to
+       the pre-v119 'default' row for the course that existed before there
+       were courses, so an owner who added categories keeps them. */
+    async function getCustomCurriculum(trackId) {
+      await ensureClient();
+      const ids = [trackId || 'default'];
+      if (!trackId || trackId === 'pgim-og-2') ids.push('default');
+      for (const id of ids) {
+        const { data } = await sb.from('curriculum').select('data').eq('id', id).maybeSingle();
+        if (data?.data && (data.data.categories || []).length) return data.data;
+      }
+      return { categories: [] };
+    }
     /* THE SYLLABUS IS THE ONE THING THAT IS NOT COURSE CONTENT — not yet.
        This table holds a SINGLE row, `id = 'default'`, so it cannot be
        per-course until it is keyed by course, and tagging the one row to
@@ -1939,7 +1970,12 @@ const Backend = (() => {
        `is_preview` is the column v115 added for exactly this: readable
        whatever the entitlement. Per-course curricula are their own change,
        and this line is what keeps the syllabus visible until then. */
-    async function saveCustomCurriculum(data) { await ensureClient(); await sb.from('curriculum').upsert({ id: 'default', data, is_preview: true, updated_at: new Date().toISOString() }); }
+    /* THE SYLLABUS STAYS READABLE WHATEVER THE ENTITLEMENT. It is the
+       table of contents, not the content: a candidate deciding whether to
+       pay has to be able to see what the course covers, and a candidate
+       who cannot read their own syllabus has a broken library. The papers
+       behind it are still gated by their own `tracks`. */
+    async function saveCustomCurriculum(data, trackId) { await ensureClient(); await sb.from('curriculum').upsert({ id: trackId || 'default', data, is_preview: true, updated_at: new Date().toISOString() }); }
 
     /* AI saves (chats, charts, infographics, mind maps, summaries) */
     const newId = () => 'ai-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
