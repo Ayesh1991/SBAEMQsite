@@ -207,7 +207,16 @@ say('switching course on the page shows that course’s blueprint',
 /* A half-finished edit belongs to the course it was opened for. Carrying it
    across would save one exam's weights onto another. */
 const devJs = readFileSync('js/dev-console.js', 'utf8');
-say('  and a half-edited blueprint is not carried across', /bpEdit = null;\n      view\.querySelector\('#bp-studio'\)\.innerHTML = '';/.test(devJs));
+/* MATCHED WITHOUT DEPENDING ON LAYOUT. The first version of this spanned a
+   line break and pinned the indentation, so it passed on Linux and failed
+   on Windows, where git checks the file out with CRLF — a test that only
+   passes on the machine it was written on, which is exactly the fault the
+   suite had just been fixed for elsewhere. Find the handler, then ask what
+   it does. */
+const bpHandlerAt = devJs.indexOf("'#bp-course')?.addEventListener");
+const bpHandler = bpHandlerAt < 0 ? '' : devJs.slice(bpHandlerAt, bpHandlerAt + 700);
+say('  and a half-edited blueprint is not carried across',
+  /bpEdit = null/.test(bpHandler) && /#bp-studio'\)\.innerHTML = ''/.test(bpHandler));
 
 /* ---------------------------------------------------------------- */
 sec('6. STAMPS');

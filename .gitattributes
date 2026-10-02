@@ -1,0 +1,25 @@
+# Line endings are normalised to LF in the working tree on every platform.
+#
+# WHY THIS IS HERE. Git for Windows checks files out with CRLF by default.
+# Nothing in the site minds — browsers do not care — but a test that reads a
+# source file and matches a pattern spanning a line break passes on Linux
+# and fails on Windows. One did, and it cost the first local test run on a
+# new laptop. Normalising removes the whole class rather than the instance.
+* text=auto eol=lf
+
+# Never touch these.
+*.png  -text
+*.jpg  -text
+*.jpeg -text
+*.gif  -text
+*.webp -text
+*.ico  -text
+*.svg  text
+*.woff  -text
+*.woff2 -text
+*.ttf  -text
+*.pdf  -text
+*.zip  -text
+*.mp3  -text
+*.mp4  -text
+*.webm -text
