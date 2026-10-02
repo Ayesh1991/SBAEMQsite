@@ -30,7 +30,7 @@
    choose it and nothing tagged to it reaches anybody. §3 holds that line,
    because a console that makes creating a course easy is exactly where
    that distinction would get lost. */
-import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
+import { launch } from './browser.mjs';
 import { readFileSync } from 'node:fs';
 const B = process.argv[2] || 'http://127.0.0.1:8907';
 const bad = [];
@@ -62,7 +62,7 @@ say('the courses console is routable', /\|settings\|courses\)/.test(app));
 /* ---------------------------------------------------------------- */
 sec('2. IN THE RUNNING APP — TODAY IS UNCHANGED');
 
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+const browser = await launch();
 const ctx = await browser.newContext({ viewport: { width: 1400, height: 1200 } });
 await ctx.addInitScript(() => { let real;
   Object.defineProperty(window, 'AUREUM_CONFIG', { configurable: true, get() { return real; },

@@ -28,14 +28,14 @@
    nothing ever leaves the screen sideways and there is nothing to pan.
    It is also why the marks survive it: they are anchored to words and to
    blocks, and are simply re-measured at the new size. */
-import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
+import { launch } from './browser.mjs';
 const B = process.argv[2] || 'http://127.0.0.1:8907';
 const bad = [];
 let fails = 0;
 const say = (w, c, x) => { console.log('  ' + (c ? '✓' : '✗') + ' ' + w + (x !== undefined ? ' — ' + x : '')); if (!c) fails++; };
 const sec = t => console.log('\n======== ' + t + ' ========');
 
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+const browser = await launch();
 /* Wide, like an iPad in landscape — which is the whole point: the
    column is 680px and the pane is not. */
 const ctx = await browser.newContext({ viewport: { width: 1400, height: 1000 } });

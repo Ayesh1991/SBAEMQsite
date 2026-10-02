@@ -71,14 +71,19 @@ Everything a candidate sees is scoped to the **course** they are on.
 
 ## Testing
 
+First time on a machine: `npm install` (Playwright only — nothing in `js/`
+is built), then `npx playwright install chromium`.
+
 ```bash
-python3 -m http.server 8907 --directory .      # leave running
+npm run serve                                  # leave running (or serve:node)
+npm test                                       # all 22 files, summarised
 node tools/tests/t121-blueprint-and-banks.mjs  # one release file
-node tools/tests/smoke.mjs                     # every route renders
 ```
 
 Each file prints `fails=0` and exits non-zero on failure. `/suite` runs
-them all. **Full details and the hard-won gotchas are in
+them all. The files resolve Playwright through `tools/tests/browser.mjs`,
+so they work on a laptop and in a container alike — never reintroduce an
+absolute path to a browser or a module. **Full details and the hard-won gotchas are in
 `tools/tests/README.md` — read it before writing a test.** The short list:
 
 - An accessor like `Annotate._marks()` returns the module's **own** array.

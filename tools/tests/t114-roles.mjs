@@ -27,7 +27,7 @@
        anything, including the person who would grant the first role. The
        owner's address stays as a second way in that no database state can
        take away. */
-import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
+import { launch } from './browser.mjs';
 import { readFileSync } from 'node:fs';
 const B = process.argv[2] || 'http://127.0.0.1:8907';
 const bad = [];
@@ -89,7 +89,7 @@ say('  and is exported from both', (js.match(/setUserStatus, setUserRole,/g) || 
 /* ---------------------------------------------------------------- */
 sec('3. IN THE RUNNING APP');
 
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+const browser = await launch();
 const ctx = await browser.newContext({ viewport: { width: 1400, height: 1000 } });
 await ctx.addInitScript(() => { let real;
   Object.defineProperty(window, 'AUREUM_CONFIG', { configurable: true, get() { return real; },

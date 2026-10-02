@@ -18,7 +18,7 @@
    §5 is the Drive fix, tested at the exact fault: a token request that
    fails because the browser blocked a popup is NOT an expired grant, and
    must not put the connection into the state that stops it trying. */
-import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
+import { launch } from './browser.mjs';
 const B = 'http://127.0.0.1:8907';
 const bad = [];
 let fails = 0;
@@ -26,7 +26,7 @@ const say = (w, c, x) => { console.log('  ' + (c ? '✓' : '✗') + ' ' + w + (x
 const sec = t => console.log('\n======== ' + t + ' ========');
 const flat = s => String(s || '').replace(/\s+/g, ' ').trim();
 
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+const browser = await launch();
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 1000 } });
 await ctx.addInitScript(() => { let real;
   Object.defineProperty(window, 'AUREUM_CONFIG', { configurable: true, get() { return real; },

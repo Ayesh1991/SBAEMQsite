@@ -24,7 +24,7 @@
    marker that paints from the nib. What remains in this file is the
    inventory, the two layers, the anchoring, and the programmatic entry
    that is now only a fallback. */
-import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
+import { launch } from './browser.mjs';
 const B = process.argv[2] || 'http://127.0.0.1:8907';
 const bad = [];
 let fails = 0;
@@ -35,7 +35,7 @@ const IMG = 'data:image/svg+xml;utf8,' + encodeURIComponent(
   `<svg xmlns="http://www.w3.org/2000/svg" width="420" height="300"><rect width="420" height="300" fill="#111"/>
    <ellipse cx="210" cy="160" rx="120" ry="80" fill="#333"/></svg>`);
 
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+const browser = await launch();
 const ctx = await browser.newContext({ viewport: { width: 1180, height: 1100 } });
 await ctx.addInitScript(() => { let real;
   Object.defineProperty(window, 'AUREUM_CONFIG', { configurable: true, get() { return real; },

@@ -28,14 +28,14 @@
    already on screen is dismissed by the nib landing). The rule is a hint
    about what MAY be selected; iPadOS has reached round it more than
    once. */
-import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
+import { launch } from './browser.mjs';
 const B = process.argv[2] || 'http://127.0.0.1:8907';
 const bad = [];
 let fails = 0;
 const say = (w, c, x) => { console.log('  ' + (c ? '✓' : '✗') + ' ' + w + (x !== undefined ? ' — ' + x : '')); if (!c) fails++; };
 const sec = t => console.log('\n======== ' + t + ' ========');
 
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+const browser = await launch();
 const ctx = await browser.newContext({ viewport: { width: 1400, height: 1000 } });
 await ctx.addInitScript(() => { let real;
   Object.defineProperty(window, 'AUREUM_CONFIG', { configurable: true, get() { return real; },

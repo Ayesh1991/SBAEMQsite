@@ -6,13 +6,15 @@ Run every test file and report the result.
 
 ```bash
 curl -s -o /dev/null http://127.0.0.1:8907/index.html \
-  || (python3 -m http.server 8907 --directory . >/dev/null 2>&1 &)
+  || (npm run serve >/dev/null 2>&1 &)
 sleep 2
-for f in tools/tests/smoke.mjs tools/tests/t*.mjs; do
-  echo "##### $f"
-  node "$f" 2>&1 | grep -E "^  ✗|^fails="
-done
+npm test
 ```
+
+`npm test` runs `tools/tests/run-all.mjs`, which runs each file in its own
+process — they drive a real browser against real localStorage and would
+fight over the same session if run together — and quotes every failure in
+full at the end.
 
 The suite takes a few minutes — run it in the background and keep working
 rather than waiting on it.
