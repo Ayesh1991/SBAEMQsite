@@ -75,7 +75,7 @@ First time on a machine: `npm install` (Playwright only — nothing in `js/`
 is built), then `npx playwright install chromium`.
 
 ```bash
-npm run serve                                  # leave running (or serve:node)
+npm run serve                                  # leave running (Node, no python)
 npm test                                       # all 22 files, summarised
 node tools/tests/t121-blueprint-and-banks.mjs  # one release file
 ```

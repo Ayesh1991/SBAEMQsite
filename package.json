@@ -5,8 +5,8 @@
   "description": "AUREUM · Pathway to MD — a static site. This file exists ONLY so the test suite can be installed and run; nothing in js/ is built, bundled or compiled, and the site is served exactly as it is committed.",
   "type": "module",
   "scripts": {
-    "serve": "python3 -m http.server 8907 --directory .",
-    "serve:node": "npx --yes http-server -p 8907 -c-1 .",
+    "serve": "node tools/serve.mjs",
+    "serve:python": "python3 -m http.server 8907 --directory .",
     "test": "node tools/tests/run-all.mjs",
     "test:one": "node"
   },

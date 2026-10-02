@@ -6,7 +6,7 @@ Run every test file and report the result.
 
 ```bash
 curl -s -o /dev/null http://127.0.0.1:8907/index.html \
-  || (npm run serve >/dev/null 2>&1 &)
+  || (npm run serve >/dev/null 2>&1 &)   # node tools/serve.mjs — no python needed
 sleep 2
 npm test
 ```
