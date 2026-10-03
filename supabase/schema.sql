@@ -1900,3 +1900,100 @@ on conflict (id) do nothing;
 insert into public.enrolments (user_id, track_id, is_primary, status)
   select id, 'pgim-og-2', true, 'active' from public.profiles
 on conflict (user_id, track_id) do nothing;
+
+-- ---------- 34) REVIEW BEFORE ANYBODY SITS IT ----------
+-- A set of questions reaches candidates only after an editor has been
+-- through it. That is the point of having editors at all, and it is the
+-- work they will be paid for, so it is counted per person per question.
+--
+-- THE MIGRATION IS THE DANGEROUS PART of this whole release. Two hundred
+-- stations and every paper are already in front of people; if they landed
+-- as 'draft' the bank would go dark for everybody until somebody had
+-- clicked through all of it. So the column is ADDED with a default of
+-- 'published' — which is what every existing row then holds — and the
+-- default is changed to 'draft' immediately afterwards, for everything
+-- written from now on.
+--
+-- Both statements are safe to re-run: `add column if not exists` does
+-- nothing the second time, so an existing row is never pushed back to
+-- 'published', and setting the default again changes nothing.
+alter table public.papers        add column if not exists review_status text not null default 'published';
+alter table public.papers        alter column review_status set default 'draft';
+alter table public.osce_stations add column if not exists review_status text not null default 'published';
+alter table public.osce_stations alter column review_status set default 'draft';
+
+alter table public.papers        add column if not exists reviewed_by uuid references auth.users(id) on delete set null;
+alter table public.papers        add column if not exists reviewed_at timestamptz;
+alter table public.osce_stations add column if not exists reviewed_by uuid references auth.users(id) on delete set null;
+alter table public.osce_stations add column if not exists reviewed_at timestamptz;
+
+do $$ begin
+  alter table public.papers add constraint papers_review_status_ck
+    check (review_status in ('draft', 'in_review', 'published'));
+exception when duplicate_object then null; end $$;
+do $$ begin
+  alter table public.osce_stations add constraint osce_review_status_ck
+    check (review_status in ('draft', 'in_review', 'published'));
+exception when duplicate_object then null; end $$;
+
+create index if not exists papers_review_idx on public.papers (review_status);
+create index if not exists osce_review_idx   on public.osce_stations (review_status);
+
+-- PUBLISHING IS NOT A COLUMN THE AUTHOR WRITES. Nothing in the app sends
+-- `review_status` on a publish — the column default does the work on
+-- insert, and an upsert that does not name the column leaves it alone on
+-- update. So fixing a typo in a reviewed paper does not send it back to
+-- the queue, and no author can mark their own work published by sending a
+-- field. The only route is submitReview(), which is editor-only.
+create or replace function public.protect_review_state() returns trigger
+  language plpgsql security definer set search_path = public as $$
+begin
+  if not public.is_editor() then
+    new.review_status := old.review_status;
+    new.reviewed_by   := old.reviewed_by;
+    new.reviewed_at   := old.reviewed_at;
+  end if;
+  return new;
+end $$;
+drop trigger if exists papers_protect_review on public.papers;
+create trigger papers_protect_review before update on public.papers
+  for each row execute function public.protect_review_state();
+drop trigger if exists osce_protect_review on public.osce_stations;
+create trigger osce_protect_review before update on public.osce_stations
+  for each row execute function public.protect_review_state();
+
+-- WHAT AN EDITOR GETS CREDIT FOR, one row per question they have been
+-- through. The primary key is the pair, so going over the same question
+-- twice is not two payments, and a second editor re-reviewing it is still
+-- credited for the work they did. The count is a consequence of the work
+-- and nobody can edit the number itself.
+create table if not exists public.question_reviews (
+  question_key text not null,
+  reviewed_by  uuid not null references auth.users(id) on delete cascade,
+  set_table    text not null,
+  set_id       text not null,
+  reviewed_at  timestamptz not null default now(),
+  primary key (question_key, reviewed_by)
+);
+create index if not exists question_reviews_by_idx on public.question_reviews (reviewed_by);
+alter table public.question_reviews enable row level security;
+drop policy if exists "reviews own insert" on public.question_reviews;
+drop policy if exists "reviews read"       on public.question_reviews;
+-- An editor records their own work and nobody else's.
+create policy "reviews own insert" on public.question_reviews for insert
+  with check (reviewed_by = auth.uid() and public.is_editor());
+-- Readable by editors: the tally is what a payment conversation runs on,
+-- and an editor who cannot see their own count cannot check it.
+create policy "reviews read" on public.question_reviews for select
+  using (public.is_editor());
+
+-- THE GATE. Candidates read published sets; editors read everything,
+-- because content they cannot see is content they cannot review.
+drop policy if exists "papers public read" on public.papers;
+create policy "papers public read" on public.papers for select
+  using ((is_preview or public.can_read_tracks(tracks))
+         and (review_status = 'published' or public.is_editor()));
+drop policy if exists "osce stations read" on public.osce_stations;
+create policy "osce stations read" on public.osce_stations for select
+  using ((is_preview or public.can_read_tracks(tracks))
+         and (review_status = 'published' or public.is_editor()));

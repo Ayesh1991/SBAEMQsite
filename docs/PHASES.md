@@ -16,6 +16,7 @@ per release, each shippable on its own.
 | 120 | True/false as a real paper question type |
 | 121 | One blueprint per course; papers/essays/cases filtered |
 | 122 | **Phase 1** — the Editor panel, gated on the role |
+| 123 | **Phase 2** — question review, and the gate |
 
 Three exams are now fully separable: course, enrolment, syllabus,
 blueprint, question types, and all five banks.
@@ -61,6 +62,28 @@ Smallest honest version: route `#/editor`, gated on `isEditor`, flags moved
 in, `#/peer` redirecting so nobody's bookmark breaks. The existing
 proposal machinery (`submitProposal`, `listProposals`, `setProposalStatus`)
 and the two correction layers in `js/qedit.js` are reused, not replaced.
+
+## Phase 2 — Question review, and the gate — DONE in v123
+
+Shipped: `review_status` on `papers` and `osce_stations`, with the column
+added as `published` so nothing already in the bank moved and the default
+changed to `draft` afterwards; a trigger so a non-editor's update cannot
+move it; the read policies gated, with editors exempt because content they
+cannot see is content they cannot review; a `question_reviews` table keyed
+on (question, editor), so the per-editor tally is a consequence of the work
+and not a number anybody can type; the review queue and the one-question
+editing surface at `#/editor/review`.
+
+A typo fix does NOT send a reviewed set back to the queue — nothing writes
+the status on publish, so an upsert that does not name the column leaves it
+alone.
+
+Still to come here: essays, cases, CPD and flashcards have no review state;
+only the three kinds that were asked for (SBA, EMQ, OSCE) are gated.
+
+The original note follows, for the reasoning.
+
+---
 
 ## Phase 2 — Question review, and the gate
 

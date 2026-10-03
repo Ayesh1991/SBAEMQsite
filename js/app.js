@@ -82,7 +82,8 @@
     { re: /^#\/profile$/, fn: renderProfile },
     { re: /^#\/studio$/, fn: renderStudio },
     { re: /^#\/review$/, fn: renderReview },
-    { re: /^#\/editor(?:\/(flagged))?$/, fn: renderEditor },
+    { re: /^#\/editor(?:\/(flagged|review))?$/, fn: renderEditor },
+    { re: /^#\/editor\/review\/([^/]+)\/([^/]+)$/, fn: renderEditorSet },
     /* The old address, kept working. Somebody has it bookmarked and a dead
        link teaches them the feature was removed. */
     { re: /^#\/peer$/, fn: () => { location.replace('#/editor/flagged'); } },
@@ -2211,6 +2212,7 @@
      that costs a click to get through. */
 
   const EDITOR_SECTIONS = [
+    { id: 'review', label: '📋 Question review', hash: '#/editor/review' },
     { id: 'flagged', label: '🚩 Flagged questions', hash: '#/editor/flagged' }
   ];
 
@@ -2248,7 +2250,321 @@
       FX.viewIn(view);
       return;
     }
-    return renderEditorFlagged(user, section || 'flagged');
+    if (section === 'review' || !section) return renderEditorReview(user);
+    return renderEditorFlagged(user, section);
+  }
+
+  /* ---------------- the review queue ----------------
+
+     A SET AT A TIME, because that is how questions arrive: somebody
+     imports a paper or writes a station, and the unit of work is the whole
+     thing. A queue of four hundred loose questions is a queue nobody
+     starts. */
+  async function renderEditorReview(user) {
+    view.innerHTML = `
+      <section class="page">
+        <header data-animate>
+          <p class="kicker">EDITOR · QUESTION REVIEW</p>
+          <h1 class="page-title">Sets waiting to be read</h1>
+          <p class="muted">Nothing new reaches a candidate until an editor has been through it. Open a set, work down
+            it, and submit — that is the moment it appears in the bank.</p>
+        </header>
+        ${editorSubnav('review')}
+        <div id="er-tally"></div>
+        <div id="er-list" data-animate><p class="muted">Loading…</p></div>
+      </section>`;
+    FX.viewIn(view);
+
+    const host = view.querySelector('#er-list');
+    let sets = [];
+    try { sets = (await Backend.listForReview()) || []; }
+    catch (e) { host.innerHTML = `<p class="bad">${esc(e.message || e)}</p>`; return; }
+
+    /* THE TALLY IS WHAT A PAYMENT CONVERSATION RUNS ON, so an editor can
+       see their own without asking anybody. It is counted from the work —
+       one row per question they have been through — and there is no number
+       anywhere that somebody can simply type. */
+    try {
+      const counts = (await Backend.reviewCounts()) || [];
+      const mine = counts.find(c => c.userId === user.id);
+      view.querySelector('#er-tally').innerHTML = counts.length ? `
+        <div class="card er-tally" data-animate>
+          <h3 class="card-title">Questions reviewed</h3>
+          <p class="er-mine"><strong>${mine ? mine.n : 0}</strong> by you</p>
+          ${counts.length > 1 ? `<details class="dev-collapse"><summary><span class="muted tiny">Everyone (${counts.length})</span><span class="dc-caret">▸</span></summary>
+            ${counts.map(c => `<p class="er-row"><span>${esc(c.name)}</span><strong>${c.n}</strong></p>`).join('')}
+          </details>` : ''}
+        </div>` : '';
+    } catch { /* the tally is never the reason the page fails */ }
+
+    if (!sets.length) {
+      host.innerHTML = `<div class="card" data-animate>
+        <h3 class="card-title">Nothing waiting</h3>
+        <p class="muted">Every set in the bank has been reviewed. New ones appear here as soon as they are
+          imported — they stay out of the bank until somebody has read them.</p></div>`;
+      return;
+    }
+    host.innerHTML = sets.map(st => `
+      <a class="card er-card" href="#/editor/review/${encodeURIComponent(st.table)}/${encodeURIComponent(st.id)}">
+        <div class="er-card-top">
+          <span class="chip chip-${st.table === 'papers' ? 'sba' : 'tf'}">${esc(st.label)}</span>
+          <span class="er-status">${st.status === 'in_review' ? 'part-read' : 'not read yet'}</span>
+        </div>
+        <h3>${esc(st.title)}</h3>
+        <p class="muted tiny">${st.questionCount} question${st.questionCount === 1 ? '' : 's'}${
+          (st.tracks || []).length ? ' · ' + esc(st.tracks.join(', ')) : ''}</p>
+      </a>`).join('');
+  }
+
+  /* ---------------- reviewing one set ----------------
+
+     THE WHOLE DESIGN IS "DO NOT MAKE ME CLICK". An editor going through
+     forty questions should finish without touching the mouse, so:
+
+       · one question on screen, never a wall of them;
+       · every field is already an input — there is no "edit" mode to enter
+         and therefore no mode to forget you are in;
+       · nothing is saved by pressing a button. Moving on saves. A save
+         button is a thing to forget, and the forgetting costs the work;
+       · j / k or the arrow keys move, 1-9 set the answer, Enter accepts
+         and moves on;
+       · the count of what is left is always on screen, because the only
+         question anybody has while doing this is "how much more". */
+  async function renderEditorSet(table, setId, user) {
+    if (!(user.isEditor || devOnly(user))) { location.replace('#/editor'); return; }
+    view.innerHTML = `<section class="page narrow"><p class="muted">Loading the set…</p></section>`;
+
+    let paper = null, questions = [], title = setId, kindOf = [];
+    try {
+      if (table === 'papers') {
+        const loaded = await Data.loadPaper(setId);
+        paper = loaded.paper; title = loaded.paper.topic || loaded.meta.title || setId;
+        ['SBA', 'EMQ', 'TF'].forEach(k => Data.flatten(paper, k).forEach(q => {
+          questions.push(q); kindOf.push(k);
+        }));
+      } else {
+        const st = await Backend.getOsceStation(setId);
+        if (!st) throw new Error('That station no longer exists.');
+        title = st.topic || setId;
+        (st.questions || []).forEach((q, i) => {
+          questions.push({ kind: 'OSCE', number: i + 1, stem: q.prompt || '',
+            options: [], answer: -1, rationale: (q.marking_points || [])
+              .map(p => (typeof p === 'string' ? p : p.text)).filter(Boolean).join('\n') });
+          kindOf.push('OSCE');
+        });
+      }
+    } catch (e) {
+      view.innerHTML = `<section class="page narrow"><p class="bad">${esc(e.message || e)}</p>
+        <a class="btn btn-ghost" href="#/editor/review">← Back to the queue</a></section>`;
+      return;
+    }
+    if (!questions.length) {
+      view.innerHTML = `<section class="page narrow"><div class="card">
+        <h3 class="card-title">${esc(title)}</h3>
+        <p class="muted">This set has no questions in it to read.</p></div>
+        <a class="btn btn-ghost" href="#/editor/review">← Back to the queue</a></section>`;
+      return;
+    }
+
+    let i = 0;
+    const seen = new Set();                       // questions this editor has been through
+    const edits = new Map();                      // index -> the fields they changed
+    const keyOf = n => `${setId}:${kindOf[n]}:${questions[n].number}`;
+
+    view.innerHTML = `
+      <section class="page narrow er-set" data-animate>
+        <header>
+          <p class="kicker">EDITOR · REVIEWING</p>
+          <h1 class="page-title">${esc(title)}</h1>
+          <p class="muted er-help">
+            <kbd>J</kbd>/<kbd>K</kbd> move · <kbd>1</kbd>–<kbd>9</kbd> set the answer ·
+            <kbd>Enter</kbd> accept and go on. Changes save as you make them.</p>
+        </header>
+        <div class="er-progress"><span id="er-bar"></span></div>
+        <p class="er-count" id="er-count"></p>
+        <div id="er-q"></div>
+        <div class="er-nav">
+          <button class="btn btn-ghost" id="er-prev">← Previous</button>
+          <button class="btn btn-primary" id="er-next">Accept &amp; next →</button>
+        </div>
+        <div id="er-done"></div>
+        <p class="dev-row-msg" id="er-msg"></p>
+      </section>`;
+    FX.viewIn(view);
+
+    const qHost = view.querySelector('#er-q');
+    const msg = view.querySelector('#er-msg');
+
+    function paint() {
+      const q = questions[i];
+      const e = edits.get(i) || {};
+      const stem = e.stem ?? q.stem;
+      const opts = e.options ?? q.options;
+      const ans = e.answer ?? q.answer;
+      const rat = e.rationale ?? q.rationale;
+      view.querySelector('#er-count').textContent =
+        `Question ${i + 1} of ${questions.length} · ${seen.size} read · ${questions.length - seen.size} to go`;
+      view.querySelector('#er-bar').style.width = (seen.size / questions.length * 100) + '%';
+      qHost.innerHTML = `
+        <div class="card er-qcard">
+          <div class="er-qhead">
+            <span class="chip chip-${String(kindOf[i]).toLowerCase()}">${esc(kindOf[i])}</span>
+            ${seen.has(i) ? '<span class="er-read">✓ read</span>' : ''}
+          </div>
+          <label class="er-f"><span>Question</span>
+            <textarea data-f="stem" rows="3">${esc(stem)}</textarea></label>
+          ${opts.length ? `
+          <div class="er-f"><span>Options — click one to make it the answer</span>
+            <div class="er-opts">
+              ${opts.map((o, oi) => `
+                <button type="button" class="er-opt${oi === ans ? ' is-key' : ''}" data-opt="${oi}">
+                  <span class="er-opt-n">${oi + 1}</span>
+                  <input type="text" data-o="${oi}" value="${esc(o)}">
+                </button>`).join('')}
+            </div></div>` : ''}
+          <label class="er-f"><span>${kindOf[i] === 'OSCE' ? 'Marking points' : 'Explanation'}</span>
+            <textarea data-f="rationale" rows="${kindOf[i] === 'OSCE' ? 6 : 3}">${esc(rat || '')}</textarea></label>
+        </div>`;
+      /* Every field writes straight into the pending edit. There is no save
+         button because there is no moment at which saving is a decision. */
+      qHost.querySelectorAll('[data-f]').forEach(el => el.addEventListener('input', () => {
+        const cur = edits.get(i) || {}; cur[el.dataset.f] = el.value; edits.set(i, cur);
+      }));
+      qHost.querySelectorAll('[data-o]').forEach(el => el.addEventListener('input', () => {
+        const cur = edits.get(i) || {};
+        const list = (cur.options ?? questions[i].options).slice();
+        list[Number(el.dataset.o)] = el.value; cur.options = list; edits.set(i, cur);
+      }));
+      qHost.querySelectorAll('[data-opt]').forEach(el => el.addEventListener('click', ev => {
+        if (ev.target.tagName === 'INPUT') return;   // typing in an option is not choosing it
+        setAnswer(Number(el.dataset.opt));
+      }));
+    }
+
+    function setAnswer(n) {
+      const q = questions[i];
+      if (!q.options.length || n < 0 || n >= q.options.length) return;
+      const cur = edits.get(i) || {}; cur.answer = n; edits.set(i, cur);
+      paint();
+    }
+    function move(d) {
+      const n = Math.min(questions.length - 1, Math.max(0, i + d));
+      if (n !== i) { i = n; paint(); }
+    }
+    function accept() {
+      seen.add(i);
+      if (i < questions.length - 1) move(1); else { paint(); offerSubmit(); }
+    }
+
+    view.querySelector('#er-prev').addEventListener('click', () => move(-1));
+    view.querySelector('#er-next').addEventListener('click', accept);
+
+    /* The keyboard is the point. Typing in a field must not move the
+       cursor off it, so the shortcuts stand down inside an input. */
+    const onKey = ev => {
+      const inField = /^(INPUT|TEXTAREA|SELECT)$/.test(ev.target.tagName);
+      if (ev.key === 'Enter' && !ev.shiftKey && (!inField || ev.target.tagName === 'INPUT')) {
+        ev.preventDefault(); accept(); return;
+      }
+      if (inField) return;
+      if (ev.key === 'j' || ev.key === 'ArrowDown' || ev.key === 'ArrowRight') { ev.preventDefault(); move(1); }
+      else if (ev.key === 'k' || ev.key === 'ArrowUp' || ev.key === 'ArrowLeft') { ev.preventDefault(); move(-1); }
+      else if (/^[1-9]$/.test(ev.key)) { ev.preventDefault(); setAnswer(Number(ev.key) - 1); }
+    };
+    document.addEventListener('keydown', onKey);
+    view.querySelector('.er-set').addEventListener('aureum:gone', () => document.removeEventListener('keydown', onKey));
+
+    function offerSubmit() {
+      view.querySelector('#er-done').innerHTML = `
+        <div class="card er-submit" data-animate>
+          <h3 class="card-title">Read all ${questions.length}</h3>
+          <p class="muted">Submitting publishes the set: candidates can reach it from that moment, and the
+            ${questions.length} question${questions.length === 1 ? '' : 's'} count towards your tally.</p>
+          <button class="btn btn-gold" id="er-submit">Submit — publish this set</button>
+        </div>`;
+      view.querySelector('#er-submit').addEventListener('click', submit);
+    }
+    /* Submitting is allowed before the end, and says what it will do. An
+       editor who has read thirty of forty and has to stop should be able
+       to; refusing would mean the work is lost or faked. */
+    async function submit(ev) {
+      const btn = ev.currentTarget; btn.disabled = true;
+      msg.textContent = 'Saving…'; msg.className = 'dev-row-msg muted';
+      try {
+        if (edits.size) await saveEdits();
+        await Backend.submitReview(table, setId, [...seen].map(keyOf));
+        try { Data.bustPapers?.(); OSCE?.bustStations?.(); } catch {}
+        msg.textContent = '✓ Published. Candidates can reach it now.';
+        msg.className = 'dev-row-msg good';
+        setTimeout(() => { location.hash = '#/editor/review'; }, 900);
+      } catch (e) {
+        msg.textContent = e.message || String(e); msg.className = 'dev-row-msg bad';
+        btn.disabled = false;
+      }
+    }
+
+    /* The edits are written back into the set itself, which is the only
+       place a question actually lives. */
+    async function saveEdits() {
+      if (table !== 'papers') {
+        const st = await Backend.getOsceStation(setId);
+        edits.forEach((e, n) => {
+          const q = (st.questions || [])[questions[n].number - 1];
+          if (!q) return;
+          if (e.stem != null) q.prompt = e.stem;
+          if (e.rationale != null) {
+            q.marking_points = String(e.rationale).split('\n').map(x => x.trim()).filter(Boolean)
+              .map(text => ({ text, marks: 1 }));
+          }
+        });
+        await Backend.publishOsceStation(st);
+        return;
+      }
+      const loaded = await Data.loadPaper(setId);
+      const doc = JSON.parse(JSON.stringify(loaded.paper));
+      edits.forEach((e, n) => {
+        const kind = kindOf[n], num = questions[n].number;
+        if (kind === 'SBA') {
+          const q = (doc.sba || doc.questions || [])[num - 1]; if (!q) return;
+          if (e.stem != null) q.stem = e.stem;
+          if (e.options) q.options = e.options;
+          if (e.answer != null) q.answer = e.answer;
+          if (e.rationale != null) q.rationale = e.rationale;
+        } else if (kind === 'EMQ') {
+          let seenN = 0;
+          for (const b of (doc.emq || doc.themes || [])) {
+            for (const stm of (b.stems || [])) {
+              if (++seenN === num) {
+                if (e.stem != null) stm.stem = e.stem;
+                if (e.options) b.options = e.options;
+                if (e.answer != null) stm.answer = e.answer;
+                if (e.rationale != null) stm.rationale = e.rationale;
+                return;
+              }
+            }
+          }
+        } else if (kind === 'TF') {
+          let seenN = 0;
+          for (const b of (doc.tf || doc.truefalse || [])) {
+            const list = Array.isArray(b.statements) ? b.statements : [b];
+            for (const stm of list) {
+              if (++seenN === num) {
+                if (e.stem != null) stm.stem = e.stem;
+                /* True is option 0 — see Data.flatten. */
+                if (e.answer != null) stm.answer = e.answer === 0;
+                if (e.rationale != null) stm.rationale = e.rationale;
+                return;
+              }
+            }
+          }
+        }
+      });
+      const meta = { ...loaded.meta, content: doc,
+        sba: Data.countSBA(doc), emq: Data.countEMQ(doc), tf: Data.countTF(doc) };
+      await Backend.publishPaper(meta);
+    }
+
+    paint();
   }
 
   async function renderEditorFlagged(user, active) {

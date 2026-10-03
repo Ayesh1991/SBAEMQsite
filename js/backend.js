@@ -313,9 +313,15 @@ const Backend = (() => {
        that genuinely need the whole bank. Mirrors the cloud impl exactly. */
 
     /* ---- OSCE stations + attempts ---- */
-    async function getOsceStations() { return read('oscestations', []).map(osceCard); }
+    async function getOsceStations() {
+      const me = await currentUser().catch(() => null);
+      return gateByReview(read('oscestations', []), me).map(osceCard);
+    }
     async function getOsceSearchIndex() { return read('oscestations', []).map(x => ({ id: x.id, search: x.search || '' })); }
-    async function getOsceStation(id) { return read('oscestations', []).find(x => x.id === id) || null; }
+    async function getOsceStation(id) {
+      const me = await currentUser().catch(() => null);
+      return gateByReview(read('oscestations', []), me).find(x => x.id === id) || null;
+    }
     async function publishOsceStation(meta) {
       const rec = withOsceCounts(meta);
       Object.assign(rec, await contentTags(rec));
@@ -324,6 +330,7 @@ const Backend = (() => {
       /* The date it went into AUREUM, set once and never moved by a later
          edit — the cloud gets this from the row's own insert time. */
       rec.created_at = (i >= 0 && l[i].created_at) || new Date().toISOString();
+      keepReviewState(rec, i >= 0 ? l[i] : null);
       if (i >= 0) l[i] = rec; else l.push(rec);
       write('oscestations', l); return rec;
     }
@@ -571,15 +578,65 @@ const Backend = (() => {
       const all = read('topupsall', []); const r = all.find(x => x.id === id); if (r) { stamp(r); write('topupsall', all); }
       if (r?.user_email) { const l = read('topups:' + r.user_email, []); const m = l.find(x => x.id === id); if (m) { stamp(m); write('topups:' + r.user_email, l); } }
       return r; }
-    async function getPublishedPapers() { return read('published', []).map(({ content, ...card }) => card); }
-    async function getPaperContent(id) { const p = read('published', []).find(x => x.id === id); return p ? (p.content || null) : null; }
-    async function getPaperContents() { return read('published', []).map(p => ({ id: p.id, content: p.content || null })); }
+    /* THE GATE, mirrored. The cloud enforces it in the read policy; here it
+       has to be applied on the way out or local mode would show a draft to
+       everybody and the tests of the gate would prove nothing.
+
+       An editor sees everything, because content they cannot see is
+       content they cannot review. */
+    function gateByReview(rows, me) {
+      if (me && me.isEditor) return rows;
+      /* A ROW WITH NO STATUS AT ALL PREDATES THE GATE, and is published.
+         This is the local mirror of what the schema does: the column is
+         added with a default of 'published', so everything already in the
+         bank stays visible, and only then does the default become 'draft'
+         for what is written afterwards. Reading a missing value as 'draft'
+         instead would empty the bank of everyone already using it —
+         which is the one failure this whole release had to avoid. */
+      return rows.filter(r => r.review_status == null || r.review_status === 'published');
+    }
+    async function getPublishedPapers() {
+      const me = await currentUser().catch(() => null);
+      return gateByReview(read('published', []), me).map(({ content, ...card }) => card);
+    }
+    /* The CONTENT reads are gated too. A card list that hides a draft but a
+       content read that hands it over is not a gate — the paper page asks
+       for the content by id, and an id is easy to guess. */
+    async function getPaperContent(id) {
+      const me = await currentUser().catch(() => null);
+      const p = gateByReview(read('published', []), me).find(x => x.id === id);
+      return p ? (p.content || null) : null;
+    }
+    async function getPaperContents() {
+      const me = await currentUser().catch(() => null);
+      return gateByReview(read('published', []), me).map(p => ({ id: p.id, content: p.content || null }));
+    }
+    /* THE REVIEW STATE SURVIVES AN EDIT. Storing locally replaces the whole
+       record, so without this a reviewed paper would lose its status —
+       or worse, silently drop back to draft — the moment somebody fixed a
+       typo in it. A NEW record starts as a draft; an existing one keeps
+       whatever it already had. The cloud gets both halves from the column
+       default and an upsert that does not name the column. */
+    function keepReviewState(rec, prev) {
+      if (prev) {
+        /* Copied through exactly, including absent — a row that predates
+           the gate must not acquire a 'draft' by being edited. */
+        rec.review_status = prev.review_status;
+        if (prev.reviewed_by) rec.reviewed_by = prev.reviewed_by;
+        if (prev.reviewed_at) rec.reviewed_at = prev.reviewed_at;
+      } else if (!rec.review_status) {
+        rec.review_status = 'draft';
+      }
+      return rec;
+    }
+
     async function publishPaper(meta) {
       /* The same stamp as the cloud. Local mode is where the two-person
          flows get tested, and a rule that only one backend applies is a
          rule that gets tested on the wrong one. */
       Object.assign(meta, await contentTags(meta));
       const list = read('published', []); const i = list.findIndex(p => p.id === meta.id);
+      keepReviewState(meta, i >= 0 ? list[i] : null);
       if (i >= 0) list[i] = meta; else list.push(meta); write('published', list); return meta;
     }
     async function unpublishPaper(id) { write('published', read('published', []).filter(p => p.id !== id)); }
@@ -903,6 +960,89 @@ const Backend = (() => {
       write(t.key, l); return n;
     }
 
+    /* ---------- REVIEW BEFORE ANYBODY SITS IT ----------
+       A set of questions reaches candidates only after an editor has been
+       through it. Locally the status lives on the stored record; in the
+       cloud it is a column with a trigger, because a check that lives only
+       in the browser is not a check.
+
+       NOTHING HERE IS WRITTEN ON PUBLISH. A new record gets 'draft' when
+       it is first stored and keeps whatever it has on an edit, so fixing a
+       typo in a reviewed paper does not send it back to the queue. */
+    const REVIEWABLE = [
+      { table: 'papers', key: 'published', label: 'Paper', title: r => r.title || r.id },
+      { table: 'osce_stations', key: 'oscestations', label: 'OSCE station', title: r => r.topic || r.id }
+    ];
+    const setOf = t => REVIEWABLE.find(x => x.table === t);
+
+    /** Sets an editor has not finished with. */
+    async function listForReview() {
+      const me = await currentUser();
+      if (!me || !me.isEditor) throw new Error('Only an editor may review questions.');
+      const out = [];
+      REVIEWABLE.forEach(t => read(t.key, []).forEach(r => {
+        /* Only an explicit non-published status is waiting for somebody.
+           A row with none predates the gate and is already in the bank. */
+        if (r.review_status && r.review_status !== 'published') {
+          out.push({ table: t.table, label: t.label, id: r.id, title: String(t.title(r) || r.id),
+            status: r.review_status, tracks: r.tracks || [],
+            questionCount: countQuestions(t.table, r) });
+        }
+      }));
+      return out;
+    }
+    function countQuestions(table, rec) {
+      if (table === 'osce_stations') return (rec.questions || []).length;
+      const c = rec.content || rec;
+      return (c.sba || c.questions || []).length
+        + (c.emq || c.themes || []).reduce((n, b) => n + (b.stems || []).length, 0)
+        + (c.tf || c.truefalse || []).reduce((n, b) => n + (Array.isArray(b.statements) ? b.statements.length : 1), 0);
+    }
+
+    /** Record that this editor has been through these questions. */
+    async function recordReviewed(table, setId, questionKeys) {
+      const me = await currentUser();
+      if (!me || !me.isEditor) throw new Error('Only an editor may review questions.');
+      const log = read('questionreviews', []);
+      const have = new Set(log.map(r => r.questionKey + '|' + r.reviewedBy));
+      (questionKeys || []).forEach(qk => {
+        if (have.has(qk + '|' + me.id)) return;
+        log.push({ questionKey: qk, reviewedBy: me.id, setTable: table, setId, reviewedAt: Date.now() });
+      });
+      write('questionreviews', log);
+      return log.length;
+    }
+
+    /** Finish a set: it becomes readable by candidates. */
+    async function submitReview(table, setId, questionKeys) {
+      const me = await currentUser();
+      if (!me || !me.isEditor) throw new Error('Only an editor may review questions.');
+      const t = setOf(table); if (!t) throw new Error('Unknown content table: ' + table);
+      await recordReviewed(table, setId, questionKeys);
+      const l = read(t.key, []);
+      const rec = l.find(x => x.id === setId);
+      if (!rec) throw new Error('That set no longer exists.');
+      rec.review_status = 'published';
+      rec.reviewed_by = me.id; rec.reviewed_at = Date.now();
+      write(t.key, l);
+      return rec;
+    }
+
+    /** How many questions each editor has been through. */
+    async function reviewCounts() {
+      const me = await currentUser();
+      if (!me || !me.isEditor) throw new Error('Only an editor may see the review tally.');
+      const log = read('questionreviews', []);
+      const users = await listAllUsers();
+      const by = {};
+      log.forEach(r => { by[r.reviewedBy] = (by[r.reviewedBy] || 0) + 1; });
+      return Object.keys(by).map(id => ({
+        userId: id, n: by[id],
+        name: users.find(u => u.id === id)?.name || id,
+        email: users.find(u => u.id === id)?.email || ''
+      })).sort((a, b) => b.n - a.n);
+    }
+
     async function setUserRole(userId, role) {
       if (!['student', 'editor', 'admin'].includes(role)) throw new Error('Unknown role.');
       const all = users(); const u = Object.values(all).find(x => x.id === userId || x.email === userId);
@@ -1116,7 +1256,7 @@ const Backend = (() => {
 
     return { init, signUp, signIn, signOut, requestPasswordReset, updatePassword, onPasswordRecovery, currentUser, updateProfile,
       getRegistrationOpen, setRegistrationOpen, setUserStatus, setUserRole,
-      listTracks, saveTrack, myEnrolments, enrol, setPrimaryTrack, grantEnrolment, canReadTracks, listUntagged, fileUnder, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
+      listTracks, saveTrack, myEnrolments, enrol, setPrimaryTrack, grantEnrolment, canReadTracks, listUntagged, fileUnder, listForReview, submitReview, recordReviewed, reviewCounts, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
       getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
@@ -2644,6 +2784,73 @@ const Backend = (() => {
       return (data || []).length;
     }
 
+    /* ---------- REVIEW BEFORE ANYBODY SITS IT ----------
+       The status is a column with a trigger behind it: a non-editor's
+       update cannot move it, whatever the client sends. Nothing writes it
+       on publish — the column default marks a new row 'draft', and an
+       upsert that does not name the column leaves it alone on update. */
+    const REVIEWABLE = [
+      { table: 'papers', label: 'Paper', title: 'meta->>title', count: 'meta->sba' },
+      { table: 'osce_stations', label: 'OSCE station', title: 'meta->>topic', count: 'meta->q_count' }
+    ];
+
+    async function listForReview() {
+      await ensureClient();
+      const out = [];
+      for (const t of REVIEWABLE) {
+        try {
+          const { data, error } = await sb.from(t.table)
+            .select(`id,title:${t.title},status:review_status,tracks,n:${t.count}`)
+            .neq('review_status', 'published').order('id').limit(500);
+          if (error) continue;
+          (data || []).forEach(r => out.push({ table: t.table, label: t.label, id: r.id,
+            title: String(r.title || r.id), status: r.status, tracks: r.tracks || [],
+            questionCount: Number(r.n) || 0 }));
+        } catch { /* one missing table must not hide the others */ }
+      }
+      return out;
+    }
+
+    async function recordReviewed(table, setId, questionKeys) {
+      await ensureClient();
+      const id = await uid(); if (!id) throw new Error('Sign in first.');
+      const rows = (questionKeys || []).map(qk => ({ question_key: qk, reviewed_by: id,
+        set_table: table, set_id: setId }));
+      if (!rows.length) return 0;
+      /* The pair is the primary key, so a question gone over twice is not
+         two payments. Ignoring the duplicate is the whole point. */
+      const { error } = await sb.from('question_reviews').upsert(rows, { onConflict: 'question_key,reviewed_by', ignoreDuplicates: true });
+      if (error) throw new Error(error.message || 'Could not record the review.');
+      return rows.length;
+    }
+
+    async function submitReview(table, setId, questionKeys) {
+      await ensureClient();
+      if (!REVIEWABLE.some(x => x.table === table)) throw new Error('Unknown content table: ' + table);
+      const id = await uid();
+      await recordReviewed(table, setId, questionKeys);
+      const { error } = await sb.from(table)
+        .update({ review_status: 'published', reviewed_by: id, reviewed_at: new Date().toISOString() })
+        .eq('id', setId);
+      if (error) throw new Error(error.message || 'Could not submit the review.');
+      return { id: setId, review_status: 'published' };
+    }
+
+    async function reviewCounts() {
+      await ensureClient();
+      const { data, error } = await sb.from('question_reviews').select('reviewed_by');
+      if (error) throw new Error(error.message || 'Could not read the review tally.');
+      const by = {};
+      (data || []).forEach(r => { by[r.reviewed_by] = (by[r.reviewed_by] || 0) + 1; });
+      let users = [];
+      try { users = await listAllUsers(); } catch { /* an editor cannot list users; the ids still count */ }
+      return Object.keys(by).map(id => ({
+        userId: id, n: by[id],
+        name: users.find(u => u.id === id)?.name || id,
+        email: users.find(u => u.id === id)?.email || ''
+      })).sort((a, b) => b.n - a.n);
+    }
+
     /** Promote or demote somebody. Admin only — the database enforces it
         too, in the profiles trigger, because a check that lives only in
         the browser is not a check. */
@@ -2795,7 +3002,7 @@ const Backend = (() => {
 
     return { init, signUp, signIn, signOut, requestPasswordReset, updatePassword, onPasswordRecovery, currentUser, updateProfile,
       getRegistrationOpen, setRegistrationOpen, setUserStatus, setUserRole,
-      listTracks, saveTrack, myEnrolments, enrol, setPrimaryTrack, grantEnrolment, canReadTracks, listUntagged, fileUnder, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
+      listTracks, saveTrack, myEnrolments, enrol, setPrimaryTrack, grantEnrolment, canReadTracks, listUntagged, fileUnder, listForReview, submitReview, recordReviewed, reviewCounts, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
       getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,

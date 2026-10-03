@@ -31,7 +31,7 @@ const sec = t => console.log('\n======== ' + t + ' ========');
 sec('1. THE DOOR IS GATED, AND THE OLD ONE STILL OPENS');
 
 const app = readFileSync('js/app.js', 'utf8');
-say('the panel has its own route', /\^#\\\/editor\(\?:\\\/\(flagged\)\)\?\$/.test(app));
+say('the panel has its own route', /\^#\\\/editor\(\?:\\\/\(flagged\|review\)\)\?\$/.test(app));
 /* A dead bookmark teaches somebody the feature was removed. */
 say('  and the old address still goes somewhere',
   /\^#\\\/peer\$[\s\S]{0,120}editor\/flagged/.test(app));
@@ -98,13 +98,17 @@ await page.evaluate(async () => {
   await Backend.setUserRole(u.id, 'editor');
 });
 await go('#/editor');
-say('  and it opens on the flagged work', /Answer what the cohort flagged/.test(await title()),
-  await title());
+/* v123 moved the front door. The panel opens on the review queue, because
+   that is the work that blocks candidates — a set nobody has read is
+   content nobody can reach, whereas a flag is a question already in use
+   that somebody doubts. Flagged is one tab away. */
+say('  and it opens on the work that blocks candidates',
+  /Sets waiting to be read/.test(await title()), await title());
+await go('#/editor/flagged');
+say('  with the flagged work one tab away',
+  /Answer what the cohort flagged/.test(await title()), await title());
 const tabs = await page.evaluate(() => [...document.querySelectorAll('.ed-tab')].map(t => t.textContent.trim()));
-/* Drawn with one tab on purpose: Question review joins it next, and a tab
-   strip that appears from nowhere reads as a different page rather than
-   the same one grown. */
-say('  with a sub-navigation ready for the next section', tabs.length === 1, tabs.join(', '));
+say('  and both sections in the sub-navigation', tabs.length === 2, tabs.join(', '));
 
 /* The old address, from a bookmark or a message sent months ago. */
 await go('#/peer');
@@ -119,7 +123,7 @@ await page.waitForTimeout(900);
 await page.evaluate(async () => { await Backend.signOut(); await Backend.signIn('nimal@example.com', 'password123'); });
 await go('#/editor');
 say('a granted editor is offered the panel', await hasTab('a[href="#/editor"]'));
-say('  and it opens', /Answer what the cohort flagged/.test(await title()), await title());
+say('  and it opens', /Sets waiting to be read/.test(await title()), await title());
 
 /* ---------------------------------------------------------------- */
 sec('4. BUT AN EDITOR IS STILL NOT AN ADMIN');
@@ -165,9 +169,11 @@ const stamp = await page.evaluate(async () => {
   const h = await (await fetch('/index.html')).text();
   const sw = await (await fetch('/sw.js')).text();
   const vs = [...new Set([...h.matchAll(/\?v=(\d+)/g)].map(m => m[1]))];
-  return { vs, sw: /aureum-v122/.test(sw) };
+  /* The literal belongs to the newest release file only — see the
+     README. */
+  return { vs, sw: vs.length === 1 && sw.includes("'aureum-v" + vs[0] + "'") };
 });
-say('one version across every asset', stamp.vs.join() === '122', stamp.vs.join(', '));
+say('one version across every asset', stamp.vs.length === 1, stamp.vs.join(', '));
 say('  the service worker agrees', stamp.sw);
 
 console.log('\nerrors on the page: ' + (bad.length ? '\n  ' + bad.join('\n  ') : 'none'));
