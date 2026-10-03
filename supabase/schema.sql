@@ -2064,3 +2064,93 @@ create policy "reactions read" on public.post_reactions for select
 -- authenticated. A view takes no policy of its own — writing one here
 -- would simply fail when this file is run — and the grant is exactly the
 -- access a search needs.
+
+-- ---------- 36) A PAPER THE GROUP SITS TOGETHER ----------
+-- A group designs a paper from the blueprint, sets a time, and everybody
+-- sits the SAME questions at that time, alone. Afterwards the group sees
+-- everyone's marks beside each other.
+--
+-- THE WHOLE DIFFICULTY IS FAIRNESS, and it is one sentence: a paper that
+-- can be opened early is not an assessment. So the question list is not a
+-- column on a row the group can read — it is its own table, and the policy
+-- that guards it compares the clock to the start time. The rows do not
+-- leave the database before then, whatever the client asks for. A check in
+-- the browser would be a countdown anybody could skip with a console.
+create table if not exists public.group_papers (
+  id          uuid primary key default gen_random_uuid(),
+  room_id     uuid not null references public.chat_rooms(id) on delete cascade,
+  title       text not null,
+  created_by  uuid references auth.users(id) on delete set null,
+  starts_at   timestamptz not null,
+  minutes     int not null default 60,
+  created_at  timestamptz not null default now()
+);
+create index if not exists group_papers_room_idx on public.group_papers (room_id, starts_at desc);
+
+-- The questions. A separate table for one reason: so the TIME can gate it.
+create table if not exists public.group_paper_plan (
+  paper_id uuid primary key references public.group_papers(id) on delete cascade,
+  qkeys    text[] not null default '{}'
+);
+
+create table if not exists public.group_paper_attempts (
+  paper_id     uuid not null references public.group_papers(id) on delete cascade,
+  user_id      uuid not null references auth.users(id) on delete cascade,
+  score        int not null default 0,
+  total        int not null default 0,
+  percent      numeric(5,2) not null default 0,
+  detail       jsonb not null default '[]'::jsonb,
+  submitted_at timestamptz not null default now(),
+  primary key (paper_id, user_id)
+);
+
+alter table public.group_papers        enable row level security;
+alter table public.group_paper_plan    enable row level security;
+alter table public.group_paper_attempts enable row level security;
+
+-- Has this paper started? SECURITY DEFINER so the plan's policy can ask
+-- without being able to read the paper row through its own policy.
+create or replace function public.group_paper_open(p uuid)
+returns boolean language sql security definer stable set search_path = public as $$
+  select exists (select 1 from public.group_papers g
+                  where g.id = p and now() >= g.starts_at);
+$$;
+create or replace function public.group_paper_room(p uuid)
+returns uuid language sql security definer stable set search_path = public as $$
+  select g.room_id from public.group_papers g where g.id = p;
+$$;
+
+drop policy if exists "group papers read"   on public.group_papers;
+drop policy if exists "group papers write"  on public.group_papers;
+-- The group knows a paper exists, what it is called and when it starts.
+-- That is the invitation, and it has to be visible beforehand or nobody
+-- turns up.
+create policy "group papers read" on public.group_papers for select
+  using (public.is_room_member(room_id));
+create policy "group papers write" on public.group_papers for insert
+  with check (public.is_room_member(room_id) and created_by = auth.uid());
+
+drop policy if exists "group plan read"  on public.group_paper_plan;
+drop policy if exists "group plan write" on public.group_paper_plan;
+-- AND THE QUESTIONS ONLY AFTER IT HAS STARTED. This is the line between a
+-- mock and an assessment.
+create policy "group plan read" on public.group_paper_plan for select
+  using (public.is_room_member(public.group_paper_room(paper_id))
+         and public.group_paper_open(paper_id));
+-- Whoever set the paper writes the plan once, before it opens.
+create policy "group plan write" on public.group_paper_plan for insert
+  with check (public.is_room_member(public.group_paper_room(paper_id)));
+
+drop policy if exists "group attempts read"  on public.group_paper_attempts;
+drop policy if exists "group attempts write" on public.group_paper_attempts;
+-- The marks are the point of sitting it together, so the whole group reads
+-- them. A score is not an answer: knowing somebody got 72% tells you
+-- nothing about which questions they got right.
+create policy "group attempts read" on public.group_paper_attempts for select
+  using (public.is_room_member(public.group_paper_room(paper_id)));
+create policy "group attempts write" on public.group_paper_attempts for insert
+  with check (user_id = auth.uid()
+              and public.is_room_member(public.group_paper_room(paper_id))
+              and public.group_paper_open(paper_id));
+-- No update policy, deliberately: a mark is submitted once. Re-sitting the
+-- same paper for a better number is not what a group is comparing.

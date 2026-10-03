@@ -84,6 +84,8 @@
     { re: /^#\/review$/, fn: renderReview },
     { re: /^#\/editor(?:\/(flagged|review))?$/, fn: renderEditor },
     { re: /^#\/editor\/review\/([^/]+)\/([^/]+)$/, fn: renderEditorSet },
+    { re: /^#\/group\/([^/]+)$/, fn: renderGroup },
+    { re: /^#\/group\/([^/]+)\/paper\/([^/]+)$/, fn: renderGroupPaper },
     /* The old address, kept working. Somebody has it bookmarked and a dead
        link teaches them the feature was removed. */
     { re: /^#\/peer$/, fn: () => { location.replace('#/editor/flagged'); } },
@@ -2675,6 +2677,34 @@
         } catch (e) { msg.textContent = e.message || String(e); msg.className = 'dev-row-msg bad'; ev.target.disabled = false; }
       });
     }
+  }
+
+  /* ================= a group's papers =================
+
+     MEMBERSHIP IS CHECKED BY THE DATABASE, not here: listGroupPapers on a
+     group you are not in comes back empty because the policy refuses it.
+     What this does is find the group's NAME, and say something useful when
+     there is nothing to find. */
+  async function groupOf(roomId) {
+    try { return ((await Backend.listChatRooms()) || []).find(r => r.id === roomId) || null; }
+    catch { return null; }
+  }
+  async function renderGroup(roomId, user) {
+    const room = await groupOf(roomId);
+    if (!room) {
+      view.innerHTML = `<section class="page narrow" data-animate>
+        <header><p class="kicker">GROUP</p><h1 class="page-title">Not one of your groups</h1></header>
+        <div class="card"><p class="muted">Either this group does not exist, or you are not in it. A group's
+          papers, wall and chat are readable only by its members.</p>
+          <a class="btn btn-gold" href="#/studio">← Back to the studio</a></div></section>`;
+      FX.viewIn(view); return;
+    }
+    return GroupPaper.renderList(view, roomId, user, room.title);
+  }
+  async function renderGroupPaper(roomId, paperId, user) {
+    const room = await groupOf(roomId);
+    if (!room) { location.replace('#/studio'); return; }
+    return GroupPaper.renderSit(view, roomId, paperId, user);
   }
 
   /* ================= studio — mission control ================= */
