@@ -1207,6 +1207,59 @@ const Backend = (() => {
       (postIds || []).forEach(id => { if (m[id] && m[id][e]) out[id] = m[id][e]; });
       return out;
     }
+    /* ---------- A PAPER THE GROUP SITS TOGETHER ----------
+       The question list is kept apart from the paper's details and handed
+       over only once the clock passes the start time. In the cloud that is
+       a policy; here it is the same rule written again, because a fairness
+       rule that only one backend applies is a rule that gets tested on the
+       wrong one. */
+    const gpOpen = g => !!g && Date.now() >= new Date(g.starts_at).getTime();
+
+    async function createGroupPaper({ roomId, title, startsAt, minutes, qkeys }) {
+      const e = sessionEmail(); if (!e) throw new Error('Not signed in.');
+      if (!isRoomMember(roomId)) throw new Error('You are not in that group.');
+      const row = { id: 'gp' + Date.now() + Math.random().toString(36).slice(2, 6),
+        room_id: roomId, title: String(title || 'Group paper'), created_by: e,
+        starts_at: new Date(startsAt).toISOString(), minutes: Number(minutes) || 60,
+        created_at: new Date().toISOString() };
+      const all = read('grouppapers', []); all.unshift(row); write('grouppapers', all);
+      const plans = read('grouppaperplans', {}); plans[row.id] = (qkeys || []).slice();
+      write('grouppaperplans', plans);
+      return row;
+    }
+    async function listGroupPapers(roomId) {
+      if (!isRoomMember(roomId)) return [];
+      return read('grouppapers', []).filter(g => g.room_id === roomId);
+    }
+    /** The questions — refused until the paper has started. */
+    async function getGroupPaperPlan(paperId) {
+      const g = read('grouppapers', []).find(x => x.id === paperId);
+      if (!g || !isRoomMember(g.room_id)) throw new Error('That paper is not yours to open.');
+      if (!gpOpen(g)) throw new Error('That paper has not started yet.');
+      return read('grouppaperplans', {})[paperId] || [];
+    }
+    async function saveGroupAttempt(paperId, row) {
+      const e = sessionEmail(); if (!e) throw new Error('Not signed in.');
+      const g = read('grouppapers', []).find(x => x.id === paperId);
+      if (!g || !isRoomMember(g.room_id)) throw new Error('That paper is not yours to sit.');
+      if (!gpOpen(g)) throw new Error('That paper has not started yet.');
+      const all = read('groupattempts', []);
+      /* Submitted once. Re-sitting for a better number is not what a group
+         is comparing. */
+      if (all.some(a => a.paper_id === paperId && a.user_id === e)) throw new Error('You have already sat this paper.');
+      const rec = { paper_id: paperId, user_id: e, score: row.score || 0, total: row.total || 0,
+        percent: row.percent || 0, detail: row.detail || [], submitted_at: new Date().toISOString() };
+      all.push(rec); write('groupattempts', all); return rec;
+    }
+    async function listGroupAttempts(paperId) {
+      const g = read('grouppapers', []).find(x => x.id === paperId);
+      if (!g || !isRoomMember(g.room_id)) return [];
+      const who = users();
+      return read('groupattempts', []).filter(a => a.paper_id === paperId)
+        .map(a => ({ ...a, name: Object.values(who).find(u => u.email === a.user_id)?.name || a.user_id }))
+        .sort((x, y) => y.percent - x.percent);
+    }
+
     /* MEMBERSHIP IS THE WHOLE POINT OF A GROUP, so it is checked here and
        not only in the cloud's policies. Local mode is where these flows
        get tried out, and a privacy rule that only one backend applies is a
@@ -1330,7 +1383,7 @@ const Backend = (() => {
       listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, setPref, listAiUsage, listAiTokenUsage, listMyTokenUsage, getEligibleCounts,
       logEvents, listRecentEvents, bumpQuestionStats, listQuestionStats, saveCohortScore, listCohortScores,
       listAllFlags, resolveFlags, listGlobalFlaggedKeys, saveUserDeck, listUserDecks, deleteUserDeck,
-      addDiscussion, listDiscussions, deleteDiscussion, searchPeople, listDiscussionReplies, addDiscussionReply, deleteDiscussionReply, pollDiscussions, getDiscussionQuestion,
+      addDiscussion, listDiscussions, deleteDiscussion, searchPeople, createGroupPaper, listGroupPapers, getGroupPaperPlan, saveGroupAttempt, listGroupAttempts, listDiscussionReplies, addDiscussionReply, deleteDiscussionReply, pollDiscussions, getDiscussionQuestion,
       listUserNotes, saveUserNote, deleteUserNote,
       uploadTeaFile, setReaction, myReactions, listChatRooms, createChatRoom, listChatMessages, sendChatMessage, markRoomRead, pollChat, listChatPeople,
       listMemberCards, uploadAvatar, getNotifSeen, setNotifSeen,
@@ -2637,6 +2690,60 @@ const Backend = (() => {
       return (data || []).map(m => ({ ...m, mine: m.user_id === id }));
     }
     /** Everyone who could be added to a room, with their avatar. */
+    /* ---------- A PAPER THE GROUP SITS TOGETHER ----------
+       The plan lives in its own table so a POLICY can compare the clock to
+       the start time. Asking early does not return an empty list to be
+       filtered — the rows never leave the database. */
+    async function createGroupPaper({ roomId, title, startsAt, minutes, qkeys }) {
+      await ensureClient(); const id = await uid(); if (!id) throw new Error('Sign in first.');
+      const { data, error } = await sb.from('group_papers')
+        .insert({ room_id: roomId, title: String(title || 'Group paper'), created_by: id,
+          starts_at: new Date(startsAt).toISOString(), minutes: Number(minutes) || 60 })
+        .select().single();
+      if (error) throw new Error(error.message || 'Could not set that paper.');
+      const { error: e2 } = await sb.from('group_paper_plan')
+        .insert({ paper_id: data.id, qkeys: (qkeys || []).slice() });
+      if (e2) throw new Error(e2.message || 'Could not save the questions.');
+      return data;
+    }
+    async function listGroupPapers(roomId) {
+      await ensureClient();
+      const { data } = await sb.from('group_papers').select('*')
+        .eq('room_id', roomId).order('starts_at', { ascending: false });
+      return data || [];
+    }
+    async function getGroupPaperPlan(paperId) {
+      await ensureClient();
+      const { data, error } = await sb.from('group_paper_plan')
+        .select('qkeys').eq('paper_id', paperId).maybeSingle();
+      if (error) throw new Error(error.message || 'Could not open that paper.');
+      /* No row means the policy refused it, which at this point means the
+         paper has not started. Saying so is kinder than an empty paper. */
+      if (!data) throw new Error('That paper has not started yet.');
+      return data.qkeys || [];
+    }
+    async function saveGroupAttempt(paperId, row) {
+      await ensureClient(); const id = await uid(); if (!id) throw new Error('Sign in first.');
+      const { data, error } = await sb.from('group_paper_attempts')
+        .insert({ paper_id: paperId, user_id: id, score: row.score || 0, total: row.total || 0,
+          percent: row.percent || 0, detail: row.detail || [] })
+        .select().single();
+      if (error) {
+        if (/duplicate key/i.test(error.message || '')) throw new Error('You have already sat this paper.');
+        throw new Error(error.message || 'Could not save your paper.');
+      }
+      return data;
+    }
+    async function listGroupAttempts(paperId) {
+      await ensureClient();
+      const { data } = await sb.from('group_paper_attempts')
+        .select('paper_id,user_id,score,total,percent,submitted_at').eq('paper_id', paperId);
+      let cards = {};
+      try { cards = await listMemberCards(); } catch {}
+      return (data || []).map(a => ({ ...a, name: cards[a.user_id]?.name || 'A member' }))
+        .sort((x, y) => y.percent - x.percent);
+    }
+
     async function listChatPeople() {
       await ensureClient(); const id = await uid();
       const { data } = await sb.from('profiles').select('id,name,email,avatar_url,user_no').neq('id', id).limit(200);
@@ -3101,7 +3208,7 @@ const Backend = (() => {
       listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, setPref, listAiUsage, listAiTokenUsage, listMyTokenUsage, getEligibleCounts,
       logEvents, listRecentEvents, bumpQuestionStats, listQuestionStats, saveCohortScore, listCohortScores,
       listAllFlags, resolveFlags, listGlobalFlaggedKeys, saveUserDeck, listUserDecks, deleteUserDeck,
-      addDiscussion, listDiscussions, deleteDiscussion, searchPeople, listDiscussionReplies, addDiscussionReply, deleteDiscussionReply, pollDiscussions, getDiscussionQuestion,
+      addDiscussion, listDiscussions, deleteDiscussion, searchPeople, createGroupPaper, listGroupPapers, getGroupPaperPlan, saveGroupAttempt, listGroupAttempts, listDiscussionReplies, addDiscussionReply, deleteDiscussionReply, pollDiscussions, getDiscussionQuestion,
       listUserNotes, saveUserNote, deleteUserNote,
       uploadTeaFile, setReaction, myReactions, listChatRooms, createChatRoom, listChatMessages, sendChatMessage, markRoomRead, pollChat, listChatPeople,
       listMemberCards, uploadAvatar, getNotifSeen, setNotifSeen,

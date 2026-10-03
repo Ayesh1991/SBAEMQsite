@@ -18,6 +18,7 @@ per release, each shippable on its own.
 | 122 | **Phase 1** — the Editor panel, gated on the role |
 | 123 | **Phase 2** — question review, and the gate |
 | 124 | **Phase 3** — groups: the wall belongs to one |
+| 125 | **Phase 4** — a paper the group sits together |
 
 Three exams are now fully separable: course, enrolment, syllabus,
 blueprint, question types, and all five banks.
@@ -153,6 +154,29 @@ the chat and the files belong to the group.
   — names collide.
 - The existing Tea room becomes the default group everybody is in, so
   nothing is lost on the day this ships.
+
+## Phase 4 — Group mock exams — DONE in v125
+
+Shipped: `group_papers` (name, time, length — the invitation, readable by
+members), `group_paper_plan` in its OWN table so a row-level policy can
+compare the clock to the start time, and `group_paper_attempts` with no
+update policy at all.
+
+The plan is sealed until the start — for the person who set it too. Asking
+early does not return an empty list to be filtered; the rows never leave
+the database. A countdown in the browser is a countdown anybody can skip
+with a console open.
+
+A mark is submitted once. A leaderboard that can be improved by trying
+again measures persistence rather than knowledge.
+
+The marks are readable by the whole group while the questions are not,
+because a score is not an answer: knowing somebody got 72% tells you
+nothing about which ones they got right.
+
+The original note follows, for the reasoning.
+
+---
 
 ## Phase 4 — Group mock exams
 

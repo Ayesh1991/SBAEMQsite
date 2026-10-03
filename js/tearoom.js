@@ -1088,7 +1088,8 @@ const TeaRoom = (() => {
     if (!mine.length) { host.innerHTML = ''; return; }
     host.innerHTML = `
       <button class="tw-room${wallRoom ? '' : ' is-on'}" data-wall-room="">🧱 Everyone</button>
-      ${mine.map(r => `<button class="tw-room${wallRoom === r.id ? ' is-on' : ''}" data-wall-room="${esc(r.id)}">${esc(r.title || 'Group')}</button>`).join('')}`;
+      ${mine.map(r => `<button class="tw-room${wallRoom === r.id ? ' is-on' : ''}" data-wall-room="${esc(r.id)}">${esc(r.title || 'Group')}</button>`).join('')}
+      ${wallRoom ? `<a class="tw-room tw-room-go" href="#/group/${encodeURIComponent(wallRoom)}">📝 Papers</a>` : ''}`;
     host.querySelectorAll('[data-wall-room]').forEach(b => b.addEventListener('click', async () => {
       const id = b.dataset.wallRoom || null;
       if (id === wallRoom) return;

@@ -7177,3 +7177,31 @@ body.sc-open { overflow: hidden; }
 .nc-hit-n { flex: 1; }
 /* The number is what makes one Perera the right Perera. */
 .nc-hit-no { font-size: .74rem; color: var(--muted); }
+
+/* ============================================================
+   v125 — a paper the group sits together
+   ============================================================ */
+.gp-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 10px 0 14px; }
+.gp-form .field { display: grid; gap: 5px; }
+.gp-form .sel { width: 100%; }
+@media (max-width: 560px) { .gp-form { grid-template-columns: 1fr; } }
+.gp-card { margin-top: 14px; }
+.gp-card h3 { margin: 8px 0 6px; }
+.gp-card-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+/* The three states are not a detail — each one is a different page with a
+   different button on it, so each gets its own colour. */
+.gp-state { font-size: .66rem; letter-spacing: .08em; text-transform: uppercase; font-weight: 700;
+  padding: 3px 9px; border-radius: 999px; border: 1px solid var(--hairline); color: var(--muted); }
+.gp-state.is-open { border-color: var(--gold, #c9a227); color: var(--gold, #c9a227); }
+.gp-state.is-upcoming { border-color: var(--warn, #e8a33d); color: var(--warn, #e8a33d); }
+.gp-board { margin-top: 12px; }
+.gp-table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+.gp-table td { padding: 6px 4px; border-top: 1px solid var(--hairline); }
+.gp-table tr:first-child td { border-top: none; }
+.gp-rank { width: 28px; color: var(--muted); font-size: .78rem; }
+.gp-pc { text-align: right; white-space: nowrap; }
+/* Your own row, so you find yourself without reading the list. */
+.gp-table tr.is-me td { background: var(--gold-wash, rgba(201, 162, 39, .1)); }
+.gp-table tr.is-me td:first-child { border-radius: 7px 0 0 7px; }
+.gp-table tr.is-me td:last-child { border-radius: 0 7px 7px 0; }
+.tw-room-go { text-decoration: none; }
