@@ -25,14 +25,14 @@
      python3 -m http.server 8907 --directory .
      node tools/tests/smoke.mjs            # or: node tools/tests/smoke.mjs http://127.0.0.1:8907
 */
-import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
+import { launch } from './browser.mjs';
 
 const B = process.argv[2] || 'http://127.0.0.1:8907';
 let fails = 0;
 const bad = [];
 const say = (w, ok, x) => { console.log('  ' + (ok ? '✓' : '✗') + ' ' + w + (x !== undefined ? ' — ' + x : '')); if (!ok) fails++; };
 
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+const browser = await launch();
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 1000 } });
 /* Local mode: no Supabase, so nothing here can touch a real database. */
 await ctx.addInitScript(() => { let real;

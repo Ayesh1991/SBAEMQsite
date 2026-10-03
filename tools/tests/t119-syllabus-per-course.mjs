@@ -29,7 +29,7 @@
    whose syllabus nobody has written, and visibly empty rather than quietly
    full of the wrong subjects. §2 is the isolation proof and §4 is the
    empty state, and between them they are most of the point. */
-import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
+import { launch } from './browser.mjs';
 import { readFileSync } from 'node:fs';
 const B = process.argv[2] || 'http://127.0.0.1:8907';
 const bad = [];
@@ -74,7 +74,7 @@ say('a syllabus stays readable whatever the entitlement',
 /* ---------------------------------------------------------------- */
 sec('2. IN THE RUNNING APP — ONE COURSE CANNOT REACH ANOTHER’S');
 
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+const browser = await launch();
 const ctx = await browser.newContext({ viewport: { width: 1400, height: 1200 } });
 await ctx.addInitScript(() => { let real;
   Object.defineProperty(window, 'AUREUM_CONFIG', { configurable: true, get() { return real; },

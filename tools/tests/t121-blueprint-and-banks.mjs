@@ -25,7 +25,7 @@
    WHAT AN EMPTY BLUEPRINT MUST DO is refuse, loudly. Sampling no buckets
    falls straight through to the top-up and hands out thirty arbitrary
    questions dressed as a blueprint-shaped paper. §4 holds that line. */
-import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
+import { launch } from './browser.mjs';
 import { readFileSync } from 'node:fs';
 const B = process.argv[2] || 'http://127.0.0.1:8907';
 const bad = [];
@@ -79,7 +79,7 @@ say('  as does the mock pool', /const papers = await Data\.myPapers\(\);/.test(r
 /* ---------------------------------------------------------------- */
 sec('3. IN THE RUNNING APP');
 
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+const browser = await launch();
 const ctx = await browser.newContext({ viewport: { width: 1400, height: 1200 } });
 await ctx.addInitScript(() => { let real;
   Object.defineProperty(window, 'AUREUM_CONFIG', { configurable: true, get() { return real; },
@@ -207,7 +207,16 @@ say('switching course on the page shows that course’s blueprint',
 /* A half-finished edit belongs to the course it was opened for. Carrying it
    across would save one exam's weights onto another. */
 const devJs = readFileSync('js/dev-console.js', 'utf8');
-say('  and a half-edited blueprint is not carried across', /bpEdit = null;\n      view\.querySelector\('#bp-studio'\)\.innerHTML = '';/.test(devJs));
+/* MATCHED WITHOUT DEPENDING ON LAYOUT. The first version of this spanned a
+   line break and pinned the indentation, so it passed on Linux and failed
+   on Windows, where git checks the file out with CRLF — a test that only
+   passes on the machine it was written on, which is exactly the fault the
+   suite had just been fixed for elsewhere. Find the handler, then ask what
+   it does. */
+const bpHandlerAt = devJs.indexOf("'#bp-course')?.addEventListener");
+const bpHandler = bpHandlerAt < 0 ? '' : devJs.slice(bpHandlerAt, bpHandlerAt + 700);
+say('  and a half-edited blueprint is not carried across',
+  /bpEdit = null/.test(bpHandler) && /#bp-studio'\)\.innerHTML = ''/.test(bpHandler));
 
 /* ---------------------------------------------------------------- */
 sec('6. STAMPS');
@@ -215,9 +224,11 @@ const stamp = await page.evaluate(async () => {
   const h = await (await fetch('/index.html')).text();
   const sw = await (await fetch('/sw.js')).text();
   const vs = [...new Set([...h.matchAll(/\?v=(\d+)/g)].map(m => m[1]))];
-  return { vs, sw: /aureum-v121/.test(sw) };
+  /* The literal belongs to the newest release file only — see the
+     README. */
+  return { vs, sw: vs.length === 1 && sw.includes("'aureum-v" + vs[0] + "'") };
 });
-say('one version across every asset', stamp.vs.join() === '121', stamp.vs.join(', '));
+say('one version across every asset', stamp.vs.length === 1, stamp.vs.join(', '));
 say('  the service worker agrees', stamp.sw);
 
 console.log('\nerrors on the page: ' + (bad.length ? '\n  ' + bad.join('\n  ') : 'none'));

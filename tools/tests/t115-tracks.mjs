@@ -25,7 +25,7 @@
    live from the moment the schema runs and nothing is behind it until a
    paid track is deliberately added. Shipping the mechanism and flipping
    the switch are two decisions and should not happen on one day. */
-import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
+import { launch } from './browser.mjs';
 import { readFileSync } from 'node:fs';
 const B = process.argv[2] || 'http://127.0.0.1:8907';
 const bad = [];
@@ -100,7 +100,7 @@ say('  and both export them', (js.match(/listTracks, saveTrack, myEnrolments/g) 
 /* ---------------------------------------------------------------- */
 sec('3. IN THE RUNNING APP');
 
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+const browser = await launch();
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 950 } });
 await ctx.addInitScript(() => { let real;
   Object.defineProperty(window, 'AUREUM_CONFIG', { configurable: true, get() { return real; },

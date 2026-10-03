@@ -17,14 +17,14 @@
    §3 is the window itself, in the corner fan.
 
    Run with the site served locally on 8907. */
-import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
+import { launch } from './browser.mjs';
 const B = process.argv[2] || 'http://127.0.0.1:8907';
 const bad = [];
 let fails = 0;
 const say = (w, c, x) => { console.log('  ' + (c ? '✓' : '✗') + ' ' + w + (x !== undefined ? ' — ' + x : '')); if (!c) fails++; };
 const sec = t => console.log('\n======== ' + t + ' ========');
 
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+const browser = await launch();
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 1000 } });
 await ctx.addInitScript(() => { let real;
   Object.defineProperty(window, 'AUREUM_CONFIG', { configurable: true, get() { return real; },

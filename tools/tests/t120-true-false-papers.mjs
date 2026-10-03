@@ -32,7 +32,7 @@
    has already emitted. A kind inserted before EMQ would renumber every EMQ
    question in the bank and orphan every mark, note, flag and review item
    filed against it. §2 proves the numbering did not move. */
-import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
+import { launch } from './browser.mjs';
 import { readFileSync } from 'node:fs';
 const B = process.argv[2] || 'http://127.0.0.1:8907';
 const bad = [];
@@ -75,7 +75,7 @@ say('  and the docs say how to write one',
    and not just the rule — otherwise the next author "fixes" it to 0/1. */
 say('  including why a number is refused', /would invert the mark/.test(doc));
 
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+const browser = await launch();
 const ctx = await browser.newContext({ viewport: { width: 1400, height: 1200 } });
 await ctx.addInitScript(() => { let real;
   Object.defineProperty(window, 'AUREUM_CONFIG', { configurable: true, get() { return real; },

@@ -1,0 +1,31 @@
+# ============================================================
+#  What does NOT belong in the repository
+# ============================================================
+
+# THE RELEASE ZIPS. Each one is built with `git archive` from a commit that
+# is already here, so committing it would put a second, heavier copy of the
+# repository inside the repository — and a stale one the moment anything
+# changes. They are how a release is handed over, not part of it.
+#
+# There is a second reason on this project: Cloudflare Pages publishes this
+# branch as the preview site from the repository root, so a zip committed
+# here would be served as a public download of the whole codebase.
+aureum-v*.zip
+*.zip
+
+# Editor and operating-system leftovers.
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Local tooling, if anything is ever installed here. Nothing in js/ is
+# built or bundled — the site is served exactly as it is committed — so
+# these are listed to keep an accident out, not to describe a build.
+# Both forms: a real directory, and the symlink a container may use to
+# borrow a globally-installed Playwright. `node_modules/` alone does not
+# match a symlink, which is how one nearly got committed.
+node_modules
+node_modules/
+.env
+.env.*

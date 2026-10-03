@@ -18,14 +18,14 @@
    station's page underneath itself — which is what the bucket and the
    star already had to learn. Each one is asserted to do its own thing
    and NOT to navigate. */
-import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
+import { launch } from './browser.mjs';
 const B = process.argv[2] || 'http://127.0.0.1:8907';
 const bad = [];
 let fails = 0;
 const say = (w, c, x) => { console.log('  ' + (c ? '✓' : '✗') + ' ' + w + (x !== undefined ? ' — ' + x : '')); if (!c) fails++; };
 const sec = t => console.log('\n======== ' + t + ' ========');
 
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+const browser = await launch();
 const ctx = await browser.newContext({ viewport: { width: 1400, height: 1000 },
   permissions: ['clipboard-read', 'clipboard-write'] });
 await ctx.addInitScript(() => { let real;

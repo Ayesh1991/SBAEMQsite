@@ -7079,3 +7079,18 @@ body.sc-open { overflow: hidden; }
    looking like more stem. */
 .q-tf-lead { margin: 0 0 10px; padding-left: 12px; font-weight: 600;
   color: var(--muted); border-left: 3px solid var(--gold, #c9a227); }
+
+/* ============================================================
+   v122 — the editor panel
+
+   The sub-navigation holds one tab today and is drawn anyway: Question
+   review joins it next, and a tab strip that appears from nowhere reads
+   as a different page rather than the same one grown.
+   ============================================================ */
+.ed-subnav { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 22px; }
+.ed-tab { font-size: .85rem; padding: 8px 15px; border-radius: 999px;
+  border: 1px solid var(--hairline); background: var(--surface); color: var(--muted);
+  text-decoration: none; transition: color .14s ease, border-color .14s ease, background .14s ease; }
+.ed-tab:hover { color: var(--ink); }
+.ed-tab.is-on { color: var(--ink); font-weight: 650;
+  border-color: var(--gold, #c9a227); background: var(--gold-wash, rgba(201, 162, 39, .1)); }

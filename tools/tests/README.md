@@ -98,3 +98,29 @@ That is the suite working. When a release closes off a state, the files that
 depended on that state must say how the state is reached NOW — t116 writes
 its untagged row straight into storage, which is the only way one can exist
 any more, and says so — rather than being relaxed until they pass.
+
+## Do not pin the layout of a source file
+
+Several tests read a `.js` file and match a pattern against it — a fair way
+to assert that a rule is written down, when the rule has no visible
+behaviour to drive. The trap is matching across a line break, or pinning
+the indentation:
+
+```js
+/bpEdit = null;\n      view\.querySelector\('#bp-studio'\)/   // passes on Linux only
+```
+
+Git for Windows checks files out with CRLF, so `\n` is not there and the
+test fails on a laptop while passing in the container. `.gitattributes` now
+normalises the tree to LF, but do not rely on that: find the block you care
+about with `indexOf`, slice it, and ask what it contains.
+
+```js
+const at = src.indexOf("'#bp-course')?.addEventListener");
+const block = at < 0 ? '' : src.slice(at, at + 700);
+ok(/bpEdit = null/.test(block) && /#bp-studio/.test(block));
+```
+
+The same instinct applies to the whole suite: a test that only passes on
+the machine it was written on is worse than no test, because it is believed
+until somebody else runs it.

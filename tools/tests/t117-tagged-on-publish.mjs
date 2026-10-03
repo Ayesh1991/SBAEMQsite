@@ -35,7 +35,7 @@
    which would leave a candidate on any other course reading no syllabus
    at all. It is `is_preview` instead — readable whatever the entitlement
    — until curricula are keyed by course, which is its own change. */
-import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
+import { launch } from './browser.mjs';
 import { readFileSync } from 'node:fs';
 const B = process.argv[2] || 'http://127.0.0.1:8907';
 const bad = [];
@@ -91,7 +91,7 @@ say('the read policy still fails closed on untagged content',
 /* ---------------------------------------------------------------- */
 sec('2. IN THE RUNNING APP');
 
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+const browser = await launch();
 const ctx = await browser.newContext({ viewport: { width: 1400, height: 1100 } });
 await ctx.addInitScript(() => { let real;
   Object.defineProperty(window, 'AUREUM_CONFIG', { configurable: true, get() { return real; },
