@@ -7147,3 +7147,33 @@ body.sc-open { overflow: hidden; }
 .er-nav { display: flex; justify-content: space-between; gap: 12px; margin: 18px 0; }
 .er-submit { border-color: var(--gold, #c9a227); }
 @media (max-width: 560px) { .er-nav { flex-direction: column-reverse; } .er-nav .btn { width: 100%; } }
+
+/* ============================================================
+   v124 — groups: a wall that belongs to one
+   ============================================================ */
+.tw-rooms { display: flex; gap: 6px; overflow-x: auto; padding: 8px 12px 0;
+  scrollbar-width: none; }
+.tw-rooms::-webkit-scrollbar { display: none; }
+.tw-room { flex: 0 0 auto; font: inherit; font-size: .78rem; padding: 5px 12px;
+  border-radius: 999px; border: 1px solid var(--hairline);
+  background: var(--surface); color: var(--muted); cursor: pointer; white-space: nowrap; }
+.tw-room.is-on { color: var(--ink); font-weight: 650;
+  border-color: var(--gold, #c9a227); background: var(--gold-wash, rgba(201, 162, 39, .1)); }
+
+/* The member picker: a search box and the people it found, rather than a
+   list of everybody with a tick-box beside them. */
+.nc-picked { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; }
+.nc-chip { display: inline-flex; align-items: center; gap: 6px; font-size: .78rem;
+  padding: 4px 6px 4px 10px; border-radius: 999px;
+  border: 1px solid var(--gold, #c9a227); background: var(--gold-wash, rgba(201, 162, 39, .1)); }
+.nc-chip i { font-style: normal; color: var(--muted); font-size: .72rem; }
+.nc-chip button { border: none; background: transparent; cursor: pointer;
+  color: var(--muted); font-size: .8rem; padding: 0 2px; }
+.nc-results { display: grid; gap: 4px; margin-top: 8px; max-height: 240px; overflow-y: auto; }
+.nc-hit { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  padding: 7px 10px; border-radius: 10px; border: 1px solid transparent;
+  background: transparent; cursor: pointer; font: inherit; }
+.nc-hit:hover { border-color: var(--hairline); background: var(--surface); }
+.nc-hit-n { flex: 1; }
+/* The number is what makes one Perera the right Perera. */
+.nc-hit-no { font-size: .74rem; color: var(--muted); }

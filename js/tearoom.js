@@ -42,6 +42,10 @@ const TeaRoom = (() => {
   const PAGE = 25;
 
   let rooms = [], activeRoom = null, roomMsgs = {}, lastChatPoll = null;
+  /* WHICH WALL IS OPEN. null is the one everybody shares — the tea room as
+     it always was. A room id is that group's wall, and a non-member cannot
+     read it at all: the rows never leave the database. */
+  let wallRoom = null;
   let me = null;
   let cards = {};                     // userId → { name, avatar }
 
@@ -204,7 +208,7 @@ const TeaRoom = (() => {
     loading = (async () => {
       try {
         me = me || await Backend.currentUser().catch(() => null);
-        posts = (await Backend.listDiscussions?.({ limit: PAGE })) || [];
+        posts = (await Backend.listDiscussions?.({ limit: PAGE, roomId: wallRoom })) || [];
         moreAvailable = posts.length >= PAGE;
         posts.sort((a, b) => ts(b) - ts(a));
         myRx = (await Backend.myReactions?.(posts.map(p => p.id))) || {};
@@ -234,7 +238,7 @@ const TeaRoom = (() => {
     let changed = false;
     // ---- wall ----
     try {
-      const out = await Backend.pollDiscussions?.(lastPoll);
+      const out = await Backend.pollDiscussions?.(lastPoll, { roomId: wallRoom });
       for (const p of (out?.threads || [])) if (!posts.some(x => x.id === p.id)) {
         posts.unshift(p); changed = true;
         if (!p.mine) announceOnce(p.id, `${p.author_name || 'A friend'} posted`, p.topic, () => openWall());
@@ -310,7 +314,10 @@ const TeaRoom = (() => {
   /* ---------------- posting ---------------- */
 
   async function post(payload) {
-    const row = await Backend.addDiscussion(payload);
+    /* A post lands on the wall that is open. Taking the room from the view
+       rather than asking again is what makes it impossible to be reading
+       one group and posting to another. */
+    const row = await Backend.addDiscussion({ ...payload, roomId: wallRoom });
     posts.unshift(row); comments[row.id] = [];
     markSeen(Math.max(ts(row), seenAt()));
     repaint();
@@ -943,34 +950,84 @@ const TeaRoom = (() => {
     });
   }
 
+  /* SEARCH, NOT FIVE HUNDRED CHECKBOXES. The old picker listed everybody
+     with a tick-box beside them, which worked for eight people and stops
+     working somewhere around thirty. Searching by NAME finds the person
+     you are thinking of; searching by their USER NUMBER finds the right
+     one of the three people with that name, and the number is what people
+     read out to each other. */
   async function newRoomFlow() {
-    let people = [];
-    try { people = (await Backend.listChatPeople?.()) || []; } catch {}
+    const chosen = new Map();                       // id -> { id, name, userNo }
     const m = document.createElement('div');
     m.className = 'tw-modal is-open';
     m.innerHTML = `<div class="tw-sheet tc-newsheet" role="dialog" aria-modal="true">
-        <header class="tw-sheet-head"><h3>New conversation</h3><button class="cov-x">✕</button></header>
+        <header class="tw-sheet-head"><h3>New group</h3><button class="cov-x">✕</button></header>
         <div class="tw-sheet-body">
           <input class="nc-input" id="nr-title" placeholder="Group name (leave blank for a direct chat)">
-          <p class="muted tiny" style="margin:10px 0 6px">Who's in it?</p>
-          <div class="tc-people">${people.length ? people.map(p => `
-            <label class="tc-person"><input type="checkbox" value="${esc(p.id)}"> <span class="tr-av sm" style="background:${tint(p.name)}">${esc(initials(p.name))}</span> ${esc(p.name)}</label>`).join('')
-            : '<p class="muted">No other members yet.</p>'}</div>
+          <p class="muted tiny" style="margin:12px 0 6px">Who's in it? Search by name or user number.</p>
+          <input class="nc-input" id="nr-find" placeholder="e.g. Nimal, or 10042" autocomplete="off">
+          <div class="nc-picked" id="nr-picked"></div>
+          <div class="nc-results" id="nr-results"></div>
           <div class="nc-actions"><button class="btn btn-gold" id="nr-go">Create</button></div>
+          <p class="dev-row-msg" id="nr-msg"></p>
         </div>
       </div>`;
     document.body.appendChild(m);
     const close = () => m.remove();
     m.querySelector('.cov-x').addEventListener('click', close);
     m.addEventListener('click', e => { if (e.target === m) close(); });
+
+    const results = m.querySelector('#nr-results');
+    const picked = m.querySelector('#nr-picked');
+    function paintPicked() {
+      picked.innerHTML = [...chosen.values()].map(p => `
+        <span class="nc-chip">${esc(p.name)}${p.userNo ? ` <i>#${esc(p.userNo)}</i>` : ''}
+          <button data-drop="${esc(p.id)}" aria-label="Remove">✕</button></span>`).join('');
+      picked.querySelectorAll('[data-drop]').forEach(b => b.addEventListener('click', () => {
+        chosen.delete(b.dataset.drop); paintPicked();
+      }));
+    }
+    /* Debounced: a search per keystroke is a query per keystroke, and the
+       answer to "Nim" is never worth sending. */
+    let timer = null;
+    m.querySelector('#nr-find').addEventListener('input', e => {
+      const q = e.target.value;
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        if (String(q).trim().length < 2) { results.innerHTML = ''; return; }
+        let found = [];
+        try { found = (await Backend.searchPeople?.(q)) || []; } catch { found = []; }
+        const fresh = found.filter(p => !chosen.has(p.id));
+        results.innerHTML = fresh.length
+          ? fresh.map(p => `<button class="nc-hit" data-add="${esc(p.id)}" data-name="${esc(p.name)}" data-no="${esc(p.userNo || '')}">
+              <span class="tr-av sm" style="background:${tint(p.name)}">${esc(initials(p.name))}</span>
+              <span class="nc-hit-n">${esc(p.name)}</span>
+              ${p.userNo ? `<span class="nc-hit-no">#${esc(p.userNo)}</span>` : ''}</button>`).join('')
+          : `<p class="muted tiny" style="padding:8px 2px">Nobody matches “${esc(q)}”.</p>`;
+        results.querySelectorAll('[data-add]').forEach(b => b.addEventListener('click', () => {
+          chosen.set(b.dataset.add, { id: b.dataset.add, name: b.dataset.name, userNo: b.dataset.no });
+          paintPicked(); b.remove();
+        }));
+      }, 220);
+    });
+
     m.querySelector('#nr-go').addEventListener('click', async () => {
       const title = m.querySelector('#nr-title').value.trim();
-      const ids = [...m.querySelectorAll('.tc-people input:checked')].map(i => i.value);
-      if (!ids.length && !title) { alert('Pick at least one person, or name a group.'); return; }
+      const ids = [...chosen.keys()];
+      const msg = m.querySelector('#nr-msg');
+      if (!ids.length && !title) { msg.textContent = 'Find at least one person, or name a group.'; msg.className = 'dev-row-msg bad'; return; }
       try {
         const room = await Backend.createChatRoom({ title, kind: ids.length === 1 && !title ? 'direct' : 'group', memberIds: ids, myName: me?.name });
-        await loadRooms(); close(); openRoom(room.id);
-      } catch (err) { alert('Could not create: ' + (err.message || err)); }
+        await loadRooms(); close();
+        /* The strip is redrawn whether or not the wall is on screen: it is
+           cheap, and a group that only appears after a reload reads as a
+           group that was not created. */
+        if (wallEl) paintWallRooms(wallEl.querySelector('.tr-surface'));
+        openRoom(room.id);
+      } catch (err) {
+        const msg = m.querySelector('#nr-msg');
+        msg.textContent = 'Could not create: ' + (err.message || err); msg.className = 'dev-row-msg bad';
+      }
     });
   }
 
@@ -982,10 +1039,11 @@ const TeaRoom = (() => {
     wallEl.className = 'tr-dock tw-dock';
     wallEl.innerHTML = `<div class="tr-surface">
         <header class="tr-dock-head">
-          <span class="tr-dock-title">🧱 Tea room wall</span>
+          <span class="tr-dock-title" data-tw-title>🧱 Tea room wall</span>
           <div data-tr-mute class="tr-mute-wrap"></div>
           <button class="tr-icon" data-dock="close" title="Close">✕</button>
         </header>
+        <div class="tw-rooms" data-tw-rooms></div>
         <div class="tw-body">
           ${composerHTML()}
           <div class="tw-feed" data-tw-feed></div>
@@ -1017,11 +1075,52 @@ const TeaRoom = (() => {
     return chatEl;
   }
 
+  /* THE SWITCHER. One strip: everybody's wall, then each group this person
+     is in. Groups they are not in are not listed, because a group they
+     cannot read is not a place they can go — and naming it would leak that
+     it exists. */
+  function paintWallRooms(surface) {
+    const host = surface?.querySelector('[data-tw-rooms]');
+    if (!host) return;
+    const mine = (rooms || []).filter(r => r.kind === 'group' || (r.title || '').trim());
+    /* With no groups there is nothing to switch between, and a strip with
+       one button on it is furniture. */
+    if (!mine.length) { host.innerHTML = ''; return; }
+    host.innerHTML = `
+      <button class="tw-room${wallRoom ? '' : ' is-on'}" data-wall-room="">🧱 Everyone</button>
+      ${mine.map(r => `<button class="tw-room${wallRoom === r.id ? ' is-on' : ''}" data-wall-room="${esc(r.id)}">${esc(r.title || 'Group')}</button>`).join('')}`;
+    host.querySelectorAll('[data-wall-room]').forEach(b => b.addEventListener('click', async () => {
+      const id = b.dataset.wallRoom || null;
+      if (id === wallRoom) return;
+      wallRoom = id;
+      const t = surface.querySelector('[data-tw-title]');
+      if (t) t.textContent = id ? '👥 ' + (mine.find(r => r.id === id)?.title || 'Group') : '🧱 Tea room wall';
+      /* A different wall is a different set of posts, so the loaded ones
+         are dropped rather than filtered — a stale post from the last
+         group appearing in this one is the failure this whole release is
+         about. */
+      /* `comments` is a const object shared by the whole module, so it is
+         emptied in place rather than replaced — reassigning it throws, and
+         the throw took the rest of this handler with it. */
+      posts = []; myRx = {}; loaded = false; lastPoll = null;
+      Object.keys(comments).forEach(k => delete comments[k]);
+      paintWallRooms(surface);
+      const feed = surface.querySelector('[data-tw-feed]');
+      if (feed) feed.innerHTML = '<p class="muted" style="padding:16px">Loading…</p>';
+      await ensureLoaded(true);
+      repaint();
+    }));
+  }
+
   async function openWall() {
     ensureWall(); wallOpen = true; wallEl.classList.add('is-open');
+    /* The groups have to be in hand before the strip can be drawn, and the
+       wall is often opened before the chat ever is. */
+    if (!rooms.length) await loadRooms();
     await ensureLoaded();
     // composer needs `me` for the avatar — repaint once known
     wallEl.querySelector('.tw-composer .tr-av')?.setAttribute('style', `background:${tint(me?.name)}`);
+    paintWallRooms(wallEl.querySelector('.tr-surface'));
     paintWall(wallEl.querySelector('.tr-surface'));
     markSeen(Math.max(latestStamp(), seenAt()));
     schedule(); emit(); updateLaunchers();
