@@ -1,8 +1,7 @@
 {
   "name": "aureum",
-  "version": "121.0.0",
   "private": true,
-  "description": "AUREUM · Pathway to MD — a static site. This file exists ONLY so the test suite can be installed and run; nothing in js/ is built, bundled or compiled, and the site is served exactly as it is committed.",
+  "description": "AUREUM · Pathway to MD — a static site. This file exists ONLY so the test suite can be installed and run; nothing in js/ is built, bundled or compiled, and the site is served exactly as it is committed. There is deliberately no version field: the release number lives in index.html, sw.js and the newest test, and a fourth place to bump is a fourth place to forget.",
   "type": "module",
   "scripts": {
     "serve": "node tools/serve.mjs",
