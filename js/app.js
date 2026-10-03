@@ -82,7 +82,10 @@
     { re: /^#\/profile$/, fn: renderProfile },
     { re: /^#\/studio$/, fn: renderStudio },
     { re: /^#\/review$/, fn: renderReview },
-    { re: /^#\/peer$/, fn: renderPeerReview },
+    { re: /^#\/editor(?:\/(flagged))?$/, fn: renderEditor },
+    /* The old address, kept working. Somebody has it bookmarked and a dead
+       link teaches them the feature was removed. */
+    { re: /^#\/peer$/, fn: () => { location.replace('#/editor/flagged'); } },
     { re: /^#\/cards$/, fn: renderCards },
     { re: /^#\/cards\/([^/]+)$/, fn: renderDeck },
     { re: /^#\/simulator$/, fn: renderSimHome },
@@ -154,6 +157,7 @@
     window.__aureumUser = user;
     if (user) applyPrefsAppearance(user);       // theme + energy-saving from prefs
     renderNav(user);
+    refreshEditorBadge(user);                   // best-effort, never blocks the page
     startTeaRoom(user);                         // live chat + dock, once per session
     /* An empty wallet is discovered on arrival, not four minutes into a
        station when the marking will not send. Once per session. */
@@ -209,6 +213,9 @@
   function renderNav(user) {
     const nav = document.getElementById('nav');
     const isDev = devOnly(user);
+    /* An admin is an editor too — the roles nest, and an owner who could not
+       reach the editor panel would be locked out of their own bank. */
+    const isEd = !!(user && (user.isEditor || isDev));
     const simOn = isDev || (isPaid(user) && user?.featureFlags?.simulator && user?.prefs?.simulator);
     // the case section needs no `prefs` opt-in: it is granted one account
     // at a time, so the grant IS the decision
@@ -228,7 +235,17 @@
           <a href="#/osce" class="${location.hash.startsWith('#/osce') ? 'active' : ''}">OSCE</a>
           ${casesOn ? `<a href="#/cases" class="${location.hash.startsWith('#/cases') ? 'active' : ''}">Cases</a>` : ''}
           <a href="#/studio" class="${location.hash === '#/studio' ? 'active' : ''}">Studio<span class="nav-badge nav-badge-tea" id="nav-tea-badge" hidden></span></a>
-          <a href="#/peer" class="${location.hash === '#/peer' ? 'active' : ''}">Peer review</a>
+          ${/* THE EDITOR'S DOOR, and only theirs. Until v122 this said "Peer
+                review" and was in everybody's menu: any candidate could open
+                the flagged list and propose a correction. That was right
+                while there was one author and nobody else to ask, and it is
+                wrong now that `editor` is a role somebody is granted — the
+                work it leads to is the work an editor will be paid for.
+
+                Flagging is untouched. A candidate still flags a question
+                they doubt while practising, which is where flagging belongs;
+                what moved behind the role is answering the flag. */''}
+          ${isEd ? `<a href="#/editor" class="${location.hash.startsWith('#/editor') ? 'active' : ''}">Editor<span class="nav-badge" id="nav-ed-badge" hidden></span></a>` : ''}
           ${isDev ? `<a href="#/dev" class="${location.hash.startsWith('#/dev') ? 'active' : ''}">Developer<span class="nav-badge" id="nav-dev-badge" hidden></span></a>` : ''}
           <a href="#/profile" class="${location.hash === '#/profile' ? 'active' : ''}">Profile</a>
           <button class="btn btn-ghost btn-sm" id="nav-logout">Sign out</button>
@@ -281,6 +298,22 @@
      and MONEY — a top-up waiting for approval, or one that credited itself
      and still has to be checked against the bank statement. Money is the one
      a person is waiting on, so it is also called out by name. */
+  /* How many flags are waiting for somebody who can answer them. An editor
+     has no console and no other reason to open the panel, so without a
+     count on the tab the work is only found by remembering to look. */
+  async function refreshEditorBadge(user) {
+    const el = document.getElementById('nav-ed-badge');
+    if (!el || !(user && (user.isEditor || devOnly(user)))) return;
+    try {
+      const flags = (await Backend.listFlaggedDetails()) || [];
+      el.textContent = flags.length > 9 ? '9+' : String(flags.length);
+      el.hidden = flags.length === 0;
+      el.title = flags.length
+        ? `${flags.length} flagged question${flags.length === 1 ? '' : 's'} waiting`
+        : '';
+    } catch { /* a badge that cannot load is simply not drawn */ }
+  }
+
   async function refreshDevBadge() {
     try {
       const [props, users, tops] = await Promise.all([
@@ -2157,18 +2190,78 @@
     }));
   }
 
-  /* ================= peer review (open to every user) ================= */
+  /* ================= the editor panel =================
 
-  async function renderPeerReview(user) {
+     ONE PLACE FOR THE PEOPLE WHO MAINTAIN THE BANK. Until v122 this was
+     "Peer review", in everybody's menu, and open to every signed-in
+     candidate. That was the right shape when there was one author and no
+     one to delegate to. It is the wrong shape now: `editor` has been a
+     granted role since v114, and the work behind this door is the work an
+     editor will be paid for, counted per person.
+
+     WHAT DID NOT MOVE. Flagging. A candidate still marks a question they
+     doubt while they are practising, which is the only moment they know it
+     is wrong. What went behind the role is ANSWERING a flag, not raising
+     one — so the loop that keeps the bank honest still starts with whoever
+     noticed.
+
+     The panel is built with room for its second section from the start:
+     Question review lands next to Flagged in the next release, and a
+     sub-navigation that holds one tab today is cheaper than a hub page
+     that costs a click to get through. */
+
+  const EDITOR_SECTIONS = [
+    { id: 'flagged', label: '🚩 Flagged questions', hash: '#/editor/flagged' }
+  ];
+
+  function editorSubnav(active) {
+    return `<div class="ed-subnav" data-animate>
+      ${EDITOR_SECTIONS.map(s => `<a href="${s.hash}" class="ed-tab${s.id === active ? ' is-on' : ''}">${s.label}</a>`).join('')}
+    </div>`;
+  }
+
+  async function renderEditor(section, user) {
+    /* THE GATE. The nav link is not drawn for a candidate, so the only way
+       here is a bookmark or a link somebody pasted — which means the person
+       arriving is not doing anything wrong and should be told plainly, not
+       bounced to the dashboard wondering what they clicked.
+
+       This is not the security either: the database decides what may be
+       written, in the policies that call is_editor(). This decides what is
+       worth drawing. */
+    if (!(user.isEditor || devOnly(user))) {
+      view.innerHTML = `
+        <section class="page narrow" data-animate>
+          <header>
+            <p class="kicker">EDITOR</p>
+            <h1 class="page-title">This part is for the editors</h1>
+          </header>
+          <div class="card">
+            <p class="muted">The editor panel is where the people who maintain the question bank answer flags and
+              review new sets before anyone sits them. It is granted by the site owner.</p>
+            <p class="muted"><strong>Flagging a question does not need it.</strong> If you are practising and
+              something looks wrong, flag it there — that is what brings it here, and it is the most useful thing
+              anyone can do for the bank.</p>
+            <a class="btn btn-gold" href="#/library">← Back to the question bank</a>
+          </div>
+        </section>`;
+      FX.viewIn(view);
+      return;
+    }
+    return renderEditorFlagged(user, section || 'flagged');
+  }
+
+  async function renderEditorFlagged(user, active) {
     view.innerHTML = `
       <section class="page">
         <header data-animate>
-          <p class="kicker">PEER REVIEW · OPEN TO EVERYONE</p>
-          <h1 class="page-title">Review flagged questions</h1>
-          <p class="muted">Questions the cohort flagged as wrong, waiting for a fix. Propose a corrected version —
-            cite the guideline — and it goes to the site owner for approval. <strong>Nothing changes for anyone
-            until they approve it</strong>, and approved fixes carry your name.</p>
+          <p class="kicker">EDITOR · FLAGGED QUESTIONS</p>
+          <h1 class="page-title">Answer what the cohort flagged</h1>
+          <p class="muted">Questions candidates flagged as wrong while practising, waiting for someone who can
+            judge them. Propose a corrected version — cite the guideline — and it goes to the site owner.
+            <strong>Nothing changes for anyone until they approve it</strong>, and approved fixes carry your name.</p>
         </header>
+        ${editorSubnav(active)}
         <div id="pr-mine"></div>
         <div id="pr-list" data-animate><p class="muted">Loading flagged questions…</p></div>
       </section>`;

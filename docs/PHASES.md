@@ -15,13 +15,32 @@ per release, each shippable on its own.
 | 119 | One syllabus per course |
 | 120 | True/false as a real paper question type |
 | 121 | One blueprint per course; papers/essays/cases filtered |
+| 122 | **Phase 1** — the Editor panel, gated on the role |
 
 Three exams are now fully separable: course, enrolment, syllabus,
 blueprint, question types, and all five banks.
 
 ---
 
-## Phase 1 — The Editor panel
+## Phase 1 — The Editor panel — DONE in v122
+
+**Renamed "Peer review" to "Editor", shown only to editors.**
+
+Shipped: route `#/editor` (+ `/flagged`), gated on `isEditor` with admins
+counting as editors; `#/peer` redirects so no bookmark breaks; a candidate
+who follows an old link gets an explanation that points them back at
+flagging rather than a silent bounce; a flag count on the tab, hidden when
+there is nothing waiting; a sub-navigation drawn with one tab, ready for
+Question review.
+
+Deliberately NOT moved: the admin's power to approve a proposal stays in
+the developer console. v114 drew that line — an editor writes content and
+sees nothing else — and an editor who could approve their own proposal
+would make the approval a formality.
+
+The original note follows, for the reasoning.
+
+---
 
 **Rename "Peer review" to "Editor", and show it only to editors.**
 
