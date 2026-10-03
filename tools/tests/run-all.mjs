@@ -21,10 +21,16 @@ const BASE = process.argv[2] || 'http://127.0.0.1:8907';
 
 const alive = await fetch(BASE + '/index.html').then(r => r.ok).catch(() => false);
 if (!alive) {
+  /* Name the right script. This message used to advertise `serve:node`,
+     which stopped existing when `serve` became the Node one — so the
+     instruction printed at the moment somebody is already stuck pointed
+     them at a command that errors. A help string is code: it goes stale
+     like any other. */
   console.error(`\nNothing is serving ${BASE}.\n\n` +
-    `  Start it in another terminal, then run this again:\n` +
-    `    npm run serve          (needs python3)\n` +
-    `    npm run serve:node     (no python needed)\n`);
+    `  The tests drive a real browser against a running site, so the site\n` +
+    `  has to be running. In a SECOND terminal, from this folder:\n\n` +
+    `      npm run serve\n\n` +
+    `  Leave that one running, then run \`npm test\` again in this one.\n`);
   process.exit(2);
 }
 
