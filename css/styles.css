@@ -7094,3 +7094,56 @@ body.sc-open { overflow: hidden; }
 .ed-tab:hover { color: var(--ink); }
 .ed-tab.is-on { color: var(--ink); font-weight: 650;
   border-color: var(--gold, #c9a227); background: var(--gold-wash, rgba(201, 162, 39, .1)); }
+
+/* ============================================================
+   v123 — question review
+
+   The surface an editor spends hours in. Everything here is in service of
+   one thing: getting through a set without touching the mouse.
+   ============================================================ */
+.er-card { display: block; text-decoration: none; padding: 18px 20px; margin-bottom: 12px; }
+.er-card:hover { border-color: var(--gold, #c9a227); }
+.er-card h3 { margin: 8px 0 4px; }
+.er-card-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.er-status { font-size: .68rem; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--muted); font-weight: 700; }
+
+.er-tally { max-width: 460px; }
+.er-mine { font-size: 1.5rem; margin: 4px 0 10px; }
+.er-mine strong { color: var(--gold, #c9a227); }
+.er-row { display: flex; justify-content: space-between; gap: 14px; margin: 5px 0; font-size: .88rem; }
+
+/* The question itself. Every field is already an input: there is no edit
+   mode to enter, and so no mode to forget you are in. */
+.er-help kbd { font: inherit; font-size: .78rem; padding: 2px 6px; border-radius: 5px;
+  border: 1px solid var(--hairline); background: var(--surface); }
+.er-progress { height: 4px; border-radius: 999px; background: var(--hairline); overflow: hidden; margin: 4px 0 10px; }
+.er-progress span { display: block; height: 100%; width: 0;
+  background: var(--gold, #c9a227); transition: width .25s ease; }
+.er-count { font-size: .82rem; color: var(--muted); margin: 0 0 14px; }
+.er-qcard { padding: 20px; }
+.er-qhead { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.er-read { font-size: .72rem; color: var(--gold, #c9a227); font-weight: 700; }
+.er-f { display: grid; gap: 6px; margin-bottom: 16px; }
+.er-f > span { font-size: .74rem; letter-spacing: .07em; text-transform: uppercase;
+  color: var(--muted); font-weight: 700; }
+.er-f textarea, .er-f input { font: inherit; width: 100%; padding: 10px 12px;
+  border-radius: 10px; border: 1px solid var(--hairline);
+  background: var(--surface); color: var(--ink); resize: vertical; }
+.er-opts { display: grid; gap: 8px; }
+/* The whole row is the target for choosing, and the text inside it stays
+   editable — so picking the answer and fixing its wording are the same
+   two seconds, not two trips. */
+.er-opt { display: flex; align-items: center; gap: 10px; padding: 6px 10px 6px 6px;
+  border-radius: 10px; border: 1px solid var(--hairline); background: transparent;
+  cursor: pointer; text-align: left; }
+.er-opt input { border: none; background: transparent; padding: 6px 2px; }
+.er-opt-n { flex: 0 0 24px; height: 24px; display: grid; place-items: center;
+  border-radius: 7px; font-size: .74rem; font-weight: 700;
+  background: var(--hairline); color: var(--muted); }
+.er-opt.is-key { border-color: var(--gold, #c9a227);
+  background: var(--gold-wash, rgba(201, 162, 39, .1)); }
+.er-opt.is-key .er-opt-n { background: var(--gold, #c9a227); color: #0b1020; }
+.er-nav { display: flex; justify-content: space-between; gap: 12px; margin: 18px 0; }
+.er-submit { border-color: var(--gold, #c9a227); }
+@media (max-width: 560px) { .er-nav { flex-direction: column-reverse; } .er-nav .btn { width: 100%; } }

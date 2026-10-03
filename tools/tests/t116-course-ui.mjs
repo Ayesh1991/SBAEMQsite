@@ -190,17 +190,24 @@ await page.evaluate(async () => {
     id, topic, scenario: 'A scenario for ' + topic, tracks, subject,
     station_time_min: 15, questions: [{ prompt: 'Assess.', marking_points: [{ text: 'Do it', marks: 1 }] }]
   });
-  await Backend.publishOsceStation(st('t116-og', 'Postpartum haemorrhage', ['pgim-og-2'], 'obgyn'));
-  await Backend.publishOsceStation(st('t116-paeds', 'Febrile convulsion', ['mbbs-final'], 'paediatrics'));
-  await Backend.publishOsceStation(st('t116-surg', 'Acute abdomen', ['mbbs-final'], 'surgery'));
-  /* THE UNFILED ONE IS WRITTEN BY HAND, and has to be as of v117.
-     Publishing cannot produce an untagged row any more — contentTags()
-     stamps the editor's own course on anything that arrives without one —
-     so a genuinely unfiled row is now only what it was always meant to
-     represent here: something that predates the tagging, or was written
-     straight into the table. Going through publish() would quietly tag it
-     and this section would be asserting nothing. */
+  /* ALL FOUR ARE WRITTEN BY HAND, and each gate is the reason for one of
+     them being so:
+
+       · v117 made publishing stamp the editor's own course on anything
+         arriving without one, so a genuinely UNFILED row can no longer be
+         produced by publishing — and unfiled is what this section is
+         partly about.
+       · v123 made publishing produce a DRAFT, invisible to candidates
+         until an editor has been through it. The account signed in here
+         is a candidate, so it could not review them either.
+
+     Both gates are right and both have their own test. Going through
+     publish() here would mean this file silently measured them instead of
+     the course filter it is named after. */
   const raw = JSON.parse(localStorage.getItem('aureum.oscestations') || '[]');
+  raw.push(st('t116-og', 'Postpartum haemorrhage', ['pgim-og-2'], 'obgyn'));
+  raw.push(st('t116-paeds', 'Febrile convulsion', ['mbbs-final'], 'paediatrics'));
+  raw.push(st('t116-surg', 'Acute abdomen', ['mbbs-final'], 'surgery'));
   raw.push(st('t116-unfiled', 'Consent for laparoscopy', [], null));
   localStorage.setItem('aureum.oscestations', JSON.stringify(raw));
 });
