@@ -65,7 +65,14 @@ const Coverage = (() => {
       const rows = [];
       for (const p of papers) {
         let loaded; try { loaded = await Data.loadPaper(p.id); } catch { continue; }
-        for (const kind of ['SBA', 'EMQ']) {
+        /* TF ADDED IN v126, and it moves a number people look at. True/false
+           questions have existed in papers since v120 and this index did not
+           count them, so the syllabus map was reporting a topic as less
+           covered than it was — a candidate who had answered every statement
+           in a topic still saw a gap there. Including them corrects that;
+           anyone with true/false papers in their bank will see their
+           coverage percentages shift once, which is the right direction. */
+        for (const kind of ['SBA', 'EMQ', 'TF']) {
           for (const q of Data.flatten(loaded.paper, kind)) {
             const qkey = `${p.id}:${kind}:${q.number}`;
             const tg = tags[qkey];
@@ -185,7 +192,11 @@ const Coverage = (() => {
     });
     return [
       ...build(bp.sba || [], 'SBA', b => b.subcategory || b.category),
-      ...build(bp.emq || [], 'EMQ', b => b.theme)
+      ...build(bp.emq || [], 'EMQ', b => b.theme),
+      /* Empty on every blueprint that has not asked for true/false, which
+         is all of them until somebody edits one — so the map is unchanged
+         until the mock is. */
+      ...build(bp.tf || [], 'TF', b => b.subcategory || b.category)
     ].sort((a, b) => a.pct - b.pct);
   }
 
@@ -335,10 +346,24 @@ const Coverage = (() => {
     return best;
   }
 
+  /* KEYED BY KIND AND NAME, not by name alone — v126.
+     A true/false bucket is named the way an SBA bucket is: subcategory,
+     then category. So "Endocrine" was one key that the last kind inserted
+     won, and a slot in the SBA section would have been offered the
+     true/false bucket's specific areas. Nothing would have thrown; the
+     paper would simply have been planned from the wrong list. */
   function bucketDefs(bp) {
     const m = new Map();
-    (bp.sba || []).forEach(b => m.set(b.subcategory || b.category, { ...b, kind: 'SBA' }));
-    (bp.emq || []).forEach(b => m.set(b.theme, { ...b, kind: 'EMQ' }));
+    const put = (name, b, kind) => { if (name) m.set(kind + '\u0000' + name, { ...b, kind }); };
+    (bp.sba || []).forEach(b => put(b.subcategory || b.category, b, 'SBA'));
+    (bp.emq || []).forEach(b => put(b.theme, b, 'EMQ'));
+    (bp.tf || []).forEach(b => put(b.subcategory || b.category, b, 'TF'));
+    /* Still a Map, so .size and iteration behave as they did; get() takes
+       the kind as a second argument and falls back to a name-only search
+       for any caller that does not know it. */
+    const raw = m.get.bind(m);
+    m.get = (name, kind) => raw(kind + '\u0000' + name)
+      || (kind ? null : [...m.values()].find(b => (b.subcategory || b.category || b.theme) === name) || null);
     return m;
   }
 

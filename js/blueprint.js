@@ -106,6 +106,16 @@ const Blueprint = (() => {
       paper: {
         sbaCount: num(paper.sba_count, 30),
         emqCount: num(paper.emq_count, 30),
+        /* TRUE/FALSE DEFAULTS TO NONE, and that is the whole safety of
+           this feature. v120 made true/false a real question type in a
+           paper; a mock can draw from it too, but how many and from which
+           topics is a judgement about a real exam that nobody has sat yet.
+           Zero here, and no buckets below, means every existing blueprint
+           produces exactly the mock it produced before — the mechanism
+           ships and the weights are decided later, by somebody holding a
+           real paper. */
+        tfCount: num(paper.tf_count, 0),
+        tfMark: num(paper.tf_mark_each, 1),
         durationMin: num(paper.duration_min, 180),
         sbaMark: num(paper.sba_mark_each, 3),
         emqMark: num(paper.emq_mark_each, 3),
@@ -117,6 +127,13 @@ const Blueprint = (() => {
       })).filter(b => b.weight > 0),
       emq: (doc.blueprint_emq || []).map(b => ({
         theme: b.theme || '', weight: num(b.weight, 0), areas: cleanAreas(b.specific_areas || b.areas)
+      })).filter(b => b.weight > 0),
+      /* Shaped like the SBA buckets, because a true/false statement is
+         filed under a subject the same way — see Data.flatten, where it is
+         a single-best-answer with two options. */
+      tf: (doc.blueprint_tf || []).map(b => ({
+        category: b.category || '', subcategory: b.subcategory || '',
+        weight: num(b.weight, 0), areas: cleanAreas(b.specific_areas || b.areas)
       })).filter(b => b.weight > 0),
       priority: (doc.priority_topics || []).map(p => ({ match: p.match || '', boost: num(p.boost, 1) })).filter(p => p.match),
       notes: doc.notes || ''
@@ -174,7 +191,7 @@ const Blueprint = (() => {
     } catch { return ''; }
   };
   const keyFor = t => t ? KEY + ':' + t : KEY;
-  const EMPTY = () => ({ sba: [], emq: [], priority: [], paper: {}, notes: '' });
+  const EMPTY = () => ({ sba: [], emq: [], tf: [], priority: [], paper: {}, notes: '' });
 
   async function load(trackId) {
     const t = trackId === undefined ? await trackNow() : (trackId || '');
@@ -273,6 +290,13 @@ const Blueprint = (() => {
     L.push('  sba_mark_each: ' + (p.sbaMark ?? 3));
     L.push('  emq_mark_each: ' + (p.emqMark ?? 3));
     L.push('  negative_marking: ' + (p.negativeMarking ? 'true' : 'false'));
+    /* Written only when there IS true/false, so a blueprint that has none
+       exports exactly as it did before this release — an unasked-for
+       "tf_count: 0" in every file is a diff that means nothing. */
+    if (num(p.tfCount, 0) > 0) {
+      L.push('  tf_count: ' + p.tfCount);
+      L.push('  tf_mark_each: ' + (p.tfMark ?? 1));
+    }
     const areas = (arr) => (arr || []).length ? ['    specific_areas:', ...(arr).map(a => '      - ' + q(a))] : [];
     L.push('blueprint_sba:');
     (doc.sba || []).forEach(b => {
@@ -287,6 +311,20 @@ const Blueprint = (() => {
       L.push('    weight: ' + (b.weight || 0));
       areas(b.areas).forEach(x => L.push(x));
     });
+    /* THE EXPORT IS THE ROUND TRIP. The Studio offers this file as the one to
+       paste back into data/blueprint.md; a section it cannot write is a
+       section that disappears the first time somebody uses the button it is
+       documented with. The buckets are not editable in the Studio — they
+       still have to come out of it. */
+    if ((doc.tf || []).length) {
+      L.push('blueprint_tf:');
+      doc.tf.forEach(b => {
+        L.push('  - category: ' + q(b.category || ''));
+        L.push('    subcategory: ' + q(b.subcategory || ''));
+        L.push('    weight: ' + (b.weight || 0));
+        areas(b.areas).forEach(x => L.push(x));
+      });
+    }
     if ((doc.priority || []).length) {
       L.push('priority_topics:');
       doc.priority.forEach(pt => { L.push('  - match: ' + q(pt.match || '')); L.push('    boost: ' + (pt.boost || 1)); });
