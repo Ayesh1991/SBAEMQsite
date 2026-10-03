@@ -1113,32 +1113,45 @@ const Backend = (() => {
     function discAuthor() { const e = sessionEmail(); const u = e ? users()[e] : null; return u ? (u.name || u.email) : 'You'; }
     async function addDiscussion(post) {
       const e = sessionEmail(); if (!e) throw new Error('Not signed in.');
+      /* And nobody posts INTO a group they are not in. */
+      if (post.roomId && !isRoomMember(post.roomId)) throw new Error('You are not in that group.');
       const list = read('disc', []);
       const row = { id: 'd' + Date.now() + Math.random().toString(36).slice(2, 6), user_id: e, author_name: discAuthor(),
         question_key: post.questionKey || null, paper_title: post.paperTitle || null, answer_text: post.answerText || null,
         rationale: post.rationale || null, question: post.question || null, topic: post.topic || '',
         kind: post.kind || (post.question ? 'question' : 'post'), media: post.media || [], reaction_count: 0,
+        room_id: post.roomId || null,
         created_at: new Date().toISOString(), reply_count: 0, mine: true };
       list.unshift(row); write('disc', list); return row;
     }
-    async function pollDiscussions(sinceIso) {
+    async function pollDiscussions(sinceIso, opts) {
       const e = sessionEmail(); if (!e) return { threads: [], replies: [] };
       const since = sinceIso || '';
       const replies = read('discR', {});
+      const want = opts?.roomId || null;
+      if (want && !isRoomMember(want)) return { threads: [], replies: [] };
       return {
-        threads: read('disc', []).filter(d => d.created_at > since).map(d => ({ ...d, mine: d.user_id === e })),
+        threads: read('disc', []).filter(d => d.created_at > since && (d.room_id || null) === want)
+          .map(d => ({ ...d, mine: d.user_id === e })),
         replies: Object.values(replies).flat().filter(r => r.created_at > since).map(r => ({ ...r, mine: r.user_id === e }))
       };
     }
     async function listDiscussions(opts) {
       const e = sessionEmail(); const replies = read('discR', {});
       let rows = read('disc', []);
+      /* The same rule as the cloud: the shared wall is the posts with NO
+         room, not every post this account could read. */
+      const want = opts?.roomId || null;
+      /* A group's wall is unreadable to somebody who is not in it — not
+         filtered out of the list afterwards, refused. */
+      if (want && !isRoomMember(want)) return [];
+      rows = rows.filter(d => (d.room_id || null) === want);
       if (opts?.before) rows = rows.filter(d => d.created_at < opts.before);
       // mirror the cloud's slim projection so both paths behave identically
       return rows.slice(0, opts?.limit || 40).map(d => ({
         id: d.id, user_id: d.user_id, author_name: d.author_name, question_key: d.question_key,
         paper_title: d.paper_title, topic: d.topic, created_at: d.created_at,
-        kind: d.kind || 'post', media: d.media || [], reaction_count: d.reaction_count || 0,
+        kind: d.kind || 'post', media: d.media || [], reaction_count: d.reaction_count || 0, room_id: d.room_id || null,
         reply_count: (replies[d.id] || []).length, mine: d.user_id === e, hasQuestion: !!d.question_key
       }));
     }
@@ -1194,7 +1207,19 @@ const Backend = (() => {
       (postIds || []).forEach(id => { if (m[id] && m[id][e]) out[id] = m[id][e]; });
       return out;
     }
-    async function listChatRooms() { const e = sessionEmail(); if (!e) return []; return read('rooms', []); }
+    /* MEMBERSHIP IS THE WHOLE POINT OF A GROUP, so it is checked here and
+       not only in the cloud's policies. Local mode is where these flows
+       get tried out, and a privacy rule that only one backend applies is a
+       privacy rule that gets tested on the wrong one. */
+    function isRoomMember(roomId) {
+      const e = sessionEmail(); if (!e || !roomId) return false;
+      const r = read('rooms', []).find(x => x.id === roomId);
+      return !!r && (r.members || []).some(m => m.user_id === e);
+    }
+    async function listChatRooms() {
+      const e = sessionEmail(); if (!e) return [];
+      return read('rooms', []).filter(r => (r.members || []).some(m => m.user_id === e));
+    }
     async function createChatRoom({ title, kind, memberIds, myName }) {
       const e = sessionEmail(); if (!e) throw new Error('Not signed in.');
       // keep the roster: room names and the WhatsApp-style sender labels are
@@ -1221,7 +1246,23 @@ const Backend = (() => {
       const e = sessionEmail(); const all = read('msgs', {});
       return Object.values(all).flat().filter(m => !sinceIso || m.created_at > sinceIso).map(m => ({ ...m, mine: m.user_id === e }));
     }
-    async function listChatPeople() { return Object.values(users()).map(u => ({ id: u.email, name: u.name, avatar: u.avatar || '' })); }
+    async function listChatPeople() { return Object.values(users()).map(u => ({ id: u.email, name: u.name, userNo: u.userNo || '', avatar: u.avatar || '' })); }
+    /* SEARCH, NOT A LIST OF CHECKBOXES. Five hundred people is not a
+       picker. Names collide — there will be three Pereras — so the user
+       NUMBER is searched too: it is unique, and it is what people read out
+       to each other when they want to be found. */
+    async function searchPeople(q) {
+      const term = String(q || '').trim().toLowerCase();
+      if (term.length < 2) return [];
+      const me = sessionEmail();
+      const digits = term.replace(/^0+/, '');
+      return Object.values(users())
+        .filter(u => u.email !== me)
+        .filter(u => String(u.name || '').toLowerCase().includes(term)
+          || (digits && String(u.userNo || '').replace(/^0+/, '').startsWith(digits)))
+        .slice(0, 20)
+        .map(u => ({ id: u.email, name: u.name, userNo: u.userNo || '', avatar: u.avatar || '' }));
+    }
     async function listMemberCards() { const m = {}; Object.values(users()).forEach(u => m[u.email] = { name: u.name, avatar: u.avatar || '' }); return m; }
     async function uploadAvatar(file) {
       const e = sessionEmail(); if (!e) throw new Error('Not signed in.');
@@ -1289,7 +1330,7 @@ const Backend = (() => {
       listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, setPref, listAiUsage, listAiTokenUsage, listMyTokenUsage, getEligibleCounts,
       logEvents, listRecentEvents, bumpQuestionStats, listQuestionStats, saveCohortScore, listCohortScores,
       listAllFlags, resolveFlags, listGlobalFlaggedKeys, saveUserDeck, listUserDecks, deleteUserDeck,
-      addDiscussion, listDiscussions, deleteDiscussion, listDiscussionReplies, addDiscussionReply, deleteDiscussionReply, pollDiscussions, getDiscussionQuestion,
+      addDiscussion, listDiscussions, deleteDiscussion, searchPeople, listDiscussionReplies, addDiscussionReply, deleteDiscussionReply, pollDiscussions, getDiscussionQuestion,
       listUserNotes, saveUserNote, deleteUserNote,
       uploadTeaFile, setReaction, myReactions, listChatRooms, createChatRoom, listChatMessages, sendChatMessage, markRoomRead, pollChat, listChatPeople,
       listMemberCards, uploadAvatar, getNotifSeen, setNotifSeen,
@@ -2404,7 +2445,10 @@ const Backend = (() => {
       const row = { user_id: id, author_name: await discAuthorName(), question_key: post.questionKey || null,
         paper_title: post.paperTitle || null, answer_text: post.answerText || null, rationale: post.rationale || null,
         question: post.question || null, topic: post.topic || '',
-        kind: post.kind || (post.question ? 'question' : 'post'), media: post.media || [] };
+        kind: post.kind || (post.question ? 'question' : 'post'), media: post.media || [],
+        /* null is the wall everybody shares; a room id keeps the post to
+           that group. The insert policy refuses a room you are not in. */
+        room_id: post.roomId || null };
       const { data, error } = await sb.from('discussions').insert(row).select().single();
       if (error) throw error;
       return { ...data, mine: true, reply_count: 0 };
@@ -2412,11 +2456,11 @@ const Backend = (() => {
     /* Incremental poll for live chat: only rows newer than `sinceIso`, so a
        quiet board costs two near-empty queries and the tea room stays live
        without anyone reloading the tab. */
-    async function pollDiscussions(sinceIso) {
+    async function pollDiscussions(sinceIso, opts) {
       await ensureClient(); const id = await uid(); if (!id) return { threads: [], replies: [] };
       const since = sinceIso || new Date(Date.now() - 60000).toISOString();
       const [t, r] = await Promise.all([
-        sb.from('discussions').select(DISC_COLS).gt('created_at', since).order('created_at', { ascending: true }).limit(80),
+        onWall(sb.from('discussions').select(DISC_COLS), opts?.roomId).gt('created_at', since).order('created_at', { ascending: true }).limit(80),
         sb.from('discussion_replies').select('id,discussion_id,user_id,author_name,body,created_at').gt('created_at', since).order('created_at', { ascending: true }).limit(200)
       ]);
       return {
@@ -2429,11 +2473,17 @@ const Backend = (() => {
        they are fetched lazily per thread (getDiscussionQuestion) instead of
        being broadcast for every row. Reply counts come from the trigger-kept
        column, so drawing badges costs nothing. */
-    const DISC_COLS = 'id,user_id,author_name,question_key,paper_title,topic,created_at,reply_count,kind,media,reaction_count';
+    const DISC_COLS = 'id,user_id,author_name,question_key,paper_title,topic,created_at,reply_count,kind,media,reaction_count,room_id';
+    /* WHICH WALL. Asking for the shared one must mean `room_id is null`
+       and not "everything readable": a member of three groups would
+       otherwise see all three mixed into the wall they thought was
+       everybody's. */
+    const onWall = (q, roomId) => roomId ? q.eq('room_id', roomId) : q.is('room_id', null);
     async function listDiscussions(opts) {
       await ensureClient(); const id = await uid();
       const limit = opts?.limit || 40;
-      let q = sb.from('discussions').select(DISC_COLS).order('created_at', { ascending: false }).limit(limit);
+      let q = onWall(sb.from('discussions').select(DISC_COLS), opts?.roomId)
+        .order('created_at', { ascending: false }).limit(limit);
       if (opts?.before) q = q.lt('created_at', opts.before);          // "load older" paging
       const { data } = await q;
       return (data || []).map(r => ({ ...r, mine: r.user_id === id, hasQuestion: !!r.question_key }));
@@ -2589,8 +2639,24 @@ const Backend = (() => {
     /** Everyone who could be added to a room, with their avatar. */
     async function listChatPeople() {
       await ensureClient(); const id = await uid();
-      const { data } = await sb.from('profiles').select('id,name,email,avatar_url').neq('id', id).limit(200);
-      return (data || []).map(p => ({ id: p.id, name: p.name || (p.email || '').split('@')[0], avatar: p.avatar_url || '' }));
+      const { data } = await sb.from('profiles').select('id,name,email,avatar_url,user_no').neq('id', id).limit(200);
+      return (data || []).map(p => ({ id: p.id, name: p.name || (p.email || '').split('@')[0],
+        userNo: p.user_no || '', avatar: p.avatar_url || '' }));
+    }
+    /* Searched through user_directory, which is the view that exposes id,
+       number and name and nothing else — the right amount to know about
+       somebody you are about to add to a group. */
+    async function searchPeople(q) {
+      await ensureClient(); const id = await uid();
+      const term = String(q || '').trim();
+      if (term.length < 2) return [];
+      const digits = term.replace(/^0+/, '');
+      const { data } = await sb.from('user_directory')
+        .select('id,user_no,name')
+        .or(`name.ilike.%${term.replace(/[%,()]/g, '')}%,user_no.ilike.${digits.replace(/[%,()]/g, '')}%`)
+        .limit(20);
+      return (data || []).filter(p => p.id !== id)
+        .map(p => ({ id: p.id, name: p.name || p.user_no, userNo: p.user_no || '', avatar: '' }));
     }
     /** Name + avatar for everyone, so the wall and chat can show faces. */
     async function listMemberCards() {
@@ -3035,7 +3101,7 @@ const Backend = (() => {
       listReviewItems, saveReviewItem, removeReviewItem, listAllUsers, setUserFeature, setPref, listAiUsage, listAiTokenUsage, listMyTokenUsage, getEligibleCounts,
       logEvents, listRecentEvents, bumpQuestionStats, listQuestionStats, saveCohortScore, listCohortScores,
       listAllFlags, resolveFlags, listGlobalFlaggedKeys, saveUserDeck, listUserDecks, deleteUserDeck,
-      addDiscussion, listDiscussions, deleteDiscussion, listDiscussionReplies, addDiscussionReply, deleteDiscussionReply, pollDiscussions, getDiscussionQuestion,
+      addDiscussion, listDiscussions, deleteDiscussion, searchPeople, listDiscussionReplies, addDiscussionReply, deleteDiscussionReply, pollDiscussions, getDiscussionQuestion,
       listUserNotes, saveUserNote, deleteUserNote,
       uploadTeaFile, setReaction, myReactions, listChatRooms, createChatRoom, listChatMessages, sendChatMessage, markRoomRead, pollChat, listChatPeople,
       listMemberCards, uploadAvatar, getNotifSeen, setNotifSeen,

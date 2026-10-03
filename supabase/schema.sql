@@ -1997,3 +1997,70 @@ drop policy if exists "osce stations read" on public.osce_stations;
 create policy "osce stations read" on public.osce_stations for select
   using ((is_preview or public.can_read_tracks(tracks))
          and (review_status = 'published' or public.is_editor()));
+
+-- ---------- 35) THE WALL BELONGS TO A GROUP ----------
+-- Chat has been private per group since 8c-3: chat_rooms, chat_members and
+-- is_room_member() already keep a conversation to the people in it. The
+-- WALL never was — every post went to everybody, which is the whole of
+-- "at the moment all the users are in the tea room".
+--
+-- A GROUP IS A chat_room. Not a second kind of object beside it: the same
+-- row, the same membership, the same RLS helper. A group you can chat in
+-- but not post to, or post to but not chat in, is two things to create and
+-- two places to add somebody.
+--
+-- NULL MEANS EVERYBODY, which is how every existing post survives. The
+-- shared wall does not disappear — it becomes the room everyone is in, and
+-- a group wall is the same thing addressed to fewer people.
+alter table public.discussions add column if not exists room_id uuid
+  references public.chat_rooms(id) on delete cascade;
+create index if not exists discussions_room_idx on public.discussions (room_id, created_at desc);
+
+-- Reading one post, as a question the replies and reactions can ask too.
+-- SECURITY DEFINER so the policies below do not recurse through
+-- discussions' own policy.
+create or replace function public.can_read_post(d uuid)
+returns boolean language sql security definer stable set search_path = public as $$
+  select exists (
+    select 1 from public.discussions p
+     where p.id = d
+       and (p.room_id is null or public.is_room_member(p.room_id)));
+$$;
+
+drop policy if exists "discussions read"   on public.discussions;
+drop policy if exists "discussions insert" on public.discussions;
+-- A post with no room is the shared wall; a post with one is the group's,
+-- and a non-member cannot read it at all. This is privacy, not a filter:
+-- the rows never leave the database.
+create policy "discussions read" on public.discussions for select
+  using (auth.role() = 'authenticated'
+         and (room_id is null or public.is_room_member(room_id)));
+-- And nobody posts INTO a group they are not in.
+create policy "discussions insert" on public.discussions for insert
+  with check (auth.uid() = user_id
+              and (room_id is null or public.is_room_member(room_id)));
+
+drop policy if exists "disc replies read"   on public.discussion_replies;
+drop policy if exists "disc replies insert" on public.discussion_replies;
+create policy "disc replies read" on public.discussion_replies for select
+  using (auth.role() = 'authenticated' and public.can_read_post(discussion_id));
+create policy "disc replies insert" on public.discussion_replies for insert
+  with check (auth.uid() = user_id and public.can_read_post(discussion_id));
+
+-- A reaction is a fact about a post, so it is readable exactly when the
+-- post is. Leaving this open would leak which posts exist and how popular
+-- they are, which is most of what a private group is hiding.
+drop policy if exists "reactions read" on public.post_reactions;
+create policy "reactions read" on public.post_reactions for select
+  using (auth.role() = 'authenticated' and public.can_read_post(post_id));
+
+-- FINDING SOMEBODY TO ADD. Names collide and a list of five hundred
+-- checkboxes is not a picker, so a group is built by searching — by name
+-- or by the user number, which is unique and is what people read out to
+-- each other.
+--
+-- Nothing is needed here: public.user_directory is a VIEW over profiles
+-- exposing id, user_no and name and nothing else, already granted to
+-- authenticated. A view takes no policy of its own — writing one here
+-- would simply fail when this file is run — and the grant is exactly the
+-- access a search needs.

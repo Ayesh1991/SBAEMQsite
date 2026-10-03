@@ -17,6 +17,7 @@ per release, each shippable on its own.
 | 121 | One blueprint per course; papers/essays/cases filtered |
 | 122 | **Phase 1** — the Editor panel, gated on the role |
 | 123 | **Phase 2** — question review, and the gate |
+| 124 | **Phase 3** — groups: the wall belongs to one |
 
 Three exams are now fully separable: course, enrolment, syllabus,
 blueprint, question types, and all five banks.
@@ -118,6 +119,26 @@ all in the third:
 `reviewed_at` per question gives the per-editor tally directly, which is
 what a payment model will need. Store the count as a consequence of the
 work, never as a number somebody can edit.
+
+## Phase 3 — Groups in the Tea room — DONE in v124
+
+Found on opening it up: **chat was already private per group**. `chat_rooms`,
+`chat_members` and `is_room_member()` have kept conversations and their
+files to their members since 8c-3. Only the WALL was global.
+
+So a group IS a chat room — not a second object beside one. Shipped:
+`discussions.room_id` (null = the wall everyone shares, which is how every
+existing post survives); read and insert policies requiring membership;
+`can_read_post()` so replies and reactions follow the post they belong to,
+because leaking which posts exist and how popular they are is most of what
+a private group hides; a strip on the wall to switch between everybody's
+and each group's; and a member picker that SEARCHES by name or user number
+instead of listing everyone with a tick-box, which stops working somewhere
+around thirty people.
+
+The original note follows, for the reasoning.
+
+---
 
 ## Phase 3 — Groups in the Tea room
 
