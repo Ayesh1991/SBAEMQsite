@@ -168,10 +168,15 @@ say('the group sees everyone, best first',
 sec('5. AND THE PAGE SAYS WHICH STATE EACH PAPER IS IN');
 
 await page.evaluate(async () => { await Backend.signOut(); await Backend.signIn('ayeshmantha@gmail.com', 'password123'); });
-await page.goto(B + '/index.html?r=' + Math.random() + '#/group/' + ids.room, { waitUntil: 'domcontentloaded' });
-await page.waitForTimeout(2200);
+/* THE ADDRESS GREW A TAB IN v128. A group is a place now — wall, chat,
+   files, papers, members — so #/group/<id> opens the wall and the papers
+   are one of five tabs rather than the whole page. Same page, named
+   explicitly. */
+await page.goto(B + '/index.html?r=' + Math.random() + '#/group/' + ids.room + '/papers', { waitUntil: 'domcontentloaded' });
+await page.waitForTimeout(2400);
 const ui = await page.evaluate(() => ({
-  title: document.querySelector('.page-title')?.textContent || '',
+  title: (document.querySelector('#g-panel .gp-head-title') || document.querySelector('#g-panel h2')
+          || document.querySelector('.page-title'))?.textContent || '',
   states: [...document.querySelectorAll('.gp-state')].map(s => s.textContent.trim()),
   rows: [...document.querySelectorAll('.gp-table tr')].map(r => r.textContent.replace(/\s+/g, ' ').trim()),
   me: document.querySelectorAll('.gp-table tr.is-me').length,

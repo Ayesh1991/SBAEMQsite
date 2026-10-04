@@ -84,7 +84,9 @@
     { re: /^#\/review$/, fn: renderReview },
     { re: /^#\/editor(?:\/(flagged|review))?$/, fn: renderEditor },
     { re: /^#\/editor\/review\/([^/]+)\/([^/]+)$/, fn: renderEditorSet },
+    { re: /^#\/groups$/, fn: renderGroups },
     { re: /^#\/group\/([^/]+)$/, fn: renderGroup },
+    { re: /^#\/group\/([^/]+)\/(wall|chat|files|papers|members)$/, fn: renderGroupTab },
     { re: /^#\/group\/([^/]+)\/paper\/([^/]+)$/, fn: renderGroupPaper },
     /* The old address, kept working. Somebody has it bookmarked and a dead
        link teaches them the feature was removed. */
@@ -2689,18 +2691,14 @@
     try { return ((await Backend.listChatRooms()) || []).find(r => r.id === roomId) || null; }
     catch { return null; }
   }
-  async function renderGroup(roomId, user) {
-    const room = await groupOf(roomId);
-    if (!room) {
-      view.innerHTML = `<section class="page narrow" data-animate>
-        <header><p class="kicker">GROUP</p><h1 class="page-title">Not one of your groups</h1></header>
-        <div class="card"><p class="muted">Either this group does not exist, or you are not in it. A group's
-          papers, wall and chat are readable only by its members.</p>
-          <a class="btn btn-gold" href="#/studio">← Back to the studio</a></div></section>`;
-      FX.viewIn(view); return;
-    }
-    return GroupPaper.renderList(view, roomId, user, room.title);
-  }
+  /* A GROUP IS A PLACE, NOT A LIST OF PAPERS. Until v128 this address
+     showed the group's papers and nothing else, while its wall lived on a
+     strip the full-page Studio wall never drew and its chat lived in a
+     dock. One page, five tabs, and every tab mounts whoever already owned
+     that job. */
+  async function renderGroups(user) { return Group.renderIndex(view, user); }
+  async function renderGroup(roomId, user) { return Group.render(view, roomId, 'wall', user); }
+  async function renderGroupTab(roomId, tab, user) { return Group.render(view, roomId, tab, user); }
   async function renderGroupPaper(roomId, paperId, user) {
     const room = await groupOf(roomId);
     if (!room) { location.replace('#/studio'); return; }
@@ -2750,7 +2748,12 @@
     const tiles = [
       { id: 'tearoom', ico: '☕', title: 'Tea room', sub: 'Discuss with friends', count: (typeof TeaRoom !== 'undefined' ? TeaRoom.unreadCount() : 0) || '💬', accent: 'linear-gradient(135deg,#f4c95d,#e8a33d)' },
       { id: 'creations', ico: '✨', title: 'AI creations', sub: 'Charts · mind maps · chats', count: creations.length, accent: 'linear-gradient(135deg,#7dd3fc,#a78bfa)' },
-      { id: 'notes', ico: '🗒', title: 'My notes', sub: 'Quick jottings by question', count: noteList.length, accent: 'linear-gradient(135deg,#5eead4,#34d399)' }
+      { id: 'notes', ico: '🗒', title: 'My notes', sub: 'Quick jottings by question', count: noteList.length, accent: 'linear-gradient(135deg,#5eead4,#34d399)' },
+      /* A LINK, NOT A FOURTH PANEL. A group has a page of its own with five
+         tabs on it; squeezing that into a tile beside the shared wall is
+         how groups ended up scattered over three surfaces in the first
+         place. */
+      { id: 'groups', ico: '👥', title: 'Study groups', sub: 'Wall · chat · files · papers', count: '→', accent: 'linear-gradient(135deg,#a78bfa,#f472b6)', go: '#/groups' }
     ];
     let active = 'tearoom';
     function drawConsole() {
@@ -2760,7 +2763,11 @@
           <span class="studio-tile-txt"><strong>${t.title}</strong><span>${t.sub}</span></span>
           <span class="studio-tile-count">${t.count}</span>
         </button>`).join('');
-      consoleEl.querySelectorAll('[data-tile]').forEach(b => b.addEventListener('click', () => { active = b.dataset.tile; drawConsole(); drawPanel(); }));
+      consoleEl.querySelectorAll('[data-tile]').forEach(b => b.addEventListener('click', () => {
+        const t = tiles.find(x => x.id === b.dataset.tile);
+        if (t?.go) { location.hash = t.go; return; }
+        active = b.dataset.tile; drawConsole(); drawPanel();
+      }));
     }
     function drawPanel() {
       if (active === 'tearoom') return drawTearoom();

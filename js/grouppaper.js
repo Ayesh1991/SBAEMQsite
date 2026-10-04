@@ -99,7 +99,10 @@ const GroupPaper = (() => {
 
   /* ---------------- the group's papers ---------------- */
 
-  async function renderList(view, roomId, user, roomTitle) {
+  /* `embedded` since v128: mounted as a TAB on the group's page, which has
+     already named the group in its own <h1>. A second page-title inside it
+     is two headings claiming to be the heading. */
+  async function renderList(view, roomId, user, roomTitle, embedded) {
     view.innerHTML = `<section class="page narrow"><p class="muted">Loading…</p></section>`;
     let papers = [];
     try { papers = (await Backend.listGroupPapers(roomId)) || []; }
@@ -108,10 +111,10 @@ const GroupPaper = (() => {
       return;
     }
     view.innerHTML = `
-      <section class="page narrow" data-animate>
+      <section class="${embedded ? 'gp-embed' : 'page narrow'}" data-animate>
         <header>
-          <p class="kicker">GROUP · ${esc(roomTitle || 'Your group')}</p>
-          <h1 class="page-title">Papers you sit together</h1>
+          ${embedded ? '' : `<p class="kicker">GROUP · ${esc(roomTitle || 'Your group')}</p>`}
+          <${embedded ? 'h2' : 'h1'} class="${embedded ? 'gp-head-title' : 'page-title'}">Papers you sit together</${embedded ? 'h2' : 'h1'}>
           <p class="muted">One person sets a paper from the blueprint and names a time. Everybody sits the same
             questions at that time, on their own — and then the marks go side by side.</p>
         </header>

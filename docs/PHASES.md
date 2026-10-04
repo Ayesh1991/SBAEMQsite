@@ -21,6 +21,7 @@ per release, each shippable on its own.
 | 125 | **Phase 4** — a paper the group sits together |
 | 126 | **Phase 5** — true/false in the adaptive mock |
 | 127 | **Phase 6** — groups have somebody in charge of them |
+| 128 | **Phase 7** — one place for a group |
 
 Three exams are now fully separable: course, enrolment, syllabus,
 blueprint, question types, and all five banks. The editor/groups/group-mocks
@@ -289,6 +290,48 @@ group you are reading, `👥 Members`.
 Not built, deliberately: invite links and request-to-join. Groups are
 **closed** — an admin adds you by name or user number, or you are not in.
 There is no code to leak and no pending queue for somebody to forget.
+
+---
+
+## Phase 7 — One place for a group — DONE in v128
+
+A group was spread over three surfaces that did not mention each other.
+Its chat was in a dock you opened from a button. Its wall was a strip on
+the Studio wall. Its papers were at `#/group/<id>`.
+
+And the strip — the only way to reach a group's wall — was drawn by
+`paintWallRooms`, which **`renderPanel` never called**. `renderPanel` is
+the full-page Studio wall: the one almost everybody actually reads. So on
+that page there was no way to open a group's wall, and after v127 no way
+to make a group either. Both features existed; neither was reachable from
+where people were standing. That is the shape worth remembering — not a
+function that threw, but a surface that was never given one.
+
+Shipped: `js/group.js` (`Group`, **not** `GroupPaper`), a page per group
+with five tabs — Wall, Chat, Files, Papers, Members — plus `#/groups`
+listing the groups you are in, and a Studio tile pointing at it.
+
+**Nothing here is a second implementation.** Each tab mounts whoever
+already owned that job: `renderPanel` for the wall (now taking a room),
+`renderChatPanel` for the chat, `GroupPaper.renderList` for the papers.
+A second copy of the wall would be a second thing to keep in step with the
+first, and the first is the one with four releases of fixes in it.
+
+Three things that had to change underneath:
+
+- **`renderPanel` takes a `roomId`.** Same posts, same composer, addressed
+  to the group. Switching wall drops what was loaded rather than filtering
+  it — a post left over from the last wall appearing in this one is the
+  bug v124 was about.
+- **`paintChat` walked one element.** It now walks every live host, so the
+  same conversation can be in the dock and inside a page at once.
+- **Files had nowhere to be seen together.** They were already on the
+  posts and the messages; `groupFiles()` gathers both, each source guarded
+  so one failing does not empty the other.
+
+A page is a nicer way to reach a group. It is **not** a way in — the
+database still answers that, and §3 of the test is the proof a page did
+not quietly become a door.
 
 ---
 

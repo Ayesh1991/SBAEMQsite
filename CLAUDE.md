@@ -7,7 +7,7 @@ twenty releases to learn, and most of it is counter-intuitive.
 
 A static single-page app for Sri Lankan postgraduate and undergraduate
 medical exam preparation. **No build step.** The files in `js/` are served
-exactly as they are committed; `index.html` loads 51 `<script>` tags in a
+exactly as they are committed; `index.html` loads 52 `<script>` tags in a
 fixed order. Cloudflare Pages serves it, Pages Functions in `functions/api/`
 are the only server code, Supabase is the database.
 
@@ -29,7 +29,7 @@ are the only server code, Supabase is the database.
    function added to one and not the other works in testing and throws in
    production, or the reverse. The tests assert the lists match.
 
-3. **The version stamp is in three places.** `index.html` (`?v=N`, 51
+3. **The version stamp is in three places.** `index.html` (`?v=N`, 52
    occurrences), `sw.js` (`VERSION = 'aureum-vN'`), and the newest test
    file. Bump all three together — see `/release`.
 
@@ -63,6 +63,13 @@ Groups are `chat_rooms` reused — one row, one membership list, one
 `is_room_admin()` is what the add/remove/rename/promote policies ask. The
 maker of a group is its admin; a group is never left without one.
 
+A group's page is `js/group.js` (`Group`, **not** `GroupPaper` — that one
+sits a paper). `#/group/<id>/<tab>` for wall, chat, files, papers and
+members; `#/groups` lists them. **Every tab mounts the surface that already
+owned that job** — a second copy of the wall is a second thing to keep in
+step. Mounting one means releasing the last: `TeaRoom.releasePanel()` and
+`releaseChatPanel()`.
+
 - `js/course.js` is the module (`Course`, **not** `Track` — that name is
   the interaction logger in `js/track.js`).
 - `Course.fits(row)` is the relevance filter. **Untagged content is shown**
@@ -81,8 +88,8 @@ is built), then `npx playwright install chromium`.
 
 ```bash
 npm run serve                                  # leave running (Node, no python)
-npm test                                       # all 28 files, summarised
-node tools/tests/t127-group-admin.mjs          # one release file
+npm test                                       # all 29 files, summarised
+node tools/tests/t128-group-home.mjs           # one release file
 ```
 
 Each file prints `fails=0` and exits non-zero on failure. `/suite` runs
@@ -130,6 +137,7 @@ and must never appear in the repo.
 | Adaptive mocks | `js/simulator.js`, `js/blueprint.js` |
 | OSCE bank and stations | `js/osce.js` |
 | Course scoping | `js/course.js` |
+| A group's page (wall/chat/files/papers) | `js/group.js` |
 | Schema, RLS, migrations | `supabase/schema.sql` |
 
 The roadmap and phase plan: `docs/PHASES.md`.
