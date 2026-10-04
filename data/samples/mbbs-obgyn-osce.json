@@ -1,0 +1,50 @@
+{
+  "schema": "ogr-osce-v1",
+  "topic": "Counselling a woman with recurrent miscarriage",
+  "collection": "mbbs-obgyn",
+  "scenario": "You are the house officer in the gynaecology clinic. Mrs Perera is 31 and has had three consecutive first-trimester miscarriages. She has come with her husband to discuss why this has happened and what can be done. Her investigations are not yet back.",
+  "station_time_min": 15,
+  "reading_time_min": 2,
+  "total_marks": 50,
+  "pass_mark": 30,
+  "source": "Faculty of Medicine — Final MBBS, 2025",
+
+  "questions": [
+    {
+      "prompt": "Explain to the couple what recurrent miscarriage means and how common it is.",
+      "marks": 10,
+      "marking_points": [
+        "# Definition and frequency",
+        "Defines recurrent miscarriage as three or more consecutive losses before 24 weeks",
+        "States it affects about 1% of couples",
+        "Explains that most couples go on to have a successful pregnancy",
+        "Uses plain language, avoiding jargon"
+      ]
+    },
+    {
+      "prompt": "Describe the investigations you would arrange and why.",
+      "marks": 25,
+      "marking_points": [
+        "# Investigations",
+        "Antiphospholipid antibodies — lupus anticoagulant and anticardiolipin, repeated 12 weeks apart",
+        "Parental karyotyping where a fetal loss is found to be unbalanced",
+        "Pelvic ultrasound for uterine anomalies",
+        "Thyroid function and HbA1c where clinically indicated",
+        "# Communication",
+        "Explains that no cause is found in about half of couples",
+        "Checks the couple's understanding before moving on"
+      ]
+    },
+    {
+      "prompt": "Outline the management if antiphospholipid syndrome is confirmed.",
+      "marks": 15,
+      "marking_points": [
+        "# Treatment",
+        "Low-dose aspirin from a positive pregnancy test",
+        "Low molecular weight heparin once a fetal heart is seen",
+        "States this improves the live birth rate substantially",
+        "Arranges early pregnancy unit referral and supportive care"
+      ]
+    }
+  ]
+}

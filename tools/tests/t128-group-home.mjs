@@ -251,9 +251,10 @@ const stamp = await page.evaluate(async () => {
   const h = await (await fetch('/index.html')).text();
   const sw = await (await fetch('/sw.js')).text();
   const vs = [...new Set([...h.matchAll(/\?v=(\d+)/g)].map(m => m[1]))];
-  return { vs, sw: /aureum-v128/.test(sw), has: /js\/group\.js\?v=/.test(h) };
+  /* The literal belongs to the newest release file only — see the README. */
+  return { vs, sw: vs.length === 1 && sw.includes("'aureum-v" + vs[0] + "'"), has: /js\/group\.js\?v=/.test(h) };
 });
-say('one version across every asset', stamp.vs.join() === '128', stamp.vs.join(', '));
+say('one version across every asset', stamp.vs.length === 1, stamp.vs.join(', '));
 say('  the service worker agrees', stamp.sw);
 /* A module nothing loads is a module that does not exist. */
 say('  and the new module is actually loaded by the page', stamp.has);

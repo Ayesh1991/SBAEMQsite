@@ -283,6 +283,8 @@ const DevConsole = (() => {
           <button class="btn btn-gold" id="dev-scan">Scan Drive for new papers</button>
           <label class="wl-f" style="max-width:260px" id="pp-track-wrap" hidden><span>Course</span>
             <select class="sel" id="pp-import-track"></select></label>
+          <label class="wl-f" style="max-width:260px" id="pp-subject-wrap" hidden><span>Subject</span>
+            <select class="sel" id="pp-import-subject"></select></label>
           <span class="dev-status" id="dev-status"></span>
         </div>
 
@@ -373,6 +375,7 @@ const DevConsole = (() => {
     view.querySelector('#dev-paste-btn').addEventListener('click', stagePasted);
     await wireCurriculumManager(view);
     await fillCoursePicker(view, '#pp-track-wrap', '#pp-import-track');
+    await fillSubjectPicker(view, '#pp-subject-wrap', '#pp-import-subject', '#pp-import-track');
     /* A PAPER IS CLASSIFIED AGAINST THE COURSE IT IS BEING IMPORTED INTO,
        not against the one the editor happens to be studying for. The row
        dropdowns read the module-wide `syllabus`, so changing the toolbar's
@@ -1092,6 +1095,11 @@ const DevConsole = (() => {
          contentTags() then stamps the editor's own course, so a paper
          cannot reach the database filed nowhere. */
       ...(pickedCourse('#pp-import-track') ? { tracks: [pickedCourse('#pp-import-track')] } : {}),
+      /* And which subject within it. Left off when the toolbar is not
+         asking — contentTags() then answers it for a one-speciality
+         course, and leaves it null for a course that genuinely has not
+         been told. */
+      ...(pickedSubject('#pp-import-subject') ? { subject: pickedSubject('#pp-import-subject') } : {}),
       content: paper                          // inline content (no file on disk)
     };
   }
@@ -2835,6 +2843,14 @@ const DevConsole = (() => {
         </header>
         <div class="dev-toolbar" data-animate>
           <button class="btn btn-gold" id="es-scan">Scan Drive for essay papers</button>
+          ${/* The essay importer never had either picker. A final MBBS
+                essay paper filed under no course and no subject is one a
+                candidate on another course still sees — and one the
+                subject bar cannot separate. */''}
+          <label class="wl-f" style="max-width:260px" id="es-track-wrap" hidden><span>Course</span>
+            <select class="sel" id="es-import-track"></select></label>
+          <label class="wl-f" style="max-width:260px" id="es-subject-wrap" hidden><span>Subject</span>
+            <select class="sel" id="es-import-subject"></select></label>
           <span class="dev-status" id="es-status"></span>
         </div>
         <div id="es-list" data-animate></div>
@@ -2856,6 +2872,8 @@ const DevConsole = (() => {
         </div>
       </section>`;
     view.querySelector('#es-scan').addEventListener('click', scanEssays);
+    await fillCoursePicker(view, '#es-track-wrap', '#es-import-track');
+    await fillSubjectPicker(view, '#es-subject-wrap', '#es-import-subject', '#es-import-track');
     view.querySelector('#es-paste-btn').addEventListener('click', pasteEssay);
     await refreshEssayPublished(view);
     ctx.FX.viewIn(view);
@@ -2916,6 +2934,7 @@ const DevConsole = (() => {
     staged.forEach((d, i) => document.querySelector(`[data-es-approve="${i}"]`).addEventListener('click', async e => {
       const msg = document.querySelector(`[data-es-msg="${i}"]`);
       e.target.disabled = true; msg.textContent = 'Publishing…'; msg.className = 'dev-row-msg muted';
+      stampCourse(d, '#es-import-track', '#es-import-subject');
       try { await ctx.Backend.publishEssayPaper(d); if (typeof Essay !== 'undefined') Essay.bustPapers();
         msg.textContent = '✓ Published to Library → Essay.'; msg.className = 'dev-row-msg good';
         await refreshEssayPublished(document.getElementById('view'));
@@ -2928,6 +2947,7 @@ const DevConsole = (() => {
     let d; try { d = JSON.parse(ta.value); } catch (e) { out.innerHTML = `<p class="bad">Invalid JSON: ${ctx.esc(e.message)}</p>`; return; }
     const errs = validateEssayPaper(d); if (errs.length) { out.innerHTML = `<p class="bad">${errs.map(ctx.esc).join('<br>')}</p>`; return; }
     d.id = essayId(d);
+    stampCourse(d, '#es-import-track', '#es-import-subject');
     try { await ctx.Backend.publishEssayPaper(d); if (typeof Essay !== 'undefined') Essay.bustPapers();
       out.innerHTML = `<p class="good">✓ Published “${ctx.esc(d.paperLabel || d.id)}”.</p>`; await refreshEssayPublished(document.getElementById('view'));
     } catch (e) { out.innerHTML = `<p class="bad">${ctx.esc(e.message || e)}</p>`; }
@@ -3080,6 +3100,8 @@ const DevConsole = (() => {
                 from the editor's own course either way. */''}
           <label class="wl-f" style="max-width:260px" id="os-track-wrap" hidden><span>Course</span>
             <select class="sel" id="os-import-track"></select></label>
+          <label class="wl-f" style="max-width:260px" id="os-subject-wrap" hidden><span>Subject</span>
+            <select class="sel" id="os-import-subject"></select></label>
           <span class="dev-status" id="os-status"></span>
         </div>
         <div id="os-list" data-animate></div>
@@ -3106,6 +3128,7 @@ const DevConsole = (() => {
     await wireBlueprint(view);
     wireTagger(view);
     await fillCoursePicker(view, '#os-track-wrap', '#os-import-track');
+    await fillSubjectPicker(view, '#os-subject-wrap', '#os-import-subject', '#os-import-track');
     await refreshOscePublished(view);
   }
 
@@ -3130,6 +3153,49 @@ const DevConsole = (() => {
   function pickedCourse(selSel) {
     const sel = document.querySelector(selSel);
     return (sel && !sel.closest('[hidden]')) ? (sel.value || '') : '';
+  }
+
+  /* WHICH SUBJECT, for a course that has more than one.
+     A one-speciality course answers this by itself — every Part 2 O&G
+     paper is about O&G, and contentTags() fills it in. A final MBBS course
+     cannot: its bank holds obstetrics, medicine, surgery and the rest, and
+     nothing in the FILE says which. So it is asked here, at the only
+     moment somebody knows the answer.
+     Without it a paper reaches the database with subject = null, which
+     `fitsSubject` reads as unfiled and therefore shows under every
+     subject — the right default for a tag somebody forgot, and no use at
+     all as a way of separating five subjects. */
+  async function fillSubjectPicker(view, wrapSel, selSel, courseSel) {
+    const wrap = view.querySelector(wrapSel), sel = view.querySelector(selSel);
+    if (!wrap || !sel || typeof Course === 'undefined') return;
+    const draw = async () => {
+      try { await Course.load(); } catch { return; }
+      const id = pickedCourse(courseSel) || Course.currentId();
+      const subs = (Course.byId(id)?.subjects || []);
+      if (subs.length < 2) { wrap.hidden = true; sel.innerHTML = ''; return; }
+      const keep = sel.value;
+      sel.innerHTML = `<option value="">— choose a subject —</option>` + subs.map(x =>
+        `<option value="${ctx.esc(x)}"${x === keep ? ' selected' : ''}>${ctx.esc(Course.subjectName(x))}</option>`).join('');
+      wrap.hidden = false;
+    };
+    await draw();
+    /* The subjects belong to the course, so changing the course has to
+       redraw them — otherwise you file an MBBS paper under a Part 2
+       subject that no longer exists on the list. */
+    view.querySelector(courseSel)?.addEventListener('change', draw);
+  }
+  /* One place that writes both tags onto a record, because four importers
+     each doing it by hand is four chances to forget one — and a forgotten
+     tag does not throw, it quietly files the content nowhere. */
+  function stampCourse(rec, courseSel, subjectSel) {
+    const tk = pickedCourse(courseSel); if (tk && !rec.tracks) rec.tracks = [tk];
+    const sj = pickedSubject(subjectSel); if (sj && !rec.subject) rec.subject = sj;
+    return rec;
+  }
+  /** What the toolbar's subject picker says, or nothing if it is not shown. */
+  function pickedSubject(selSel) {
+    const sel = document.querySelector(selSel);
+    return (sel && !sel.closest('[hidden]') && !sel.hidden) ? (sel.value || '') : '';
   }
 
   /* ---- the station-writing instructions ----
@@ -3638,6 +3704,7 @@ const DevConsole = (() => {
            always wins; with the control hidden the backend stamps the
            editor's own course. */
         const tk = pickedCourse('#os-import-track'); if (tk) d.tracks = [tk];
+        const sj = pickedSubject('#os-import-subject'); if (sj) d.subject = sj;
         await ctx.Backend.publishOsceStation(d);
         if (typeof OSCE !== 'undefined') { OSCE.bustStations(); OSCE.bustCollections?.(); }
         msg.textContent = '✓ Published to the OSCE tab.'; msg.className = 'dev-row-msg good';
@@ -3653,6 +3720,7 @@ const DevConsole = (() => {
     d.id = osceId(d);
     if (d.collection == null) d.collection = document.getElementById('os-import-coll')?.value || '';
     if (!d.tracks) { const tk = pickedCourse('#os-import-track'); if (tk) d.tracks = [tk]; }
+    if (!d.subject) { const sj = pickedSubject('#os-import-subject'); if (sj) d.subject = sj; }
     try { await ctx.Backend.publishOsceStation(d); if (typeof OSCE !== 'undefined') OSCE.bustStations();
       out.innerHTML = `<p class="good">✓ Published “${ctx.esc(d.topic)}”.</p>`;
       await refreshOscePublished(document.getElementById('view'));

@@ -73,7 +73,16 @@ step. Mounting one means releasing the last: `TeaRoom.releasePanel()` and
 - `js/course.js` is the module (`Course`, **not** `Track` — that name is
   the interaction logger in `js/track.js`).
 - `Course.fits(row)` is the relevance filter. **Untagged content is shown**
-  — unfiled is not irrelevant.
+  — unfiled is not irrelevant. `Course.fitsSubject(row, sel)` is the same
+  rule one level down, for a course with several subjects.
+- **A course with >1 subject must be asked which one on import** (v129).
+  `contentTags()` infers `subject` only for a one-speciality course, so a
+  final MBBS paper reaches the database with `subject = null` unless the
+  console's subject picker wrote it. `stampCourse()` in `js/dev-console.js`
+  is the one place that writes both tags — add new importers there.
+  Subject ids: `obgyn`, `medicine`, `surgery`, `paediatrics`,
+  `psychiatry`, `anaesthesiology`.
+- Import file formats and what the validator refuses: `data/samples/`.
 - The three bundled files — `data/syllabus.json`, `data/manifest.json`,
   `data/blueprint.md` — each name their course in a `track` field. They
   belong to `pgim-og-2` and must not follow a candidate to another course.
@@ -88,8 +97,8 @@ is built), then `npx playwright install chromium`.
 
 ```bash
 npm run serve                                  # leave running (Node, no python)
-npm test                                       # all 29 files, summarised
-node tools/tests/t128-group-home.mjs           # one release file
+npm test                                       # all 30 files, summarised
+node tools/tests/t129-subject-pipeline.mjs     # one release file
 ```
 
 Each file prints `fails=0` and exits non-zero on failure. `/suite` runs

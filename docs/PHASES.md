@@ -22,6 +22,7 @@ per release, each shippable on its own.
 | 126 | **Phase 5** — true/false in the adaptive mock |
 | 127 | **Phase 6** — groups have somebody in charge of them |
 | 128 | **Phase 7** — one place for a group |
+| 129 | **Phase 8** — a course splits into its subjects |
 
 Three exams are now fully separable: course, enrolment, syllabus,
 blueprint, question types, and all five banks. The editor/groups/group-mocks
@@ -332,6 +333,50 @@ Three things that had to change underneath:
 A page is a nicer way to reach a group. It is **not** a way in — the
 database still answers that, and §3 of the test is the proof a page did
 not quietly become a door.
+
+---
+
+## Phase 8 — A course splits into its subjects — DONE in v129
+
+A final MBBS bank is five banks. Obstetrics, medicine, surgery,
+paediatrics and psychiatry all belong to one course, and a candidate
+revising O&G has no use for the other four in the same list.
+
+v115 put a `subjects` list on a course. v116 gave the OSCE bank a subject
+bar. Then it stopped — and what was missing was the middle, in the way
+that is hardest to see: **every piece existed and nothing joined them.**
+`subject` was a column on seven tables, `Course.fitsSubject` was written
+and exported, `Course.subjectBar` drew the chips — and **nothing wrote the
+column** for a course with more than one subject. `contentTags()` infers
+it only when a course has exactly one speciality, which is precisely the
+case where it does not matter. A final MBBS paper reached the database
+with `subject = null`.
+
+Same failure as v117's: a filter cannot filter on what nothing ever wrote.
+
+Shipped: a subject picker in the papers, OSCE and essay importers, shown
+only when the chosen course has more than one subject and redrawn when the
+course changes; one `stampCourse()` that writes both tags, because four
+importers each doing it by hand is four chances to forget; and the subject
+chips on the question bank and the essay bank, which only the OSCE bank
+had.
+
+The essay importer had **neither** picker — not even the course one — so
+an essay paper could reach the database filed nowhere at all.
+
+**Unfiled is still shown.** A paper whose subject somebody forgot appears
+under every subject, the same rule as `Course.fits` and for the same
+reason: hiding it would lose it from its own author's bank with nothing to
+say why.
+
+Also shipped: `data/samples/` — four import files in the exact shapes the
+importers accept, and a README saying what the validator will stop you on.
+t129 imports the sample paper through the real validator, so a sample that
+would not import fails the suite.
+
+Still to do here: **cases** have no subject picker, and the subject is not
+editable after import — a paper filed under the wrong subject has to be
+re-imported. Both are small and neither blocks the pipeline.
 
 ---
 
