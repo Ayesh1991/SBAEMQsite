@@ -76,8 +76,8 @@ is built), then `npx playwright install chromium`.
 
 ```bash
 npm run serve                                  # leave running (Node, no python)
-npm test                                       # all 22 files, summarised
-node tools/tests/t121-blueprint-and-banks.mjs  # one release file
+npm test                                       # all 27 files, summarised
+node tools/tests/t126-tf-in-the-mock.mjs       # one release file
 ```
 
 Each file prints `fails=0` and exits non-zero on failure. `/suite` runs

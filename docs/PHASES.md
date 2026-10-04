@@ -19,9 +19,11 @@ per release, each shippable on its own.
 | 123 | **Phase 2** — question review, and the gate |
 | 124 | **Phase 3** — groups: the wall belongs to one |
 | 125 | **Phase 4** — a paper the group sits together |
+| 126 | **Phase 5** — true/false in the adaptive mock |
 
 Three exams are now fully separable: course, enrolment, syllabus,
-blueprint, question types, and all five banks.
+blueprint, question types, and all five banks. All five phases of the
+editor/groups/group-mocks roadmap are shipped.
 
 ---
 
@@ -195,6 +197,44 @@ new is the *scheduling* and the *shared result*:
 The honest difficulty is fairness — a paper that can be opened early is not
 an assessment. The question plan must not be readable before the start
 time, which makes it a database rule rather than a client one.
+
+## Phase 5 — True/false in the adaptive mock — DONE in v126
+
+Shipped as a **mechanism with the weights left empty**. `tf_count` defaults
+to zero and `blueprint_tf` to nothing, so every blueprint that exists today
+produces exactly the paper it produced yesterday. The planner draws a
+true/false section only when a count AND buckets both exist — either alone
+would fall through to the top-up and hand out arbitrary statements dressed
+as a blueprint-shaped section.
+
+Threaded through all of it: the index, the plan, the preview, the mock
+record, `bySection`, the result page, the coverage map, the history table,
+and the readiness gate on the home page. The 120-minute cap lifts for a
+three-section paper — that number is the length of the two-hour PGIM
+SBA+EMQ paper and capping a longer blueprint there would hand a candidate
+three sections in the time written for two.
+
+Three bugs found on the way, none of which throws:
+
+- **The Studio would have deleted the weights.** It rebuilds the blueprint
+  field by field and saves it whole, so a field it does not know about is
+  gone — silently, and by somebody who came to change one weight. Carried
+  through now, and the panel says so.
+- **The export would have deleted them too.** `toMarkdown` is offered as
+  the file to paste back into `data/blueprint.md`; a section it cannot
+  write disappears through the button it is documented with.
+- **`bucketDefs` was keyed by name alone.** A true/false bucket is named
+  the way an SBA bucket is — subcategory, then category — so one key had
+  two kinds fighting over it and an SBA slot in the preview would have been
+  offered the true/false bucket's specific areas. Keyed by kind and name.
+
+The weights themselves are still a judgement about a real exam nobody on
+this project has sat. They go in when Final MBBS has content, decided by
+somebody holding a paper.
+
+The original note follows, for the reasoning.
+
+---
 
 ## Phase 5 — True/false in the adaptive mock
 

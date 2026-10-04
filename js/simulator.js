@@ -7,7 +7,8 @@
         difficulty). Cached, so it downloads once — new papers become
         eligible automatically (the index rebuilds when papers change
         or on demand).
-     2. SELECTS a 30-SBA + 30-EMQ mock shaped to the PGIM blueprint:
+     2. SELECTS a mock shaped to the course's blueprint — SBA, EMQ and,
+        where the blueprint asks for one, a true/false section:
         weights → target counts, priority boosts, difficulty tuned to
         the candidate, and NO repeats of questions already seen.
         Selection is deterministic + a little randomness so each day
@@ -64,6 +65,11 @@ const Simulator = (() => {
         const sub = paper.subcategory || loaded.path.topic?.title || '';
         Data.flatten(paper, 'SBA').forEach(q => recs.push(mk(p, q, 'SBA', cat, sub)));
         Data.flatten(paper, 'EMQ').forEach(q => recs.push(mk(p, q, 'EMQ', cat, q.theme || sub)));
+        /* True/false joined the bank in v120. Indexing it costs nothing
+           while no blueprint asks for any — the selector simply never
+           looks at these rows — and without it there would be nothing to
+           draw from the day somebody does. */
+        Data.flatten(paper, 'TF').forEach(q => recs.push(mk(p, q, 'TF', cat, sub)));
       }
       return recs;
     };
@@ -282,7 +288,13 @@ const Simulator = (() => {
 
     const sbaRecs = pickForSection('SBA', bp.sba, b => b.subcategory || b.category, bp.paper.sbaCount || 30);
     const emqRecs = pickForSection('EMQ', bp.emq, b => b.theme, bp.paper.emqCount || 30);
-    return { sbaRecs, emqRecs };
+    /* NOTHING UNLESS THE BLUEPRINT ASKS. With no tf buckets and a tfCount
+       of zero — which is every blueprint until somebody edits one — this
+       returns an empty list and the paper is exactly what it was. */
+    const tfRecs = (bp.paper.tfCount > 0 && (bp.tf || []).length)
+      ? pickForSection('TF', bp.tf, b => b.subcategory || b.category, bp.paper.tfCount)
+      : [];
+    return { sbaRecs, emqRecs, tfRecs };
   }
   function sameCat(a, b) { a = Blueprint.normStr(a); b = Blueprint.normStr(b); return a && b && (a === b || a.includes(b) || b.includes(a)); }
 
@@ -315,10 +327,10 @@ const Simulator = (() => {
     for (const pid of Object.keys(byPaper)) {
       let loaded; try { loaded = await Data.loadPaper(pid); } catch { continue; }
       const flat = {};
-      /* The mock BUILDER still draws only SBA and EMQ — the blueprint has
-         no true/false weights, and giving it some is its own release. This
-         is the lookup that turns a mock's keys back into questions, so it
-         has to know every kind a key can name. */
+      /* Every kind a key can name. This already included TF before the
+         builder did — a stored mock from a paper that had true/false in it
+         still had to resolve, and a lookup that silently returns nothing
+         is how a review page loses half its questions. */
       ['SBA', 'EMQ', 'TF'].forEach(kind => Data.flatten(loaded.paper, kind).forEach(q => flat[`${pid}:${kind}:${q.number}`] = q));
       byPaper[pid].forEach(r => { const q = flat[r.qkey]; if (q) dict[r.qkey] = { ...q, _qkey: r.qkey, _paperTitle: r.paperTitle, bucket: r.bucket, difficulty: r.difficulty }; });
     }
@@ -338,7 +350,7 @@ const Simulator = (() => {
         <header data-animate>
           <p class="kicker">ADAPTIVE SIMULATOR · DEVELOPER</p>
           <h1 class="page-title">Daily exam simulator</h1>
-          <p class="muted">A fresh 30-SBA + 30-EMQ mock shaped to the PGIM blueprint, tuned each day to your performance. Questions are drawn from the live bank — never repeated, never invented.</p>
+          <p class="muted">A fresh mock shaped to your course's blueprint, tuned each day to your performance. Questions are drawn from the live bank — never repeated, never invented.</p>
         </header>
         <div id="sim-body"><p class="muted">Preparing the engine…</p></div>
       </section>`;
@@ -351,7 +363,18 @@ const Simulator = (() => {
     const emqTotal = index.filter(r => r.kind === 'EMQ').length;
     const unseenSba = index.filter(r => r.kind === 'SBA' && !hist.seen.has(r.qkey) && !hist.excluded.has(r.qkey)).length;
     const unseenEmq = index.filter(r => r.kind === 'EMQ' && !hist.seen.has(r.qkey) && !hist.excluded.has(r.qkey)).length;
-    const enough = unseenSba >= 10 && unseenEmq >= 10;
+    /* A THIRD SECTION ONLY IF THE BLUEPRINT ASKS FOR ONE. Every count,
+       every sentence and the readiness gate below are guarded on this, so
+       a blueprint without true/false weights — which is all of them until
+       somebody writes some — shows precisely the page it showed before. */
+    const wantTf = bp.paper.tfCount > 0 && (bp.tf || []).length > 0;
+    const tfTotal = wantTf ? index.filter(r => r.kind === 'TF').length : 0;
+    const unseenTf = wantTf
+      ? index.filter(r => r.kind === 'TF' && !hist.seen.has(r.qkey) && !hist.excluded.has(r.qkey)).length : 0;
+    /* Asking for true/false the bank cannot supply would build a paper
+       quietly short of its own blueprint, so it blocks the button like a
+       missing SBA does rather than being discovered at question 61. */
+    const enough = unseenSba >= 10 && unseenEmq >= 10 && (!wantTf || unseenTf >= 10);
 
     // weak areas (lowest accuracy with enough evidence)
     const weak = Object.entries(hist.bucketAgg)
@@ -364,11 +387,11 @@ const Simulator = (() => {
       ${modeSwitcherHTML('mock')}
       <div class="sim-hero card" data-animate>
         <div class="sim-hero-main">
-          <p class="sim-hero-kicker">Blueprint v${bp.version || 1}${bp.updated ? ' · ' + esc(bp.updated) : ''} · ${bp.sba.length} SBA topics · ${bp.emq.length} EMQ themes</p>
+          <p class="sim-hero-kicker">Blueprint v${bp.version || 1}${bp.updated ? ' · ' + esc(bp.updated) : ''} · ${bp.sba.length} SBA topics · ${bp.emq.length} EMQ themes${wantTf ? ` · ${bp.tf.length} T/F topics` : ''}</p>
           <h2>${hist.mocks.filter(m => !m.custom).length ? `Mock #${hist.mocks.filter(m => !m.custom).length + 1}` : 'Your first mock'}</h2>
           <p class="muted">${enough
-            ? `Ready — ${unseenSba} SBA & ${unseenEmq} EMQ still unseen in the bank.`
-            : `<span class="bad">Not enough unseen questions yet.</span> Publish more papers (or clear a flaw exclusion). SBA unseen: ${unseenSba}, EMQ unseen: ${unseenEmq}.`}</p>
+            ? `Ready — ${unseenSba} SBA${wantTf ? `, ${unseenEmq} EMQ & ${unseenTf} T/F` : ` & ${unseenEmq} EMQ`} still unseen in the bank.`
+            : `<span class="bad">Not enough unseen questions yet.</span> Publish more papers (or clear a flaw exclusion). SBA unseen: ${unseenSba}, EMQ unseen: ${unseenEmq}${wantTf ? `, T/F unseen: ${unseenTf}` : ''}.`}</p>
           <div class="sim-hero-actions">
             <button class="btn btn-gold btn-lg" id="sim-start" ${enough ? '' : 'disabled'}>Generate today's mock →</button>
             <button class="btn btn-ghost btn-lg" id="sim-preview" ${enough ? '' : 'disabled'} title="See which blueprint areas tomorrow's paper will cover — and change them">🗺 Coverage map for this paper</button>
@@ -376,7 +399,7 @@ const Simulator = (() => {
           </div>
         </div>
         <div class="sim-hero-side">
-          <div class="sim-stat"><strong>${sbaTotal + emqTotal}</strong><span>Questions indexed</span></div>
+          <div class="sim-stat"><strong>${sbaTotal + emqTotal + tfTotal}</strong><span>Questions indexed</span></div>
           <div class="sim-stat"><strong>${Object.keys(tags).length}</strong><span>AI-tagged</span></div>
           <div class="sim-stat"><strong>${hist.mocks.filter(m => !m.custom).length}</strong><span>Mocks taken</span></div>
           <div class="sim-stat"><strong>${hist.mocks.filter(m => m.custom).length}</strong><span>Designed papers</span></div>
@@ -404,13 +427,13 @@ const Simulator = (() => {
         <div class="card" data-animate>
           <h3 class="card-title">Recent mocks <span class="muted" style="font-weight:400;font-size:.85rem">· ${hist.mocks.length} total</span></h3>
           <div class="table-scroll mock-history-scroll"><table class="table">
-            <thead><tr><th>#</th><th>Date</th><th>Score</th><th>SBA/EMQ</th><th>Excluded</th><th></th></tr></thead>
+            <thead><tr><th>#</th><th>Date</th><th>Score</th><th>${hist.mocks.some(m => m.tfCount > 0) ? 'SBA/EMQ/TF' : 'SBA/EMQ'}</th><th>Excluded</th><th></th></tr></thead>
             <tbody>${hist.mocks.map((m, i) => `
               <tr>
                 <td>${m.custom ? '🎨' : 'Mock ' + hist.mocks.slice(i).filter(x => !x.custom).length}</td>
                 <td class="muted">${new Date(m.date).toLocaleDateString()}</td>
                 <td><strong class="${m.percent >= 70 ? 'good' : m.percent >= 50 ? '' : 'bad'}">${m.percent}%</strong> <span class="muted">(${m.correct}/${m.scored})</span></td>
-                <td class="muted">${m.sbaCount || 0}/${m.emqCount || 0}</td>
+                <td class="muted">${m.sbaCount || 0}/${m.emqCount || 0}${m.tfCount > 0 ? '/' + m.tfCount : ''}</td>
                 <td class="muted">${(m.excludedKeys || []).length}</td>
                 <td><a class="link" href="#/simulator/result/${encodeURIComponent(m.id)}">Review</a></td>
               </tr>`).join('')}</tbody>
@@ -1073,8 +1096,8 @@ const Simulator = (() => {
 
     // the plan the engine would produce right now
     let plan = select(bp, index, hist, null);
-    let slots = [...plan.sbaRecs, ...plan.emqRecs].map(r => {
-      const def = defs.get(r.bucket);
+    let slots = [...plan.sbaRecs, ...plan.emqRecs, ...(plan.tfRecs || [])].map(r => {
+      const def = defs.get(r.bucket, r.kind);
       const cov = covByKey[r.qkey];
       return { rec: r, bucket: r.bucket, kind: r.kind, def, area: Coverage.areaFor(cov || r, def) || '(unmatched)' };
     });
@@ -1217,8 +1240,8 @@ const Simulator = (() => {
       if (areaBtn) { openAreaPicker(areaBtn, Number(areaBtn.dataset.slot)); return; }
       if (e.target.id === 'pv-reset') {
         plan = select(bp, index, hist, null);
-        slots = [...plan.sbaRecs, ...plan.emqRecs].map(r => {
-          const def = defs.get(r.bucket); const cov = covByKey[r.qkey];
+        slots = [...plan.sbaRecs, ...plan.emqRecs, ...(plan.tfRecs || [])].map(r => {
+          const def = defs.get(r.bucket, r.kind); const cov = covByKey[r.qkey];
           return { rec: r, bucket: r.bucket, kind: r.kind, def, area: Coverage.areaFor(cov || r, def) || '(unmatched)' };
         });
         repaint();
@@ -1318,22 +1341,26 @@ const Simulator = (() => {
 
     // A previewed-and-steered plan wins over a fresh draw, so the paper you
     // approved in the coverage map is exactly the paper you sit.
-    let sbaRecs, emqRecs;
+    let sbaRecs, emqRecs, tfRecs;
     if (pendingPlan?.recs?.length) {
       sbaRecs = pendingPlan.recs.filter(r => r.kind === 'SBA');
       emqRecs = pendingPlan.recs.filter(r => r.kind === 'EMQ');
+      tfRecs = pendingPlan.recs.filter(r => r.kind === 'TF');
       pendingPlan = null;
     } else {
       const plan = select(bp, index, hist, ov);
-      sbaRecs = plan.sbaRecs; emqRecs = plan.emqRecs;
+      sbaRecs = plan.sbaRecs; emqRecs = plan.emqRecs; tfRecs = plan.tfRecs || [];
     }
-    const areaOf = {}; [...sbaRecs, ...emqRecs].forEach(r => { if (r.area) areaOf[r.qkey] = r.area; });
-    const dict = await resolve([...sbaRecs, ...emqRecs]);
+    const areaOf = {}; [...sbaRecs, ...emqRecs, ...tfRecs].forEach(r => { if (r.area) areaOf[r.qkey] = r.area; });
+    const dict = await resolve([...sbaRecs, ...emqRecs, ...tfRecs]);
     const sbaQ = sbaRecs.map(r => dict[r.qkey]).filter(Boolean);
     const emqQ = emqRecs.map(r => dict[r.qkey]).filter(Boolean);
+    /* Last in the paper, as it is in flatten() — and an empty list adds
+       nothing, which is the whole point of the default. */
+    const tfQ = tfRecs.map(r => dict[r.qkey]).filter(Boolean);
     // stamp the blueprint area so it is RECORDED with the attempt from now on,
     // instead of being inferred from the text later
-    const questions = [...sbaQ, ...emqQ].map((q, i) => ({ ...q, number: i + 1, area: areaOf[q._qkey] || q.area || '' }));
+    const questions = [...sbaQ, ...emqQ, ...tfQ].map((q, i) => ({ ...q, number: i + 1, area: areaOf[q._qkey] || q.area || '' }));
 
     if (questions.length < 4) {
       view.innerHTML = `<section class="page narrow"><p class="bad">Not enough eligible questions to build a mock yet. Publish more papers, then rebuild the index.</p><a class="btn btn-ghost" href="#/simulator">Back</a></section>`;
@@ -1345,14 +1372,20 @@ const Simulator = (() => {
       paper: { topic: 'Daily adaptive mock' },
       path: { category: { title: 'Adaptive simulator' }, topic: null }
     };
-    const counts = { sba: sbaQ.length, emq: emqQ.length };
+    const counts = { sba: sbaQ.length, emq: emqQ.length, tf: tfQ.length };
 
     view.innerHTML = '';
     Quiz.start(view, loaded, questions, {
       mode: 'exam', kind: 'MIX', sessionKey: null, simulator: true,
-      // Real PGIM SBA+EMQ paper is 2 hours — cap at 120 min even if an older
-      // stored blueprint still says 180. A shorter blueprint value is honoured.
-      timeLimitMinutes: Math.min(bp.paper.durationMin || 120, 120),
+      /* Real PGIM SBA+EMQ paper is 2 hours — cap at 120 min even if an older
+         stored blueprint still says 180. A shorter blueprint value is honoured.
+         THE CAP IS ABOUT THAT ONE PAPER, so it lifts for a paper with a
+         true/false section: that is not the two-hour PGIM paper the number
+         describes, and capping it would hand a candidate three sections in
+         the time written for two. The blueprint's own duration wins. */
+      timeLimitMinutes: tfQ.length
+        ? (bp.paper.durationMin || 120)
+        : Math.min(bp.paper.durationMin || 120, 120),
       onFinish: async (attempt) => {
         const mock = await saveMock(attempt, bp, counts, questions);
         try { if (typeof ReviewQueue !== 'undefined') ReviewQueue.addFromAttempt(attempt); } catch { /* optional */ }
@@ -1378,13 +1411,15 @@ const Simulator = (() => {
       const a = areas[d.area] || (areas[d.area] = { seen: 0, correct: 0, bucket: d.bucket || '' });
       a.seen++; if (d.isCorrect) a.correct++;
     });
-    const bySection = { SBA: { seen: 0, correct: 0 }, EMQ: { seen: 0, correct: 0 } };
+    /* A section with no questions in it stays at zero and is simply not
+       drawn, so a mock with no true/false looks exactly as it did. */
+    const bySection = { SBA: { seen: 0, correct: 0 }, EMQ: { seen: 0, correct: 0 }, TF: { seen: 0, correct: 0 } };
     attempt.detail.forEach(d => { if (d.excluded) return; const s = bySection[d.kind]; if (s) { s.seen++; if (d.isCorrect) s.correct++; } });
     const result = {
       date: attempt.date, total: attempt.total, scored: attempt.scored, correct: attempt.correct,
       percent: attempt.percent, durationSec: attempt.durationSec, timedOut: attempt.timedOut,
       questionKeys: questions.map(q => q._qkey), excludedKeys: attempt.excludedKeys || [],
-      buckets, areas, bySection, sbaCount: counts.sba, emqCount: counts.emq, blueprintVersion: bp.version,
+      buckets, areas, bySection, sbaCount: counts.sba, emqCount: counts.emq, tfCount: counts.tf || 0, blueprintVersion: bp.version,
       detail: attempt.detail.map(d => ({ qkey: d.qkey, bucket: d.bucket, area: d.area || '', kind: d.kind, isCorrect: d.isCorrect, excluded: d.excluded, chosen: d.chosen, correct: d.correct, timeSec: d.timeSec || 0 }))
     };
     if (opts.custom) { result.custom = true; result.topics = opts.topics || []; }
@@ -1425,6 +1460,10 @@ const Simulator = (() => {
           <div class="sim-section-split">
             <div class="sim-split"><span class="chip chip-sba">SBA</span> <strong class="${secPct(sec.SBA) >= 70 ? 'good' : ''}">${secPct(sec.SBA)}%</strong> <span class="muted">(${sec.SBA?.correct || 0}/${sec.SBA?.seen || 0})</span></div>
             <div class="sim-split"><span class="chip chip-emq">EMQ</span> <strong class="${secPct(sec.EMQ) >= 70 ? 'good' : ''}">${secPct(sec.EMQ)}%</strong> <span class="muted">(${sec.EMQ?.correct || 0}/${sec.EMQ?.seen || 0})</span></div>
+            ${/* Drawn only when the paper actually had some. A permanent
+                  "T/F 0%" on every mock that never had a true/false
+                  question in it is a score for something nobody sat. */''}
+            ${sec.TF?.seen ? `<div class="sim-split"><span class="chip chip-tf">T/F</span> <strong class="${secPct(sec.TF) >= 70 ? 'good' : ''}">${secPct(sec.TF)}%</strong> <span class="muted">(${sec.TF.correct || 0}/${sec.TF.seen})</span></div>` : ''}
           </div>
           <div class="results-actions">
             <a class="btn btn-gold" href="#/simulator/run">New mock</a>

@@ -1312,6 +1312,13 @@ const DevConsole = (() => {
       paper: doc.paper || { sbaCount: 30, emqCount: 30, durationMin: 180, sbaMark: 3, emqMark: 3, negativeMarking: false },
       sba: (doc.sba || []).map(b => ({ ...b, areas: fixAreas(b.areas) })),
       emq: (doc.emq || []).map(b => ({ ...b, areas: fixAreas(b.areas) })),
+      /* CARRIED THROUGH, not edited here. This object is rebuilt field by
+         field and then saved whole, so anything left out of it is DELETED
+         by the act of opening the Studio and pressing save — silently, and
+         by somebody who came to change a weight. True/false weights are
+         authored in the blueprint file for now; they must still survive
+         being looked at. */
+      tf: (doc.tf || []).map(b => ({ ...b, areas: fixAreas(b.areas) })),
       priority: doc.priority || [], notes: doc.notes || ''
     }));
     bpCoverage = null;
@@ -1384,6 +1391,16 @@ const DevConsole = (() => {
     const hit = (b, name) => !q || name.toLowerCase().includes(q) || (b.areas || []).some(a => String(a).toLowerCase().includes(q));
     const idxSba = d.sba.map((b, i) => i).filter(i => hit(d.sba[i], d.sba[i].subcategory || d.sba[i].category || ''));
     const idxEmq = d.emq.map((b, i) => i).filter(i => hit(d.emq[i], d.emq[i].theme || ''));
+    /* TRUE/FALSE IS NOT EDITABLE IN HERE, and saying so is the point. The
+       weights are authored in the blueprint file; what this line prevents is
+       somebody opening the Studio, pressing save, and wondering later where
+       the true/false section of their mock went. It is carried through
+       untouched — see bpEdit — and the note is how anyone knows that. */
+    const tfNote = (d.tf || []).length
+      ? `<p class="muted bp-tf-note">Plus <strong>${d.tf.length}</strong> true/false bucket${d.tf.length === 1 ? '' : 's'}
+         (${Number(d.paper?.tfCount) || 0} per paper), authored in the blueprint file. Saving here keeps them as they are.</p>`
+      : `<p class="muted bp-tf-note">No true/false in the mock. Add <code>tf_count</code> and a
+         <code>blueprint_tf</code> section to the blueprint file to include it.</p>`;
     panel.innerHTML = `
       <div class="card bp-studio-head">
         <div class="bp-sums">
@@ -1406,6 +1423,7 @@ const DevConsole = (() => {
           <button class="btn btn-ghost btn-sm" data-act="close">Close</button>
         </div>
         <span class="dev-status" id="bp-studio-status"></span>
+        ${tfNote}
       </div>
       <div class="card">
         <div class="bp-sec-head"><h4>SBA buckets · ${q ? `${idxSba.length} of ${d.sba.length}` : d.sba.length}</h4><button class="btn btn-ghost btn-sm" data-act="add-sba">+ Add bucket</button></div>

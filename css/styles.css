@@ -1964,6 +1964,11 @@ textarea.nc-input { min-height: 90px; resize: vertical; }
 .bp-vlabel { display: inline-flex; align-items: center; gap: 2px; font-size: .85rem; color: var(--muted); }
 .bp-vnum { width: 66px; text-align: center; }
 .bp-studio-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+/* Takes the whole second line of the sticky header — it is a sentence, not a
+   chip, and it must not squeeze the sums along the first. */
+.bp-tf-note { flex-basis: 100%; margin: 0; font-size: .78rem; line-height: 1.5; }
+.bp-tf-note code { font-size: .74rem; padding: 1px 5px; border-radius: 5px; background: rgba(255,255,255,0.06); }
+:root[data-theme="light"] .bp-tf-note code { background: rgba(17,24,39,0.06); }
 
 /* section headers */
 .bp-sec-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
