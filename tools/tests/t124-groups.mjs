@@ -176,8 +176,12 @@ await page.waitForTimeout(2400);
 await page.evaluate(() => TeaRoom.openWall?.());
 await page.waitForTimeout(1800);
 const strip = await page.evaluate(() => [...document.querySelectorAll('.tw-room')].map(b => b.textContent.trim()));
-say('the wall offers everybody’s, then each group', strip.length === 2
-  && /Everyone/.test(strip[0]) && /Revision crew/.test(strip[1]), strip.join(' | '));
+/* REVERSED IN v127, and the count is why this line changed rather than the
+   rule it tests. The strip still reads "everybody's, then each group" —
+   it now also carries the controls that make and manage one, so the
+   assertion names what it wants instead of counting buttons. */
+say('the wall offers everybody’s, then each group',
+  /Everyone/.test(strip[0]) && /Revision crew/.test(strip[1]), strip.join(' | '));
 say('  with the shared one open to begin with',
   await page.evaluate(() => document.querySelector('.tw-room')?.classList.contains('is-on')));
 
@@ -202,10 +206,20 @@ await page.waitForTimeout(2400);
 await page.evaluate(() => TeaRoom.openWall?.());
 await page.waitForTimeout(1600);
 const theirs = await page.evaluate(() => [...document.querySelectorAll('.tw-room')].map(b => b.textContent.trim()));
-/* With no groups there is nothing to switch between, and a strip with one
-   button on it is furniture. */
-say('somebody in no groups is shown no strip at all', theirs.length === 0,
-  theirs.join(' | ') || 'none');
+/* v124 SAID THE OPPOSITE OF THIS, and v127 reversed it on purpose, so the
+   reasoning is worth keeping both ways round. v124: with no groups there
+   is nothing to switch between, and a strip with one button on it is
+   furniture — true, as far as it went. What it missed is that somebody
+   with no groups is exactly the person who needs to be told groups exist.
+   Creating one was a ＋ inside the CHAT dock, so a person reading the wall
+   could not find it at all, and the empty strip was what hid it. The strip
+   now always draws, and for somebody in no groups it carries one thing:
+   the way to make the first one. */
+say('somebody in no groups is still offered the way to make one',
+  theirs.length === 1 && /New group/.test(theirs[0]), theirs.join(' | ') || 'none');
+/* Still no group they cannot open — naming one would leak that it exists. */
+say('  and no group they are not in', !theirs.some(t => /Revision crew/.test(t)),
+  theirs.join(' | '));
 
 /* ---------------------------------------------------------------- */
 sec('5. STAMPS');

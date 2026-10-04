@@ -7210,3 +7210,22 @@ body.sc-open { overflow: hidden; }
 .gp-table tr.is-me td:first-child { border-radius: 7px 0 0 7px; }
 .gp-table tr.is-me td:last-child { border-radius: 0 7px 7px 0; }
 .tw-room-go { text-decoration: none; }
+/* The one control somebody with no groups needs, so it reads as an action
+   rather than one more tab among the groups they do not have yet. */
+.tw-room-new { border-style: dashed; color: var(--gold, #e8c06a); }
+.tw-room-new:hover { border-style: solid; }
+
+/* ---- group members sheet (v127) ---- */
+.gm-rename { display: flex; gap: 8px; align-items: center; }
+.gm-rename .nc-input { flex: 1; }
+.gm-list { display: flex; flex-direction: column; gap: 6px; }
+.gm-row { display: flex; align-items: center; gap: 10px; padding: 7px 8px;
+  border: 1px solid transparent; border-radius: 10px; }
+.gm-row:hover { border-color: var(--hairline); background: var(--surface); }
+.gm-n { flex: 1; font-size: .88rem; }
+.gm-n i { font-style: normal; color: var(--muted); font-size: .78rem; }
+/* The role is a label, not a button — it says what somebody IS. */
+.gm-role { font-size: .72rem; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--muted); padding: 2px 8px; border-radius: 999px; border: 1px solid var(--hairline); }
+.gm-role.is-admin { color: #e8c06a; border-color: rgba(232,192,106,.45); }
+:root[data-theme="light"] .gm-role.is-admin { color: #8a6212; border-color: rgba(154,107,18,.4); }

@@ -58,6 +58,11 @@ Everything a candidate sees is scoped to the **course** they are on.
 | Blueprint | `app_config` `blueprint:<course>` | v121 |
 | Banks (papers, essays, cases, OSCE) | filtered in the client | v116/v121 |
 
+Groups are `chat_rooms` reused — one row, one membership list, one
+`is_room_member()`. Since v127 a member carries a `role`, and
+`is_room_admin()` is what the add/remove/rename/promote policies ask. The
+maker of a group is its admin; a group is never left without one.
+
 - `js/course.js` is the module (`Course`, **not** `Track` — that name is
   the interaction logger in `js/track.js`).
 - `Course.fits(row)` is the relevance filter. **Untagged content is shown**
@@ -76,8 +81,8 @@ is built), then `npx playwright install chromium`.
 
 ```bash
 npm run serve                                  # leave running (Node, no python)
-npm test                                       # all 27 files, summarised
-node tools/tests/t126-tf-in-the-mock.mjs       # one release file
+npm test                                       # all 28 files, summarised
+node tools/tests/t127-group-admin.mjs          # one release file
 ```
 
 Each file prints `fails=0` and exits non-zero on failure. `/suite` runs
