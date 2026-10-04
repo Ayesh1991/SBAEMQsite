@@ -950,6 +950,146 @@ const TeaRoom = (() => {
     });
   }
 
+  /* WHO IS IN IT, AND WHO RUNS IT.
+     v124 gave every member the same powers: anybody could add anybody and
+     nobody could be removed. This is the panel where that stopped being
+     true. Everything in it is a request the DATABASE decides — the buttons
+     below are hidden from an ordinary member because showing somebody a
+     control that will refuse them is its own small insult, not because
+     hiding it is the rule. A member who forges the call is still refused. */
+  async function membersFlow(roomId, surface) {
+    if (!roomId) return;
+    const room = (rooms || []).find(r => r.id === roomId);
+    const chosen = new Map();
+    let list = [];
+    const m = document.createElement('div');
+    m.className = 'tw-modal is-open';
+    m.innerHTML = `<div class="tw-sheet tc-newsheet" role="dialog" aria-modal="true">
+        <header class="tw-sheet-head"><h3>Group members</h3><button class="cov-x">✕</button></header>
+        <div class="tw-sheet-body" id="gm-body"><p class="muted">Loading…</p></div>
+      </div>`;
+    document.body.appendChild(m);
+    const close = () => m.remove();
+    m.querySelector('.cov-x').addEventListener('click', close);
+    m.addEventListener('click', e => { if (e.target === m) close(); });
+    const body = m.querySelector('#gm-body');
+    const say = (t, bad) => { const el = m.querySelector('#gm-msg'); if (el) { el.textContent = t; el.className = 'dev-row-msg' + (bad ? ' bad' : ''); } };
+
+    async function load() {
+      try { list = await Backend.listRoomMembers(roomId); }
+      catch (err) { body.innerHTML = `<p class="bad">Could not read the members: ${esc(err.message || err)}</p>`; return; }
+      paint();
+    }
+    function paint() {
+      const iAmAdmin = list.some(p => p.me && p.role === 'admin');
+      const admins = list.filter(p => p.role === 'admin').length;
+      body.innerHTML = `
+        ${iAmAdmin ? `<div class="gm-rename">
+          <input class="nc-input" id="gm-title" value="${esc(room?.title || '')}" placeholder="Group name">
+          <button class="btn btn-ghost btn-sm" id="gm-ren">Rename</button>
+        </div>` : `<p class="muted tiny">${esc(room?.title || 'Group')}</p>`}
+        <p class="muted tiny" style="margin:14px 0 6px">${list.length} member${list.length === 1 ? '' : 's'}${iAmAdmin ? '' : ' · only an admin can add or remove people'}</p>
+        <div class="gm-list">${list.map(p => `
+          <div class="gm-row" data-uid="${esc(p.id)}">
+            <span class="tr-av sm" style="background:${tint(p.name)}">${esc(initials(p.name))}</span>
+            <span class="gm-n">${esc(p.name)}${p.me ? ' <i>(you)</i>' : ''}${p.userNo ? ` <span class="nc-hit-no">#${esc(p.userNo)}</span>` : ''}</span>
+            <span class="gm-role ${p.role === 'admin' ? 'is-admin' : ''}">${p.role === 'admin' ? 'Admin' : 'Member'}</span>
+            ${iAmAdmin && !p.me ? `<button class="btn btn-ghost btn-sm" data-role="${esc(p.id)}" data-to="${p.role === 'admin' ? 'member' : 'admin'}">${p.role === 'admin' ? 'Make member' : 'Make admin'}</button>` : ''}
+            ${iAmAdmin && !p.me ? `<button class="bp-x" data-kick="${esc(p.id)}" title="Remove from the group">✕</button>` : ''}
+          </div>`).join('')}</div>
+        ${iAmAdmin ? `
+          <p class="muted tiny" style="margin:16px 0 6px">Add somebody — search by name or user number.</p>
+          <input class="nc-input" id="gm-find" placeholder="e.g. Nimal, or 10042" autocomplete="off">
+          <div class="nc-picked" id="gm-picked"></div>
+          <div class="nc-results" id="gm-results"></div>
+          <div class="nc-actions"><button class="btn btn-gold" id="gm-add">Add to group</button></div>` : ''}
+        <div class="nc-actions" style="justify-content:flex-start">
+          <button class="btn btn-ghost btn-sm" id="gm-leave">Leave this group</button>
+        </div>
+        <p class="dev-row-msg" id="gm-msg"></p>`;
+      wire(iAmAdmin, admins);
+    }
+    function paintPicked() {
+      const picked = m.querySelector('#gm-picked'); if (!picked) return;
+      picked.innerHTML = [...chosen.values()].map(p => `
+        <span class="nc-chip">${esc(p.name)}${p.userNo ? ` <i>#${esc(p.userNo)}</i>` : ''}
+          <button data-drop="${esc(p.id)}" aria-label="Remove">✕</button></span>`).join('');
+      picked.querySelectorAll('[data-drop]').forEach(b => b.addEventListener('click', () => {
+        chosen.delete(b.dataset.drop); paintPicked();
+      }));
+    }
+    function wire(iAmAdmin) {
+      m.querySelector('#gm-ren')?.addEventListener('click', async () => {
+        const t = m.querySelector('#gm-title').value.trim();
+        try { await Backend.renameRoom(roomId, t); if (room) room.title = t || null;
+          say('Renamed.'); await loadRooms(); if (surface) paintWallRooms(surface);
+          const h = surface?.querySelector('[data-tw-title]'); if (h) h.textContent = '👥 ' + (t || 'Group');
+        } catch (err) { say(err.message || String(err), true); }
+      });
+      m.querySelectorAll('[data-role]').forEach(b => b.addEventListener('click', async () => {
+        try { await Backend.setRoomMemberRole(roomId, b.dataset.role, b.dataset.to); await load(); say('Role changed.'); }
+        catch (err) { say(err.message || String(err), true); }
+      }));
+      m.querySelectorAll('[data-kick]').forEach(b => b.addEventListener('click', async () => {
+        const who = list.find(p => p.id === b.dataset.kick);
+        if (!confirm(`Remove ${who?.name || 'this person'} from the group?`)) return;
+        try { await Backend.removeRoomMember(roomId, b.dataset.kick); await load(); say('Removed.'); }
+        catch (err) { say(err.message || String(err), true); }
+      }));
+      m.querySelector('#gm-leave')?.addEventListener('click', async () => {
+        if (!confirm('Leave this group? You will stop seeing its wall, chat and papers.')) return;
+        try {
+          await Backend.leaveRoom(roomId);
+          await loadRooms(); close();
+          /* The wall you were reading is one you can no longer read, so it
+             goes back to everybody's rather than sitting there empty. */
+          wallRoom = null; posts = []; myRx = {}; loaded = false; lastPoll = null;
+          Object.keys(comments).forEach(k => delete comments[k]);
+          if (surface) {
+            paintWallRooms(surface);
+            const t = surface.querySelector('[data-tw-title]');
+            if (t) t.textContent = '🧱 Tea room wall';
+            await ensureLoaded(true);
+            repaint();
+          }
+        } catch (err) { say(err.message || String(err), true); }
+      });
+      if (!iAmAdmin) return;
+      let timer = null;
+      m.querySelector('#gm-find')?.addEventListener('input', e => {
+        const q = e.target.value;
+        const results = m.querySelector('#gm-results');
+        clearTimeout(timer);
+        timer = setTimeout(async () => {
+          if (String(q).trim().length < 2) { results.innerHTML = ''; return; }
+          let found = [];
+          try { found = (await Backend.searchPeople?.(q)) || []; } catch { found = []; }
+          /* Somebody already in the group is not a search result — offering
+             to add them again is a button that does nothing. */
+          const already = new Set(list.map(p => p.id));
+          const fresh = found.filter(p => !chosen.has(p.id) && !already.has(p.id));
+          results.innerHTML = fresh.length
+            ? fresh.map(p => `<button class="nc-hit" data-add="${esc(p.id)}" data-name="${esc(p.name)}" data-no="${esc(p.userNo || '')}">
+                <span class="tr-av sm" style="background:${tint(p.name)}">${esc(initials(p.name))}</span>
+                <span class="nc-hit-n">${esc(p.name)}</span>
+                ${p.userNo ? `<span class="nc-hit-no">#${esc(p.userNo)}</span>` : ''}</button>`).join('')
+            : `<p class="muted tiny" style="padding:8px 2px">Nobody new matches “${esc(q)}”.</p>`;
+          results.querySelectorAll('[data-add]').forEach(b => b.addEventListener('click', () => {
+            chosen.set(b.dataset.add, { id: b.dataset.add, name: b.dataset.name, userNo: b.dataset.no });
+            paintPicked(); b.remove();
+          }));
+        }, 220);
+      });
+      m.querySelector('#gm-add')?.addEventListener('click', async () => {
+        const ids = [...chosen.keys()];
+        if (!ids.length) { say('Find somebody first.', true); return; }
+        try { await Backend.addRoomMembers(roomId, ids); chosen.clear(); await load(); say('Added.'); }
+        catch (err) { say(err.message || String(err), true); }
+      });
+    }
+    await load();
+  }
+
   /* SEARCH, NOT FIVE HUNDRED CHECKBOXES. The old picker listed everybody
      with a tick-box beside them, which worked for eight people and stops
      working somewhere around thirty. Searching by NAME finds the person
@@ -1083,13 +1223,19 @@ const TeaRoom = (() => {
     const host = surface?.querySelector('[data-tw-rooms]');
     if (!host) return;
     const mine = (rooms || []).filter(r => r.kind === 'group' || (r.title || '').trim());
-    /* With no groups there is nothing to switch between, and a strip with
-       one button on it is furniture. */
-    if (!mine.length) { host.innerHTML = ''; return; }
+    /* ONE WAY IN, WHERE GROUPS ARE ACTUALLY USED. Until v127 the only way
+       to make a group was a ＋ inside the chat dock, which is a place you
+       go to chat — so people looking at the wall, where groups are read,
+       could not find it at all. The strip now always draws, because
+       "＋ New group" is the thing somebody with no groups needs most. */
     host.innerHTML = `
-      <button class="tw-room${wallRoom ? '' : ' is-on'}" data-wall-room="">🧱 Everyone</button>
+      ${mine.length ? `<button class="tw-room${wallRoom ? '' : ' is-on'}" data-wall-room="">🧱 Everyone</button>` : ''}
       ${mine.map(r => `<button class="tw-room${wallRoom === r.id ? ' is-on' : ''}" data-wall-room="${esc(r.id)}">${esc(r.title || 'Group')}</button>`).join('')}
-      ${wallRoom ? `<a class="tw-room tw-room-go" href="#/group/${encodeURIComponent(wallRoom)}">📝 Papers</a>` : ''}`;
+      ${wallRoom ? `<button class="tw-room tw-room-go" data-act="members" title="Who is in this group">👥 Members</button>` : ''}
+      ${wallRoom ? `<a class="tw-room tw-room-go" href="#/group/${encodeURIComponent(wallRoom)}">📝 Papers</a>` : ''}
+      <button class="tw-room tw-room-new" data-act="newgroup" title="Make a study group">＋ New group</button>`;
+    host.querySelector('[data-act="newgroup"]')?.addEventListener('click', () => newRoomFlow());
+    host.querySelector('[data-act="members"]')?.addEventListener('click', () => membersFlow(wallRoom, surface));
     host.querySelectorAll('[data-wall-room]').forEach(b => b.addEventListener('click', async () => {
       const id = b.dataset.wallRoom || null;
       if (id === wallRoom) return;

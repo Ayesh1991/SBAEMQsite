@@ -2154,3 +2154,150 @@ create policy "group attempts write" on public.group_paper_attempts for insert
               and public.group_paper_open(paper_id));
 -- No update policy, deliberately: a mark is submitted once. Re-sitting the
 -- same paper for a better number is not what a group is comparing.
+
+-- ============================================================
+-- 37) GROUPS HAVE AN OWNER (v127)
+--
+-- Until now every member of a group was equally powerful: the insert
+-- policy let ANY member add ANYBODY, and the delete policy let you remove
+-- only yourself. So nobody could be taken out of a group, and anyone in it
+-- could put anyone else in. That is survivable for three friends revising
+-- together and not survivable for a group that sits papers and compares
+-- marks.
+--
+-- A ROLE, NOT A SECOND TABLE. The admin of a group is a member with a
+-- different role, which means every existing membership row, policy and
+-- helper keeps working and there is no second place that has to agree
+-- about who is in the group.
+--
+-- THE MIGRATION IS THE DANGEROUS PART, and it is the same shape as v123's.
+-- Adding the column with a default of 'member' would leave every group that
+-- already exists with NO admin — frozen, nobody able to add anyone ever
+-- again. So the column is added, then the creator of each room is promoted,
+-- and then any room still without an admin (its creator left, or the row
+-- predates created_by) hands it to the member who joined first. Re-running
+-- this file is safe: each step only moves rows that are not already right.
+-- ============================================================
+
+alter table public.chat_members add column if not exists role text not null default 'member';
+
+-- the creator of a room is its admin
+update public.chat_members m set role = 'admin'
+  from public.chat_rooms c
+ where c.id = m.room_id and c.created_by = m.user_id and m.role <> 'admin';
+
+-- A ROOM WITH NO ADMIN CAN NEVER GAIN ONE, so it must not be possible to
+-- have one. Where the creator is gone, the earliest member takes it.
+update public.chat_members m set role = 'admin'
+ where m.role <> 'admin'
+   and not exists (select 1 from public.chat_members a
+                    where a.room_id = m.room_id and a.role = 'admin')
+   and (m.room_id, m.user_id) in (
+     select x.room_id, x.user_id from public.chat_members x
+      where x.room_id = m.room_id
+      order by x.joined_at asc nulls last, x.user_id asc limit 1);
+
+create or replace function public.is_room_admin(r uuid)
+returns boolean language sql security definer stable as $$
+  select exists (select 1 from public.chat_members m
+                  where m.room_id = r and m.user_id = auth.uid() and m.role = 'admin');
+$$;
+
+-- ---------- who may add, remove and promote ----------
+drop policy if exists "members insert" on public.chat_members;
+-- An admin adds people. The creator is covered separately because at the
+-- instant the room is made their own membership row does not exist yet.
+create policy "members insert" on public.chat_members for insert
+  with check (public.is_room_admin(room_id) or public.is_room_creator(room_id));
+
+drop policy if exists "members own update" on public.chat_members;
+drop policy if exists "members update" on public.chat_members;
+-- Your own row carries last_read_at and your display name, so you must be
+-- able to write it. The ROLE on that row is a different matter — see the
+-- trigger, which is what stops you promoting yourself.
+create policy "members update" on public.chat_members for update
+  using (auth.uid() = user_id or public.is_room_admin(room_id))
+  with check (auth.uid() = user_id or public.is_room_admin(room_id));
+
+create or replace function public.protect_member_role()
+returns trigger language plpgsql security definer as $$
+begin
+  if new.role is distinct from old.role and not public.is_room_admin(old.room_id) then
+    raise exception 'Only a group admin can change a member''s role';
+  end if;
+  return new;
+end $$;
+drop trigger if exists protect_member_role on public.chat_members;
+create trigger protect_member_role before update on public.chat_members
+  for each row execute function public.protect_member_role();
+
+drop policy if exists "members own delete" on public.chat_members;
+drop policy if exists "members delete" on public.chat_members;
+-- You may always leave. An admin may remove anybody.
+create policy "members delete" on public.chat_members for delete
+  using (auth.uid() = user_id or public.is_room_admin(room_id));
+
+-- A GROUP MUST ALWAYS HAVE AN ADMIN. One with members but no admin is one
+-- nobody can ever add to, rename or moderate again, and the person who
+-- caused it would not find out until somebody tried.
+--
+-- REPAIRED, NOT REFUSED. A trigger that raises would also fire on the
+-- cascade from deleting an account, so closing an account could be blocked
+-- by a group that account happened to administer — a rule about study
+-- groups is not allowed to hold somebody's account hostage. So the last
+-- admin leaving hands the group to the member who joined first, which
+-- cannot fail and cannot leave the invariant broken.
+--
+-- The app refuses it first, with the remedy in the message, so this fires
+-- only on paths the UI does not drive. That is not a browser filter
+-- standing in for a rule: the rule holds here regardless, and the dialog
+-- only spares somebody a surprise.
+create or replace function public.heir_to_the_group()
+returns trigger language plpgsql security definer as $$
+begin
+  -- the whole room is going: nothing left to administer
+  if not exists (select 1 from public.chat_rooms c where c.id = old.room_id) then
+    return null;
+  end if;
+  if old.role = 'admin'
+     and not exists (select 1 from public.chat_members x
+                      where x.room_id = old.room_id and x.role = 'admin')
+  then
+    update public.chat_members m set role = 'admin'
+     where (m.room_id, m.user_id) in (
+       select x.room_id, x.user_id from public.chat_members x
+        where x.room_id = old.room_id
+        order by x.joined_at asc nulls last, x.user_id asc limit 1);
+  end if;
+  return null;
+end $$;
+drop trigger if exists protect_last_admin on public.chat_members;
+drop trigger if exists heir_to_the_group on public.chat_members;
+create trigger heir_to_the_group after delete on public.chat_members
+  for each row execute function public.heir_to_the_group();
+
+-- ---------- renaming, and who may ----------
+drop policy if exists "rooms update" on public.chat_rooms;
+-- Was: any member. Renaming the group out from under everybody is an
+-- admin's job, and it is the same button that promotes people.
+create policy "rooms update" on public.chat_rooms for update
+  using (public.is_room_admin(id)) with check (public.is_room_admin(id));
+
+-- ---------- an admin clears up after anybody ----------
+-- A wall nobody can moderate is a wall that keeps whatever is put on it.
+-- These widen DELETE only; nothing here lets an admin read or write a thing
+-- they could not already.
+drop policy if exists "discussions own delete" on public.discussions;
+create policy "discussions own delete" on public.discussions for delete
+  using (auth.uid() = user_id or (room_id is not null and public.is_room_admin(room_id)));
+
+drop policy if exists "disc replies own delete" on public.discussion_replies;
+create policy "disc replies own delete" on public.discussion_replies for delete
+  using (auth.uid() = user_id
+         or exists (select 1 from public.discussions d
+                     where d.id = discussion_id and d.room_id is not null
+                       and public.is_room_admin(d.room_id)));
+
+drop policy if exists "messages own delete" on public.chat_messages;
+create policy "messages own delete" on public.chat_messages for delete
+  using (auth.uid() = user_id or public.is_room_admin(room_id));

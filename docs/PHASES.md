@@ -20,10 +20,11 @@ per release, each shippable on its own.
 | 124 | **Phase 3** — groups: the wall belongs to one |
 | 125 | **Phase 4** — a paper the group sits together |
 | 126 | **Phase 5** — true/false in the adaptive mock |
+| 127 | **Phase 6** — groups have somebody in charge of them |
 
 Three exams are now fully separable: course, enrolment, syllabus,
-blueprint, question types, and all five banks. All five phases of the
-editor/groups/group-mocks roadmap are shipped.
+blueprint, question types, and all five banks. The editor/groups/group-mocks
+roadmap is shipped, and groups now have owners.
 
 ---
 
@@ -243,6 +244,53 @@ adding them means a third section threaded through the plan, the mock
 record, the post-mock analysis and the coverage map. Worth doing once
 Final MBBS has real content in it, and not before — the shape of the
 weights should be decided by a real paper, not guessed.
+
+## Phase 6 — Groups have somebody in charge — DONE in v127
+
+v124 gave every member of a group identical powers, and both halves of
+that were wrong in the same direction. **Any** member could add **anybody**
+— being let into a study group was being handed the guest list. And nobody
+could be removed but themselves, so a person added by mistake, or who left
+the course, stayed reading the group's wall for ever.
+
+Shipped: `chat_members.role`, so an admin is a member with a different role
+on the row that already says they are a member — one place that knows who
+is in the group, one helper that answers it. The maker of a group is its
+admin. Only an admin adds, removes, renames, promotes, or clears up
+somebody else's post. A member may always leave.
+
+**Setting a group paper stayed with every member**, deliberately — asked
+for and decided that way. A group that has to wait for one person to
+schedule the mock is a group that does not sit one.
+
+Three things worth keeping:
+
+- **The migration is where the danger was.** Adding the column with a
+  default of `'member'` leaves every group that already exists with NO
+  admin — frozen, nobody able to add anyone ever again. The creator is
+  promoted, and a room whose creator is gone hands it to whoever joined
+  first. Same shape as v123's.
+- **Your own membership row has to stay writable** — `last_read_at` lives
+  on it — so the policy cannot be the guard on the `role` column or every
+  member could promote themselves. A trigger is, exactly as in v123.
+- **The last admin leaving is repaired, not refused.** A trigger that
+  raised would also fire on the cascade from closing an account, and a rule
+  about study groups may not hold somebody's account hostage. So the group
+  is handed to the next member. The app refuses first, with the remedy in
+  the message, so the repair only ever fires on paths the UI does not
+  drive.
+
+And the reason the release existed at all: **none of this was findable.**
+Creating a group was a `＋` inside the chat dock — a place you go to chat.
+Somebody looking at the wall, where groups are read, had no way to make
+one. The wall strip now always draws, carrying `＋ New group` and, on the
+group you are reading, `👥 Members`.
+
+Not built, deliberately: invite links and request-to-join. Groups are
+**closed** — an admin adds you by name or user number, or you are not in.
+There is no code to leak and no pending queue for somebody to forget.
+
+---
 
 ---
 

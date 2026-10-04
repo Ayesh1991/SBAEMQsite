@@ -1277,10 +1277,83 @@ const Backend = (() => {
       const e = sessionEmail(); if (!e) throw new Error('Not signed in.');
       // keep the roster: room names and the WhatsApp-style sender labels are
       // resolved from it, so an empty members array reads as "Direct chat"
-      const members = [{ room_id: null, user_id: e, display_name: myName || null }]
-        .concat((memberIds || []).filter(u => u && u !== e).map(u => ({ user_id: u, display_name: null })));
+      /* The maker is the admin, exactly as in the cloud — a group whose
+         creator is an ordinary member is a group nobody can add to. */
+      const members = [{ room_id: null, user_id: e, display_name: myName || null, role: 'admin', joined_at: new Date().toISOString() }]
+        .concat((memberIds || []).filter(u => u && u !== e).map(u => ({ user_id: u, display_name: null, role: 'member', joined_at: new Date().toISOString() })));
       const room = { id: 'r' + Date.now(), kind: kind || 'group', title: title || null, created_by: e, created_at: new Date().toISOString(), last_message_at: new Date().toISOString(), members, mine: true };
       const list = read('rooms', []); list.unshift(room); write('rooms', list); return room;
+    }
+    /* ---------- WHO IS IN THE GROUP, AND WHO RUNS IT ----------
+       The same rules the policies enforce in the cloud, applied here too. A
+       rule only one backend applies is a rule that gets tested on the wrong
+       one — which is the hole v124 shipped and its own test found. */
+    const roomRow = roomId => read('rooms', []).find(x => x.id === roomId) || null;
+    function isRoomAdmin(roomId) {
+      const e = sessionEmail(); if (!e) return false;
+      const r = roomRow(roomId);
+      return !!r && (r.members || []).some(m => m.user_id === e && m.role === 'admin');
+    }
+    async function listRoomMembers(roomId) {
+      const e = sessionEmail(); if (!e || !isRoomMember(roomId)) return [];
+      const dir = users();
+      return (roomRow(roomId)?.members || []).map(m => ({
+        id: m.user_id, name: dir[norm(m.user_id)]?.name || m.display_name || m.user_id,
+        userNo: dir[norm(m.user_id)]?.userNo || '', role: m.role || 'member',
+        joinedAt: m.joined_at || '', me: m.user_id === e
+      })).sort((a, b) => (a.role === b.role ? 0 : a.role === 'admin' ? -1 : 1));
+    }
+    async function addRoomMembers(roomId, userIds) {
+      if (!sessionEmail()) throw new Error('Not signed in.');
+      if (!isRoomAdmin(roomId)) throw new Error('Only a group admin can add members.');
+      const rooms = read('rooms', []); const r = rooms.find(x => x.id === roomId);
+      if (!r) throw new Error('No such group.');
+      r.members = r.members || [];
+      (userIds || []).filter(Boolean).forEach(u => {
+        if (!r.members.some(m => m.user_id === u))
+          r.members.push({ user_id: u, display_name: null, role: 'member', joined_at: new Date().toISOString() });
+      });
+      write('rooms', rooms);
+      return listRoomMembers(roomId);
+    }
+    async function removeRoomMember(roomId, userId) {
+      const e = sessionEmail(); if (!e) throw new Error('Not signed in.');
+      if (userId !== e && !isRoomAdmin(roomId)) throw new Error('Only a group admin can remove members.');
+      const rooms = read('rooms', []); const r = rooms.find(x => x.id === roomId);
+      if (!r) throw new Error('No such group.');
+      r.members = (r.members || []).filter(m => m.user_id !== userId);
+      /* The group never goes without one — the cloud repairs this with a
+         trigger, so local mode has to do the same or the two disagree. */
+      if (r.members.length && !r.members.some(m => m.role === 'admin')) r.members[0].role = 'admin';
+      write('rooms', rooms);
+      return true;
+    }
+    async function setRoomMemberRole(roomId, userId, role) {
+      if (!sessionEmail()) throw new Error('Not signed in.');
+      if (!isRoomAdmin(roomId)) throw new Error("Only a group admin can change a member's role");
+      const rooms = read('rooms', []); const r = rooms.find(x => x.id === roomId);
+      const m = (r?.members || []).find(x => x.user_id === userId);
+      if (!m) throw new Error('They are not in this group.');
+      m.role = role === 'admin' ? 'admin' : 'member';
+      write('rooms', rooms);
+      return true;
+    }
+    async function renameRoom(roomId, title) {
+      if (!sessionEmail()) throw new Error('Not signed in.');
+      if (!isRoomAdmin(roomId)) throw new Error('Only a group admin can rename the group.');
+      const rooms = read('rooms', []); const r = rooms.find(x => x.id === roomId);
+      if (!r) throw new Error('No such group.');
+      r.title = String(title || '').trim() || null;
+      write('rooms', rooms);
+      return true;
+    }
+    async function leaveRoom(roomId) {
+      const e = sessionEmail(); if (!e) throw new Error('Not signed in.');
+      const mem = await listRoomMembers(roomId);
+      const me = mem.find(m => m.id === e);
+      if (me?.role === 'admin' && mem.length > 1 && !mem.some(m => m.id !== e && m.role === 'admin'))
+        throw new Error('You are the only admin — make somebody else an admin before you leave.');
+      return removeRoomMember(roomId, e);
     }
     async function listChatMessages(roomId, sinceIso) {
       const e = sessionEmail();
@@ -1386,6 +1459,7 @@ const Backend = (() => {
       addDiscussion, listDiscussions, deleteDiscussion, searchPeople, createGroupPaper, listGroupPapers, getGroupPaperPlan, saveGroupAttempt, listGroupAttempts, listDiscussionReplies, addDiscussionReply, deleteDiscussionReply, pollDiscussions, getDiscussionQuestion,
       listUserNotes, saveUserNote, deleteUserNote,
       uploadTeaFile, setReaction, myReactions, listChatRooms, createChatRoom, listChatMessages, sendChatMessage, markRoomRead, pollChat, listChatPeople,
+      listRoomMembers, addRoomMembers, removeRoomMember, setRoomMemberRole, renameRoom, leaveRoom,
       listMemberCards, uploadAvatar, getNotifSeen, setNotifSeen,
       getAiFeatures, saveAiFeatures, getModelPricing, saveModelPricing, getTeaConfig, saveTeaConfig, listSharedUsage, saveQuestionTags, listQuestionTags, getAccessToken };
   })();
@@ -2648,14 +2722,87 @@ const Backend = (() => {
       // Own membership FIRST: the policies that let you add other people check
       // membership (or creatorship) of the room, and a multi-row insert cannot
       // see its own earlier rows.
-      const { error: meErr } = await sb.from('chat_members').insert({ room_id: room.id, user_id: id, display_name: myName || null });
+      /* THE MAKER IS THE ADMIN. A group whose creator is an ordinary member
+         is a group nobody can add to — the insert policy asks for an admin,
+         and there would not be one. */
+      const { error: meErr } = await sb.from('chat_members')
+        .insert({ room_id: room.id, user_id: id, display_name: myName || null, role: 'admin' });
       if (meErr) throw new Error('Could not join the room: ' + meErr.message);
-      const others = (memberIds || []).filter(u => u && u !== id).map(u => ({ room_id: room.id, user_id: u }));
+      const others = (memberIds || []).filter(u => u && u !== id).map(u => ({ room_id: room.id, user_id: u, role: 'member' }));
       if (others.length) {
         const { error: oErr } = await sb.from('chat_members').insert(others);
         if (oErr) throw new Error('Room made, but adding members failed: ' + oErr.message);
       }
       return room;
+    }
+    /* ---------- WHO IS IN THE GROUP, AND WHO RUNS IT ---------- */
+    async function listRoomMembers(roomId) {
+      await ensureClient(); const id = await uid(); if (!id) return [];
+      const { data, error } = await sb.from('chat_members')
+        .select('user_id,display_name,role,joined_at').eq('room_id', roomId)
+        .order('role', { ascending: true }).order('joined_at', { ascending: true });
+      if (error) throw error;
+      /* The membership row carries the name it was added under; the
+         directory has the current one and the user number people read out
+         to each other. */
+      let dir = {};
+      try {
+        const { data: d } = await sb.from('user_directory').select('id,name,user_no')
+          .in('id', (data || []).map(m => m.user_id));
+        (d || []).forEach(p => dir[p.id] = p);
+      } catch { /* the display name still stands on its own */ }
+      return (data || []).map(m => ({
+        id: m.user_id, name: dir[m.user_id]?.name || m.display_name || 'Member',
+        userNo: dir[m.user_id]?.user_no || '', role: m.role || 'member',
+        joinedAt: m.joined_at, me: m.user_id === id
+      }));
+    }
+    async function addRoomMembers(roomId, userIds) {
+      await ensureClient(); const id = await uid(); if (!id) throw new Error('Not signed in.');
+      const rows = (userIds || []).filter(Boolean).map(u => ({ room_id: roomId, user_id: u, role: 'member' }));
+      if (!rows.length) return [];
+      /* upsert, because adding somebody who is already in is not an error
+         worth showing anybody — it is the same end state. */
+      const { error } = await sb.from('chat_members').upsert(rows, { onConflict: 'room_id,user_id', ignoreDuplicates: true });
+      if (error) throw new Error(/row-level security/i.test(error.message)
+        ? 'Only a group admin can add members.' : error.message);
+      return listRoomMembers(roomId);
+    }
+    async function removeRoomMember(roomId, userId) {
+      await ensureClient(); const id = await uid(); if (!id) throw new Error('Not signed in.');
+      const { error } = await sb.from('chat_members').delete().eq('room_id', roomId).eq('user_id', userId);
+      if (error) throw new Error(/row-level security/i.test(error.message)
+        ? 'Only a group admin can remove members.' : error.message);
+      return true;
+    }
+    async function setRoomMemberRole(roomId, userId, role) {
+      await ensureClient(); const id = await uid(); if (!id) throw new Error('Not signed in.');
+      const { error } = await sb.from('chat_members')
+        .update({ role: role === 'admin' ? 'admin' : 'member' }).eq('room_id', roomId).eq('user_id', userId);
+      /* The trigger's own words are better than anything generic here. */
+      if (error) throw new Error(error.message || 'Could not change that role.');
+      return true;
+    }
+    async function renameRoom(roomId, title) {
+      await ensureClient(); const id = await uid(); if (!id) throw new Error('Not signed in.');
+      const { error } = await sb.from('chat_rooms').update({ title: String(title || '').trim() || null }).eq('id', roomId);
+      if (error) throw new Error(/row-level security/i.test(error.message)
+        ? 'Only a group admin can rename the group.' : error.message);
+      return true;
+    }
+    /* LEAVING IS REFUSED HERE FIRST, not because the browser is the rule —
+       the database repairs this either way by handing the group to the
+       next member — but because having it quietly change hands is a worse
+       surprise than being told to pick somebody. */
+    async function leaveRoom(roomId) {
+      await ensureClient(); const id = await uid(); if (!id) throw new Error('Not signed in.');
+      const mem = await listRoomMembers(roomId);
+      const me = mem.find(m => m.id === id);
+      if (me?.role === 'admin' && mem.length > 1 && !mem.some(m => m.id !== id && m.role === 'admin'))
+        throw new Error('You are the only admin — make somebody else an admin before you leave.');
+      const { error } = await sb.from('chat_members').delete().eq('room_id', roomId).eq('user_id', id);
+      if (error) throw error;
+      return true;
     }
     async function listChatMessages(roomId, sinceIso) {
       await ensureClient();
@@ -3211,6 +3358,7 @@ const Backend = (() => {
       addDiscussion, listDiscussions, deleteDiscussion, searchPeople, createGroupPaper, listGroupPapers, getGroupPaperPlan, saveGroupAttempt, listGroupAttempts, listDiscussionReplies, addDiscussionReply, deleteDiscussionReply, pollDiscussions, getDiscussionQuestion,
       listUserNotes, saveUserNote, deleteUserNote,
       uploadTeaFile, setReaction, myReactions, listChatRooms, createChatRoom, listChatMessages, sendChatMessage, markRoomRead, pollChat, listChatPeople,
+      listRoomMembers, addRoomMembers, removeRoomMember, setRoomMemberRole, renameRoom, leaveRoom,
       listMemberCards, uploadAvatar, getNotifSeen, setNotifSeen,
       getAiFeatures, saveAiFeatures, getModelPricing, saveModelPricing, getTeaConfig, saveTeaConfig, listSharedUsage, saveQuestionTags, listQuestionTags, getAccessToken };
   })();
