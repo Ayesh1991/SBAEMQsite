@@ -7261,4 +7261,9 @@ body.sc-open { overflow: hidden; }
 .tc-inline .tc-back { display: none; }
 .gp-embed { display: block; }
 .gp-head-title { margin: 0 0 6px; font-size: 1.3rem; }
+/* moving a published paper to another course (v130) */
+.dev-move-row td { background: rgba(255,255,255,0.03); }
+:root[data-theme="light"] .dev-move-row td { background: rgba(17,24,39,0.03); }
+.dev-move { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; padding: 6px 2px; }
+.dev-move .wl-f { max-width: 240px; margin: 0; }
 @media (max-width: 640px) { .g-tab { padding: 6px 11px; font-size: .8rem; } }

@@ -209,8 +209,12 @@ const DevConsole = (() => {
     let rows = [];
     try { rows = (await ctx.Backend.listUntagged()) || []; } catch { host.innerHTML = ''; return; }
     if (!rows.length) { host.innerHTML = ''; return; }
+    /* EVERY COURSE, NOT THE OPEN ONES — the same bug as the importer's
+       picker, in the same words: a course is FILLED before it is opened,
+       so offering only the open ones makes the one you are filling the
+       one you cannot choose. */
     let live = [];
-    try { await Course.load(); live = Course.live(); } catch { /* handled below */ }
+    try { await Course.load(); live = Course.all(); } catch { /* handled below */ }
 
     const byTable = {};
     rows.forEach(r => { (byTable[r.table] = byTable[r.table] || []).push(r); });
@@ -228,13 +232,13 @@ const DevConsole = (() => {
         ${live.length ? `
           <label class="field"><span>File all of them under</span>
             <select class="dev-role" id="unfiled-track">
-              ${live.map(t => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join('')}
+              ${live.map(t => `<option value="${esc(t.id)}">${esc(t.name)}${t.isLive ? '' : ' — being built'}</option>`).join('')}
             </select></label>
           <p class="muted tiny">An item that already has a course is not touched. If some of these belong
             somewhere else, file the bulk here and move the rest from their own editor.</p>
           <button class="btn btn-gold btn-sm" id="unfiled-go">File ${rows.length} item${rows.length > 1 ? 's' : ''}</button>
           <p class="form-error" id="unfiled-err" role="alert" hidden></p>
-        ` : `<p class="muted">No course is open yet, so there is nowhere to file these. Create one first.</p>`}
+        ` : `<p class="muted">No course exists yet, so there is nowhere to file these. Create one first.</p>`}
       </div>`;
     host.querySelector('#unfiled-go')?.addEventListener('click', async e => {
       const btn = e.currentTarget, err = host.querySelector('#unfiled-err');
@@ -937,22 +941,44 @@ const DevConsole = (() => {
     });
   }
 
+  /* WHICH COURSE A PUBLISHED PAPER IS UNDER, AND HOW TO CHANGE IT — v130.
+     This table listed a paper's category and topic but never its COURSE,
+     which is the tag that decides who can see it at all. So a paper filed
+     under the wrong course looked exactly like one filed correctly, and
+     the only repair was to unpublish and import it again — losing nothing
+     except the time, but only if you noticed. The picker bug above put
+     content in the wrong course without anybody choosing it, which is
+     precisely when you need to be able to see and undo that.
+
+     The move writes through fileUnder(), the same call the "filed
+     nowhere" panel uses, so there is one way to set these tags and not
+     two. */
   async function refreshPublished(view) {
     published = await ctx.Data.publishedPapers();
     const host = view.querySelector('#dev-published');
     const card = host.closest('.card').querySelector('.card-title');
     if (card) card.textContent = `Published papers (${published.length})`;
+    let courses = [];
+    try { await Course.load(); courses = Course.all(); } catch { courses = []; }
+    const nameOf = id => courses.find(c => c.id === id)?.short || id;
+    const whose = p => {
+      const t = (p.tracks || []).filter(Boolean);
+      if (!t.length) return '<span class="bad">nowhere</span>';
+      return ctx.esc(t.map(nameOf).join(', '))
+        + (p.subject ? ` <span class="muted tiny">· ${ctx.esc(Course.subjectName ? Course.subjectName(p.subject) : p.subject)}</span>` : '');
+    };
     host.innerHTML = published.length ? `
       <div class="table-scroll"><table class="table">
-        <thead><tr><th>Paper</th><th>Category</th><th>Topic</th><th>SBA/EMQ</th><th></th></tr></thead>
+        <thead><tr><th>Paper</th><th>Course</th><th>Topic</th><th>SBA/EMQ</th><th></th></tr></thead>
         <tbody>${published.map(p => {
           const path = ctx.Data.topicPath(p.categoryId, p.sectionId, p.topicId);
-          return `<tr>
-            <td>${ctx.esc(p.title)}</td>
-            <td class="muted">${ctx.esc(path.category?.title || p.categoryId || '')}</td>
+          return `<tr data-pid="${ctx.esc(p.id)}">
+            <td>${ctx.esc(p.title)}<div class="muted tiny">${ctx.esc(path.category?.title || p.categoryId || '')}</div></td>
+            <td class="muted">${whose(p)}</td>
             <td class="muted">${ctx.esc(path.topic?.title || p.topicId || '')}</td>
             <td class="muted">${p.sba || 0}/${p.emq || 0}</td>
-            <td>${p.file ? '<span class="tiny muted">bundled</span>' : `<button class="link-btn" data-unpub="${ctx.esc(p.id)}">unpublish</button>`}</td>
+            <td>${courses.length > 1 ? `<button class="link-btn" data-move="${ctx.esc(p.id)}">move</button> ` : ''}${
+              p.file ? '<span class="tiny muted">bundled</span>' : `<button class="link-btn" data-unpub="${ctx.esc(p.id)}">unpublish</button>`}</td>
           </tr>`;
         }).join('')}</tbody>
       </table></div>` : `<p class="muted">Nothing published through the console yet.</p>`;
@@ -964,6 +990,60 @@ const DevConsole = (() => {
         await refreshPublished(view);
       }
     }));
+    host.querySelectorAll('[data-move]').forEach(b => b.addEventListener('click', () =>
+      moveRow(view, host, b, published.find(x => x.id === b.dataset.move), courses)));
+  }
+
+  /* One row turns into a course + subject picker in place. A modal for a
+     two-field change is a lot of furniture, and the row is where you are
+     already looking. */
+  function moveRow(view, host, btn, paper, courses) {
+    const { esc } = ctx;
+    const tr = btn.closest('tr');
+    if (tr.nextElementSibling?.classList.contains('dev-move-row')) { tr.nextElementSibling.remove(); return; }
+    const now = (paper.tracks || [])[0] || '';
+    const row = document.createElement('tr');
+    row.className = 'dev-move-row';
+    row.innerHTML = `<td colspan="5">
+      <div class="dev-move">
+        <label class="wl-f"><span>Course</span><select class="sel" data-mv-course>
+          ${courses.map(c => `<option value="${esc(c.id)}"${c.id === now ? ' selected' : ''}>${esc(c.short)}${c.isLive ? '' : ' — being built'}</option>`).join('')}
+        </select></label>
+        <label class="wl-f" data-mv-subwrap hidden><span>Subject</span><select class="sel" data-mv-subject></select></label>
+        <button class="btn btn-gold btn-sm" data-mv-go>Move</button>
+        <button class="btn btn-ghost btn-sm" data-mv-x>Cancel</button>
+        <span class="dev-row-msg" data-mv-msg></span>
+      </div></td>`;
+    tr.after(row);
+    const cSel = row.querySelector('[data-mv-course]');
+    const sWrap = row.querySelector('[data-mv-subwrap]');
+    const sSel = row.querySelector('[data-mv-subject]');
+    const drawSubs = () => {
+      const subs = courses.find(c => c.id === cSel.value)?.subjects || [];
+      if (subs.length < 2) { sWrap.hidden = true; sSel.innerHTML = ''; return; }
+      sSel.innerHTML = `<option value="">— leave as it is —</option>` + subs.map(x =>
+        `<option value="${esc(x)}"${x === paper.subject ? ' selected' : ''}>${esc(Course.subjectName(x))}</option>`).join('');
+      sWrap.hidden = false;
+    };
+    drawSubs();
+    cSel.addEventListener('change', drawSubs);
+    row.querySelector('[data-mv-x]').addEventListener('click', () => row.remove());
+    row.querySelector('[data-mv-go]').addEventListener('click', async e => {
+      const msg = row.querySelector('[data-mv-msg]');
+      e.target.disabled = true; msg.textContent = 'Moving…'; msg.className = 'dev-row-msg muted';
+      try {
+        await ctx.Backend.fileUnder('papers', [paper.id], [cSel.value], sSel.value || null);
+        /* Every bank caches its listing, and the simulator's index is
+           built from the bank — a paper that just changed course is in
+           neither copy. */
+        ctx.Data.bustPapers?.();
+        if (typeof Cache !== 'undefined') { Cache.bust('sim-qindex'); Cache.bust('coverage-index'); }
+        await refreshPublished(view);
+      } catch (err) {
+        msg.textContent = err.message || String(err); msg.className = 'dev-row-msg bad';
+        e.target.disabled = false;
+      }
+    });
   }
 
   /* ---------------- scan ---------------- */
@@ -3133,19 +3213,36 @@ const DevConsole = (() => {
   }
 
   /* Fill — and reveal — a "Course" picker on an importer's toolbar.
-     Hidden while one course is open, because then it is not a question:
-     contentTags() in backend.js stamps the editor's own course on
-     everything they publish, so the control only earns its space once
-     there is a second answer. */
+     Hidden while there is only one course, because then it is not a
+     question: contentTags() in backend.js stamps the editor's own course
+     on everything they publish, so the control only earns its space once
+     there is a second answer.
+
+     EVERY COURSE, NOT THE OPEN ONES — v130, and the bug is worth keeping
+     written down because the line that caused it looked obviously right.
+     This used to offer Course.live(), the courses a CANDIDATE may choose.
+     But the course admin page promises the opposite in as many words: "A
+     course can be built and filled long before it is opened — until Open
+     is ticked nobody can choose it and nothing tagged to it reaches
+     anybody." FILLING IS EXACTLY WHAT THIS PICKER IS FOR, so hiding a
+     course until it opens made that promise impossible to keep: a new
+     course could not be selected, the picker stayed hidden because one
+     live course is not a choice, and contentTags() then quietly stamped
+     the EDITOR'S OWN course on the import. The content went somewhere
+     real and plausible and wrong, with nothing thrown.
+
+     This is the editor's console. It shows what exists. */
   async function fillCoursePicker(view, wrapSel, selSel) {
     const wrap = view.querySelector(wrapSel), sel = view.querySelector(selSel);
     if (!wrap || !sel || typeof Course === 'undefined') return;
     try { await Course.load(); } catch { return; }
-    const live = Course.live();
-    if (live.length < 2) return;
+    const all = Course.all();
+    if (all.length < 2) return;
     const mine = Course.currentId();
-    sel.innerHTML = live.map(t =>
-      `<option value="${ctx.esc(t.id)}"${t.id === mine ? ' selected' : ''}>${ctx.esc(t.short)}</option>`).join('');
+    /* Said on the option itself. Filing into a course nobody can reach yet
+       is the normal way to build one, but it should never be a surprise. */
+    sel.innerHTML = all.map(t =>
+      `<option value="${ctx.esc(t.id)}"${t.id === mine ? ' selected' : ''}>${ctx.esc(t.short)}${t.isLive ? '' : ' — being built'}</option>`).join('');
     wrap.hidden = false;
   }
 

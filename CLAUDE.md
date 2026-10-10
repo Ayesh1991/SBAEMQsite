@@ -83,6 +83,11 @@ step. Mounting one means releasing the last: `TeaRoom.releasePanel()` and
   Subject ids: `obgyn`, `medicine`, `surgery`, `paediatrics`,
   `psychiatry`, `anaesthesiology`.
 - Import file formats and what the validator refuses: `data/samples/`.
+- **The console lists `Course.all()`, never `Course.live()`** (v130). A
+  course is *filled* before it is opened, so offering only the open ones
+  makes the course you are building the one you cannot choose — and the
+  picker then hides itself and `contentTags()` silently stamps the
+  editor's own course instead. `live()` is for candidates.
 - The three bundled files — `data/syllabus.json`, `data/manifest.json`,
   `data/blueprint.md` — each name their course in a `track` field. They
   belong to `pgim-og-2` and must not follow a candidate to another course.
@@ -97,8 +102,8 @@ is built), then `npx playwright install chromium`.
 
 ```bash
 npm run serve                                  # leave running (Node, no python)
-npm test                                       # all 30 files, summarised
-node tools/tests/t129-subject-pipeline.mjs     # one release file
+npm test                                       # all 31 files, summarised
+node tools/tests/t130-fill-before-open.mjs     # one release file
 ```
 
 Each file prints `fails=0` and exits non-zero on failure. `/suite` runs
