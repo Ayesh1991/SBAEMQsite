@@ -1,0 +1,97 @@
+{
+  "schema": "ogr-paper-v1",
+  "topic": "Final MBBS — Obstetrics & Gynaecology — Paper 1",
+  "category": "Obstetrics",
+  "subcategory": "Medical disorders in pregnancy",
+  "source": "Faculty of Medicine — Final MBBS, 2025",
+  "description": "Sample file. Replace the three questions below with your own; keep the shape.",
+  "created": "2026-10-04",
+
+  "sba": [
+    {
+      "id": "sba1",
+      "stem": "A 28-year-old primigravida at 34 weeks' gestation has a blood pressure of 158/104 mmHg on two readings four hours apart, and a urine protein:creatinine ratio of 48 mg/mmol. She has no headache, visual disturbance or epigastric pain. Fetal growth is on the 40th centile with a normal umbilical artery Doppler.",
+      "lead": "What is the most appropriate first-line antihypertensive agent?",
+      "options": [
+        "Nifedipine modified release",
+        "Labetalol",
+        "Methyldopa",
+        "Hydralazine",
+        "Atenolol"
+      ],
+      "answer": 1,
+      "rationale": "Labetalol is first-line for hypertension in pregnancy. Nifedipine and methyldopa are alternatives where labetalol is contraindicated — asthma, for instance. Atenolol is associated with fetal growth restriction and is avoided.",
+      "hook": "Pre-eclampsia BP control → labetalol first-line.",
+      "reference": "NICE NG133"
+    },
+    {
+      "id": "sba2",
+      "stem": "A 32-year-old woman is seen six weeks after a normal vaginal delivery. She is breastfeeding exclusively and wants contraception.",
+      "lead": "Which method is LEAST appropriate at this visit?",
+      "options": [
+        "Progestogen-only pill",
+        "Combined oral contraceptive pill",
+        "Copper intrauterine device",
+        "Levonorgestrel intrauterine system",
+        "Progestogen-only implant"
+      ],
+      "answer": 1,
+      "rationale": "Combined hormonal contraception is UKMEC 4 under six weeks postpartum in a breastfeeding woman and UKMEC 2 from six weeks to six months. Progestogen-only methods and intrauterine methods are all suitable.",
+      "hook": "Breastfeeding + postpartum → avoid combined oestrogen early."
+    }
+  ],
+
+  "emq": [
+    {
+      "id": "emq1",
+      "theme": "Causes of antepartum haemorrhage",
+      "instruction": "For each woman below, select the SINGLE most likely diagnosis. Each option may be used once, more than once, or not at all.",
+      "options": [
+        "A. Placenta praevia",
+        "B. Placental abruption",
+        "C. Vasa praevia",
+        "D. Cervical ectropion",
+        "E. Uterine rupture",
+        "F. Heavy show"
+      ],
+      "stems": [
+        {
+          "id": "emq1a",
+          "stem": "A 30-year-old at 32 weeks has sudden painless bright red bleeding. The uterus is soft and non-tender; the fetal heart is normal. She had a lower-segment caesarean two years ago.",
+          "answer": 0,
+          "rationale": "Painless bleeding with a soft uterus and a normal fetal heart points to praevia; a previous caesarean is a risk factor."
+        },
+        {
+          "id": "emq1b",
+          "stem": "A 36-year-old at 34 weeks has constant abdominal pain and dark vaginal bleeding. The uterus is woody-hard and tender, and the cardiotocograph shows late decelerations.",
+          "answer": 1,
+          "rationale": "Pain, a tense tender uterus and fetal compromise are the picture of abruption."
+        }
+      ]
+    }
+  ],
+
+  "tf": [
+    {
+      "id": "tf1",
+      "lead": "Regarding pre-eclampsia:",
+      "statements": [
+        {
+          "stem": "Proteinuria is required for the diagnosis.",
+          "answer": false,
+          "rationale": "Since the 2018 ISSHP definition, hypertension with any maternal organ dysfunction or uteroplacental dysfunction is sufficient. Proteinuria is not mandatory."
+        },
+        {
+          "stem": "Low-dose aspirin from 12 weeks reduces the risk in high-risk women.",
+          "answer": true,
+          "rationale": "150 mg at night from 12 weeks until delivery is recommended for women with one high risk factor or two moderate ones."
+        },
+        {
+          "stem": "Delivery of the placenta is the definitive treatment.",
+          "answer": true,
+          "rationale": "It is the only cure; everything else buys time or manages the complications."
+        }
+      ]
+    }
+  ]
+}

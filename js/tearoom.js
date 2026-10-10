@@ -51,6 +51,10 @@ const TeaRoom = (() => {
 
   let pollTimer = null, lastPoll = null;
   let wallEl = null, chatEl = null;
+  /* The chat used to live only in a dock. A group's own page hosts the same
+     conversation inline, so painting walks every live host instead of the
+     one element it used to assume. */
+  let chatPanelEl = null;
   let wallOpen = false, chatOpen = false;
   let panelHost = null;
   const listeners = new Set();
@@ -880,12 +884,14 @@ const TeaRoom = (() => {
   }
 
   function paintChat() {
-    if (!chatEl) return;
-    const listEl = chatEl.querySelector('[data-tc-rooms]');
-    const viewEl = chatEl.querySelector('[data-tc-view]');
+    [chatEl, chatPanelEl].filter(Boolean).forEach(paintChatInto);
+  }
+  function paintChatInto(hostEl) {
+    const listEl = hostEl.querySelector('[data-tc-rooms]');
+    const viewEl = hostEl.querySelector('[data-tc-view]');
     if (listEl) listEl.innerHTML = roomsHTML();
     if (!viewEl) return;
-    chatEl.classList.toggle('has-room', !!activeRoom);
+    hostEl.classList.toggle('has-room', !!activeRoom);
     if (!activeRoom) { viewEl.innerHTML = `<p class="tr-empty big">Pick a conversation, or start a new one.</p>`; return; }
     const r = rooms.find(x => x.id === activeRoom);
     viewEl.innerHTML = `
@@ -1286,7 +1292,7 @@ const TeaRoom = (() => {
   function repaint() {
     if (panelHost && document.body.contains(panelHost)) paintWall(panelHost);
     if (wallEl && wallOpen) paintWall(wallEl.querySelector('.tr-surface'));
-    if (chatEl && chatOpen) paintChat();
+    if ((chatEl && chatOpen) || chatPanelEl) paintChat();
     updateLaunchers();
   }
 
@@ -1385,7 +1391,7 @@ const TeaRoom = (() => {
     launchBar?.remove(); launchBar = null;
     closeWall(); closeChat();
     try { Assist.unmount(); } catch {}
-    wallEl?.remove(); wallEl = null; chatEl?.remove(); chatEl = null;
+    wallEl?.remove(); wallEl = null; chatEl?.remove(); chatEl = null; chatPanelEl = null;
     reset();
   }
 
@@ -1404,9 +1410,29 @@ const TeaRoom = (() => {
 
   /* ---------------- Studio panel (full-page wall) ---------------- */
 
-  async function renderPanel(host) {
+  /* THE FULL-PAGE WALL, and since v128 the wall of ONE GROUP too.
+     This panel never had the room strip the pop-out dock got in v124, so
+     the Studio page — the main way people read the wall — could not switch
+     to a group or make one at all.
+
+     THE FIX IS NOT A SECOND STRIP HERE. A strip on this panel and a strip
+     in the dock are two switchers over one piece of state, and clicking
+     either leaves the other's header naming the wall you just left. So
+     this panel stays the SHARED wall, groups get a page of their own, and
+     the Studio points at it with a tile. The roomId argument is what that
+     page mounts: the same posts, the same composer, addressed to the
+     group. */
+  async function renderPanel(host, roomId) {
     panelHost = host;
     me = me || await Backend.currentUser().catch(() => null);
+    const want = roomId || null;
+    /* Switching wall means dropping what was loaded, not filtering it — a
+       post left over from the last wall appearing in this one is the bug
+       v124 was about. */
+    if (want !== wallRoom) {
+      wallRoom = want; posts = []; myRx = {}; loaded = false; lastPoll = null;
+      Object.keys(comments).forEach(k => delete comments[k]);
+    }
     host.innerHTML = `<div class="tr-surface tw-panel">
         <div class="tr-bar">
           <div data-tr-mute class="tr-mute-wrap"></div>
@@ -1419,7 +1445,7 @@ const TeaRoom = (() => {
     const root = host.querySelector('.tr-surface');
     wireWall(root);
     root.querySelector('[data-act="popwall"]').addEventListener('click', () => openWall());
-    root.querySelector('[data-act="popchat"]').addEventListener('click', () => openChat());
+    root.querySelector('[data-act="popchat"]').addEventListener('click', () => openChat(want || undefined));
     await ensureLoaded();
     paintWall(root);
     markSeen(Math.max(latestStamp(), seenAt()));
@@ -1427,9 +1453,45 @@ const TeaRoom = (() => {
   }
   function releasePanel() { panelHost = null; schedule(); }
 
+  /* ---------------- a group's own chat, inline ---------------- */
+  async function renderChatPanel(host, roomId) {
+    me = me || await Backend.currentUser().catch(() => null);
+    if (!rooms.length) await loadRooms();
+    host.innerHTML = `<div class="tr-surface tc-inline">
+        <div class="tc-body"><div class="tc-view" data-tc-view></div></div>
+      </div>`;
+    chatPanelEl = host.querySelector('.tr-surface');
+    wireChat(chatPanelEl);
+    await openRoom(roomId);
+  }
+  function releaseChatPanel() { chatPanelEl = null; }
+
+  /* EVERYTHING SHARED IN THE GROUP, in one list. The files are already
+     carried on the posts and the messages; what was missing was anywhere
+     to see them together, which is what "shared in the group" means to
+     somebody looking for the handout from last Tuesday. */
+  async function groupFiles(roomId) {
+    const out = [];
+    const take = (media, who, when, where) => (media || []).forEach(m => {
+      if (m && m.url) out.push({ url: m.url, name: m.name || 'file', type: m.type || '', who, when, where });
+    });
+    try {
+      (await Backend.listDiscussions?.({ limit: 200, roomId }) || [])
+        .forEach(p => take(p.media, p.author_name, p.created_at, 'wall'));
+    } catch { /* one source failing should not empty the other */ }
+    try {
+      (await Backend.listChatMessages?.(roomId) || [])
+        .forEach(m => take(m.media, m.author_name, m.created_at, 'chat'));
+    } catch { /* ditto */ }
+    return out.sort((a, b) => String(b.when || '').localeCompare(String(a.when || '')));
+  }
+
   return {
     init, onChange, unreadCount, toast, syncSeen, unreadWall, unreadChat,
     renderPanel, releasePanel, mountLauncher, unmountLauncher,
+    renderChatPanel, releaseChatPanel, groupFiles,
+    openMembers: (roomId, surface) => membersFlow(roomId, surface),
+    newGroup: () => newRoomFlow(),
     openWall, closeWall, toggleWall, openChat, closeChat, toggleChat,
     openComments, share, post, setMute, muteUntil,
     loadCfg, config, setNotif, askNotifPermission,

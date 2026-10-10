@@ -82,6 +82,9 @@ const Essay = (() => {
 
   /* ================= list of papers (#/library/essay) ================= */
 
+  /* WHICH SUBJECT, remembered across a visit to a paper and back. Empty is
+     every subject, which is what a one-subject course always gets. */
+  let listSubject = '';
   async function renderList(view, user, kind) {
     kind = kind === 'pgim' ? 'pgim' : 'mock';
     view.innerHTML = libraryShell('essay', `
@@ -89,6 +92,14 @@ const Essay = (() => {
     FX.viewIn(view);
     let list = [], fb = [];
     try { list = await papers(); } catch (e) { list = []; }
+    /* A final MBBS essay bank holds every subject's papers. Untagged ones
+       are still shown — unfiled is not irrelevant. */
+    let subjectBar = '';
+    try {
+      await Course.load();
+      subjectBar = Course.subjectBar ? Course.subjectBar(listSubject) : '';
+      if (subjectBar) list = list.filter(p => Course.fitsSubject(p, listSubject));
+    } catch { /* a course that will not load must not empty the bank */ }
     try { fb = (await Backend.listEssayFeedback()) || []; } catch { fb = []; }
     const fbByCode = {}; fb.forEach(f => fbByCode[f.code] = f);
     const body = view.querySelector('#es-body');
@@ -145,6 +156,7 @@ const Essay = (() => {
           both lists at once. Real PGIM questions come back marked <span class="es-real-dot">★ PGIM</span>. Several words = all of them must appear.</p>
       </div>
       <div id="es-results" hidden></div>
+      ${subjectBar}
       <div class="es-papers" id="es-paper-list" data-animate>
         ${mine.length ? mine.map(p => {
           const qs = questionsOf(p);
@@ -240,6 +252,15 @@ const Essay = (() => {
     }
     input.addEventListener('input', run);
     clear.addEventListener('click', () => { input.value = ''; run(); input.focus(); });
+    /* A re-render, not a hide-and-show: the counts in the header and the
+       search hint are counts of the papers on screen, and filtering the DOM
+       would leave them describing a list that is no longer there. */
+    body.querySelector('.tk-subs')?.addEventListener('click', e => {
+      const b = e.target.closest('[data-sub]'); if (!b) return;
+      if ((b.dataset.sub || '') === listSubject) return;
+      listSubject = b.dataset.sub || '';
+      renderList(view, user, kind);
+    });
   }
 
   /** Escape, then highlight each search term inside the escaped text. */

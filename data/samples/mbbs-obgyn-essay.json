@@ -1,0 +1,59 @@
+{
+  "schema": "ogr-essay-v1",
+  "examTitle": "Final MBBS — Obstetrics & Gynaecology",
+  "paperLabel": "Essay Paper 1",
+  "paperNumber": 1,
+  "year": 2025,
+  "sittingMonth": "August",
+  "durationHours": 3,
+  "source": "Faculty of Medicine — Final MBBS, 2025",
+
+  "sections": [
+    {
+      "sectionTitle": "Obstetrics",
+      "questions": [
+        {
+          "code": "1",
+          "stem": "A 26-year-old primigravida at 39 weeks is admitted in spontaneous labour. Four hours later the cardiotocograph shows recurrent late decelerations with reduced variability.",
+          "totalMarks": 100,
+          "parts": [
+            { "label": "a)", "text": "List the causes of this cardiotocograph pattern.", "marks": 30 },
+            { "label": "b)", "text": "Outline your immediate management.", "marks": 40 },
+            {
+              "label": "c)", "text": "Discuss the decision to deliver.", "marks": 30,
+              "subparts": [
+                { "label": "c.i)", "text": "State the factors that decide the mode of delivery.", "marks": 15 },
+                { "label": "c.ii)", "text": "Describe the preparation for an emergency caesarean section.", "marks": 15 }
+              ]
+            }
+          ],
+          "keyLearningPoints": [
+            "Late decelerations suggest uteroplacental insufficiency.",
+            "Intrauterine resuscitation comes before delivery is decided.",
+            "Mode of delivery depends on cervical dilatation, station and how fast the fetus is deteriorating."
+          ],
+          "modelAnswer": "**a)** Uteroplacental insufficiency from maternal hypotension (often after regional analgesia), uterine hyperstimulation, placental abruption, maternal hypoxia…\n\n**b)** Stop oxytocin, left lateral position, intravenous fluids, oxygen if hypoxic, consider tocolysis, vaginal examination to assess progress…\n\n**c)** …"
+        }
+      ]
+    },
+    {
+      "sectionTitle": "Gynaecology",
+      "questions": [
+        {
+          "code": "2",
+          "stem": "A 48-year-old woman presents with heavy menstrual bleeding for one year. Her haemoglobin is 8.4 g/dL.",
+          "totalMarks": 100,
+          "parts": [
+            { "label": "a)", "text": "Describe how you would evaluate her.", "marks": 40 },
+            { "label": "b)", "text": "Discuss the medical options for treatment.", "marks": 35 },
+            { "label": "c)", "text": "State the indications for surgery.", "marks": 25 }
+          ],
+          "keyLearningPoints": [
+            "Exclude endometrial pathology at this age before treating empirically.",
+            "The levonorgestrel intrauterine system is first-line medical treatment."
+          ]
+        }
+      ]
+    }
+  ]
+}

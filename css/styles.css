@@ -7229,3 +7229,36 @@ body.sc-open { overflow: hidden; }
   color: var(--muted); padding: 2px 8px; border-radius: 999px; border: 1px solid var(--hairline); }
 .gm-role.is-admin { color: #e8c06a; border-color: rgba(232,192,106,.45); }
 :root[data-theme="light"] .gm-role.is-admin { color: #8a6212; border-color: rgba(154,107,18,.4); }
+
+/* ---- a group's own page (v128) ---- */
+.g-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 18px; }
+.g-tab { font-size: .84rem; padding: 7px 14px; border-radius: 999px; text-decoration: none;
+  border: 1px solid var(--hairline); color: var(--muted); background: transparent; }
+.g-tab:hover { color: var(--ink); }
+.g-tab.is-on { color: var(--ink); font-weight: 650; background: var(--surface);
+  border-color: rgba(232,192,106,.45); }
+.g-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+.g-card { display: flex; flex-direction: column; gap: 4px; padding: 16px; border-radius: 14px;
+  text-decoration: none; border: 1px solid var(--hairline); background: var(--surface); }
+.g-card:hover { border-color: rgba(232,192,106,.45); }
+.g-card-av { font-size: 1.4rem; }
+.g-card-n { font-weight: 650; color: var(--ink); }
+.g-card-sub { font-size: .78rem; }
+.g-files { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+.g-file { display: flex; flex-direction: column; gap: 4px; padding: 10px; border-radius: 12px;
+  text-decoration: none; border: 1px solid var(--hairline); background: var(--surface); }
+.g-file:hover { border-color: rgba(232,192,106,.45); }
+.g-file img { width: 100%; height: 108px; object-fit: cover; border-radius: 8px; display: block; }
+.g-file-ico { font-size: 1.8rem; }
+.g-file-n { font-size: .82rem; color: var(--ink); word-break: break-word; }
+.g-file-sub { font-size: .72rem; }
+/* The inline chat has no room list beside it — you are already in the
+   group whose page this is, so a column of other conversations is one more
+   way to leave it. */
+.tc-inline { min-height: 460px; display: flex; }
+.tc-inline .tc-body { flex: 1; display: flex; }
+.tc-inline .tc-view { flex: 1; display: flex; flex-direction: column; }
+.tc-inline .tc-back { display: none; }
+.gp-embed { display: block; }
+.gp-head-title { margin: 0 0 6px; font-size: 1.3rem; }
+@media (max-width: 640px) { .g-tab { padding: 6px 11px; font-size: .8rem; } }
