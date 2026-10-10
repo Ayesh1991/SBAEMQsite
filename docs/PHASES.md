@@ -23,6 +23,7 @@ per release, each shippable on its own.
 | 127 | **Phase 6** — groups have somebody in charge of them |
 | 128 | **Phase 7** — one place for a group |
 | 129 | **Phase 8** — a course splits into its subjects |
+| 130 | A course is filled before it is opened |
 
 Three exams are now fully separable: course, enrolment, syllabus,
 blueprint, question types, and all five banks. The editor/groups/group-mocks
@@ -377,6 +378,38 @@ would not import fails the suite.
 Still to do here: **cases** have no subject picker, and the subject is not
 editable after import — a paper filed under the wrong subject has to be
 re-imported. Both are small and neither blocks the pipeline.
+
+---
+
+## v130 — A course is filled before it is opened
+
+Not a phase: a bug found the first time somebody tried to use v129 for
+real.
+
+The course admin page makes a promise in as many words: *"A course can be
+built and filled long before it is opened — until Open is ticked nobody
+can choose it and nothing tagged to it reaches anybody."* The importer's
+course picker offered `Course.live()` — the courses a **candidate** may
+choose. So the course you were filling was the one course you could not
+select.
+
+And it compounded. One live course is not a choice, so the picker hid
+itself; with the picker hidden `pickedCourse()` returns nothing; and
+`contentTags()` then stamps the **editor's own** course on the import. The
+questions went somewhere real and plausible and wrong, with nothing
+thrown — and the published-papers table never showed a paper's course, so
+there was nothing to notice afterwards either.
+
+Three things in one failure, each defensible alone: the wrong **list**, a
+control that **hides itself** when the list comes back short, and a
+**fallback that always succeeds**.
+
+Fixed: both pickers (the importer's and the "filed nowhere" panel's) list
+every course that exists, marking the ones not open yet. And the
+published-papers table now shows each paper's course and subject, with a
+**move** that re-files it in place through the same `fileUnder()` the
+unfiled panel uses — content mis-filed by a bug has to be fixable by the
+person who hit it, without unpublishing and importing again.
 
 ---
 
