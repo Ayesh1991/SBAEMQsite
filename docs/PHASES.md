@@ -25,6 +25,7 @@ per release, each shippable on its own.
 | 129 | **Phase 8** — a course splits into its subjects |
 | 130 | A course is filled before it is opened |
 | 131 | Flashcard decks belong to a course too |
+| 132 | Every bank, the same two questions |
 
 Three exams are now fully separable: course, enrolment, syllabus,
 blueprint, question types, and all five banks. The editor/groups/group-mocks
@@ -448,6 +449,41 @@ keeps, and t131 is the test that it still does.
 
 Still to do: **cases** remain the one bank with no subject picker, and
 the `move` control added in v130 covers papers only.
+
+---
+
+## v132 — Every bank, the same two questions
+
+Five banks, five importers, and they were never done at once. Papers,
+OSCE and essays got the course and subject pickers in v129; flashcard
+decks in v131; **cases had neither until now**, so a case could only ever
+be filed under whichever course the editor happened to be on. And the
+repair added in v130 — change a published row's course without
+unpublishing it — existed **for papers alone**, leaving the other four
+fixable only by importing them again.
+
+The pattern worth naming is not any one of those gaps. It is that each
+was closed on its own, in a different release, and the one left out was
+never the same one twice. So t132 asks the **same question of all five**,
+in a shape that fails for whichever is missing next time.
+
+Shipped: the cases importer gained both pickers and a subject filter on
+the case bank; every published list shows a Course column and a move
+control; and all five importers now write their tags through the one
+`stampCourse()`. **Papers and OSCE did not** — papers spread the two tags
+inline, OSCE set them a third way — which is exactly how an importer ends
+up being the one nobody updates. t132 caught that in its first run.
+
+### The one nobody would have found
+
+`getPublishedPapers` and `getOsceStations` ask the server to project
+fields out of JSON and **fall back to reading whole rows** if it will not.
+The fallback said `select('id,meta')` — no `tracks`, no `subject`.
+
+It is a path that only runs when something is already wrong, and on it
+every filter would have silently opened: untagged content is *shown*, so a
+candidate would have been handed another course's bank with nothing to say
+so. A fallback may be slower. It may not be looser.
 
 ---
 

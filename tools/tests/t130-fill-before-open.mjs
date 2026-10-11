@@ -48,9 +48,12 @@ say('  and the reason is written down beside both',
 say('a published paper’s course is visible in the table',
   /<th>Paper<\/th><th>Course<\/th>/.test(dev));
 say('  and can be changed without re-importing it', /function moveRow\(view, host, btn, paper, courses\)/.test(dev));
-/* One way to set these tags, not two. */
+/* One way to set these tags, not two. The table became an argument in
+   v132, when the other four banks got this control — so the call is
+   asserted by its SHAPE rather than by the literal 'papers' it used to
+   carry. */
 say('  through the same call the unfiled panel uses',
-  /Backend\.fileUnder\('papers', \[paper\.id\], \[cSel\.value\], sSel\.value \|\| null\)/.test(dev));
+  /Backend\.fileUnder\(table, \[paper\.id\], \[cSel\.value\], sSel\.value \|\| null\)/.test(dev));
 
 /* ---------------------------------------------------------------- */
 sec('2. IN THE RUNNING CONSOLE, WITH A COURSE THAT IS NOT OPEN');

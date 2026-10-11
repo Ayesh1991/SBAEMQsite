@@ -985,7 +985,7 @@ const DevConsole = (() => {
             <td class="muted">${whose(p)}</td>
             <td class="muted">${ctx.esc(path.topic?.title || p.topicId || '')}</td>
             <td class="muted">${p.sba || 0}/${p.emq || 0}</td>
-            <td>${courses.length > 1 ? `<button class="link-btn" data-move="${ctx.esc(p.id)}">move</button> ` : ''}${
+            <td>${courses.length > 1 ? `<button class="link-btn" data-move="${ctx.esc(p.id)}" data-mv-table="papers" data-mv-refresh="papers">move</button> ` : ''}${
               p.file ? '<span class="tiny muted">bundled</span>' : `<button class="link-btn" data-unpub="${ctx.esc(p.id)}">unpublish</button>`}</td>
           </tr>`;
         }).join('')}</tbody>
@@ -1000,6 +1000,38 @@ const DevConsole = (() => {
     }));
     host.querySelectorAll('[data-move]').forEach(b => b.addEventListener('click', () =>
       moveRow(view, host, b, published.find(x => x.id === b.dataset.move), courses)));
+  }
+
+  /* ONE MOVE CONTROL, FIVE BANKS — v132. v130 gave this to papers only,
+     which left the other four repairable solely by unpublishing and
+     importing again. The table it is attached to differs per bank; the
+     thing it does does not, so it takes the table name and the row's
+     current tags and nothing else.
+
+     `after` is what each bank must do to be seen to have changed: every
+     one of them caches its own listing, and a row that just changed
+     course is in none of those copies. */
+  const MOVABLE = {
+    papers: { label: 'paper', after: () => { ctx.Data.bustPapers?.();
+      if (typeof Cache !== 'undefined') { Cache.bust('sim-qindex'); Cache.bust('coverage-index'); } } },
+    osce_stations: { label: 'station', after: () => { if (typeof OSCE !== 'undefined') { OSCE.bustStations?.(); OSCE.bustCollections?.(); } } },
+    essay_papers: { label: 'essay paper', after: () => { if (typeof Essay !== 'undefined') Essay.bustPapers?.(); } },
+    flashcard_decks: { label: 'deck', after: () => { if (typeof Flashcards !== 'undefined') Flashcards.bustDecks?.(); } },
+    case_files: { label: 'case', after: () => { if (typeof Cases !== 'undefined') Cases.bustCases?.(); } }
+  };
+
+  /** The course + subject a row is filed under, drawn for a table cell. */
+  function tagCell(rec, courses) {
+    const nameOf = id => courses.find(c => c.id === id)?.short || id;
+    const t = (rec.tracks || []).filter(Boolean);
+    if (!t.length) return '<span class="bad">nowhere</span>';
+    return ctx.esc(t.map(nameOf).join(', '))
+      + (rec.subject ? ` <span class="muted tiny">· ${ctx.esc(Course.subjectName ? Course.subjectName(rec.subject) : rec.subject)}</span>` : '');
+  }
+
+  /** Every course, for a move control. Empty when there is nothing to move between. */
+  async function moveCourses() {
+    try { await Course.load(); return Course.all(); } catch { return []; }
   }
 
   /* One row turns into a course + subject picker in place. A modal for a
@@ -1038,21 +1070,24 @@ const DevConsole = (() => {
     row.querySelector('[data-mv-x]').addEventListener('click', () => row.remove());
     row.querySelector('[data-mv-go]').addEventListener('click', async e => {
       const msg = row.querySelector('[data-mv-msg]');
+      const table = btn.dataset.mvTable || 'papers';
       e.target.disabled = true; msg.textContent = 'Moving…'; msg.className = 'dev-row-msg muted';
       try {
-        await ctx.Backend.fileUnder('papers', [paper.id], [cSel.value], sSel.value || null);
-        /* Every bank caches its listing, and the simulator's index is
-           built from the bank — a paper that just changed course is in
-           neither copy. */
-        ctx.Data.bustPapers?.();
-        if (typeof Cache !== 'undefined') { Cache.bust('sim-qindex'); Cache.bust('coverage-index'); }
-        await refreshPublished(view);
+        await ctx.Backend.fileUnder(table, [paper.id], [cSel.value], sSel.value || null);
+        (MOVABLE[table] || MOVABLE.papers).after();
+        if (typeof btn.dataset.mvRefresh === 'string' && REFRESHERS[btn.dataset.mvRefresh]) {
+          await REFRESHERS[btn.dataset.mvRefresh](view);
+        } else await refreshPublished(view);
       } catch (err) {
         msg.textContent = err.message || String(err); msg.className = 'dev-row-msg bad';
         e.target.disabled = false;
       }
     });
   }
+  /* Named rather than passed, because the button carries only strings and
+     each bank's "draw your published list again" lives in its own
+     section. Filled at the bottom of the file, where all five exist. */
+  const REFRESHERS = {};
 
   /* ---------------- scan ---------------- */
 
@@ -1168,7 +1203,7 @@ const DevConsole = (() => {
 
   function buildMeta(f, paper, els) {
     const id = 'drv-' + (f.key || slug(paper.topic || f.title));
-    return {
+    const meta = {
       id,
       driveKey: f.key || null,
       title: paper.topic || f.title.replace(/\.json$/i, ''),
@@ -1179,17 +1214,15 @@ const DevConsole = (() => {
       sba: ctx.Data.countSBA(paper),
       emq: ctx.Data.countEMQ(paper),
       tf: ctx.Data.countTF(paper),
-      /* Which course, when the toolbar is asking. Left off when it is not:
-         contentTags() then stamps the editor's own course, so a paper
-         cannot reach the database filed nowhere. */
-      ...(pickedCourse('#pp-import-track') ? { tracks: [pickedCourse('#pp-import-track')] } : {}),
-      /* And which subject within it. Left off when the toolbar is not
-         asking — contentTags() then answers it for a one-speciality
-         course, and leaves it null for a course that genuinely has not
-         been told. */
-      ...(pickedSubject('#pp-import-subject') ? { subject: pickedSubject('#pp-import-subject') } : {}),
       content: paper                          // inline content (no file on disk)
     };
+    /* Which course and subject the toolbar is asking for. Through the one
+       function, like the other four banks — this used to spread the two
+       tags inline here and OSCE did it a third way, which is how an
+       importer ends up being the one nobody updated. Left off when the
+       toolbar is not asking: contentTags() then stamps the editor's own
+       course, so nothing reaches the database filed nowhere. */
+    return stampCourse(meta, '#pp-import-track', '#pp-import-subject');
   }
 
   function slug(s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60); }
@@ -1339,13 +1372,18 @@ const DevConsole = (() => {
     const decks = await ctx.Backend.getFlashcardDecks().catch(() => []);
     const host = view.querySelector('#fc-published'), count = view.querySelector('#fc-pub-count');
     if (count) count.textContent = decks.length;
+    const courses = await moveCourses();
     host.innerHTML = decks.length ? `<div class="table-scroll"><table class="table">
-      <thead><tr><th>Deck</th><th>Cards</th><th>Source</th><th></th></tr></thead>
-      <tbody>${decks.map(d => `<tr><td>${ctx.esc(d.title)}</td><td class="muted">${d.cardCount || d.content?.cards?.length || 0}</td><td class="muted">${ctx.esc(d.source || '')}</td><td><button class="link-btn" data-unpub-deck="${ctx.esc(d.id)}">unpublish</button></td></tr>`).join('')}</tbody>
+      <thead><tr><th>Deck</th><th>Course</th><th>Cards</th><th></th></tr></thead>
+      <tbody>${decks.map(d => `<tr><td>${ctx.esc(d.title)}</td><td class="muted">${tagCell(d, courses)}</td><td class="muted">${d.cardCount || d.content?.cards?.length || 0}</td><td>${
+        courses.length > 1 ? `<button class="link-btn" data-move="${ctx.esc(d.id)}" data-mv-table="flashcard_decks" data-mv-refresh="decks">move</button> ` : ''
+      }<button class="link-btn" data-unpub-deck="${ctx.esc(d.id)}">unpublish</button></td></tr>`).join('')}</tbody>
     </table></div>` : `<p class="muted">No decks published yet.</p>`;
     host.querySelectorAll('[data-unpub-deck]').forEach(b => b.addEventListener('click', async () => {
       if (confirm('Unpublish this deck? Card progress is kept.')) { await ctx.Backend.unpublishFlashcardDeck(b.dataset.unpubDeck); if (typeof Cache !== 'undefined') Cache.bust('flashcard-decks'); await refreshDecks(view); }
     }));
+    host.querySelectorAll('[data-move]').forEach(b => b.addEventListener('click', () =>
+      moveRow(view, host, b, decks.find(x => x.id === b.dataset.move), courses)));
   }
 
   /* ---------------- exam blueprint ---------------- */
@@ -2972,16 +3010,21 @@ const DevConsole = (() => {
     const list = (await ctx.Backend.getEssayPapers().catch(() => [])) || [];
     const host = view.querySelector('#es-published'), count = view.querySelector('#es-pub-count');
     if (count) count.textContent = list.length;
+    const courses = await moveCourses();
     host.innerHTML = list.length ? `<div class="table-scroll"><table class="table">
-      <thead><tr><th>#</th><th>Label</th><th>Questions</th><th></th></tr></thead>
+      <thead><tr><th>#</th><th>Label</th><th>Course</th><th>Questions</th><th></th></tr></thead>
       <tbody>${list.sort((a, b) => (a.paperNumber || 0) - (b.paperNumber || 0)).map(p => `<tr>
         <td>${p.paperNumber || ''}</td><td>${ctx.esc(p.paperLabel || '')}</td>
+        <td class="muted">${tagCell(p, courses)}</td>
         <td class="muted">${(p.sections || []).reduce((n, s) => n + (s.questions || []).length, 0)}</td>
-        <td><button class="link-btn" data-unpub-essay="${ctx.esc(p.id)}">unpublish</button></td></tr>`).join('')}</tbody>
+        <td>${courses.length > 1 ? `<button class="link-btn" data-move="${ctx.esc(p.id)}" data-mv-table="essay_papers" data-mv-refresh="essays">move</button> ` : ''
+        }<button class="link-btn" data-unpub-essay="${ctx.esc(p.id)}">unpublish</button></td></tr>`).join('')}</tbody>
     </table></div>` : `<p class="muted">No essay papers published yet.</p>`;
     host.querySelectorAll('[data-unpub-essay]').forEach(b => b.addEventListener('click', async () => {
       if (confirm('Unpublish this essay paper?')) { await ctx.Backend.unpublishEssayPaper(b.dataset.unpubEssay); if (typeof Essay !== 'undefined') Essay.bustPapers(); await refreshEssayPublished(view); }
     }));
+    host.querySelectorAll('[data-move]').forEach(b => b.addEventListener('click', () =>
+      moveRow(view, host, b, list.find(x => x.id === b.dataset.move), courses)));
   }
 
   async function scanEssays() {
@@ -3736,15 +3779,17 @@ const DevConsole = (() => {
     const host = view.querySelector('#os-published'); if (!host) return;
     const cnt = view.querySelector('#os-pub-count'); if (cnt) cnt.textContent = list.length;
     const colls = await osceCollections();
+    const courses = await moveCourses();
     const cname = id => id ? (colls.find(c => c.id === id)?.label || id) : '—';
     host.innerHTML = list.length ? `<div class="table-scroll"><table class="table">
-      <thead><tr><th>Station</th><th>Collection</th><th>Questions</th><th>Marks</th><th>Pass</th><th></th></tr></thead>
+      <thead><tr><th>Station</th><th>Course</th><th>Collection</th><th>Questions</th><th>Marks</th><th></th></tr></thead>
       <tbody>${list.map(v => `<tr><td>${ctx.esc(v.topic || v.id)}</td>
+        <td class="muted">${tagCell(v, courses)}</td>
         <td class="muted">${ctx.esc(cname(v.collection || ''))}</td>
         <td class="muted">${v.q_count != null ? v.q_count : (v.questions || []).length}</td>
-        <td class="muted">${v.total_marks || ''}</td>
-        <td class="muted">${v.pass_mark || ''} (${v.pass_mark_percent || 70}%)</td>
-        <td><button class="link-btn" data-edit-osce="${ctx.esc(v.id)}">edit</button>
+        <td class="muted">${v.total_marks || ''} (${v.pass_mark_percent || 70}%)</td>
+        <td>${courses.length > 1 ? `<button class="link-btn" data-move="${ctx.esc(v.id)}" data-mv-table="osce_stations" data-mv-refresh="osce">move</button> ` : ''
+        }<button class="link-btn" data-edit-osce="${ctx.esc(v.id)}">edit</button>
             <button class="link-btn qr-danger" data-unpub-osce="${ctx.esc(v.id)}">unpublish</button></td></tr>`).join('')}</tbody>
     </table></div>` : `<p class="muted">No OSCE stations published yet.</p>`;
     /* The published list is CARDS — no questions, so the bank loads in a few
@@ -3809,8 +3854,7 @@ const DevConsole = (() => {
         /* And which course, if the toolbar is asking. An explicit answer
            always wins; with the control hidden the backend stamps the
            editor's own course. */
-        const tk = pickedCourse('#os-import-track'); if (tk) d.tracks = [tk];
-        const sj = pickedSubject('#os-import-subject'); if (sj) d.subject = sj;
+        stampCourse(d, '#os-import-track', '#os-import-subject');
         await ctx.Backend.publishOsceStation(d);
         if (typeof OSCE !== 'undefined') { OSCE.bustStations(); OSCE.bustCollections?.(); }
         msg.textContent = '✓ Published to the OSCE tab.'; msg.className = 'dev-row-msg good';
@@ -3825,8 +3869,7 @@ const DevConsole = (() => {
     const errs = validateOsce(d); if (errs.length) { out.innerHTML = `<p class="bad">${errs.map(ctx.esc).join('<br>')}</p>`; return; }
     d.id = osceId(d);
     if (d.collection == null) d.collection = document.getElementById('os-import-coll')?.value || '';
-    if (!d.tracks) { const tk = pickedCourse('#os-import-track'); if (tk) d.tracks = [tk]; }
-    if (!d.subject) { const sj = pickedSubject('#os-import-subject'); if (sj) d.subject = sj; }
+    stampCourse(d, '#os-import-track', '#os-import-subject');
     try { await ctx.Backend.publishOsceStation(d); if (typeof OSCE !== 'undefined') OSCE.bustStations();
       out.innerHTML = `<p class="good">✓ Published “${ctx.esc(d.topic)}”.</p>`;
       await refreshOscePublished(document.getElementById('view'));
@@ -5209,6 +5252,13 @@ const DevConsole = (() => {
             <button class="btn btn-gold" id="cs-scan">🔍 Scan the Drive folder</button>
             <label class="btn btn-ghost" style="cursor:pointer">📄 Choose files
               <input type="file" id="cs-files" accept="application/json,.json" multiple hidden></label>
+            ${/* The last bank without them. Cases were the one importer
+                  that could only ever file under the editor's own
+                  course. */''}
+            <label class="wl-f" style="max-width:240px" id="cs-track-wrap" hidden><span>Course</span>
+              <select class="sel" id="cs-import-track"></select></label>
+            <label class="wl-f" style="max-width:240px" id="cs-subject-wrap" hidden><span>Subject</span>
+              <select class="sel" id="cs-import-subject"></select></label>
           </div>
           <details class="dev-collapse" style="margin-top:14px">
             <summary><span class="card-title">Or paste the JSON</span><span class="dc-caret">▸</span></summary>
@@ -5233,6 +5283,8 @@ const DevConsole = (() => {
     ctx.FX?.viewIn?.(view);
 
     view.querySelector('#cs-scan').addEventListener('click', scanCases);
+    await fillCoursePicker(view, '#cs-track-wrap', '#cs-import-track');
+    await fillSubjectPicker(view, '#cs-subject-wrap', '#cs-import-subject', '#cs-import-track');
     view.querySelector('#cs-files').addEventListener('change', async e => {
       const out = [];
       for (const f of [...e.target.files]) {
@@ -5317,6 +5369,7 @@ const DevConsole = (() => {
       const msg = document.querySelector(`[data-cs-msg="${i}"]`);
       e.target.disabled = true; msg.textContent = 'Publishing…'; msg.className = 'dev-row-msg muted';
       try {
+        stampCourse(d, '#cs-import-track', '#cs-import-subject');
         await ctx.Backend.publishCase(d);
         if (typeof Cases !== 'undefined') Cases.bustCases();
         msg.textContent = '✓ Published to the Cases tab.'; msg.className = 'dev-row-msg good';
@@ -5333,13 +5386,18 @@ const DevConsole = (() => {
     catch (e) { host.innerHTML = `<p class="bad">${ctx.esc(e.message || e)}</p>`; return; }
     const hub = document.getElementById('hub-cases'); if (hub) hub.textContent = list.length;
     if (!list.length) { host.innerHTML = '<p class="muted">No cases published yet.</p>'; return; }
-    host.innerHTML = `<table class="dev-table"><thead><tr><th>Case</th><th>Shape</th><th></th></tr></thead>
+    const courses = await moveCourses();
+    host.innerHTML = `<table class="dev-table"><thead><tr><th>Case</th><th>Course</th><th>Shape</th><th></th></tr></thead>
       <tbody>${list.map(c => `<tr>
         <td><strong>${ctx.esc(c.topic || c.id)}</strong><br><span class="muted tiny">${ctx.esc(c.id)}</span></td>
+        <td class="muted">${tagCell(c, courses)}</td>
         <td class="muted tiny">${c.phase_count || 0} phases · ${c.q_count || 0} questions · ${c.minutes || 30} min</td>
-        <td><a class="link" href="#/cases/case/${encodeURIComponent(c.id)}">Open</a>
+        <td>${courses.length > 1 ? `<button class="link-btn" data-move="${ctx.esc(c.id)}" data-mv-table="case_files" data-mv-refresh="cases">move</button> ` : ''
+        }<a class="link" href="#/cases/case/${encodeURIComponent(c.id)}">Open</a>
             <button class="link qr-danger" data-cs-del="${ctx.esc(c.id)}">Remove</button></td>
       </tr>`).join('')}</tbody></table>`;
+    host.querySelectorAll('[data-move]').forEach(b => b.addEventListener('click', () =>
+      moveRow(view || document, host, b, list.find(x => x.id === b.dataset.move), courses)));
     host.querySelectorAll('[data-cs-del]').forEach(b => b.addEventListener('click', async () => {
       if (!confirm('Remove that case? Discussions already marked against it keep their reports.')) return;
       await ctx.Backend.unpublishCase(b.dataset.csDel);
@@ -5386,6 +5444,15 @@ const DevConsole = (() => {
   ],
   "sources": ["RCOG/BSH guidance", "NICE NG201"]
 }`;
+
+  /* All five exist by here, so the move control can name any of them. */
+  Object.assign(REFRESHERS, {
+    papers: refreshPublished,
+    osce: refreshOscePublished,
+    essays: refreshEssayPublished,
+    decks: refreshDecks,
+    cases: refreshCasesPublished
+  });
 
   return { render, osceEditor: openOsceEditor, validateOsce, validateCase };
 })();
