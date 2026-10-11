@@ -48,10 +48,15 @@ say('  redrawing the subjects when the course changes',
   /view\.querySelector\(courseSel\)\?\.addEventListener\('change', draw\)/.test(dev));
 
 /* THE WRITE. This is the line whose absence made every other piece
-   useless. */
+   useless.
+   SPELT DIFFERENTLY SINCE v132: papers used to spread the two tags inline
+   here and OSCE set them a third way. Both now go through stampCourse
+   with the rest, so what is asserted is that each importer HANDS ITS
+   PICKERS TO THAT FUNCTION — the behaviour — rather than the shape the
+   line happened to have. */
 say('a paper is published carrying the subject that was chosen',
-  /pickedSubject\('#pp-import-subject'\) \? \{ subject: pickedSubject\('#pp-import-subject'\) \} : \{\}/.test(dev));
-say('  an OSCE station too', /pickedSubject\('#os-import-subject'\); if \(sj\) d\.subject = sj;/.test(dev));
+  /stampCourse\(meta, '#pp-import-track', '#pp-import-subject'\)/.test(dev));
+say('  an OSCE station too', /stampCourse\(d, '#os-import-track', '#os-import-subject'\)/.test(dev));
 /* The essay importer had NEITHER picker — not even the course one — so an
    essay paper could reach the database filed nowhere at all. */
 say('  and an essay paper, which had no course picker either',

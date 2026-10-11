@@ -63,8 +63,12 @@ const Cases = (() => {
   /* ---------------- the bank ---------------- */
 
   let _cases = null;
+  /* Which subject the list is showing. Outside the cache, because the
+     cache holds the COURSE's cases and the subject narrows them — caching
+     per subject would mean five copies of one read. */
+  let caseSubject = '';
   async function cases() {
-    if (_cases) return _cases;
+    if (_cases) return bySubject(_cases);
     const all = await Backend.getCases();
     /* One course's cases. A long case written for final MBBS is not a
        harder Part 2 case, it is a different exam. */
@@ -72,8 +76,10 @@ const Cases = (() => {
       try { await Course.load(); _cases = all.filter(c => Course.fits(c)); }
       catch { _cases = all; }
     } else _cases = all;
-    return _cases;
+    return bySubject(_cases);
   }
+  const bySubject = list => (typeof Course !== 'undefined' && Course.fitsSubject)
+    ? list.filter(c => Course.fitsSubject(c, caseSubject)) : list;
   function bustCases() { _cases = null; }
 
   /* ---------------- the shape of a long case ----------------
@@ -239,6 +245,7 @@ const Cases = (() => {
           <a class="btn btn-gold btn-sm" href="#/cases/mine">Open the queue →</a>
         </div>` : ''}
 
+        ${(typeof Course !== 'undefined' && Course.subjectBar) ? Course.subjectBar(caseSubject) : ''}
         <div class="cs-search">
           <input type="search" id="cs-q" placeholder="Search the cases — topic, patient, anything in the vignette"
             autocomplete="off" value="${esc(lastSearch())}">
@@ -248,6 +255,15 @@ const Cases = (() => {
         <p class="cs-empty muted" id="cs-empty" hidden></p>
       </section>`;
     FX.viewIn(view);
+
+    /* A re-render, because the count beside the search box counts the
+       cases the chip has left. */
+    view.querySelector('.tk-subs')?.addEventListener('click', e => {
+      const b = e.target.closest('[data-sub]'); if (!b) return;
+      if ((b.dataset.sub || '') === caseSubject) return;
+      caseSubject = b.dataset.sub || '';
+      renderBank(view, user);
+    });
 
     const grid = view.querySelector('#cs-grid');
     const countEl = view.querySelector('#cs-count');

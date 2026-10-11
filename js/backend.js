@@ -1648,7 +1648,16 @@ const Backend = (() => {
           osceCardsOk = false;
         }
       }
-      return (await catalogue('the OSCE stations', () => sb.from('osce_stations').select('id,meta').order('id'))).map(r => osceCard(r.meta));
+      /* THE FALLBACK MUST STILL CARRY THE TAGS. This path runs when the
+         server will not parse the JSON projection above — and `tracks`
+         and `subject` are plain columns, which always parse. Dropping
+         them here would turn a degraded read into an open one: every
+         station would look unfiled, and unfiled is SHOWN. A fallback is
+         allowed to be slower; it is not allowed to show a candidate
+         another course's bank. */
+      return (await catalogue('the OSCE stations',
+        () => sb.from('osce_stations').select('id,meta,tracks,subject').order('id')))
+        .map(r => ({ ...osceCard(r.meta), tracks: r.tracks || [], subject: r.subject || null }));
     }
     /* The searchable text — every prompt and every marking point — is most of
        a card's weight and is needed only if someone actually types in the box,
@@ -2240,7 +2249,11 @@ const Backend = (() => {
           console.warn('papers: JSON projection unavailable, falling back to whole rows —', e.message || e);
         }
       }
-      return (await catalogue('the question bank', () => sb.from('papers').select('id,meta').order('id'))).map(r => r.meta);
+      /* Same rule as the OSCE fallback above: the tags are plain columns
+         and must survive the degraded read, or the bank opens up. */
+      return (await catalogue('the question bank',
+        () => sb.from('papers').select('id,meta,tracks,subject').order('id')))
+        .map(r => ({ ...r.meta, tracks: r.tracks || [], subject: r.subject || null }));
     }
     /** One paper's questions, fetched when that paper is opened. */
     async function getPaperContent(id) {

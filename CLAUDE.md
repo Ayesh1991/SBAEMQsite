@@ -86,7 +86,14 @@ step. Mounting one means releasing the last: `TeaRoom.releasePanel()` and
 - **A bank's read must SELECT `tracks,subject`** — this has been the bug
   four times (v117, v121, v129, v131). Stamping them on write is half the
   job; a projection that leaves them out means the filter has nothing to
-  filter on, and the content looks unfiled to every candidate.
+  filter on, and the content looks unfiled to every candidate. **Including
+  the FALLBACK read** (v132): the degraded path may be slower, never
+  looser.
+- **There are five banks and they move together** — papers, OSCE, essays,
+  flashcard decks, cases. Anything one of them gains (a picker, a filter,
+  a Course column, the move control) the other four need in the same
+  release; four of the last six releases were one bank catching up.
+  `t132-every-bank.mjs` asks all five the same questions.
 - **The console lists `Course.all()`, never `Course.live()`** (v130). A
   course is *filled* before it is opened, so offering only the open ones
   makes the course you are building the one you cannot choose — and the
@@ -106,8 +113,8 @@ is built), then `npx playwright install chromium`.
 
 ```bash
 npm run serve                                  # leave running (Node, no python)
-npm test                                       # all 32 files, summarised
-node tools/tests/t131-decks-by-course.mjs      # one release file
+npm test                                       # all 33 files, summarised
+node tools/tests/t132-every-bank.mjs           # one release file
 ```
 
 Each file prints `fails=0` and exits non-zero on failure. `/suite` runs
