@@ -9,6 +9,7 @@ one, replace the content, import it from the **Developer** console.
 | `mbbs-obgyn-essay.json` | Essay / SAQ | Developer → Essays |
 | `mbbs-obgyn-osce.json` | OSCE station | Developer → OSCE |
 | `mbbs-obgyn-case.json` | Case file | Developer → Cases |
+| `mbbs-obgyn-flashcards.json` | Flashcard deck | Developer → Flashcards |
 
 ## The course and the subject are NOT in the file
 
@@ -49,3 +50,17 @@ The subject ids are fixed: `obgyn`, `medicine`, `surgery`, `paediatrics`,
   does not letter them twice.
 - Everything else (`lead`, `rationale`, `hook`, `reference`, `source`,
   `id`) is optional and used where it helps.
+
+## Flashcard decks
+
+A deck is `topic` plus a `cards` array; each card needs `question` and
+`answer`, and may carry a `keyPoint`. Answers are **Markdown** — `**bold**`
+renders.
+
+**Do not put the spaced-repetition fields in the file.** A generator that
+emits `due`, `interval`, `easeFactor` and `reps` is describing *one
+person's* schedule, and a deck is shared by everybody on the course. The
+importer keeps exactly four fields per card — `id`, `question`, `answer`,
+`keyPoint` — and drops the rest, so a file carrying them imports correctly
+but the numbers are ignored. Each candidate's own schedule lives in
+`flashcard_progress`, keyed to them.

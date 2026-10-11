@@ -2361,8 +2361,16 @@ const Backend = (() => {
     }
 
     /* flashcards — decks global (dev-published), SRS progress per-user */
+    /* THE TAGS HAVE TO COME BACK, or nothing can filter on them. The write
+       has stamped tracks and subject since v117 and this read asked for
+       neither, so every deck reached the client looking unfiled and the
+       course filter had nothing to work with. Same shape as v121's three
+       banks; this is the fourth. The columns are merged ONTO the card
+       because the rest of the app reads a deck, not a row. */
     async function getFlashcardDecks() {
-      return (await catalogue('the flashcard decks', () => sb.from('flashcard_decks').select('id,meta').order('id'))).map(r => r.meta);
+      return (await catalogue('the flashcard decks',
+        () => sb.from('flashcard_decks').select('id,meta,tracks,subject').order('id')))
+        .map(r => ({ ...r.meta, tracks: r.tracks || [], subject: r.subject || null }));
     }
     async function publishFlashcardDeck(meta) { await ensureClient(); await sb.from('flashcard_decks').upsert(Object.assign({ id: meta.id, meta }, await contentTags(meta))); return meta; }
     async function unpublishFlashcardDeck(id) { await ensureClient(); await sb.from('flashcard_decks').delete().eq('id', id); }

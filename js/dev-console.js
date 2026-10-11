@@ -422,6 +422,12 @@ const DevConsole = (() => {
 
         <div class="dev-toolbar" data-animate>
           <button class="btn btn-gold" id="fc-scan">Scan flashcard Drive</button>
+          ${/* The flashcard importer had neither picker, so a deck could
+                only ever be filed under the editor's own course. */''}
+          <label class="wl-f" style="max-width:260px" id="fc-track-wrap" hidden><span>Course</span>
+            <select class="sel" id="fc-import-track"></select></label>
+          <label class="wl-f" style="max-width:260px" id="fc-subject-wrap" hidden><span>Subject</span>
+            <select class="sel" id="fc-import-subject"></select></label>
           <span class="dev-status" id="fc-status"></span>
         </div>
         <div id="fc-list" data-animate></div>
@@ -444,6 +450,8 @@ const DevConsole = (() => {
       </section>`;
 
     view.querySelector('#fc-scan').addEventListener('click', scanCards);
+    await fillCoursePicker(view, '#fc-track-wrap', '#fc-import-track');
+    await fillSubjectPicker(view, '#fc-subject-wrap', '#fc-import-subject', '#fc-import-track');
     view.querySelector('#fc-paste-btn').addEventListener('click', stagePastedDeck);
     await refreshDecks(view);
     ctx.FX.viewIn(view);
@@ -1309,6 +1317,7 @@ const DevConsole = (() => {
       if (!deck) throw new Error('Could not load this deck\'s content.');
       const errs = validateDeck(deck); if (errs.length) throw new Error(errs.join(' '));
       const meta = buildDeckMeta(f, deck);
+      stampCourse(meta, '#fc-import-track', '#fc-import-subject');
       await ctx.Backend.publishFlashcardDeck(meta);
       if (typeof Cache !== 'undefined') Cache.bust('flashcard-decks');
       msg.textContent = `✓ Published · ${meta.cardCount} cards.`; msg.className = 'dev-row-msg good';
