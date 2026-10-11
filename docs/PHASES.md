@@ -26,6 +26,7 @@ per release, each shippable on its own.
 | 130 | A course is filled before it is opened |
 | 131 | Flashcard decks belong to a course too |
 | 132 | Every bank, the same two questions |
+| 133 | An admin can stand in any course |
 
 Three exams are now fully separable: course, enrolment, syllabus,
 blueprint, question types, and all five banks. The editor/groups/group-mocks
@@ -484,6 +485,44 @@ It is a path that only runs when something is already wrong, and on it
 every filter would have silently opened: untagged content is *shown*, so a
 candidate would have been handed another course's bank with nothing to say
 so. A fallback may be slower. It may not be looser.
+
+---
+
+## v133 — An admin can stand in any course
+
+The developer could reach every course's **content** and look at none of
+it. The console lists all courses and files into any of them (v130), and
+the database has always agreed — `can_read_tracks()` begins
+`public.is_editor()`. But the site *outside* the console shows one course:
+the one you are on. The only way to change that, the profile picker,
+offered `Course.live()` — so the course being built, precisely the one
+worth looking at, was the one that could not be chosen.
+
+**v130 fixed this exact mistake twice already** (the importer's picker and
+the "filed nowhere" panel). It was in a third place.
+
+The half that was not a display problem: opening the picker is no use if
+choosing is refused, and local `enrol()` threw on any course that is not
+live — admins included. The cloud does not: `enrolments own insert`
+requires `is_live` and `enrolments admin all` overrides it. So the admin's
+own switch worked in production and failed in testing, which is the wrong
+way round.
+
+**Admin, not editor.** The database permits this through `is_admin()` and
+nothing weaker, so offering it to an editor would be offering a control
+that refuses them.
+
+Shipped: `Course.picker(id, name, {all:true})`; the profile offering every
+course to an admin, marked *being built*; a stand-in switch on the console
+hub, where the work happens; and local `enrol()` saying what the cloud
+says.
+
+Also `docs/CURRICULUM-HANDOVER.md` — a self-contained brief for the
+separate project that writes questions from past papers, so it can
+generate a curriculum tree this app imports. §4 of t133 asserts the
+document still matches the importer: the id prefixes, the merge-never-
+delete promise, the tags default, and the two-pass matcher. **A document
+that drifts from the code is worse than none, because it is believed.**
 
 ---
 

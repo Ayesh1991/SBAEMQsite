@@ -873,7 +873,17 @@ const Backend = (() => {
     async function enrol(trackId) {
       const tracks = seedTracks();
       const t = tracks.find(x => x.id === trackId);
-      if (!t || !t.isLive) throw new Error('That course is not open yet.');
+      if (!t) throw new Error('No such course.');
+      /* A CANDIDATE MAY ONLY ENROL IN AN OPEN COURSE; AN ADMIN MAY STAND
+         IN ANY. The cloud says exactly this — "enrolments own insert"
+         requires t.is_live, and "enrolments admin all" overrides it — and
+         local mode refused everybody, which made the admin's own switch
+         work in production and fail in testing. A rule only one backend
+         applies is a rule that gets tested on the wrong one. */
+      if (!t.isLive) {
+        const me = await currentUser();
+        if (!me || !me.isDeveloper) throw new Error('That course is not open yet.');
+      }
       const l = await myEnrolments();
       if (!l.some(e => e.trackId === trackId)) {
         /* TRIAL, never active — the same refusal the database makes. */

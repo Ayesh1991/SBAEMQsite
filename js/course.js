@@ -234,8 +234,14 @@ const Course = (() => {
    * question with one answer: noise on the sign-up form, and one more
    * thing to get wrong. It draws nothing, and the caller shows nothing.
    */
-  function picker(selectedId, name) {
-    const l = live();
+  function picker(selectedId, name, opts) {
+    /* EVERY COURSE FOR AN EDITOR — v133, and the same lesson as v130's
+       importer picker. A candidate may only choose a course that is open;
+       an editor has to be able to STAND IN one to see what it looks like,
+       and the course being built is precisely the one worth looking at.
+       The database already agrees: can_read_tracks() lets an editor read
+       any course's content, so this was the only thing in the way. */
+    const l = (opts && opts.all) ? all() : live();
     if (l.length < 2) return '';
     const stages = [...new Set(l.map(t => t.stage))]
       .sort((a, b) => (a === 'mbbs-final' ? -1 : b === 'mbbs-final' ? 1 : a.localeCompare(b)));
@@ -246,7 +252,7 @@ const Course = (() => {
           ${l.filter(t => t.stage === st).map(t => `
             <label class="tk-opt${t.id === selectedId ? ' is-on' : ''}">
               <input type="radio" name="${esc(name || 'course')}" value="${esc(t.id)}"${t.id === selectedId ? ' checked' : ''}>
-              <span class="tk-opt-n">${esc(t.short)}</span>
+              <span class="tk-opt-n">${esc(t.short)}${t.isLive ? '' : ' <i class="tk-wip">being built</i>'}</span>
               <span class="tk-opt-f">${esc(t.name)}</span>
             </label>`).join('')}
         </div>`).join('')}
