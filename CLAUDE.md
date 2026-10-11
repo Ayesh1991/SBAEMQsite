@@ -94,6 +94,10 @@ step. Mounting one means releasing the last: `TeaRoom.releasePanel()` and
   a Course column, the move control) the other four need in the same
   release; four of the last six releases were one bank catching up.
   `t132-every-bank.mjs` asks all five the same questions.
+- **An admin may stand in a course that is not open** (v133) — the
+  profile picker takes `{all:true}`, and the console hub has a switch.
+  `live()` is the candidate's list; `all()` is the editor's. This mistake
+  has now been made in three places.
 - **The console lists `Course.all()`, never `Course.live()`** (v130). A
   course is *filled* before it is opened, so offering only the open ones
   makes the course you are building the one you cannot choose — and the
@@ -113,8 +117,8 @@ is built), then `npx playwright install chromium`.
 
 ```bash
 npm run serve                                  # leave running (Node, no python)
-npm test                                       # all 33 files, summarised
-node tools/tests/t132-every-bank.mjs           # one release file
+npm test                                       # all 34 files, summarised
+node tools/tests/t133-stand-in-a-course.mjs    # one release file
 ```
 
 Each file prints `fails=0` and exits non-zero on failure. `/suite` runs

@@ -61,6 +61,14 @@ const DevConsole = (() => {
           <h1 class="page-title">Mission control</h1>
           <p class="muted">Backend: <strong>${ctx.Backend.mode === 'cloud' ? 'Supabase (shared)' : 'local (this browser)'}</strong> — pick a workspace.</p>
         </header>
+        ${/* STAND IN A COURSE — v133. An editor could reach every course's
+              CONTENT (the console lists them all) but could only ever LOOK
+              at the site as somebody on their own course, because the
+              profile picker offered the open ones and nothing else. This
+              is the same switch as the profile's, put where the work
+              happens: checking a page across courses is a dozen trips
+              otherwise. */''}
+        <div id="dev-standin"></div>
         <div id="dev-unfiled"></div>
         <div class="dev-hub" data-animate>
           <a class="dev-hub-card" href="#/dev/papers" style="--hub-accent:linear-gradient(135deg,#5eead4,#3987e5)">
@@ -188,6 +196,7 @@ const DevConsole = (() => {
       courseN = all.length ? `${live} open · ${all.length - live} being built` : 'run schema.sql';
     } catch { courseN = 'run schema.sql'; }
     put('#hub-courses', courseN);
+    paintStandIn(view.querySelector('#dev-standin'));
     paintUnfiled(view.querySelector('#dev-unfiled'));
   }
 
@@ -768,6 +777,46 @@ const DevConsole = (() => {
       </section>`;
     await refreshUsers(view);
     ctx.FX.viewIn(view);
+  }
+
+  /* The course an editor is standing in, switchable from the hub. It is
+     the REAL course switch — Course.choose() — not a pretend one: a
+     preview mode that only some pages honoured would show a different
+     site from the one candidates get, which is the opposite of the
+     point. */
+  async function paintStandIn(host) {
+    if (!host) return;
+    let courses = [], now = '';
+    try { await Course.load(); courses = Course.all(); now = Course.currentId(); } catch { return; }
+    if (courses.length < 2) { host.innerHTML = ''; return; }
+    const { esc } = ctx;
+    host.innerHTML = `
+      <div class="card dev-standin" data-animate>
+        <div>
+          <h3 class="card-title">You are looking at the site as</h3>
+          <p class="muted tiny">Everything outside this console — the library, the mocks, the OSCE bank,
+            the decks — is filtered to this course. Switch to see what its candidates see.</p>
+        </div>
+        <label class="wl-f"><span>Course</span>
+          <select class="sel" id="standin-course">
+            ${courses.map(t => `<option value="${esc(t.id)}"${t.id === now ? ' selected' : ''}>${esc(t.short)}${t.isLive ? '' : ' — being built'}</option>`).join('')}
+          </select></label>
+        <span class="dev-status" id="standin-msg"></span>
+      </div>`;
+    host.querySelector('#standin-course').addEventListener('change', async e => {
+      const msg = host.querySelector('#standin-msg');
+      const id = e.target.value;
+      msg.textContent = 'Switching…'; msg.className = 'dev-status muted';
+      try {
+        await Course.choose(id);
+        /* choose() drops the six course-scoped caches; the console's own
+           lists are read fresh on the next render. */
+        msg.textContent = '✓ Now on ' + (Course.current()?.short || id);
+        msg.className = 'dev-status good';
+      } catch (err) {
+        msg.textContent = err.message || String(err); msg.className = 'dev-status bad';
+      }
+    });
   }
 
   /* ---------------- curriculum manager ---------------- */

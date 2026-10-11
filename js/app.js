@@ -1601,12 +1601,22 @@
        looking at without clicking anything. */
     try { await Course.load(); } catch { /* the rest of the profile is unaffected */ }
     const here = Course.current();
-    const coursePicker = Course.picker(Course.currentId(), 'profile-course');
+    /* An editor is offered every course, including the ones not open yet —
+       standing in one is how you see what a candidate will see. A
+       candidate is offered only what is open, as before. */
+    /* ADMIN, NOT EDITOR. The database permits standing in a course that
+       is not open through "enrolments admin all" and nothing weaker, so
+       offering it to an editor would be offering a control that refuses
+       them. */
+    const canSeeAll = !!user?.isDeveloper;
+    const coursePicker = Course.picker(Course.currentId(), 'profile-course', { all: canSeeAll });
     const courseCard = coursePicker ? `
         <div class="card" data-animate id="course-card">
           <h3 class="card-title">Your course</h3>
           <p class="muted">The exam you are preparing for. Everything in the banks is filtered to it —
-            change it here and the whole site follows.</p>
+            change it here and the whole site follows.${canSeeAll
+              ? ' As an admin you can also stand in a course that is still being built, to see it as a candidate will.'
+              : ''}</p>
           ${coursePicker}
           <p class="save-note" id="course-note"${courseSaved ? '' : ' hidden'}>Saved ✓</p>
           <p class="form-error" id="course-err" role="alert" hidden></p>
