@@ -20,11 +20,23 @@ const Flashcards = (() => {
   const addDays = (iso, n) => { const d = new Date(iso + 'T00:00:00'); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
   const isDue = st => !st || !st.due || st.due <= today();
 
-  async function decks() {
+  /* THE DECKS OF THE COURSE YOU ARE ON. Until v131 every published deck
+     reached every candidate, whichever exam they were sitting — the one
+     bank that never got the v116/v121 course filter. Untagged decks are
+     still SHOWN, the same rule as everywhere else: unfiled is not
+     irrelevant.
+     A PERSONAL DECK IS NEVER FILTERED. Cards you made from your own wrong
+     answers are yours, and hiding them because nobody tagged them with a
+     course would be taking your own notes away from you. */
+  async function decks(subject) {
     const loader = () => Backend.getFlashcardDecks().then(r => r || []);
-    const published = await ((typeof Cache !== 'undefined')
+    let published = await ((typeof Cache !== 'undefined')
       ? Cache.wrap(DECKS_KEY, DECKS_TTL, loader, { keepIfEmptied: true })
       : loader());
+    try {
+      await Course.load();
+      published = published.filter(d => Course.fits(d) && Course.fitsSubject(d, subject || ''));
+    } catch { /* a course that will not load must not empty the bank */ }
     // personal decks (e.g. AI cards from wrong answers) — small and fresh, never cached
     let personal = [];
     try { personal = (await Backend.listUserDecks?.()) || []; } catch { personal = []; }
@@ -96,6 +108,20 @@ const Flashcards = (() => {
     return /[A-Z]/.test(c) ? c : '#';
   }
 
+  /* A re-render, not a hide: every number on this page — decks, cards due,
+     total cards, and each filter chip — counts the decks on screen. */
+  function wireSubjects(body, view, user) {
+    body.querySelector('.tk-subs')?.addEventListener('click', e => {
+      const b = e.target.closest('[data-sub]'); if (!b) return;
+      if ((b.dataset.sub || '') === deckSubject) return;
+      deckSubject = b.dataset.sub || '';
+      renderList(view, user);
+    });
+  }
+
+  /* Which subject the deck list is showing. Outside the render so opening
+     a deck and coming back does not throw the choice away. */
+  let deckSubject = '';
   async function renderList(view, user) {
     view.innerHTML = `
       <section class="page">
@@ -108,14 +134,24 @@ const Flashcards = (() => {
       </section>`;
 
     const [list, allProg] = await Promise.all([
-      decks().catch(() => []),
+      decks(deckSubject).catch(() => []),
       Backend.listAllCardProgress ? Backend.listAllCardProgress().catch(() => ({})) : Promise.resolve({})
     ]);
     const body = view.querySelector('#fc-body');
+    let subjectBar = '';
+    try { await Course.load(); subjectBar = Course.subjectBar ? Course.subjectBar(deckSubject) : ''; } catch {}
+    /* AN EMPTY LIST HAS TWO CAUSES AND THEY NEED DIFFERENT SENTENCES.
+       "No decks published yet" is a lie when there are decks and a chip is
+       hiding them, and it sends somebody to the importer to fix a filter. */
     if (!list.length) {
-      body.innerHTML = `<div class="fc-empty card"><span class="fc-empty-ico">🗂️</span>
-        <p>No decks published yet.</p>
-        <p class="muted tiny">Import flashcard JSON from the Developer tab to build your first deck.</p></div>`;
+      body.innerHTML = `${subjectBar}<div class="fc-empty card"><span class="fc-empty-ico">🗂️</span>
+        ${deckSubject
+          ? `<p>No decks under ${esc(Course.subjectName(deckSubject))} yet.</p>
+             <p class="muted tiny">Choose <strong>All subjects</strong> above to see the rest.</p>`
+          : `<p>No decks published yet.</p>
+             <p class="muted tiny">Import flashcard JSON from the Developer tab to build your first deck.</p>`}
+      </div>`;
+      wireSubjects(body, view, user);
       return;
     }
 
@@ -143,6 +179,10 @@ const Flashcards = (() => {
       </div>
       <div id="fc-results" class="lib-results" hidden></div>
       <div id="fc-groups"></div>`;
+    /* Drawn above the summary, because the counts in it are counts of the
+       decks the chip has left. */
+    if (subjectBar) body.insertAdjacentHTML('afterbegin', subjectBar);
+    wireSubjects(body, view, user);
 
     const groupsEl = body.querySelector('#fc-groups');
     const resultsEl = body.querySelector('#fc-results');

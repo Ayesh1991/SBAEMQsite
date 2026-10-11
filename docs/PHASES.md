@@ -24,6 +24,7 @@ per release, each shippable on its own.
 | 128 | **Phase 7** — one place for a group |
 | 129 | **Phase 8** — a course splits into its subjects |
 | 130 | A course is filled before it is opened |
+| 131 | Flashcard decks belong to a course too |
 
 Three exams are now fully separable: course, enrolment, syllabus,
 blueprint, question types, and all five banks. The editor/groups/group-mocks
@@ -410,6 +411,43 @@ published-papers table now shows each paper's course and subject, with a
 **move** that re-files it in place through the same `fileUnder()` the
 unfiled panel uses — content mis-filed by a bug has to be fixable by the
 person who hit it, without unpublishing and importing again.
+
+---
+
+## v131 — Flashcard decks belong to a course too
+
+The fourth bank, and the one that was never joined up. v116 filtered the
+OSCE bank by course, v121 did papers, essays and cases, v129 added the
+subject below that. **Flashcard decks were in none of it** — every
+published deck reached every candidate, whichever exam they were sitting.
+
+And the read is why, for the third time:
+`getFlashcardDecks` asked for `id,meta` — neither tag — and then mapped
+straight to `r.meta`, so the columns could not have survived even if they
+had been selected. `publishFlashcardDeck` has stamped `tracks` and
+`subject` since v117. *A filter cannot filter on what the read never
+returned.*
+
+Shipped: the read brings both tags back and keeps them on the deck; the
+deck list filters by course and subject and draws the subject chips; the
+flashcard importer gained the course and subject pickers it never had.
+
+Two details worth keeping:
+
+- **A personal deck is never filtered.** Cards made from your own wrong
+  answers are yours, and hiding them because nobody tagged them with a
+  course would be taking your own notes away from you.
+- **An empty list has two causes and they need different sentences.** "No
+  decks published yet" is a lie when there are decks and a chip is hiding
+  them, and it sends somebody to the importer to fix a filter.
+
+Also: a generated deck file carries `due`, `interval`, `easeFactor` and
+`reps`. Those describe **one person's** schedule and must not enter a
+shared deck. `buildDeckMeta` drops them by naming the four fields it
+keeps, and t131 is the test that it still does.
+
+Still to do: **cases** remain the one bank with no subject picker, and
+the `move` control added in v130 covers papers only.
 
 ---
 

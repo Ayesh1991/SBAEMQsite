@@ -1,0 +1,24 @@
+{
+  "topic": "Female pelvic anatomy and development",
+  "source": "Ten Teachers Gynaecology, Ch 1 (2024)",
+  "cards": [
+    {
+      "id": "1",
+      "question": "What determines whether the bipotential fetal gonad becomes a testis or an ovary?",
+      "answer": "The **SRY gene** on the Y chromosome actively drives the indifferent gonad to become a testis. Ovarian development is also active, directed by ovarian-determining genes, rather than a simple default.",
+      "keyPoint": ""
+    },
+    {
+      "id": "2",
+      "question": "⭐ What is the embryological origin of the vagina?",
+      "answer": "The upper vagina forms from the **fused Müllerian ducts**, and the lower vagina from the sinovaginal bulbs of the urogenital sinus. The vaginal plate canalises from the hymen upwards, so failure of canalisation causes obstruction at the hymen or higher.",
+      "keyPoint": "⭐ Upper vagina = Müllerian; lower vagina = urogenital sinus."
+    },
+    {
+      "id": "3",
+      "question": "⭐ Where is the ureter most at risk during hysterectomy?",
+      "answer": "It passes **beneath the uterine artery** about 1 cm lateral to the supravaginal cervix, so it can be clamped or tied with the uterine vessels.",
+      "keyPoint": "⭐ Water under the bridge: the ureter lies under the uterine artery."
+    }
+  ]
+}

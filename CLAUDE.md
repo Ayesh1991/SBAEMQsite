@@ -83,6 +83,10 @@ step. Mounting one means releasing the last: `TeaRoom.releasePanel()` and
   Subject ids: `obgyn`, `medicine`, `surgery`, `paediatrics`,
   `psychiatry`, `anaesthesiology`.
 - Import file formats and what the validator refuses: `data/samples/`.
+- **A bank's read must SELECT `tracks,subject`** — this has been the bug
+  four times (v117, v121, v129, v131). Stamping them on write is half the
+  job; a projection that leaves them out means the filter has nothing to
+  filter on, and the content looks unfiled to every candidate.
 - **The console lists `Course.all()`, never `Course.live()`** (v130). A
   course is *filled* before it is opened, so offering only the open ones
   makes the course you are building the one you cannot choose — and the
@@ -102,8 +106,8 @@ is built), then `npx playwright install chromium`.
 
 ```bash
 npm run serve                                  # leave running (Node, no python)
-npm test                                       # all 31 files, summarised
-node tools/tests/t130-fill-before-open.mjs     # one release file
+npm test                                       # all 32 files, summarised
+node tools/tests/t131-decks-by-course.mjs      # one release file
 ```
 
 Each file prints `fails=0` and exits non-zero on failure. `/suite` runs
