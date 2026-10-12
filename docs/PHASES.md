@@ -28,6 +28,7 @@ per release, each shippable on its own.
 | 132 | Every bank, the same two questions |
 | 133 | An admin can stand in any course |
 | 134 | Flashcards are revision, not part of the exam |
+| 135 | A candidate's history belongs to its course |
 
 Three exams are now fully separable: course, enrolment, syllabus,
 blueprint, question types, and all five banks. The editor/groups/group-mocks
@@ -553,6 +554,50 @@ decks from that list without touching `renderDeck` would have made every
 mistake deck answer *"that deck is no longer published"* — from a link on
 a page that had just counted it. It searches both lists now, and §3 of
 t134 is that link.
+
+---
+
+## v135 — A candidate's history belongs to the course it was made on
+
+Content has been course-tagged since v115. A candidate's **own history**
+never was. So standing in final MBBS showed twenty-four Part 2 mocks, a
+last score of 78% earned on another exam, and mistake decks full of O&G.
+
+That is the mild half. **The weakness profile is computed from that
+history** — `loadHistory()` decays every mock by age and aggregates per
+bucket, and `select()` up-weights the buckets the candidate is weak in.
+With the wrong exam's history in it, the wrong exam was steering the
+right one, and since the bucket names of one exam do not appear in the
+other's blueprint the steering was not merely wrong but noise.
+
+Mocks and mistake decks are now stamped with the course on write and
+filtered by it on read, in both backends. **A row with no track was
+written when `pgim-og-2` was the only course there was** — a fact about
+this deployment's history, not a guess, and the same reasoning the v119
+curriculum and v121 blueprint migrations used. A mock asked for *by id*
+is never hidden: a review link should open the mock it names.
+
+### Why the MBBS mock could not start
+
+The readiness gate demanded ten unseen EMQs of **every** course. The
+final MBBS paper has no EMQ section — it is SBA and true/false — so the
+button stayed disabled and the reason given was *"not enough unseen
+questions, EMQ unseen: 0"*: a shortage of something nobody had asked for.
+
+Each section is now required only if the blueprint wants it, by the same
+test the planner uses to decide whether to draw one. A blueprint that
+asks for **nothing** is refused separately, or the gate passes vacuously
+and `select()` falls to the top-up — arbitrary questions dressed as a
+blueprint-shaped mock, which v121 §4 exists to refuse.
+
+**Three states needed three sentences.** "Not enough unseen questions"
+sends somebody to import more papers; importing cannot fix an empty
+blueprint. That case now says so, and names the course.
+
+Also `docs/BLUEPRINT-HANDOVER.md`, the companion to the curriculum brief,
+for the project that knows the exam's shape. §5 of t135 asserts it still
+matches the parser — including the trap that omitting `emq_count` leaves
+it at **30**, so a section is removed by dropping its **bucket list**.
 
 ---
 

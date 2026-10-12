@@ -94,6 +94,11 @@ step. Mounting one means releasing the last: `TeaRoom.releasePanel()` and
   a Course column, the move control) the other four need in the same
   release; four of the last six releases were one bank catching up.
   `t132-every-bank.mjs` asks all five the same questions.
+- **A candidate's own history is course-scoped too** (v135) — mocks and
+  mistake decks are stamped with `track` on write and filtered on read,
+  because `loadHistory()` feeds the weakness profile that shapes the next
+  mock. A row with no `track` belongs to `pgim-og-2`, the course that
+  existed before courses did. A mock fetched **by id** is never filtered.
 - **An admin may stand in a course that is not open** (v133) — the
   profile picker takes `{all:true}`, and the console hub has a switch.
   `live()` is the candidate's list; `all()` is the editor's. This mistake
@@ -117,8 +122,8 @@ is built), then `npx playwright install chromium`.
 
 ```bash
 npm run serve                                  # leave running (Node, no python)
-npm test                                       # all 35 files, summarised
-node tools/tests/t134-flashcards-own-tab.mjs   # one release file
+npm test                                       # all 36 files, summarised
+node tools/tests/t135-history-by-course.mjs    # one release file
 ```
 
 Each file prints `fails=0` and exits non-zero on failure. `/suite` runs

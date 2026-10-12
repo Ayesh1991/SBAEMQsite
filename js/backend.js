@@ -96,6 +96,39 @@ const Backend = (() => {
      else's paediatrics station while enrolled in O&G must not quietly
      move it into their own course. The default fills a blank; it does not
      take a decision back. */
+  /* ---------- A CANDIDATE'S OWN HISTORY BELONGS TO A COURSE TOO ----------
+     v135. Content has been course-tagged since v115, but a candidate's
+     MOCKS and the flashcard decks built from their mistakes never were —
+     so switching to final MBBS showed twenty-four Part 2 mocks, a 78%
+     last score earned on another exam, and mistake decks full of O&G.
+     Worse than untidy: the weakness profile that shapes the next mock is
+     computed from that history, so the wrong exam was steering the right
+     one.
+
+     THE COURSE THAT EXISTED BEFORE COURSES DID. A row with no track was
+     written when pgim-og-2 was the only course there was. That is not a
+     guess, it is a fact about this deployment's history, and it is the
+     same reasoning the v119 curriculum and v121 blueprint migrations
+     used two tables over. */
+  const LEGACY_TRACK = 'pgim-og-2';
+  async function hereTrack() {
+    if (typeof Course === 'undefined') return '';
+    try { await Course.load(); return Course.currentId() || ''; } catch { return ''; }
+  }
+  /** Keep the rows of the course this candidate is on. */
+  async function onThisCourse(rows) {
+    const here = await hereTrack();
+    /* With no course resolved at all, filtering would empty a history
+       that is not actually ambiguous. Show it. */
+    if (!here) return rows;
+    return (rows || []).filter(r => (r && r.track ? r.track : LEGACY_TRACK) === here);
+  }
+  /** Stamp the course onto something the candidate just produced. */
+  async function stampTrack(rec) {
+    if (rec && !rec.track) { const t = await hereTrack(); if (t) rec.track = t; }
+    return rec;
+  }
+
   async function contentTags(rec) {
     let tracks = Array.isArray(rec.tracks) ? rec.tracks.filter(Boolean)
       : (rec.tracks ? [String(rec.tracks)] : []);
@@ -746,9 +779,13 @@ const Backend = (() => {
 
     /* adaptive-simulator mock results — per-user */
     const mKey = e => 'mocks.' + e;
-    async function saveMockResult(result) { const e = sessionEmail(); if (!e) return null; const l = read(mKey(e), []); result.id = result.id || ('mock-' + Date.now().toString(36)); l.unshift(result); if (l.length > 200) l.length = 200; write(mKey(e), l); return result; }
-    async function listMockResults() { const e = sessionEmail(); if (!e) return []; return read(mKey(e), []); }
-    async function getMockResult(id) { return (await listMockResults()).find(m => m.id === id) || null; }
+    async function saveMockResult(result) { const e = sessionEmail(); if (!e) return null; await stampTrack(result); const l = read(mKey(e), []); result.id = result.id || ('mock-' + Date.now().toString(36)); l.unshift(result); if (l.length > 200) l.length = 200; write(mKey(e), l); return result; }
+    async function listMockResults() { const e = sessionEmail(); if (!e) return []; return onThisCourse(read(mKey(e), [])); }
+    /* BY ID, UNFILTERED. A review link to a mock sat on another course
+       should open it, not deny it exists — the list is scoped so the
+       history reads as this course's; one you asked for by name is one
+       you already know about. */
+    async function getMockResult(id) { const e = sessionEmail(); if (!e) return null; return read(mKey(e), []).find(m => m.id === id) || null; }
 
     /* review queue — wrong SBA/EMQ scheduled for spaced review */
     const rvKey = e => 'review.' + e;
@@ -830,8 +867,8 @@ const Backend = (() => {
 
     /* personal decks (AI flashcards from wrong answers) */
     const udKey = e => 'userdecks.' + e;
-    async function saveUserDeck(meta) { const e = sessionEmail(); if (!e) return null; const l = read(udKey(e), []); const i = l.findIndex(d => d.id === meta.id); if (i >= 0) l[i] = meta; else l.push(meta); write(udKey(e), l); return meta; }
-    async function listUserDecks() { const e = sessionEmail(); return e ? read(udKey(e), []) : []; }
+    async function saveUserDeck(meta) { const e = sessionEmail(); if (!e) return null; await stampTrack(meta); const l = read(udKey(e), []); const i = l.findIndex(d => d.id === meta.id); if (i >= 0) l[i] = meta; else l.push(meta); write(udKey(e), l); return meta; }
+    async function listUserDecks() { const e = sessionEmail(); return e ? onThisCourse(read(udKey(e), [])) : []; }
     async function deleteUserDeck(id) { const e = sessionEmail(); if (!e) return; write(udKey(e), read(udKey(e), []).filter(d => d.id !== id)); }
 
     /* registration + user status (local: always open/approved) */
@@ -2432,12 +2469,16 @@ const Backend = (() => {
     async function saveMockResult(result) {
       await ensureClient(); const id = await uid(); if (!id) return null;
       result.id = result.id || ('mock-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6));
+      await stampTrack(result);
       await sb.from('mock_results').insert({ id: result.id, user_id: id, payload: result }); return result;
     }
     async function listMockResults() {
       await ensureClient(); const id = await uid(); if (!id) return [];
       const { data } = await sb.from('mock_results').select('id,payload').eq('user_id', id).order('created_at', { ascending: false });
-      return (data || []).map(r => ({ id: r.id, ...r.payload }));
+      /* The course lives inside the payload, so the filter is here rather
+         than in the query — a jsonb predicate on a column with no index
+         would cost more than the page it saves. */
+      return onThisCourse((data || []).map(r => ({ id: r.id, ...r.payload })));
     }
     async function getMockResult(mid) {
       await ensureClient();
@@ -2578,13 +2619,14 @@ const Backend = (() => {
     /* personal decks (AI flashcards from wrong answers) */
     async function saveUserDeck(meta) {
       await ensureClient(); const id = await uid(); if (!id) return null;
+      await stampTrack(meta);
       await sb.from('user_decks').upsert({ user_id: id, id: meta.id, meta, updated_at: new Date().toISOString() }, { onConflict: 'user_id,id' });
       return meta;
     }
     async function listUserDecks() {
       await ensureClient(); const id = await uid(); if (!id) return [];
       const { data } = await sb.from('user_decks').select('meta').eq('user_id', id);
-      return (data || []).map(r => r.meta);
+      return onThisCourse((data || []).map(r => r.meta));
     }
     async function deleteUserDeck(deckId) {
       await ensureClient(); const id = await uid(); if (!id) return;
