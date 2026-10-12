@@ -371,10 +371,25 @@ const Simulator = (() => {
     const tfTotal = wantTf ? index.filter(r => r.kind === 'TF').length : 0;
     const unseenTf = wantTf
       ? index.filter(r => r.kind === 'TF' && !hist.seen.has(r.qkey) && !hist.excluded.has(r.qkey)).length : 0;
-    /* Asking for true/false the bank cannot supply would build a paper
-       quietly short of its own blueprint, so it blocks the button like a
-       missing SBA does rather than being discovered at question 61. */
-    const enough = unseenSba >= 10 && unseenEmq >= 10 && (!wantTf || unseenTf >= 10);
+    /* WHAT THE BLUEPRINT ASKS FOR, AND NOTHING ELSE — v135.
+       This demanded ten unseen EMQs of every course. The final MBBS paper
+       has no EMQ section at all: it is SBA and true/false. So a course
+       whose blueprint asks for no EMQ could never start a mock, and the
+       reason given was "not enough unseen questions" with EMQ unseen: 0 —
+       a shortage of something nobody had asked for.
+       Each section is now required only if the blueprint wants it, by the
+       same test the planner uses to decide whether to draw one. */
+    const wantSba = bp.paper.sbaCount > 0 && (bp.sba || []).length > 0;
+    const wantEmq = bp.paper.emqCount > 0 && (bp.emq || []).length > 0;
+    /* And a blueprint that asks for nothing at all cannot make a paper.
+       Without this the gate passes vacuously and select() falls through to
+       the top-up, handing out arbitrary questions dressed as a
+       blueprint-shaped mock — the thing v121 §4 exists to refuse. */
+    const asksForAnything = wantSba || wantEmq || wantTf;
+    const enough = asksForAnything
+      && (!wantSba || unseenSba >= 10)
+      && (!wantEmq || unseenEmq >= 10)
+      && (!wantTf || unseenTf >= 10);
 
     // weak areas (lowest accuracy with enough evidence)
     const weak = Object.entries(hist.bucketAgg)
@@ -387,11 +402,28 @@ const Simulator = (() => {
       ${modeSwitcherHTML('mock')}
       <div class="sim-hero card" data-animate>
         <div class="sim-hero-main">
-          <p class="sim-hero-kicker">Blueprint v${bp.version || 1}${bp.updated ? ' · ' + esc(bp.updated) : ''} · ${bp.sba.length} SBA topics · ${bp.emq.length} EMQ themes${wantTf ? ` · ${bp.tf.length} T/F topics` : ''}</p>
+          ${/* Only the sections this exam HAS. A kicker reading "0 EMQ
+                themes" on a paper with no EMQ section states a shortfall
+                that does not exist. */''}
+          <p class="sim-hero-kicker">Blueprint v${bp.version || 1}${bp.updated ? ' · ' + esc(bp.updated) : ''}${
+            [wantSba ? `${bp.sba.length} SBA topics` : '', wantEmq ? `${bp.emq.length} EMQ themes` : '',
+             wantTf ? `${bp.tf.length} T/F topics` : ''].filter(Boolean).map(x => ' · ' + x).join('')}</p>
           <h2>${hist.mocks.filter(m => !m.custom).length ? `Mock #${hist.mocks.filter(m => !m.custom).length + 1}` : 'Your first mock'}</h2>
-          <p class="muted">${enough
-            ? `Ready — ${unseenSba} SBA${wantTf ? `, ${unseenEmq} EMQ & ${unseenTf} T/F` : ` & ${unseenEmq} EMQ`} still unseen in the bank.`
-            : `<span class="bad">Not enough unseen questions yet.</span> Publish more papers (or clear a flaw exclusion). SBA unseen: ${unseenSba}, EMQ unseen: ${unseenEmq}${wantTf ? `, T/F unseen: ${unseenTf}` : ''}.`}</p>
+          ${/* THREE ANSWERS, NOT TWO. "Not enough unseen questions" is the
+                wrong sentence for a course whose blueprint is empty: the
+                bank may be full and nothing has been asked of it. That
+                one sends somebody to import more papers to fix a problem
+                importing cannot fix. */''}
+          <p class="muted">${!asksForAnything
+            ? `<span class="bad">No blueprint for ${esc(Course.current()?.short || 'this course')} yet.</span>
+               A mock is shaped by the blueprint — how many of each kind, and from which topics — so there is
+               nothing to build one from until this course has one.`
+            : enough
+            ? `Ready — ${[wantSba ? `${unseenSba} SBA` : '', wantEmq ? `${unseenEmq} EMQ` : '', wantTf ? `${unseenTf} T/F` : '']
+                 .filter(Boolean).join(', ')} still unseen in the bank.`
+            : `<span class="bad">Not enough unseen questions yet.</span> Publish more papers (or clear a flaw exclusion).
+               ${[wantSba ? `SBA unseen: ${unseenSba}` : '', wantEmq ? `EMQ unseen: ${unseenEmq}` : '',
+                  wantTf ? `T/F unseen: ${unseenTf}` : ''].filter(Boolean).join(', ')}.`}</p>
           <div class="sim-hero-actions">
             <button class="btn btn-gold btn-lg" id="sim-start" ${enough ? '' : 'disabled'}>Generate today's mock →</button>
             <button class="btn btn-ghost btn-lg" id="sim-preview" ${enough ? '' : 'disabled'} title="See which blueprint areas tomorrow's paper will cover — and change them">🗺 Coverage map for this paper</button>
