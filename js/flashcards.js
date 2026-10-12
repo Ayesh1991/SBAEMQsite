@@ -37,10 +37,19 @@ const Flashcards = (() => {
       await Course.load();
       published = published.filter(d => Course.fits(d) && Course.fitsSubject(d, subject || ''));
     } catch { /* a course that will not load must not empty the bank */ }
-    // personal decks (e.g. AI cards from wrong answers) — small and fresh, never cached
-    let personal = [];
-    try { personal = (await Backend.listUserDecks?.()) || []; } catch { personal = []; }
-    return [...personal, ...published.filter(p => !personal.some(x => x.id === p.id))];
+    /* THE DECKS BUILT FROM YOUR OWN MISTAKES DO NOT LIVE HERE — v134.
+       They used to be merged in at the top of this list, which put a
+       deck named after mock #7 beside the published revision decks and
+       made the library look like a mixture of somebody's study material
+       and their errors. They belong to the paper that produced them, so
+       they stay on My mistakes, under Theory, where the rest of that
+       work is. Flashcards.mine() is how that page asks for them. */
+    return published;
+  }
+  /** The decks a candidate generated from their own wrong answers. */
+  async function mine() {
+    try { return ((await Backend.listUserDecks?.()) || []).filter(d => /^deck-ai-/.test(d.id)); }
+    catch { return []; }
   }
   function bustDecks() { if (typeof Cache !== 'undefined') Cache.bust(DECKS_KEY); }
 
@@ -235,7 +244,12 @@ const Flashcards = (() => {
   /* ---------- study session (#/cards/:id) ---------- */
 
   async function renderDeck(view, deckId, user) {
-    const list = await decks().catch(() => []);
+    /* BOTH LISTS. The library and the mistake decks are shown in
+       different places since v134, but a deck is SAT the same way
+       wherever it was opened from — and the mistake decks are reached
+       from My mistakes, so looking only in the library would have made
+       every one of them "no longer published". */
+    const list = (await decks().catch(() => [])).concat(await mine());
     const deck = list.find(d => d.id === deckId);
     if (!deck) { view.innerHTML = `<section class="page narrow"><p class="muted">That deck is no longer published. <a class="link" href="#/cards">Back to decks</a></p></section>`; return; }
 
@@ -471,5 +485,5 @@ const Flashcards = (() => {
     return '<p>' + h + '</p>';
   }
 
-  return { renderList, renderDeck, bustDecks, decks, schedule, deckStats };
+  return { renderList, renderDeck, bustDecks, decks, mine, schedule, deckStats };
 })();
