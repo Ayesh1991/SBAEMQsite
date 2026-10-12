@@ -234,9 +234,16 @@
       <div class="nav-links" id="nav-links">
         ${user ? `
           <a href="#/dashboard" class="${location.hash === '#/dashboard' ? 'active' : ''}">Dashboard</a>
+          ${/* FLASHCARDS IS NOT A THEORY TAB — v134. Theory is the exam:
+                the bank, the mocks, the essays, the mistakes they produce.
+                Spaced repetition is REVISION, done on a different day for
+                a different reason, and burying it in the exam's sub-nav
+                made it look like a component of a paper. Note that #/cards
+                is no longer one of the addresses that light Theory. */''}
           <a href="#/library" class="${location.hash.startsWith('#/library') || location.hash.startsWith('#/paper')
-            || location.hash.startsWith('#/simulator') || location.hash.startsWith('#/cards')
+            || location.hash.startsWith('#/simulator')
             || location.hash.startsWith('#/mistakes') ? 'active' : ''}">Theory</a>
+          ${fcOn ? `<a href="#/cards" class="${location.hash.startsWith('#/cards') ? 'active' : ''}">Flashcards</a>` : ''}
           <a href="#/osce" class="${location.hash.startsWith('#/osce') ? 'active' : ''}">OSCE</a>
           ${casesOn ? `<a href="#/cases" class="${location.hash.startsWith('#/cases') ? 'active' : ''}">Cases</a>` : ''}
           <a href="#/studio" class="${location.hash === '#/studio' ? 'active' : ''}">Studio<span class="nav-badge nav-badge-tea" id="nav-tea-badge" hidden></span></a>
@@ -895,7 +902,6 @@
   // library page; Essay.js reaches it via window.__aureumLibraryShell.
   function librarySubnav(active, user) {
     const u = user || window.__aureumUser;
-    const fcOn = u && (devOnly(u) || (isPaid(u) && u.featureFlags?.flashcards && u.prefs?.flashcards));
     const cpdOn = u && (devOnly(u) || (isPaid(u) && u.featureFlags?.cpd && u.prefs?.cpd));
     const simOn = u && (devOnly(u) || (isPaid(u) && u.featureFlags?.simulator && u.prefs?.simulator));
     const tab = (id, href, label) => `<a class="lib-tab ${active === id ? 'active' : ''}" href="${href}">${label}</a>`;
@@ -905,7 +911,10 @@
       ${tab('essay', '#/library/essay', 'Essay')}
       ${tab('notes', '#/library/notes', 'Notes')}
       ${cpdOn ? tab('cpd', '#/library/cpd', 'CPD') : ''}
-      ${fcOn ? tab('cards', '#/cards', 'Flashcards') : ''}
+      ${/* Flashcards left this row in v134 and became a tab of its own —
+            see the nav. The decks built from a candidate's OWN mistakes
+            stay here, under My mistakes, because they are part of working
+            through a paper and not part of the revision deck library. */''}
       ${simOn ? tab('mistakes', '#/mistakes', 'My mistakes') : ''}
     </div>`;
   }
@@ -2149,7 +2158,10 @@
 
     let mocks = [], decks = [], hist = null;
     try { mocks = ((await Backend.listMockResults()) || []); } catch { mocks = []; }
-    try { decks = ((await Backend.listUserDecks()) || []).filter(d => /^deck-ai-/.test(d.id)); } catch { decks = []; }
+    /* One definition of "a deck built from my mistakes", in Flashcards —
+       this page and the deck library both ask it, so the two cannot
+       disagree about which decks those are. */
+    try { decks = await Flashcards.mine(); } catch { decks = []; }
     try { hist = await Simulator.loadHistory(); } catch { hist = { bucketAgg: {} }; }
     const studied = Object.assign({}, user.prefs?.studiedAreas || {});
 
@@ -3015,7 +3027,9 @@
     nav.innerHTML = librarySubnav(active, user);
     page.insertBefore(nav.firstElementChild, page.firstChild);
   }
-  async function renderCards(user) { if (!canUse(user, 'flashcards')) return renderLocked('Flashcards'); await Flashcards.renderList(view, user); injectLibNav('cards', user); }
+  /* NO SUB-NAV. Flashcards is its own tab since v134, so wearing Theory's
+     row of tabs would say it is still one of them. */
+  async function renderCards(user) { if (!canUse(user, 'flashcards')) return renderLocked('Flashcards'); await Flashcards.renderList(view, user); }
   async function renderDeck(deckId, user) { if (!canUse(user, 'flashcards')) return renderLocked('Flashcards'); await Flashcards.renderDeck(view, deckId, user); }
   async function renderSimHome(user) { if (!canUse(user, 'simulator')) return renderLocked('The adaptive simulator'); await Simulator.renderHome(view, user); }
   async function renderSimRun(user) { if (!canUse(user, 'simulator')) return renderLocked('The adaptive simulator'); await Simulator.startRun(view, user); }

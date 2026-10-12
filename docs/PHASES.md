@@ -27,6 +27,7 @@ per release, each shippable on its own.
 | 131 | Flashcard decks belong to a course too |
 | 132 | Every bank, the same two questions |
 | 133 | An admin can stand in any course |
+| 134 | Flashcards are revision, not part of the exam |
 
 Three exams are now fully separable: course, enrolment, syllabus,
 blueprint, question types, and all five banks. The editor/groups/group-mocks
@@ -523,6 +524,35 @@ generate a curriculum tree this app imports. §4 of t133 asserts the
 document still matches the importer: the id prefixes, the merge-never-
 delete promise, the tags default, and the two-pass matcher. **A document
 that drifts from the code is worse than none, because it is believed.**
+
+---
+
+## v134 — Flashcards are revision, not part of the exam
+
+Theory is the exam: the question bank, the mocks, the essays, the
+mistakes a paper produces. Spaced repetition is done on a different day
+for a different reason, and sitting it in Theory's sub-nav — between
+Essay and My mistakes — said it was one more component of a paper. It is
+a tab of its own now, and `#/cards` no longer lights Theory.
+
+**And the decks built from a candidate's own mistakes do not go with it.**
+They were merged in at the top of the deck library, which put *"Mock 7 —
+what you got wrong"* beside the published revision decks and made the
+library a mixture of somebody's study material and their errors. They
+belong to the paper that produced them, so they stay on **My mistakes**,
+under Theory, with the rest of that work.
+
+`Flashcards.mine()` is the one definition of which decks those are — the
+Mistakes page had its own copy of the same filter and now asks for it.
+
+### The half that would have broken quietly
+
+A deck is **sat** the same way wherever it was opened from, and
+`renderDeck` looked it up in the library list. Removing the personal
+decks from that list without touching `renderDeck` would have made every
+mistake deck answer *"that deck is no longer published"* — from a link on
+a page that had just counted it. It searches both lists now, and §3 of
+t134 is that link.
 
 ---
 
