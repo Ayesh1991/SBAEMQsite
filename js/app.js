@@ -100,7 +100,10 @@
     { re: /^#\/mistakes$/, fn: renderMistakes },
     { re: /^#\/mistakes\/deck\/([^/]+)$/, fn: renderMistakeDeck },
     { re: /^#\/simulator\/result\/([^/]+)$/, fn: renderSimResult },
-    { re: /^#\/dev(?:\/(papers|cards|users|blueprint|review|ai|essays|tearoom|cpd|osce|cases|settings|courses))?$/, fn: renderDev }
+    /* A console section the router does not list renders the hub instead —
+       the section function exists, the hub card points at it, and nothing
+       anywhere says why the link goes nowhere. Add the name here too. */
+    { re: /^#\/dev(?:\/(papers|cards|users|blueprint|review|ai|essays|tearoom|cpd|osce|cases|settings|courses|remake))?$/, fn: renderDev }
   ];
   /* ADMIN BY ROLE, not by address. `isDeveloper` is computed in the
      backend from the profile's role, with the owner's email kept as the

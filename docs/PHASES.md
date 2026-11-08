@@ -670,11 +670,66 @@ withdrawing the re-make brings the original back.
 
 ---
 
+## v137 — The re-make backlog
+
+v136 made two editions able to coexist. It did not answer the question an
+editor actually has: of 8000+ questions, how far through am I, what is
+next, and what is safe to put away. `#/dev/remake` answers it.
+
+**The bar counts questions, not topics.** The topics are wildly uneven —
+one holds 400 questions and the next holds 12 — so a topic count flatters
+the work. In the test's fixture, three small finished topics and one big
+untouched one read as **75% done by topics and 3% by questions**. Both
+numbers are shown; the question one is the bar.
+
+### Five states, because four of them want different actions
+
+| State | Means | What to do |
+|---|---|---|
+| no paper yet | in the syllabus, nothing imported | import — not a re-make |
+| not started | 1st edition only | the work |
+| in review | a 2nd edition written, not yet published | wait |
+| **ready to put away** | 2nd edition live, 1st still live | **archive it** |
+| done | 2nd live, 1st archived | nothing |
+
+**The page exists for the fourth row.** When a 2nd edition goes live the
+1st is superseded but still live, so it is still offered under "also show
+the earlier questions". *Nothing looks broken from any other screen* — the
+candidate's bank already shows the newest — so those papers sit there
+indefinitely unless something counts them. Every other state is
+information; that one is a job, and it has a one-click bulk control.
+
+### Two bugs this release found
+
+**A "put away" control on a not-started topic.** The first draft returned
+every first-edition paper as archivable, so a topic nobody had touched was
+offered the control — and taking it would have archived the only edition
+that topic had, leaving the candidate no questions and no replacement
+coming. `archivable` now means **superseded**, which is only ever true
+once a replacement is live. t137 §3 asks all three states directly, rather
+than noticing by accident as the first run did.
+
+**A console section the router did not list.** `renderRemakeSection`
+existed, the hub card pointed at it, and `#/dev/remake` rendered the hub —
+because `js/app.js` matches dev sections against an explicit list and the
+new name was not in it. Nothing failed and nothing said why the link went
+nowhere. The route list now carries a comment saying it must be added in
+both places.
+
+### And the read that must carry the topic — the sixth time
+
+"In review" can only be told from "nobody has started" by reading the
+**topic** of a paper awaiting review, and `listForReview()`'s projection
+did not select it — in either backend. A filter cannot filter on what the
+read never returned: v117, v121, v129, v131, v132, and here. The
+difference this time is that the page would not have failed, it would have
+shown the wrong state.
+
 ---
 
 ## Not on this list, deliberately
 
-- **A build step.** It has been proposed twice and refused twice. 51 script
+- **A build step.** It has been proposed twice and refused twice. 54 script
   tags load in a fixed order and the site is served exactly as committed;
   that is slower for the browser and much safer for a project where one
   person's mistake is a white page for everybody. Revisit when the team is

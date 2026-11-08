@@ -7282,3 +7282,28 @@ body.sc-open { overflow: hidden; }
 .tk-wip { font-style: normal; font-size: .7rem; letter-spacing: .04em; text-transform: uppercase;
   color: var(--muted); border: 1px solid var(--hairline); border-radius: 999px; padding: 1px 7px; margin-left: 6px; }
 @media (max-width: 640px) { .g-tab { padding: 6px 11px; font-size: .8rem; } }
+
+/* ---------- re-make backlog (v137) ----------
+   The bar is the question count, not the topic count: see js/course.js
+   remakeBacklog() for why the topic count flatters the work. */
+.rm-bar { height: 10px; border-radius: 999px; background: rgba(255,255,255,.08);
+  overflow: hidden; margin: .5rem 0 .6rem; }
+.rm-bar > span { display: block; height: 100%; border-radius: 999px;
+  background: linear-gradient(90deg, #5eead4, #3987e5); transition: width .4s ease; }
+.rm-figure { margin: 0 0 .35rem; }
+.rm-figure strong { font-size: 1.15rem; }
+/* The one card that asks for an action. */
+.rm-ready { border-color: rgba(244,201,93,.45); }
+.rm-state { display: inline-block; padding: .1rem .5rem; border-radius: 999px;
+  font-size: .78rem; white-space: nowrap; }
+.rm-todo    { background: rgba(255,255,255,.08); color: var(--ink-3); }
+.rm-flight  { background: rgba(167,139,250,.18); color: #c4b5fd; }
+.rm-archive { background: rgba(244,201,93,.2);  color: #f4c95d; }
+.rm-done    { background: rgba(52,211,153,.18); color: #6ee7b7; }
+.rm-empty   { background: rgba(224,82,99,.14);  color: #f0a3ad; }
+.rm-odd { display: inline-block; margin-left: .4rem; padding: .05rem .4rem; border-radius: 4px;
+  font-size: .7rem; background: rgba(224,82,99,.16); color: #f0a3ad; }
+.chip-row { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: .7rem; }
+.chip-row .chip { cursor: pointer; border: 1px solid rgba(255,255,255,.14);
+  background: transparent; color: inherit; }
+.chip-row .chip.active { border-color: #5eead4; background: rgba(94,234,212,.14); }
