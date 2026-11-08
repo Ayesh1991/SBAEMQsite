@@ -55,8 +55,8 @@ say('  redrawing the subjects when the course changes',
    PICKERS TO THAT FUNCTION — the behaviour — rather than the shape the
    line happened to have. */
 say('a paper is published carrying the subject that was chosen',
-  /stampCourse\(meta, '#pp-import-track', '#pp-import-subject'\)/.test(dev));
-say('  an OSCE station too', /stampCourse\(d, '#os-import-track', '#os-import-subject'\)/.test(dev));
+  /stampCourse\(meta, '#pp-import-track', '#pp-import-subject', '#pp-import-edition'\)/.test(dev));
+say('  an OSCE station too', /stampCourse\(d, '#os-import-track', '#os-import-subject', '#os-import-edition'\)/.test(dev));
 /* The essay importer had NEITHER picker — not even the course one — so an
    essay paper could reach the database filed nowhere at all. */
 say('  and an essay paper, which had no course picker either',
@@ -64,7 +64,7 @@ say('  and an essay paper, which had no course picker either',
   && (dev.match(/stampCourse\(d, '#es-import-track', '#es-import-subject'\)/g) || []).length === 2);
 /* Four importers each doing it by hand is four chances to forget. */
 say('  through one function, not four copies of the same two lines',
-  /function stampCourse\(rec, courseSel, subjectSel\)/.test(dev));
+  /function stampCourse\(rec, courseSel, subjectSel, editionSel\)/.test(dev));
 
 say('the question bank offers the subject chips',
   /Course\.subjectBar\(librarySubject\)/.test(app) && /Course\.fitsSubject\(p, librarySubject\)/.test(app));

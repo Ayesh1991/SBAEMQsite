@@ -298,6 +298,7 @@ const DevConsole = (() => {
             <select class="sel" id="pp-import-track"></select></label>
           <label class="wl-f" style="max-width:260px" id="pp-subject-wrap" hidden><span>Subject</span>
             <select class="sel" id="pp-import-subject"></select></label>
+          ${editionField('pp-import-edition')}
           <span class="dev-status" id="dev-status"></span>
         </div>
 
@@ -1026,7 +1027,7 @@ const DevConsole = (() => {
     };
     host.innerHTML = published.length ? `
       <div class="table-scroll"><table class="table">
-        <thead><tr><th>Paper</th><th>Course</th><th>Topic</th><th>SBA/EMQ</th><th></th></tr></thead>
+        <thead><tr><th>Paper</th><th>Course</th><th>Topic</th><th>SBA/EMQ</th><th>Edition</th><th></th></tr></thead>
         <tbody>${published.map(p => {
           const path = ctx.Data.topicPath(p.categoryId, p.sectionId, p.topicId);
           return `<tr data-pid="${ctx.esc(p.id)}">
@@ -1034,8 +1035,12 @@ const DevConsole = (() => {
             <td class="muted">${whose(p)}</td>
             <td class="muted">${ctx.esc(path.topic?.title || p.topicId || '')}</td>
             <td class="muted">${p.sba || 0}/${p.emq || 0}</td>
+            <td class="muted">${edCell(p)}</td>
             <td>${courses.length > 1 ? `<button class="link-btn" data-move="${ctx.esc(p.id)}" data-mv-table="papers" data-mv-refresh="papers">move</button> ` : ''}${
-              p.file ? '<span class="tiny muted">bundled</span>' : `<button class="link-btn" data-unpub="${ctx.esc(p.id)}">unpublish</button>`}</td>
+              p.file ? '<span class="tiny muted">bundled</span>'
+                : `<button class="link-btn" data-arch="${ctx.esc(p.id)}" data-arch-table="papers" data-arch-to="${Course.isArchived(p) ? '0' : '1'}"
+                     title="${Course.isArchived(p) ? 'Put it back in the bank' : 'Keep the row and its history, stop offering it'}">${Course.isArchived(p) ? 'restore' : 'archive'}</button>
+                   <button class="link-btn" data-unpub="${ctx.esc(p.id)}">unpublish</button>`}</td>
           </tr>`;
         }).join('')}</tbody>
       </table></div>` : `<p class="muted">Nothing published through the console yet.</p>`;
@@ -1049,6 +1054,7 @@ const DevConsole = (() => {
     }));
     host.querySelectorAll('[data-move]').forEach(b => b.addEventListener('click', () =>
       moveRow(view, host, b, published.find(x => x.id === b.dataset.move), courses)));
+    wireArchive(view, host, 'papers');
   }
 
   /* ONE MOVE CONTROL, FIVE BANKS — v132. v130 gave this to papers only,
@@ -1076,6 +1082,28 @@ const DevConsole = (() => {
     if (!t.length) return '<span class="bad">nowhere</span>';
     return ctx.esc(t.map(nameOf).join(', '))
       + (rec.subject ? ` <span class="muted tiny">· ${ctx.esc(Course.subjectName ? Course.subjectName(rec.subject) : rec.subject)}</span>` : '');
+  }
+
+  /** Which edition a row is, and whether it is still offered. */
+  function edCell(rec) {
+    const n = Course.editionOf ? Course.editionOf(rec) : 1;
+    const arch = Course.isArchived && Course.isArchived(rec);
+    return `<span class="ed-pill${n > 1 ? ' is-new' : ''}">${n === 1 ? '1st' : n === 2 ? '2nd' : n + 'th'}</span>`
+      + (arch ? ' <span class="ed-pill is-arch" title="Kept, with every mark and attempt — just not offered">archived</span>' : '');
+  }
+  /** Archive or restore, then redraw the list it was clicked in. */
+  function wireArchive(view, host, refresher) {
+    host.querySelectorAll('[data-arch]').forEach(b => b.addEventListener('click', async () => {
+      const on = b.dataset.archTo === '1';
+      if (on && !confirm('Archive this?\n\nIt stops being offered in the bank and in mocks. '
+        + 'Nothing is deleted — every mark, note and past attempt stays readable.')) return;
+      b.disabled = true; b.textContent = on ? 'Archiving…' : 'Restoring…';
+      try {
+        await ctx.Backend.setArchived(b.dataset.archTable, [b.dataset.arch], on);
+        (MOVABLE[b.dataset.archTable] || MOVABLE.papers).after();
+        await (REFRESHERS[refresher] || refreshPublished)(view);
+      } catch (e) { alert(e.message || e); b.disabled = false; b.textContent = on ? 'archive' : 'restore'; }
+    }));
   }
 
   /** Every course, for a move control. Empty when there is nothing to move between. */
@@ -1271,7 +1299,7 @@ const DevConsole = (() => {
        importer ends up being the one nobody updated. Left off when the
        toolbar is not asking: contentTags() then stamps the editor's own
        course, so nothing reaches the database filed nowhere. */
-    return stampCourse(meta, '#pp-import-track', '#pp-import-subject');
+    return stampCourse(meta, '#pp-import-track', '#pp-import-subject', '#pp-import-edition');
   }
 
   function slug(s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60); }
@@ -3283,6 +3311,7 @@ const DevConsole = (() => {
             <select class="sel" id="os-import-track"></select></label>
           <label class="wl-f" style="max-width:260px" id="os-subject-wrap" hidden><span>Subject</span>
             <select class="sel" id="os-import-subject"></select></label>
+          ${editionField('os-import-edition')}
           <span class="dev-status" id="os-status"></span>
         </div>
         <div id="os-list" data-animate></div>
@@ -3385,11 +3414,23 @@ const DevConsole = (() => {
   /* One place that writes both tags onto a record, because four importers
      each doing it by hand is four chances to forget one — and a forgotten
      tag does not throw, it quietly files the content nowhere. */
-  function stampCourse(rec, courseSel, subjectSel) {
+  function stampCourse(rec, courseSel, subjectSel, editionSel) {
     const tk = pickedCourse(courseSel); if (tk && !rec.tracks) rec.tracks = [tk];
     const sj = pickedSubject(subjectSel); if (sj && !rec.subject) rec.subject = sj;
+    /* WHICH GENERATION. The database defaults a new row to the second
+       edition, so this only has to speak when the editor says otherwise
+       — importing a correction to a first-edition paper, say. */
+    if (editionSel && !rec.edition) {
+      const el = document.querySelector(editionSel);
+      const n = el ? Number(el.value) : 0;
+      if (n >= 1) rec.edition = n;
+    }
     return rec;
   }
+  /** The edition control, shown on every importer that has editions. */
+  const editionField = id => `<label class="wl-f" style="max-width:150px"><span>Edition</span>
+      <input type="number" min="1" step="1" class="sel" id="${id}" value="2"
+        title="New content is the 2nd edition. Set 1 only to add to the original bank."></label>`;
   /** What the toolbar's subject picker says, or nothing if it is not shown. */
   function pickedSubject(selSel) {
     const sel = document.querySelector(selSel);
@@ -3831,14 +3872,15 @@ const DevConsole = (() => {
     const courses = await moveCourses();
     const cname = id => id ? (colls.find(c => c.id === id)?.label || id) : '—';
     host.innerHTML = list.length ? `<div class="table-scroll"><table class="table">
-      <thead><tr><th>Station</th><th>Course</th><th>Collection</th><th>Questions</th><th>Marks</th><th></th></tr></thead>
+      <thead><tr><th>Station</th><th>Course</th><th>Collection</th><th>Questions</th><th>Edition</th><th></th></tr></thead>
       <tbody>${list.map(v => `<tr><td>${ctx.esc(v.topic || v.id)}</td>
         <td class="muted">${tagCell(v, courses)}</td>
         <td class="muted">${ctx.esc(cname(v.collection || ''))}</td>
         <td class="muted">${v.q_count != null ? v.q_count : (v.questions || []).length}</td>
-        <td class="muted">${v.total_marks || ''} (${v.pass_mark_percent || 70}%)</td>
+        <td class="muted">${edCell(v)}</td>
         <td>${courses.length > 1 ? `<button class="link-btn" data-move="${ctx.esc(v.id)}" data-mv-table="osce_stations" data-mv-refresh="osce">move</button> ` : ''
         }<button class="link-btn" data-edit-osce="${ctx.esc(v.id)}">edit</button>
+            <button class="link-btn" data-arch="${ctx.esc(v.id)}" data-arch-table="osce_stations" data-arch-to="${Course.isArchived(v) ? '0' : '1'}">${Course.isArchived(v) ? 'restore' : 'archive'}</button>
             <button class="link-btn qr-danger" data-unpub-osce="${ctx.esc(v.id)}">unpublish</button></td></tr>`).join('')}</tbody>
     </table></div>` : `<p class="muted">No OSCE stations published yet.</p>`;
     /* The published list is CARDS — no questions, so the bank loads in a few
@@ -3852,6 +3894,15 @@ const DevConsole = (() => {
       if (!st) { eh.innerHTML = '<p class="bad">Could not load that station.</p>'; return; }
       osceEditor(eh, st, await osceCollections(), () => refreshOscePublished(view));
     }));
+    /* THE MOVE BUTTON WAS DEAD HERE. v132 put it on all five published
+       lists and wired four of them; the OSCE list rendered the button and
+       listened for nothing, so it did nothing at all and said nothing
+       either. t132 only asserted the button EXISTS, and drove a deck to
+       prove a move works — which is exactly the gap a test that checks
+       markup instead of behaviour leaves open. */
+    host.querySelectorAll('[data-move]').forEach(b => b.addEventListener('click', () =>
+      moveRow(view, host, b, list.find(x => x.id === b.dataset.move), courses)));
+    wireArchive(view, host, 'osce');
     host.querySelectorAll('[data-unpub-osce]').forEach(b => b.addEventListener('click', async () => {
       if (!confirm('Unpublish this station?')) return;
       await ctx.Backend.unpublishOsceStation(b.dataset.unpubOsce);
@@ -3903,7 +3954,7 @@ const DevConsole = (() => {
         /* And which course, if the toolbar is asking. An explicit answer
            always wins; with the control hidden the backend stamps the
            editor's own course. */
-        stampCourse(d, '#os-import-track', '#os-import-subject');
+        stampCourse(d, '#os-import-track', '#os-import-subject', '#os-import-edition');
         await ctx.Backend.publishOsceStation(d);
         if (typeof OSCE !== 'undefined') { OSCE.bustStations(); OSCE.bustCollections?.(); }
         msg.textContent = '✓ Published to the OSCE tab.'; msg.className = 'dev-row-msg good';
@@ -3918,7 +3969,7 @@ const DevConsole = (() => {
     const errs = validateOsce(d); if (errs.length) { out.innerHTML = `<p class="bad">${errs.map(ctx.esc).join('<br>')}</p>`; return; }
     d.id = osceId(d);
     if (d.collection == null) d.collection = document.getElementById('os-import-coll')?.value || '';
-    stampCourse(d, '#os-import-track', '#os-import-subject');
+    stampCourse(d, '#os-import-track', '#os-import-subject', '#os-import-edition');
     try { await ctx.Backend.publishOsceStation(d); if (typeof OSCE !== 'undefined') OSCE.bustStations();
       out.innerHTML = `<p class="good">✓ Published “${ctx.esc(d.topic)}”.</p>`;
       await refreshOscePublished(document.getElementById('view'));

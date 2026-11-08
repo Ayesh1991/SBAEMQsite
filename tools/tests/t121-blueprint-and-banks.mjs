@@ -60,8 +60,12 @@ sec('2. AND THE CARDS CARRY WHAT THE FILTER NEEDS');
 
 /* A bank cannot filter on a column the read never selected. This is how
    v116's OSCE filter worked and how the other three silently did not. */
+/* Pinned to the columns, not to the whole string: v136 appended
+   edition and archived_at and broke this assertion about tracks and
+   subject, which was still true. An added column is not a regression;
+   a REMOVED one is, and that is what this asks about. */
 say('papers carry their course, subject and true/false count',
-  /'sba:meta->sba,emq:meta->emq,tf:meta->tf,tracks,subject'/.test(js));
+  /'sba:meta->sba,emq:meta->emq,tf:meta->tf,tracks,subject/.test(js));
 say('  essay papers carry theirs', /essay_papers'\)\.select\('id,meta,tracks,subject'\)/.test(js));
 say('  cases carry theirs', /case_files'\)\.select\('id,meta,tracks,subject'\)/.test(js));
 /* The local backend projects cases through a key list, so the columns have
@@ -71,9 +75,9 @@ say('  and the local case card keeps them too', /'tracks', 'subject'\];/.test(js
 /* The editor's view stays whole — that is the reason for a second call. */
 const dataJs = readFileSync('js/data.js', 'utf8');
 say('the filtered bank is a separate call, so the console still sees everything',
-  /async function myPapers\(\)/.test(dataJs) && /an editor has to see every paper/.test(dataJs));
+  /async function myPapers\(earlier\)/.test(dataJs) && /an editor has to see every paper/.test(dataJs));
 say('  and the library asks for the filtered one',
-  /Data\.loadSyllabus\(\), Data\.myPapers\(\), Backend\.getProgress\(\)/.test(readFileSync('js/app.js', 'utf8')));
+  /Data\.loadSyllabus\(\), Data\.myPapers\(libraryEarlier\), Backend\.getProgress\(\)/.test(readFileSync('js/app.js', 'utf8')));
 say('  as does the mock pool', /const papers = await Data\.myPapers\(\);/.test(readFileSync('js/simulator.js', 'utf8')));
 
 /* ---------------------------------------------------------------- */

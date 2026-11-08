@@ -7270,6 +7270,15 @@ body.sc-open { overflow: hidden; }
 .dev-standin { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 16px; }
 .dev-standin > div:first-child { flex: 1 1 320px; }
 .dev-standin .wl-f { max-width: 280px; margin: 0; }
+/* editions and archiving (v136) */
+.ed-pill { font-size: .7rem; letter-spacing: .03em; text-transform: uppercase; padding: 2px 8px;
+  border-radius: 999px; border: 1px solid var(--hairline); color: var(--muted); }
+.ed-pill.is-new { color: #34d399; border-color: rgba(52,211,153,.4); }
+.ed-pill.is-arch { color: #e8a33d; border-color: rgba(232,163,61,.4); }
+:root[data-theme="light"] .ed-pill.is-new { color: #036c4d; border-color: rgba(4,120,87,.4); }
+:root[data-theme="light"] .ed-pill.is-arch { color: #8a6212; border-color: rgba(154,107,18,.4); }
+.lib-earlier { margin: -6px 0 14px; }
+.lib-earlier .link-btn { font-size: inherit; }
 .tk-wip { font-style: normal; font-size: .7rem; letter-spacing: .04em; text-transform: uppercase;
   color: var(--muted); border: 1px solid var(--hairline); border-radius: 999px; padding: 1px 7px; margin-left: 6px; }
 @media (max-width: 640px) { .g-tab { padding: 6px 11px; font-size: .8rem; } }

@@ -28,6 +28,7 @@ per release, each shippable on its own.
 | 132 | Every bank, the same two questions |
 | 133 | An admin can stand in any course |
 | 134 | Flashcards are revision, not part of the exam |
+| 135 | A candidate's history belongs to its course |
 
 Three exams are now fully separable: course, enrolment, syllabus,
 blueprint, question types, and all five banks. The editor/groups/group-mocks
@@ -553,6 +554,119 @@ decks from that list without touching `renderDeck` would have made every
 mistake deck answer *"that deck is no longer published"* — from a link on
 a page that had just counted it. It searches both lists now, and §3 of
 t134 is that link.
+
+---
+
+## v135 — A candidate's history belongs to the course it was made on
+
+Content has been course-tagged since v115. A candidate's **own history**
+never was. So standing in final MBBS showed twenty-four Part 2 mocks, a
+last score of 78% earned on another exam, and mistake decks full of O&G.
+
+That is the mild half. **The weakness profile is computed from that
+history** — `loadHistory()` decays every mock by age and aggregates per
+bucket, and `select()` up-weights the buckets the candidate is weak in.
+With the wrong exam's history in it, the wrong exam was steering the
+right one, and since the bucket names of one exam do not appear in the
+other's blueprint the steering was not merely wrong but noise.
+
+Mocks and mistake decks are now stamped with the course on write and
+filtered by it on read, in both backends. **A row with no track was
+written when `pgim-og-2` was the only course there was** — a fact about
+this deployment's history, not a guess, and the same reasoning the v119
+curriculum and v121 blueprint migrations used. A mock asked for *by id*
+is never hidden: a review link should open the mock it names.
+
+### Why the MBBS mock could not start
+
+The readiness gate demanded ten unseen EMQs of **every** course. The
+final MBBS paper has no EMQ section — it is SBA and true/false — so the
+button stayed disabled and the reason given was *"not enough unseen
+questions, EMQ unseen: 0"*: a shortage of something nobody had asked for.
+
+Each section is now required only if the blueprint wants it, by the same
+test the planner uses to decide whether to draw one. A blueprint that
+asks for **nothing** is refused separately, or the gate passes vacuously
+and `select()` falls to the top-up — arbitrary questions dressed as a
+blueprint-shaped mock, which v121 §4 exists to refuse.
+
+**Three states needed three sentences.** "Not enough unseen questions"
+sends somebody to import more papers; importing cannot fix an empty
+blueprint. That case now says so, and names the course.
+
+Also `docs/BLUEPRINT-HANDOVER.md`, the companion to the curriculum brief,
+for the project that knows the exam's shape. §5 of t135 asserts it still
+matches the parser — including the trap that omitting `emq_count` leaves
+it at **30**, so a section is removed by dropping its **bucket list**.
+
+---
+
+## v136 — A second edition, and archiving that keeps the history
+
+The O&G Part 2 bank holds **8000+ SBAs and EMQs written before the review
+flow existed**. They are being re-made from the sources and reviewed; the
+question was how to run the new bank and the old one at once without the
+candidate seeing both, and without the bank emptying for a year while the
+work is done.
+
+**`edition` is a property of a paper, not a category in the curriculum.**
+Putting the two generations in separate curriculum branches was the
+obvious move and the wrong one: topic browsing, the blueprint's bucket
+names and every question key would all have forked — and since
+`Data.flatten()` decides question keys, a candidate's whole history would
+have detached from the questions it belongs to.
+
+**It is not `review_status` either.** That column answers *has a human
+checked this*; edition answers *which generation is it*. A second-edition
+paper still goes draft → in_review → published, and most of the new work
+sits at "2nd edition, not yet reviewed" for months — a state one column
+cannot express.
+
+**The migration keeps v123's shape:** add the column with the default the
+rows that already exist need (`1`), *then* move the default to `2` for
+everything imported from now on. Either half alone is wrong, and
+re-running the file is safe.
+
+### Newest per topic, not a switch
+
+A global "show 2nd edition" toggle would hide every topic nobody has
+re-made yet — which is most topics, for most of the year. So the rule is
+**the newest edition of each topic**: a topic improves the day its
+replacement is live, and nothing else moves. `Course.newestEdition()` is
+the one place that decides it, and all five banks ask it.
+
+Untagged content follows the rule it follows everywhere else: **two papers
+with no topic are not two editions of one thing.** Unfiled is not
+irrelevant.
+
+### Archiving is not deleting
+
+`unpublishPaper()` removes the row — and `js/review.js` loads the paper to
+render the questions of an attempt somebody already sat. Deleting the old
+bank would have kept every mark and destroyed every candidate's ability to
+see what they answered.
+
+So archiving is a **timestamp on the row**. Nothing in section 38 narrows
+what may be *read*: an archived row is readable by exactly the people it
+was readable by before. What changes is whether it is worth **showing**,
+and that is the client's filter — rule 4, again. A future release will be
+tempted to tidy this up by adding `archived_at is null` to a read policy;
+t136 §1 refuses that.
+
+### What this release found in the last one
+
+v132 put a move control on all five published lists and **wired four of
+them.** The OSCE list rendered the button and listened for nothing, so it
+did nothing and said nothing either. t132 asserted the button *exists*,
+then drove a deck to prove moving works — which is exactly the hole left
+by testing markup instead of behaviour. t136 §5 drives the OSCE button.
+
+t136 §2b came out of a mistake in its own first draft: the fixture used
+topic `t-pph`, which is a **real** topic in `data/manifest.json`, so the
+shipped PPH paper became a genuine earlier edition of the fixture and the
+test failed — correctly. That is now asserted on purpose: a 2nd edition
+stands down the paper the site actually ships, the bank does not grow, and
+withdrawing the re-make brings the original back.
 
 ---
 

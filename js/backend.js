@@ -96,6 +96,39 @@ const Backend = (() => {
      else's paediatrics station while enrolled in O&G must not quietly
      move it into their own course. The default fills a blank; it does not
      take a decision back. */
+  /* ---------- A CANDIDATE'S OWN HISTORY BELONGS TO A COURSE TOO ----------
+     v135. Content has been course-tagged since v115, but a candidate's
+     MOCKS and the flashcard decks built from their mistakes never were —
+     so switching to final MBBS showed twenty-four Part 2 mocks, a 78%
+     last score earned on another exam, and mistake decks full of O&G.
+     Worse than untidy: the weakness profile that shapes the next mock is
+     computed from that history, so the wrong exam was steering the right
+     one.
+
+     THE COURSE THAT EXISTED BEFORE COURSES DID. A row with no track was
+     written when pgim-og-2 was the only course there was. That is not a
+     guess, it is a fact about this deployment's history, and it is the
+     same reasoning the v119 curriculum and v121 blueprint migrations
+     used two tables over. */
+  const LEGACY_TRACK = 'pgim-og-2';
+  async function hereTrack() {
+    if (typeof Course === 'undefined') return '';
+    try { await Course.load(); return Course.currentId() || ''; } catch { return ''; }
+  }
+  /** Keep the rows of the course this candidate is on. */
+  async function onThisCourse(rows) {
+    const here = await hereTrack();
+    /* With no course resolved at all, filtering would empty a history
+       that is not actually ambiguous. Show it. */
+    if (!here) return rows;
+    return (rows || []).filter(r => (r && r.track ? r.track : LEGACY_TRACK) === here);
+  }
+  /** Stamp the course onto something the candidate just produced. */
+  async function stampTrack(rec) {
+    if (rec && !rec.track) { const t = await hereTrack(); if (t) rec.track = t; }
+    return rec;
+  }
+
   async function contentTags(rec) {
     let tracks = Array.isArray(rec.tracks) ? rec.tracks.filter(Boolean)
       : (rec.tracks ? [String(rec.tracks)] : []);
@@ -746,9 +779,13 @@ const Backend = (() => {
 
     /* adaptive-simulator mock results — per-user */
     const mKey = e => 'mocks.' + e;
-    async function saveMockResult(result) { const e = sessionEmail(); if (!e) return null; const l = read(mKey(e), []); result.id = result.id || ('mock-' + Date.now().toString(36)); l.unshift(result); if (l.length > 200) l.length = 200; write(mKey(e), l); return result; }
-    async function listMockResults() { const e = sessionEmail(); if (!e) return []; return read(mKey(e), []); }
-    async function getMockResult(id) { return (await listMockResults()).find(m => m.id === id) || null; }
+    async function saveMockResult(result) { const e = sessionEmail(); if (!e) return null; await stampTrack(result); const l = read(mKey(e), []); result.id = result.id || ('mock-' + Date.now().toString(36)); l.unshift(result); if (l.length > 200) l.length = 200; write(mKey(e), l); return result; }
+    async function listMockResults() { const e = sessionEmail(); if (!e) return []; return onThisCourse(read(mKey(e), [])); }
+    /* BY ID, UNFILTERED. A review link to a mock sat on another course
+       should open it, not deny it exists — the list is scoped so the
+       history reads as this course's; one you asked for by name is one
+       you already know about. */
+    async function getMockResult(id) { const e = sessionEmail(); if (!e) return null; return read(mKey(e), []).find(m => m.id === id) || null; }
 
     /* review queue — wrong SBA/EMQ scheduled for spaced review */
     const rvKey = e => 'review.' + e;
@@ -830,8 +867,8 @@ const Backend = (() => {
 
     /* personal decks (AI flashcards from wrong answers) */
     const udKey = e => 'userdecks.' + e;
-    async function saveUserDeck(meta) { const e = sessionEmail(); if (!e) return null; const l = read(udKey(e), []); const i = l.findIndex(d => d.id === meta.id); if (i >= 0) l[i] = meta; else l.push(meta); write(udKey(e), l); return meta; }
-    async function listUserDecks() { const e = sessionEmail(); return e ? read(udKey(e), []) : []; }
+    async function saveUserDeck(meta) { const e = sessionEmail(); if (!e) return null; await stampTrack(meta); const l = read(udKey(e), []); const i = l.findIndex(d => d.id === meta.id); if (i >= 0) l[i] = meta; else l.push(meta); write(udKey(e), l); return meta; }
+    async function listUserDecks() { const e = sessionEmail(); return e ? onThisCourse(read(udKey(e), [])) : []; }
     async function deleteUserDeck(id) { const e = sessionEmail(); if (!e) return; write(udKey(e), read(udKey(e), []).filter(d => d.id !== id)); }
 
     /* registration + user status (local: always open/approved) */
@@ -950,6 +987,33 @@ const Backend = (() => {
       return out;
     }
     /** File content under a course. `ids` null/empty = every untagged row in that table. */
+    /* ---------- EDITIONS AND ARCHIVING ----------
+       Only papers and osce_stations carry an edition: they are the two
+       banks being re-made, and the two the review flow already covers. */
+    const EDITIONED = { papers: 'published', osce_stations: 'oscestations' };
+    async function setEdition(table, ids, edition) {
+      const me = await currentUser();
+      if (!me || !me.isEditor) throw new Error("Only an editor can change a paper's edition.");
+      const key = EDITIONED[table]; if (!key) throw new Error('That bank has no editions.');
+      const n = Math.max(1, Number(edition) || 1);
+      const want = new Set(ids || []); const l = read(key, []); let hit = 0;
+      l.forEach(r => { if (want.has(r.id)) { r.edition = n; hit++; } });
+      write(key, l); return hit;
+    }
+    /* ARCHIVING IS NOT DELETING, and the difference is a candidate's
+       history: review.js loads the paper to show the questions of an
+       attempt already sat. unpublishPaper() removes the row; this keeps
+       it and only stops it being offered. */
+    async function setArchived(table, ids, archived) {
+      const me = await currentUser();
+      if (!me || !me.isEditor) throw new Error('Only an editor can archive content.');
+      const key = EDITIONED[table]; if (!key) throw new Error('That bank cannot be archived.');
+      const stamp = archived ? new Date().toISOString() : null;
+      const want = new Set(ids || []); const l = read(key, []); let hit = 0;
+      l.forEach(r => { if (want.has(r.id)) { r.archivedAt = stamp; hit++; } });
+      write(key, l); return hit;
+    }
+
     async function fileUnder(table, ids, trackIds, subject) {
       const me = await currentUser();
       if (!me || !me.isEditor) throw new Error('Only an editor may file content.');
@@ -1433,7 +1497,7 @@ const Backend = (() => {
 
     return { init, signUp, signIn, signOut, requestPasswordReset, updatePassword, onPasswordRecovery, currentUser, updateProfile,
       getRegistrationOpen, setRegistrationOpen, setUserStatus, setUserRole,
-      listTracks, saveTrack, myEnrolments, enrol, setPrimaryTrack, grantEnrolment, canReadTracks, listUntagged, fileUnder, listForReview, submitReview, recordReviewed, reviewCounts, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
+      listTracks, saveTrack, myEnrolments, enrol, setPrimaryTrack, grantEnrolment, canReadTracks, listUntagged, fileUnder, setEdition, setArchived, listForReview, submitReview, recordReviewed, reviewCounts, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
       getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
@@ -1646,7 +1710,7 @@ const Backend = (() => {
       'collection:meta->>collection,bp:meta->bp,' +
       'edited_by:meta->>edited_by,edited_at:meta->edited_at,' +
       'created_by:meta->>created_by,created_by_name:meta->>created_by_name,created_on:meta->created_on,' +
-      'created_at,tracks,subject';
+      'created_at,tracks,subject,edition,archivedAt:archived_at';
     let osceCardsOk = true;
     async function getOsceStations() {
       if (osceCardsOk) {
@@ -1666,8 +1730,9 @@ const Backend = (() => {
          allowed to be slower; it is not allowed to show a candidate
          another course's bank. */
       return (await catalogue('the OSCE stations',
-        () => sb.from('osce_stations').select('id,meta,tracks,subject').order('id')))
-        .map(r => ({ ...osceCard(r.meta), tracks: r.tracks || [], subject: r.subject || null }));
+        () => sb.from('osce_stations').select('id,meta,tracks,subject,edition,archived_at').order('id')))
+        .map(r => ({ ...osceCard(r.meta), tracks: r.tracks || [], subject: r.subject || null,
+          edition: r.edition || 1, archivedAt: r.archived_at || null }));
     }
     /* The searchable text — every prompt and every marking point — is most of
        a card's weight and is needed only if someone actually types in the box,
@@ -2242,7 +2307,7 @@ const Backend = (() => {
          read policy filters on `tracks`, so a policy cannot look inside
          jsonb it has no index on. Without them on the card, the bank has
          nothing to filter by and a true/false paper shows no T/F badge. */
-      'sba:meta->sba,emq:meta->emq,tf:meta->tf,tracks,subject';
+      'sba:meta->sba,emq:meta->emq,tf:meta->tf,tracks,subject,edition,archivedAt:archived_at';
     let cardSelectOk = true;          // set false once if the server will not project
     const numOr0 = v => (v == null || v === '') ? 0 : (Number(v) || 0);
 
@@ -2262,8 +2327,9 @@ const Backend = (() => {
       /* Same rule as the OSCE fallback above: the tags are plain columns
          and must survive the degraded read, or the bank opens up. */
       return (await catalogue('the question bank',
-        () => sb.from('papers').select('id,meta,tracks,subject').order('id')))
-        .map(r => ({ ...r.meta, tracks: r.tracks || [], subject: r.subject || null }));
+        () => sb.from('papers').select('id,meta,tracks,subject,edition,archived_at').order('id')))
+        .map(r => ({ ...r.meta, tracks: r.tracks || [], subject: r.subject || null,
+          edition: r.edition || 1, archivedAt: r.archived_at || null }));
     }
     /** One paper's questions, fetched when that paper is opened. */
     async function getPaperContent(id) {
@@ -2432,12 +2498,16 @@ const Backend = (() => {
     async function saveMockResult(result) {
       await ensureClient(); const id = await uid(); if (!id) return null;
       result.id = result.id || ('mock-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6));
+      await stampTrack(result);
       await sb.from('mock_results').insert({ id: result.id, user_id: id, payload: result }); return result;
     }
     async function listMockResults() {
       await ensureClient(); const id = await uid(); if (!id) return [];
       const { data } = await sb.from('mock_results').select('id,payload').eq('user_id', id).order('created_at', { ascending: false });
-      return (data || []).map(r => ({ id: r.id, ...r.payload }));
+      /* The course lives inside the payload, so the filter is here rather
+         than in the query — a jsonb predicate on a column with no index
+         would cost more than the page it saves. */
+      return onThisCourse((data || []).map(r => ({ id: r.id, ...r.payload })));
     }
     async function getMockResult(mid) {
       await ensureClient();
@@ -2578,13 +2648,14 @@ const Backend = (() => {
     /* personal decks (AI flashcards from wrong answers) */
     async function saveUserDeck(meta) {
       await ensureClient(); const id = await uid(); if (!id) return null;
+      await stampTrack(meta);
       await sb.from('user_decks').upsert({ user_id: id, id: meta.id, meta, updated_at: new Date().toISOString() }, { onConflict: 'user_id,id' });
       return meta;
     }
     async function listUserDecks() {
       await ensureClient(); const id = await uid(); if (!id) return [];
       const { data } = await sb.from('user_decks').select('meta').eq('user_id', id);
-      return (data || []).map(r => r.meta);
+      return onThisCourse((data || []).map(r => r.meta));
     }
     async function deleteUserDeck(deckId) {
       await ensureClient(); const id = await uid(); if (!id) return;
@@ -3121,6 +3192,28 @@ const Backend = (() => {
       return out;
     }
     /** File content under a course. `ids` null/empty = every untagged row in that table. */
+    const EDITIONED = ['papers', 'osce_stations'];
+    async function setEdition(table, ids, edition) {
+      await ensureClient();
+      if (!EDITIONED.includes(table)) throw new Error('That bank has no editions.');
+      if (!(ids || []).length) return 0;
+      const { data, error } = await sb.from(table)
+        .update({ edition: Math.max(1, Number(edition) || 1) }).in('id', ids).select('id');
+      if (error) throw new Error(/row-level security|Only an editor/i.test(error.message || '')
+        ? "Only an editor can change a paper's edition." : error.message);
+      return (data || []).length;
+    }
+    async function setArchived(table, ids, archived) {
+      await ensureClient();
+      if (!EDITIONED.includes(table)) throw new Error('That bank cannot be archived.');
+      if (!(ids || []).length) return 0;
+      const { data, error } = await sb.from(table)
+        .update({ archived_at: archived ? new Date().toISOString() : null }).in('id', ids).select('id');
+      if (error) throw new Error(/row-level security|Only an editor/i.test(error.message || '')
+        ? 'Only an editor can archive content.' : error.message);
+      return (data || []).length;
+    }
+
     async function fileUnder(table, ids, trackIds, subject) {
       await ensureClient();
       if (!TAGGED.some(x => x.table === table)) throw new Error('Unknown content table: ' + table);
@@ -3353,7 +3446,7 @@ const Backend = (() => {
 
     return { init, signUp, signIn, signOut, requestPasswordReset, updatePassword, onPasswordRecovery, currentUser, updateProfile,
       getRegistrationOpen, setRegistrationOpen, setUserStatus, setUserRole,
-      listTracks, saveTrack, myEnrolments, enrol, setPrimaryTrack, grantEnrolment, canReadTracks, listUntagged, fileUnder, listForReview, submitReview, recordReviewed, reviewCounts, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
+      listTracks, saveTrack, myEnrolments, enrol, setPrimaryTrack, grantEnrolment, canReadTracks, listUntagged, fileUnder, setEdition, setArchived, listForReview, submitReview, recordReviewed, reviewCounts, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
       getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
