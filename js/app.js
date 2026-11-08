@@ -100,10 +100,11 @@
     { re: /^#\/mistakes$/, fn: renderMistakes },
     { re: /^#\/mistakes\/deck\/([^/]+)$/, fn: renderMistakeDeck },
     { re: /^#\/simulator\/result\/([^/]+)$/, fn: renderSimResult },
+    { re: /^#\/about-ads$/, fn: renderAboutAds, public: true },
     /* A console section the router does not list renders the hub instead —
        the section function exists, the hub card points at it, and nothing
        anywhere says why the link goes nowhere. Add the name here too. */
-    { re: /^#\/dev(?:\/(papers|cards|users|blueprint|review|ai|essays|tearoom|cpd|osce|cases|settings|courses|remake))?$/, fn: renderDev }
+    { re: /^#\/dev(?:\/(papers|cards|users|blueprint|review|ai|essays|tearoom|cpd|osce|cases|settings|courses|remake|ads))?$/, fn: renderDev }
   ];
   /* ADMIN BY ROLE, not by address. `isDeveloper` is computed in the
      backend from the profile's role, with the owner's email kept as the
@@ -307,6 +308,12 @@
     TeaRoom.onChange(paintTeaBadge);
     TeaRoom.mountLauncher();
     TeaRoom.init();
+    /* THE SPONSOR'S PRE-ROLL, once per session, and never in the way:
+       maybeShow() resolves for every reason there might not be one, so
+       this is fire-and-forget and the app is already usable behind it.
+       It is started from the same place as the tea room because both
+       want a signed-in candidate and neither should run before one. */
+    try { if (typeof Ads !== 'undefined') Ads.maybeShow().catch(() => {}); } catch {}
   }
 
   /* Small red count on the Developer tab: pending proposals, pending users,
@@ -2947,6 +2954,43 @@
     }
 
     drawConsole(); drawPanel();
+  }
+
+  /* WHY YOU ARE SEEING THIS. Counting people, even in the modest way
+     this does, earns an explanation they can actually reach — the link
+     is on the ad itself. It says what is recorded and what is not,
+     because the honest answer here is short and reassuring, and a
+     vague one would not be. */
+  async function renderAboutAds() {
+    view.innerHTML = `
+      <section class="page">
+        <header data-animate>
+          <p class="kicker">SPONSORS</p>
+          <h1 class="page-title">Why you are seeing an advertisement</h1>
+        </header>
+        <div class="card" data-animate>
+          <p>AUREUM's database and hosting cost money every month. Rather than charge
+            candidates for the question bank, a short message from a sponsor runs once
+            per session. It can be skipped after three seconds.</p>
+          <h3 class="card-title">What is recorded</h3>
+          <ul class="tidy">
+            <li><strong>That an advertisement was shown to you, once per day at most</strong> —
+              however many times you open AUREUM, each sponsor counts you once a day.</li>
+            <li>How long it played, and whether it reached the end.</li>
+          </ul>
+          <h3 class="card-title">What is not</h3>
+          <ul class="tidy">
+            <li><strong>Your name, e-mail, or anything you study</strong> is never sent to a sponsor.
+              They are given totals — how many doctors saw it — and nothing that identifies anybody.</li>
+            <li>No tracking pixel, no third-party advertising network, no cookie that follows
+              you off this site. The video is a file on AUREUM's own server.</li>
+          </ul>
+          <p class="muted">Every campaign is reviewed and approved by a named person here before
+            it can run. If an advertisement seems inappropriate for a medical audience, say so in
+            the tea room and it will be taken down.</p>
+        </div>
+      </section>`;
+    FX.viewIn(view);
   }
 
   /* ================= developer console ================= */

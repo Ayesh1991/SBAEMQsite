@@ -1014,6 +1014,127 @@ const Backend = (() => {
       write(key, l); return hit;
     }
 
+    /* ---------- SPONSORED PRE-ROLL (v139) ----------
+       The local mirror keeps the SAME rules the policies keep in the
+       cloud — only a live, approved, in-date campaign is served; an
+       impression is filed under the viewer's own id and only once per
+       campaign per day; editing the creative drops the approval. A rule
+       only one backend applies is a rule tested on the wrong one. */
+    const adToday = () => new Date().toISOString().slice(0, 10);
+    const adServable = c => c.status === 'live' && !!c.approved_at
+      && (!c.starts_on || c.starts_on <= adToday())
+      && (!c.ends_on || c.ends_on >= adToday());
+    const adCard = c => ({ id: c.id, sponsor: c.sponsor, title: c.title,
+      mediaUrl: c.media_url, posterUrl: c.poster_url, durationS: c.duration_s,
+      tracks: c.tracks || [] });
+
+    async function myPlan() {
+      const e = sessionEmail(); if (!e) return 'free';
+      return (read('profile:' + norm(e), {}) || {}).plan || 'free';
+    }
+    async function setPlan(email, plan) {
+      const me = await currentUser();
+      if (!me || !me.isAdmin) throw new Error('Only an admin can change a plan.');
+      const k = 'profile:' + norm(email);
+      const row = read(k, {}); row.plan = plan === 'paid' ? 'paid' : 'free'; write(k, row);
+      return row.plan;
+    }
+    /** What a candidate may be shown — never a draft, never unapproved. */
+    async function liveAds() { return read('ads', []).filter(adServable).map(adCard); }
+    /** Every campaign, for the console. */
+    async function listCampaigns() {
+      const me = await currentUser();
+      if (!me || !me.isEditor) throw new Error('Only an editor may manage campaigns.');
+      return read('ads', []).slice().sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+    }
+    async function saveCampaign(c) {
+      const me = await currentUser();
+      if (!me || !me.isEditor) throw new Error('Only an editor may manage campaigns.');
+      const list = read('ads', []);
+      const i = c.id ? list.findIndex(x => x.id === c.id) : -1;
+      const now = new Date().toISOString();
+      if (i < 0) {
+        const row = { id: 'ad' + Date.now() + Math.random().toString(36).slice(2, 6),
+          sponsor: c.sponsor || '', title: c.title || '', media_url: c.mediaUrl || '',
+          poster_url: c.posterUrl || '', duration_s: Number(c.durationS) || 5,
+          status: 'draft', approved_by: null, approved_at: null,
+          starts_on: c.startsOn || null, ends_on: c.endsOn || null,
+          tracks: c.tracks || [], notes: c.notes || '',
+          created_by: sessionEmail(), created_at: now, updated_at: now };
+        list.unshift(row); write('ads', list); return row;
+      }
+      const old = list[i];
+      /* THE GATE IS NOT THEATRE. Approving a creative and then swapping
+         the file is the one way it becomes one, so any change to what
+         is actually shown drops the approval — the same trigger the
+         cloud runs. */
+      const changed = ['mediaUrl:media_url', 'posterUrl:poster_url', 'title:title',
+        'sponsor:sponsor', 'durationS:duration_s']
+        .some(pair => { const [k, col] = pair.split(':');
+          return c[k] !== undefined && String(c[k]) !== String(old[col]); });
+      Object.assign(old, {
+        sponsor: c.sponsor ?? old.sponsor, title: c.title ?? old.title,
+        media_url: c.mediaUrl ?? old.media_url, poster_url: c.posterUrl ?? old.poster_url,
+        duration_s: Number(c.durationS ?? old.duration_s) || 5,
+        starts_on: c.startsOn ?? old.starts_on, ends_on: c.endsOn ?? old.ends_on,
+        tracks: c.tracks ?? old.tracks, notes: c.notes ?? old.notes, updated_at: now });
+      if (changed) {
+        old.approved_at = null; old.approved_by = null;
+        if (old.status === 'approved' || old.status === 'live') old.status = 'draft';
+      }
+      write('ads', list); return old;
+    }
+    async function approveCampaign(id) {
+      const me = await currentUser();
+      if (!me || !me.isEditor) throw new Error('Only an editor can approve a campaign.');
+      const list = read('ads', []); const c = list.find(x => x.id === id);
+      if (!c) throw new Error('No such campaign.');
+      c.approved_at = new Date().toISOString(); c.approved_by = sessionEmail();
+      if (c.status === 'draft') c.status = 'approved';
+      write('ads', list); return c;
+    }
+    async function setCampaignStatus(id, status) {
+      const me = await currentUser();
+      if (!me || !me.isEditor) throw new Error('Only an editor may manage campaigns.');
+      const list = read('ads', []); const c = list.find(x => x.id === id);
+      if (!c) throw new Error('No such campaign.');
+      /* Nothing goes on air that a human has not signed off. */
+      if (status === 'live' && !c.approved_at) throw new Error('Approve the creative before it goes live.');
+      c.status = status; c.updated_at = new Date().toISOString();
+      write('ads', list); return c;
+    }
+    async function recordImpression(campaignId, watchedMs, completed) {
+      const e = sessionEmail(); if (!e) return false;
+      const c = read('ads', []).find(x => x.id === campaignId);
+      if (!c || !adServable(c)) return false;
+      const rows = read('adimp', []);
+      const day = adToday();
+      /* The unique index, kept by hand: one per campaign per person per
+         day, so a refresh loop cannot inflate what a sponsor is sold. */
+      if (rows.some(r => r.campaign_id === campaignId && r.user_id === e && r.day === day)) return false;
+      rows.push({ campaign_id: campaignId, user_id: e, day,
+        watched_ms: Number(watchedMs) || 0, completed: !!completed,
+        created_at: new Date().toISOString() });
+      write('adimp', rows); return true;
+    }
+    async function adReport(fromDay, toDay) {
+      const me = await currentUser();
+      if (!me || !me.isEditor) throw new Error('Only an editor may read the report.');
+      const camps = read('ads', []);
+      const rows = read('adimp', []).filter(r =>
+        (!fromDay || r.day >= fromDay) && (!toDay || r.day <= toDay));
+      return camps.map(c => {
+        const mine = rows.filter(r => r.campaign_id === c.id);
+        return { id: c.id, sponsor: c.sponsor, title: c.title, status: c.status,
+          approvedBy: c.approved_by || null, approvedAt: c.approved_at || null,
+          impressions: mine.length,
+          people: new Set(mine.map(r => r.user_id)).size,
+          completed: mine.filter(r => r.completed).length,
+          byDay: Object.entries(mine.reduce((m, r) => (m[r.day] = (m[r.day] || 0) + 1, m), {}))
+            .sort((a, b) => a[0].localeCompare(b[0])).map(([day, n]) => ({ day, n })) };
+      }).filter(r => r.impressions || r.status !== 'ended');
+    }
+
     async function fileUnder(table, ids, trackIds, subject) {
       const me = await currentUser();
       if (!me || !me.isEditor) throw new Error('Only an editor may file content.');
@@ -1522,7 +1643,8 @@ const Backend = (() => {
 
     return { init, signUp, signIn, signOut, requestPasswordReset, updatePassword, onPasswordRecovery, currentUser, updateProfile,
       getRegistrationOpen, setRegistrationOpen, setUserStatus, setUserRole,
-      listTracks, saveTrack, myEnrolments, enrol, setPrimaryTrack, grantEnrolment, canReadTracks, listUntagged, fileUnder, setEdition, setArchived, listForReview, submitReview, recordReviewed, reviewCounts, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
+      listTracks, saveTrack, myEnrolments, enrol, setPrimaryTrack, grantEnrolment, canReadTracks, listUntagged, fileUnder, setEdition, setArchived,
+      myPlan, setPlan, liveAds, listCampaigns, saveCampaign, approveCampaign, setCampaignStatus, recordImpression, adReport, listForReview, submitReview, recordReviewed, reviewCounts, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
       getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
@@ -3262,6 +3384,119 @@ const Backend = (() => {
       return (data || []).length;
     }
 
+    /* ---------- SPONSORED PRE-ROLL (v139) ----------
+       Every rule below is ALSO a policy in section 39: this code is the
+       convenient path, not the enforcement. The read returns only live,
+       approved, in-date campaigns because the policy returns only those;
+       the impression is deduped by a unique index, not by this function
+       checking first. */
+    const adCard = c => ({ id: c.id, sponsor: c.sponsor, title: c.title,
+      mediaUrl: c.media_url, posterUrl: c.poster_url, durationS: c.duration_s,
+      tracks: c.tracks || [] });
+
+    async function myPlan() {
+      await ensureClient(); const id = await uid(); if (!id) return 'free';
+      const { data } = await sb.from('profiles').select('plan').eq('id', id).maybeSingle();
+      return (data && data.plan) || 'free';
+    }
+    async function setPlan(userId, plan) {
+      await ensureClient();
+      const { error } = await sb.from('profiles')
+        .update({ plan: plan === 'paid' ? 'paid' : 'free' }).eq('id', userId);
+      if (error) throw new Error(error.message || 'Could not change the plan.');
+      return plan;
+    }
+    async function liveAds() {
+      await ensureClient();
+      /* No status filter here on purpose: the POLICY decides what is
+         servable, so a campaign that slips through would be a hole in
+         the database, not in this line. The filter is belt and braces. */
+      const { data, error } = await sb.from('ad_campaigns')
+        .select('id,sponsor,title,media_url,poster_url,duration_s,tracks')
+        .eq('status', 'live').not('approved_at', 'is', null).limit(20);
+      if (error) return [];
+      return (data || []).map(adCard);
+    }
+    async function listCampaigns() {
+      await ensureClient();
+      const { data, error } = await sb.from('ad_campaigns').select('*')
+        .order('created_at', { ascending: false }).limit(200);
+      if (error) throw new Error(/row-level security/i.test(error.message || '')
+        ? 'Only an editor may manage campaigns.' : error.message);
+      return data || [];
+    }
+    async function saveCampaign(c) {
+      await ensureClient(); const id = await uid();
+      const row = { sponsor: c.sponsor || '', title: c.title || '',
+        media_url: c.mediaUrl || null, poster_url: c.posterUrl || null,
+        duration_s: Number(c.durationS) || 5,
+        starts_on: c.startsOn || null, ends_on: c.endsOn || null,
+        tracks: c.tracks || [], notes: c.notes || null };
+      if (c.id) {
+        /* The approval is dropped by the trigger, not here — the rule
+           lives next to the data it protects. */
+        const { data, error } = await sb.from('ad_campaigns').update(row).eq('id', c.id).select().single();
+        if (error) throw new Error(error.message); return data;
+      }
+      const { data, error } = await sb.from('ad_campaigns')
+        .insert({ ...row, status: 'draft', created_by: id }).select().single();
+      if (error) throw new Error(/row-level security/i.test(error.message || '')
+        ? 'Only an editor may manage campaigns.' : error.message);
+      return data;
+    }
+    async function approveCampaign(cid) {
+      await ensureClient(); const id = await uid();
+      const { data, error } = await sb.from('ad_campaigns')
+        .update({ approved_at: new Date().toISOString(), approved_by: id, status: 'approved' })
+        .eq('id', cid).select().single();
+      if (error) throw new Error(/Only an editor|row-level security/i.test(error.message || '')
+        ? 'Only an editor can approve a campaign.' : error.message);
+      return data;
+    }
+    async function setCampaignStatus(cid, status) {
+      await ensureClient();
+      if (status === 'live') {
+        const { data: c } = await sb.from('ad_campaigns').select('approved_at').eq('id', cid).single();
+        if (!c || !c.approved_at) throw new Error('Approve the creative before it goes live.');
+      }
+      const { data, error } = await sb.from('ad_campaigns').update({ status }).eq('id', cid).select().single();
+      if (error) throw new Error(error.message);
+      return data;
+    }
+    async function recordImpression(campaignId, watchedMs, completed) {
+      await ensureClient(); const id = await uid(); if (!id) return false;
+      /* THE DUPLICATE IS EXPECTED, not exceptional: the same candidate
+         opening the app twice in a day hits the unique index every
+         time, and that is the index doing its job. Swallow 23505 and
+         let anything else be quiet too — a sponsor's tally is never
+         worth an error in front of a candidate. */
+      const { error } = await sb.from('ad_impressions').insert({
+        campaign_id: campaignId, user_id: id,
+        watched_ms: Math.round(Number(watchedMs) || 0), completed: !!completed });
+      return !error;
+    }
+    async function adReport(fromDay, toDay) {
+      await ensureClient();
+      const { data: camps, error: e1 } = await sb.from('ad_campaigns')
+        .select('id,sponsor,title,status,approved_by,approved_at').limit(200);
+      if (e1) throw new Error(/row-level security/i.test(e1.message || '')
+        ? 'Only an editor may read the report.' : e1.message);
+      let q = sb.from('ad_impressions').select('campaign_id,user_id,day,completed').limit(50000);
+      if (fromDay) q = q.gte('day', fromDay);
+      if (toDay) q = q.lte('day', toDay);
+      const { data: imps } = await q;
+      return (camps || []).map(c => {
+        const mine = (imps || []).filter(r => r.campaign_id === c.id);
+        return { id: c.id, sponsor: c.sponsor, title: c.title, status: c.status,
+          approvedBy: c.approved_by || null, approvedAt: c.approved_at || null,
+          impressions: mine.length,
+          people: new Set(mine.map(r => r.user_id)).size,
+          completed: mine.filter(r => r.completed).length,
+          byDay: Object.entries(mine.reduce((m, r) => (m[r.day] = (m[r.day] || 0) + 1, m), {}))
+            .sort((a, b) => a[0].localeCompare(b[0])).map(([day, n]) => ({ day, n })) };
+      });
+    }
+
     async function fileUnder(table, ids, trackIds, subject) {
       await ensureClient();
       if (!TAGGED.some(x => x.table === table)) throw new Error('Unknown content table: ' + table);
@@ -3500,7 +3735,8 @@ const Backend = (() => {
 
     return { init, signUp, signIn, signOut, requestPasswordReset, updatePassword, onPasswordRecovery, currentUser, updateProfile,
       getRegistrationOpen, setRegistrationOpen, setUserStatus, setUserRole,
-      listTracks, saveTrack, myEnrolments, enrol, setPrimaryTrack, grantEnrolment, canReadTracks, listUntagged, fileUnder, setEdition, setArchived, listForReview, submitReview, recordReviewed, reviewCounts, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
+      listTracks, saveTrack, myEnrolments, enrol, setPrimaryTrack, grantEnrolment, canReadTracks, listUntagged, fileUnder, setEdition, setArchived,
+      myPlan, setPlan, liveAds, listCampaigns, saveCampaign, approveCampaign, setCampaignStatus, recordImpression, adReport, listForReview, submitReview, recordReviewed, reviewCounts, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
       getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,

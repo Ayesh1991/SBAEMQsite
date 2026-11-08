@@ -7320,3 +7320,31 @@ body.sc-open { overflow: hidden; }
 .qe-dest-row { display: flex; align-items: center; gap: .45rem; margin-top: .5rem; }
 .qe-dest { background: rgba(255,255,255,.05); color: inherit; border: 1px solid rgba(255,255,255,.14);
   border-radius: 8px; padding: .25rem .45rem; font-size: .85rem; max-width: 300px; }
+
+/* ---------- sponsored pre-roll (v139) ----------
+   Full-bleed and above everything, but it owns the screen for at most
+   five seconds and the skip is always reachable. */
+.ad-shade { position: fixed; inset: 0; z-index: 9999; display: grid; place-items: center;
+  background: rgba(4,6,14,.96); padding: 16px; }
+body.ad-open { overflow: hidden; }
+.ad-box { width: min(760px, 100%); display: flex; flex-direction: column; gap: .55rem; }
+.ad-video { width: 100%; max-height: 62vh; border-radius: 14px; background: #000;
+  box-shadow: 0 24px 70px rgba(0,0,0,.6); }
+.ad-bar { display: flex; align-items: center; gap: .6rem; }
+.ad-by { font-size: .78rem; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-3); }
+.ad-count { margin-left: auto; font-size: .8rem; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.ad-skip { margin-left: .2rem; padding: .4rem .9rem; border-radius: 999px; font-size: .85rem;
+  border: 1px solid rgba(255,255,255,.22); background: rgba(255,255,255,.06); color: inherit;
+  cursor: pointer; transition: opacity .2s ease; }
+.ad-skip:disabled { opacity: .45; cursor: default; }
+.ad-skip:not(:disabled):hover { background: rgba(255,255,255,.13); }
+.ad-why { margin: 0; font-size: .74rem; color: var(--ink-3); text-align: center; }
+.ad-why a { color: inherit; text-decoration: underline; }
+/* Console: campaign state at a glance — on air is the one that matters. */
+.ad-st { display: inline-block; padding: .1rem .5rem; border-radius: 999px; font-size: .76rem; white-space: nowrap; }
+.ad-st-draft    { background: rgba(255,255,255,.08); color: var(--ink-3); }
+.ad-st-approved { background: rgba(94,234,212,.15); color: #5eead4; }
+.ad-st-live     { background: rgba(52,211,153,.2); color: #6ee7b7; font-weight: 600; }
+.ad-st-ended    { background: rgba(224,82,99,.14); color: #f0a3ad; }
+.ad-range { display: flex; flex-wrap: wrap; gap: .6rem; align-items: flex-end; margin-bottom: .6rem; }
+@media (max-width: 560px) { .ad-video { max-height: 48vh; } }

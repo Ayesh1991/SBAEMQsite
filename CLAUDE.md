@@ -7,7 +7,7 @@ twenty releases to learn, and most of it is counter-intuitive.
 
 A static single-page app for Sri Lankan postgraduate and undergraduate
 medical exam preparation. **No build step.** The files in `js/` are served
-exactly as they are committed; `index.html` loads 54 `<script>` tags in a
+exactly as they are committed; `index.html` loads 55 `<script>` tags in a
 fixed order. Cloudflare Pages serves it, Pages Functions in `functions/api/`
 are the only server code, Supabase is the database.
 
@@ -29,7 +29,7 @@ are the only server code, Supabase is the database.
    function added to one and not the other works in testing and throws in
    production, or the reverse. The tests assert the lists match.
 
-3. **The version stamp is in three places.** `index.html` (`?v=N`, 53
+3. **The version stamp is in three places.** `index.html` (`?v=N`, 54
    occurrences — the suite checks they all agree, so the number itself is
    not load-bearing), `sw.js` (`VERSION = 'aureum-vN'`), and the newest test
    file. Bump all three together — see `/release`.
@@ -173,6 +173,29 @@ The Part 2 bank is being re-made; the old and new generations run at once.
   — no questions for the candidate and no replacement coming. It is only
   ever non-empty once a replacement is live.
 
+## Sponsors and the pre-roll (v139)
+
+`js/ads.js` (`Ads`) plays one five-second message per session before the
+app opens; `#/dev/ads` runs the campaigns and produces the report.
+
+- **An advertisement never stops somebody studying.** Every failure path
+  — no campaign, no network, an undecodable video, autoplay refused —
+  resolves and opens the app. `maybeShow()` throws for nothing.
+- **A browser can always lie about having watched.** So the claim sold is
+  only "N distinct doctors, once each per day", and the **database**
+  keeps it: a unique index on `(campaign_id, user_id, day)`, the server's
+  date, and an insert policy filing it under the viewer's own id. The
+  report leads with *Doctors*, not *Impressions*.
+- **Approval is a gate.** Nothing is served unapproved, and changing the
+  video, title, sponsor or length **drops the approval** by trigger. NMRA
+  rules restrict advertising medicines to the public — never weaken this.
+- Creatives are **self-hosted MP4** on Pages. Never a YouTube embed:
+  their terms forbid it and an embed cannot be counted.
+- Ads go to `plan = 'free'` accounts only; editors and admins never.
+- **Playwright's Chromium has no H.264.** `ads/sample-5s.webm` is the
+  fixture for the working path; `sample-5s.mp4` is a real undecodable
+  video and is how t139 tests the failure path. Send sponsors MP4.
+
 ## Adding a console section
 
 A section needs its name in **two** places: the dispatch in
@@ -188,7 +211,7 @@ is built), then `npx playwright install chromium`.
 
 ```bash
 npm run serve                                  # leave running (Node, no python)
-npm test                                       # all 39 files, summarised
+npm test                                       # all 40 files, summarised
 node tools/tests/t135-history-by-course.mjs    # one release file
 ```
 
@@ -237,6 +260,7 @@ and must never appear in the repo.
 | Adaptive mocks | `js/simulator.js`, `js/blueprint.js` |
 | OSCE bank and stations | `js/osce.js` |
 | Course scoping | `js/course.js` |
+| Sponsored pre-roll | `js/ads.js` |
 | A group's page (wall/chat/files/papers) | `js/group.js` |
 | Schema, RLS, migrations | `supabase/schema.sql` |
 

@@ -48,6 +48,7 @@ const DevConsole = (() => {
     if (section === 'cpd') return renderCpdSection(view);
     if (section === 'courses') return renderCoursesSection(view);
     if (section === 'remake') return renderRemakeSection(view);
+    if (section === 'ads') return renderAdsSection(view);
     return renderHub(view);
   }
 
@@ -150,6 +151,12 @@ const DevConsole = (() => {
             <h3>Re-make backlog</h3>
             <p>How far through the second edition, counted in questions rather than topics — what is replaced, what is in review, what has not been started, and which superseded papers are still being offered.</p>
             <span class="dev-hub-count" id="hub-remake">…</span>
+          </a>
+          <a class="dev-hub-card" href="#/dev/ads" style="--hub-accent:linear-gradient(135deg,#f0abfc,#f4c95d)">
+            <span class="dev-hub-ico">📺</span>
+            <h3>Sponsors</h3>
+            <p>The five-second message before the app opens: campaigns, the approval each one needs before it can run, and the monthly figure a drug company is handed.</p>
+            <span class="dev-hub-count" id="hub-ads">…</span>
           </a>
           <a class="dev-hub-card" href="#/dev/cpd" style="--hub-accent:linear-gradient(135deg,#5eead4,#818cf8)">
             <span class="dev-hub-ico">📖</span>
@@ -5095,6 +5102,229 @@ const DevConsole = (() => {
       const t = b.topics.find(x => x.id === btn.dataset.rmArch);
       if (t && t.archivable.length) archive(t.archivable, btn, 'put away');
     }));
+  }
+
+  /* ================= SPONSORS (v139) =================
+
+     Two jobs on one page: run the campaigns, and produce the figure a
+     drug company is handed at the end of the month.
+
+     THE APPROVAL GATE IS THE POINT OF THE FIRST HALF. NMRA rules
+     restrict advertising prescription medicines to the public, so
+     nothing is ever served until a named person has approved it, and
+     the approver and the moment are recorded. Changing the video, the
+     title, the sponsor or the length DROPS that approval — the
+     database does it, not this page — because an approval that
+     survives a swapped creative is theatre.
+
+     AND THE SECOND HALF IS DELIBERATELY MODEST. "Impressions" is the
+     number everyone asks for and the weakest one: a browser can be
+     made to claim anything. "Doctors" is the count of distinct
+     accounts, deduped once per day by a unique index in the database,
+     and it is the number worth putting in front of a sponsor. Both are
+     shown, labelled, in that order. */
+  let adFrom = null, adTo = null;
+
+  const adMonthStart = () => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10); };
+  const adToday = () => new Date().toISOString().slice(0, 10);
+
+  async function renderAdsSection(view) {
+    const { esc } = ctx;
+    adFrom = adFrom || adMonthStart(); adTo = adTo || adToday();
+    view.innerHTML = `
+      <section class="page">
+        <header data-animate>
+          ${backLink}
+          <p class="kicker">DEVELOPER · SPONSORS</p>
+          <h1 class="page-title">Campaigns, and what the sponsor is told</h1>
+          <p class="muted">A five-second message before the app opens, skippable after three.
+            Shown to free accounts only, once per session. <strong>Nothing runs until you
+            approve it</strong>, and changing the creative withdraws that approval.</p>
+        </header>
+        <div id="ad-list" data-animate><p class="muted">Loading…</p></div>
+        <div class="card" data-animate>
+          <details class="dev-collapse"><summary><span class="card-title">New campaign</span><span class="dc-caret">▸</span></summary>
+            <div id="ad-form"></div>
+          </details>
+        </div>
+        <div id="ad-report" data-animate><p class="muted">Loading…</p></div>
+      </section>`;
+    ctx.FX.viewIn(view);
+    view.querySelector('#ad-form').innerHTML = adFormHTML(null);
+    wireAdForm(view, view.querySelector('#ad-form'), null);
+    await paintAds(view);
+    await paintAdReport(view);
+  }
+
+  function adFormHTML(c) {
+    const { esc } = ctx;
+    const v = c || { sponsor: '', title: '', mediaUrl: '', posterUrl: '', durationS: 5,
+      startsOn: '', endsOn: '', notes: '' };
+    return `
+      <div class="co-form">
+        <label class="field"><span>Sponsor</span>
+          <input type="text" class="sel" data-af="sponsor" value="${esc(v.sponsor || '')}" placeholder="Acme Pharmaceuticals"></label>
+        <label class="field"><span>Campaign title — for your records, not shown</span>
+          <input type="text" class="sel" data-af="title" value="${esc(v.title || '')}" placeholder="Iron infusion, Q1"></label>
+        <label class="field"><span>Video URL</span>
+          <input type="text" class="sel" data-af="mediaUrl" value="${esc(v.mediaUrl || v.media_url || '')}" placeholder="/ads/acme-q1.mp4">
+          <span class="tiny muted">A file committed to this repo under <code>/ads/</code>, served by Cloudflare.
+            Keep it to 5 seconds and a few hundred KB — it is in front of somebody who wants to study.
+            <strong>Not a YouTube link:</strong> their terms do not allow the embedded player to serve
+            your own advertising, and an embed cannot be counted reliably.</span></label>
+        <label class="field"><span>Poster image — the first frame, while it loads</span>
+          <input type="text" class="sel" data-af="posterUrl" value="${esc(v.posterUrl || v.poster_url || '')}" placeholder="/ads/acme-q1.jpg"></label>
+        <label class="field"><span>Length, seconds</span>
+          <input type="number" class="sel" data-af="durationS" min="1" max="60" value="${esc(v.durationS || v.duration_s || 5)}"></label>
+        <label class="field"><span>Runs from</span>
+          <input type="date" class="sel" data-af="startsOn" value="${esc(v.startsOn || v.starts_on || '')}"></label>
+        <label class="field"><span>Runs until</span>
+          <input type="date" class="sel" data-af="endsOn" value="${esc(v.endsOn || v.ends_on || '')}"></label>
+        <label class="field"><span>Notes — what you checked before approving</span>
+          <textarea class="sel" data-af="notes" rows="2" placeholder="Generic name used, no dosing claims, NMRA ref…">${esc(v.notes || '')}</textarea></label>
+        <div class="qedit-btns">
+          <button class="btn btn-gold btn-sm" data-ad-save>${c ? 'Save' : 'Create as draft'}</button>
+          <span class="dev-row-msg" data-ad-msg></span>
+        </div>
+      </div>`;
+  }
+
+  function wireAdForm(view, host, c) {
+    host.querySelector('[data-ad-save]')?.addEventListener('click', async e => {
+      const btn = e.currentTarget, msg = host.querySelector('[data-ad-msg]');
+      const get = k => host.querySelector(`[data-af="${k}"]`)?.value?.trim() || '';
+      const rec = { id: c ? (c.id) : undefined, sponsor: get('sponsor'), title: get('title'),
+        mediaUrl: get('mediaUrl'), posterUrl: get('posterUrl'),
+        durationS: Number(get('durationS')) || 5,
+        startsOn: get('startsOn') || null, endsOn: get('endsOn') || null, notes: get('notes') };
+      if (!rec.sponsor || !rec.mediaUrl) { msg.textContent = 'A sponsor and a video are the minimum.'; return; }
+      btn.disabled = true;
+      try { await ctx.Backend.saveCampaign(rec); msg.textContent = 'Saved.'; await paintAds(view); }
+      catch (err) { msg.textContent = err.message || String(err); }
+      btn.disabled = false;
+    });
+  }
+
+  const AD_STATE = { draft: 'draft', approved: 'approved, not on air', live: 'ON AIR', ended: 'ended' };
+
+  async function paintAds(view) {
+    const { esc } = ctx;
+    const host = view.querySelector('#ad-list'); if (!host) return;
+    let list = [];
+    try { list = await ctx.Backend.listCampaigns(); }
+    catch (e) { host.innerHTML = `<p class="muted">${esc(e.message || e)}</p>`; return; }
+    host.innerHTML = `
+      <div class="card">
+        <h3 class="card-title">Campaigns</h3>
+        ${list.length ? `<div class="table-scroll"><table class="table">
+          <thead><tr><th>Sponsor</th><th>State</th><th>Approved</th><th>Runs</th><th></th></tr></thead>
+          <tbody>${list.map(c => {
+            const approved = !!c.approved_at;
+            return `<tr>
+              <td>${esc(c.sponsor || '—')}<div class="muted tiny">${esc(c.title || '')}</div></td>
+              <td><span class="ad-st ad-st-${esc(c.status)}">${esc(AD_STATE[c.status] || c.status)}</span></td>
+              <td class="muted tiny">${approved
+                ? `✓ ${esc(String(c.approved_at).slice(0, 10))}`
+                : '<span class="bad">not approved</span>'}</td>
+              <td class="muted tiny">${esc(c.starts_on || 'any')} → ${esc(c.ends_on || 'any')}</td>
+              <td>
+                ${!approved ? `<button class="link-btn" data-ad-approve="${esc(c.id)}">approve</button> ` : ''}
+                ${approved && c.status !== 'live' ? `<button class="link-btn" data-ad-live="${esc(c.id)}">put on air</button> ` : ''}
+                ${c.status === 'live' ? `<button class="link-btn" data-ad-stop="${esc(c.id)}">take off air</button> ` : ''}
+                <button class="link-btn" data-ad-edit="${esc(c.id)}">edit</button>
+              </td></tr>`;
+          }).join('')}</tbody></table></div>`
+          : '<p class="muted">No campaigns yet.</p>'}
+      </div>`;
+
+    host.querySelectorAll('[data-ad-approve]').forEach(b => b.addEventListener('click', async () => {
+      /* The one place a human says yes. Spelling out what approving
+         means is the difference between a gate and a formality. */
+      if (!confirm('Approve this creative for broadcast?\n\n'
+        + 'You are confirming it is appropriate for a medical audience and complies with '
+        + 'NMRA rules on advertising medicines.\n\n'
+        + 'Your name and the time are recorded against it. Changing the video or the sponsor '
+        + 'afterwards withdraws this approval automatically.')) return;
+      b.disabled = true;
+      try { await ctx.Backend.approveCampaign(b.dataset.adApprove); await paintAds(view); }
+      catch (e) { alert(e.message || e); b.disabled = false; }
+    }));
+    host.querySelectorAll('[data-ad-live]').forEach(b => b.addEventListener('click', async () => {
+      b.disabled = true;
+      try { await ctx.Backend.setCampaignStatus(b.dataset.adLive, 'live'); await paintAds(view); }
+      catch (e) { alert(e.message || e); b.disabled = false; }
+    }));
+    host.querySelectorAll('[data-ad-stop]').forEach(b => b.addEventListener('click', async () => {
+      b.disabled = true;
+      try { await ctx.Backend.setCampaignStatus(b.dataset.adStop, 'approved'); await paintAds(view); }
+      catch (e) { alert(e.message || e); b.disabled = false; }
+    }));
+    host.querySelectorAll('[data-ad-edit]').forEach(b => b.addEventListener('click', () => {
+      const c = list.find(x => x.id === b.dataset.adEdit); if (!c) return;
+      const slot = view.querySelector('#ad-form');
+      slot.innerHTML = adFormHTML(c);
+      wireAdForm(view, slot, c);
+      slot.closest('details').open = true;
+      slot.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }));
+  }
+
+  async function paintAdReport(view) {
+    const { esc } = ctx;
+    const host = view.querySelector('#ad-report'); if (!host) return;
+    let rows = [];
+    try { rows = await ctx.Backend.adReport(adFrom, adTo); }
+    catch (e) { host.innerHTML = `<p class="muted">${esc(e.message || e)}</p>`; return; }
+    const withAny = rows.filter(r => r.impressions);
+    host.innerHTML = `
+      <div class="card">
+        <h3 class="card-title">What the sponsor is told</h3>
+        <div class="ad-range">
+          <label class="wl-f"><span>From</span><input type="date" class="sel" id="ad-from" value="${esc(adFrom)}"></label>
+          <label class="wl-f"><span>To</span><input type="date" class="sel" id="ad-to" value="${esc(adTo)}"></label>
+          <button class="btn btn-ghost btn-sm" id="ad-csv">Download CSV</button>
+        </div>
+        <p class="tiny muted"><strong>Doctors</strong> is the number to quote: distinct accounts, counted
+          once per day each, enforced by the database rather than by the browser. <strong>Impressions</strong>
+          is the same thing totalled over the period. A candidate who opens AUREUM ten times in a day
+          is one doctor and one impression that day.</p>
+        ${withAny.length ? `<div class="table-scroll"><table class="table">
+          <thead><tr><th>Sponsor</th><th>Doctors</th><th>Impressions</th><th>Watched to the end</th><th>Approved by</th></tr></thead>
+          <tbody>${withAny.map(r => `<tr>
+            <td>${esc(r.sponsor || '—')}<div class="muted tiny">${esc(r.title || '')}</div></td>
+            <td><strong>${r.people.toLocaleString()}</strong></td>
+            <td>${r.impressions.toLocaleString()}</td>
+            <td>${r.completed.toLocaleString()} <span class="tiny muted">(${r.impressions
+              ? Math.round((r.completed / r.impressions) * 100) : 0}%)</span></td>
+            <td class="muted tiny">${r.approvedAt ? esc(String(r.approvedAt).slice(0, 10)) : '—'}</td>
+          </tr>`).join('')}</tbody></table></div>`
+          : '<p class="muted">Nothing was shown in this period.</p>'}
+      </div>`;
+    const redraw = async () => {
+      adFrom = view.querySelector('#ad-from').value || adFrom;
+      adTo = view.querySelector('#ad-to').value || adTo;
+      await paintAdReport(view);
+    };
+    view.querySelector('#ad-from')?.addEventListener('change', redraw);
+    view.querySelector('#ad-to')?.addEventListener('change', redraw);
+    view.querySelector('#ad-csv')?.addEventListener('click', () => downloadAdCsv(rows));
+  }
+
+  /** The thing actually e-mailed to a drug company. Per campaign, then
+      per day, so they can check it against their own expectations. */
+  function downloadAdCsv(rows) {
+    const q = v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+    const out = [['Sponsor', 'Campaign', 'Day', 'Doctors that day', 'Watched to the end'].map(q).join(',')];
+    rows.filter(r => r.impressions).forEach(r => {
+      r.byDay.forEach(d => out.push([r.sponsor, r.title, d.day, d.n, ''].map(q).join(',')));
+      out.push([r.sponsor, r.title, 'TOTAL ' + adFrom + ' to ' + adTo, r.people, r.completed].map(q).join(','));
+    });
+    const blob = new Blob([out.join('\n')], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `aureum-sponsors-${adFrom}-to-${adTo}.csv`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   }
 
   async function renderCoursesSection(view) {

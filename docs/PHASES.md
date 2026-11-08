@@ -792,6 +792,88 @@ eight groups in a burst and counts them.
 
 ---
 
+## v139 — The sponsored pre-roll, and a number that can be defended
+
+Supabase costs $25–40 a month and the candidates are registrars on a
+registrar's salary. A five-second message from a pharmaceutical sponsor
+pays the bill instead of charging them. This is the first feature here
+whose output is read by **somebody outside the project**, which changes
+what "finished" means.
+
+### The first rule is that it never stops somebody studying
+
+Every failure path ends with the app open: no campaign, no network, a
+video that will not decode, autoplay refused, an exception anywhere.
+`maybeShow()` resolves for all of them and throws for none.
+
+The test gets this honestly rather than by mocking. **Playwright's
+Chromium ships without H.264** — a licensed codec — so `ads/sample-5s.mp4`
+is a genuinely undecodable video in that container. t139 §4 plays it and
+asserts the candidate is in the app in milliseconds with nothing counted.
+`sample-5s.webm` (VP9) exists only so the suite can drive the *working*
+path; a sponsor is always sent MP4, because Safari is patchy on WebM.
+
+### What a sponsor is actually sold
+
+A browser can always lie about having watched a video. That is not
+fixable in a static app, and claiming otherwise would be the dishonest
+part — so the claim is deliberately modest and the **database** keeps it,
+not the client:
+
+- **one impression per candidate per campaign per day** — a unique index
+  on `(campaign_id, user_id, day)`, so a refresh loop cannot inflate it
+  and neither can a tampered client;
+- dated by the **server's** clock, so a device with its clock wound back
+  is not a fresh impression;
+- filed under the viewer's own id by the insert policy;
+- only for a campaign that is live, approved and in date.
+
+The report therefore leads with **Doctors** — distinct accounts — and
+shows *Impressions* second. Impressions is the number everyone asks for
+and the weaker of the two.
+
+Watched time is **playback time**, accumulated from `timeupdate` while
+actually playing, so a backgrounded tab and a paused video earn nothing.
+The skip unlocks and the impression counts at the **same** three seconds,
+deliberately: somebody who skips the instant they may has still watched
+what the sponsor paid for, so there is nothing to argue about at the end
+of the month.
+
+### Approval is a gate, not a note
+
+NMRA rules restrict advertising prescription medicines to the public, so
+nothing is served until a named person approves it, and the approver and
+the moment are recorded. **Changing the video, title, sponsor or length
+drops that approval** — a database trigger does it, not the page —
+because an approval that survives a swapped creative is theatre. The
+campaign falls back to draft and stops being served instantly.
+
+### The rest of the shape
+
+- **Free accounts only.** The `plan` column exists before the paid tier
+  does, because a candidate who has paid and is still advertised to is
+  the complaint that follows one. Editors and admins are exempt: staff,
+  not the audience.
+- **Self-hosted MP4 on Cloudflare**, never a YouTube embed — their terms
+  do not allow the embedded player to serve your own advertising, and an
+  embed cannot be counted. Self-hosting also means zero Supabase egress.
+  The console says so where the URL is typed.
+- **`#/about-ads`** tells a candidate what is recorded and, more to the
+  point, what is not: no name, no e-mail, nothing they study, no
+  third-party network, no cross-site cookie.
+
+### Verified against a real Postgres
+
+Section 39 was executed against PostgreSQL 16 with RLS enforced as an
+unprivileged role, not read over. That caught the first harness being
+wrong — `psql` as superuser **bypasses RLS entirely**, so the first run
+"passed" a test that should have failed. As `authenticated`: recording
+somebody else's impression is refused, a second impression the same day
+is refused, a candidate reads zero rows of the tally, cannot approve a
+campaign, and cannot create one that is already live.
+
+---
+
 ## Not on this list, deliberately
 
 - **A build step.** It has been proposed twice and refused twice. 54 script
