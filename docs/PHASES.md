@@ -727,6 +727,153 @@ shown the wrong state.
 
 ---
 
+## v138 — Asking the right room
+
+Groups have existed since v127 and a question could not be asked in one.
+"Discuss with friends" under a rationale called `TeaRoom.share()`, which
+called `post()`, which took the room **from the open wall**.
+
+That rule is right where it was written. On the wall's own composer,
+taking the destination from what you are looking at is exactly what makes
+it impossible to read one group and post to another, and the comment
+saying so has been there since v127.
+
+**But the rule needs a view.** Sitting a paper there is no wall on
+screen, so the question went wherever the wall had last been left —
+invisibly, and in practice always "everyone". Somebody in four groups
+could not ask one of them. So the Discuss box now asks, at the only
+moment the asker knows the answer, and remembers the group asked last
+because a candidate works through a paper one question at a time.
+
+`share(ctx, topic, roomId)` takes the room explicitly; `undefined` still
+means "the wall I am looking at", so every older caller behaves as it
+did. The confirmation names the destination — "Posted to the tea room"
+was true of four different places and said which of them none.
+
+### The wall is a feed
+
+A picker alone would have made a group's question somewhere you have to
+go and look. The wall is now **three states, not two**:
+
+| | shows |
+|---|---|
+| `'feed'` | the shared wall **plus every group I am in** — the default |
+| `null` | the shared wall exactly (`room_id is null`) |
+| `'<id>'` | one group |
+
+Only the feed mixes rooms. Asking for the shared wall still means
+`room_id is null` exactly, because a member of three groups must not find
+all three mixed into the wall they thought was everybody's — the same
+rule, and the same comment, that v127 wrote.
+
+Each post on the feed is badged with where it came from; on a single wall
+that badge would be noise, so it is not drawn. On the feed the composer
+has no single destination to infer, so it asks; on a single wall it does
+not. `wallQuery()` is the one definition of what the open wall wants, and
+the first read, the poll and "load older" all use it — **a list that
+merges while the poll does not would show a group's new post on reload
+and never live**, which reads as the group being quiet.
+
+**The panel does not grow a second strip** — the first draft of this
+release gave it one, and the suite refused it. `wallRoom` is a single
+piece of module state, so two switchers over it means clicking either
+leaves the other's header naming the wall you just left. v128 made that
+exact mistake, t124 caught it then, and t124 caught it again now. The way
+into a group from the feed is **the badge**, which already names the
+group: it is a link to that group's page.
+
+### Two groups are two groups
+
+Found on the way: local rooms were `'r' + Date.now()` with no random
+suffix, while every other id in that file has one. Two groups made in the
+same millisecond shared an id — and with it their members, posts, chat
+and files. Chat messages had the same flaw. Both fixed, and t138 §5 makes
+eight groups in a burst and counts them.
+
+---
+
+## v139 — The sponsored pre-roll, and a number that can be defended
+
+Supabase costs $25–40 a month and the candidates are registrars on a
+registrar's salary. A five-second message from a pharmaceutical sponsor
+pays the bill instead of charging them. This is the first feature here
+whose output is read by **somebody outside the project**, which changes
+what "finished" means.
+
+### The first rule is that it never stops somebody studying
+
+Every failure path ends with the app open: no campaign, no network, a
+video that will not decode, autoplay refused, an exception anywhere.
+`maybeShow()` resolves for all of them and throws for none.
+
+The test gets this honestly rather than by mocking. **Playwright's
+Chromium ships without H.264** — a licensed codec — so `ads/sample-5s.mp4`
+is a genuinely undecodable video in that container. t139 §4 plays it and
+asserts the candidate is in the app in milliseconds with nothing counted.
+`sample-5s.webm` (VP9) exists only so the suite can drive the *working*
+path; a sponsor is always sent MP4, because Safari is patchy on WebM.
+
+### What a sponsor is actually sold
+
+A browser can always lie about having watched a video. That is not
+fixable in a static app, and claiming otherwise would be the dishonest
+part — so the claim is deliberately modest and the **database** keeps it,
+not the client:
+
+- **one impression per candidate per campaign per day** — a unique index
+  on `(campaign_id, user_id, day)`, so a refresh loop cannot inflate it
+  and neither can a tampered client;
+- dated by the **server's** clock, so a device with its clock wound back
+  is not a fresh impression;
+- filed under the viewer's own id by the insert policy;
+- only for a campaign that is live, approved and in date.
+
+The report therefore leads with **Doctors** — distinct accounts — and
+shows *Impressions* second. Impressions is the number everyone asks for
+and the weaker of the two.
+
+Watched time is **playback time**, accumulated from `timeupdate` while
+actually playing, so a backgrounded tab and a paused video earn nothing.
+The skip unlocks and the impression counts at the **same** three seconds,
+deliberately: somebody who skips the instant they may has still watched
+what the sponsor paid for, so there is nothing to argue about at the end
+of the month.
+
+### Approval is a gate, not a note
+
+NMRA rules restrict advertising prescription medicines to the public, so
+nothing is served until a named person approves it, and the approver and
+the moment are recorded. **Changing the video, title, sponsor or length
+drops that approval** — a database trigger does it, not the page —
+because an approval that survives a swapped creative is theatre. The
+campaign falls back to draft and stops being served instantly.
+
+### The rest of the shape
+
+- **Free accounts only.** The `plan` column exists before the paid tier
+  does, because a candidate who has paid and is still advertised to is
+  the complaint that follows one. Editors and admins are exempt: staff,
+  not the audience.
+- **Self-hosted MP4 on Cloudflare**, never a YouTube embed — their terms
+  do not allow the embedded player to serve your own advertising, and an
+  embed cannot be counted. Self-hosting also means zero Supabase egress.
+  The console says so where the URL is typed.
+- **`#/about-ads`** tells a candidate what is recorded and, more to the
+  point, what is not: no name, no e-mail, nothing they study, no
+  third-party network, no cross-site cookie.
+
+### Verified against a real Postgres
+
+Section 39 was executed against PostgreSQL 16 with RLS enforced as an
+unprivileged role, not read over. That caught the first harness being
+wrong — `psql` as superuser **bypasses RLS entirely**, so the first run
+"passed" a test that should have failed. As `authenticated`: recording
+somebody else's impression is refused, a second impression the same day
+is refused, a candidate reads zero rows of the tally, cannot approve a
+campaign, and cannot create one that is already live.
+
+---
+
 ## Not on this list, deliberately
 
 - **A build step.** It has been proposed twice and refused twice. 54 script

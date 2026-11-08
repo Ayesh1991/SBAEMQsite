@@ -45,7 +45,16 @@ const TeaRoom = (() => {
   /* WHICH WALL IS OPEN. null is the one everybody shares — the tea room as
      it always was. A room id is that group's wall, and a non-member cannot
      read it at all: the rows never leave the database. */
-  let wallRoom = null;
+  /* WHICH WALL IS OPEN — three states since v138:
+       'feed'  my feed: the shared wall plus every group I am in. The
+               default, and the only one that mixes rooms.
+       null    the shared wall exactly (room_id is null).
+       '<id>'  one group's wall.
+     A group's page passes its own id, so it is never the feed. */
+  let wallRoom = 'feed';
+  const wallIsFeed = () => wallRoom === 'feed';
+  /* What the data calls want: the feed asks for no room AND feed:true. */
+  const wallQuery = () => ({ roomId: wallIsFeed() ? null : wallRoom, feed: wallIsFeed() });
   let me = null;
   let cards = {};                     // userId → { name, avatar }
 
@@ -212,7 +221,7 @@ const TeaRoom = (() => {
     loading = (async () => {
       try {
         me = me || await Backend.currentUser().catch(() => null);
-        posts = (await Backend.listDiscussions?.({ limit: PAGE, roomId: wallRoom })) || [];
+        posts = (await Backend.listDiscussions?.({ limit: PAGE, ...wallQuery() })) || [];
         moreAvailable = posts.length >= PAGE;
         posts.sort((a, b) => ts(b) - ts(a));
         myRx = (await Backend.myReactions?.(posts.map(p => p.id))) || {};
@@ -242,7 +251,7 @@ const TeaRoom = (() => {
     let changed = false;
     // ---- wall ----
     try {
-      const out = await Backend.pollDiscussions?.(lastPoll, { roomId: wallRoom });
+      const out = await Backend.pollDiscussions?.(lastPoll, wallQuery());
       for (const p of (out?.threads || [])) if (!posts.some(x => x.id === p.id)) {
         posts.unshift(p); changed = true;
         if (!p.mine) announceOnce(p.id, `${p.author_name || 'A friend'} posted`, p.topic, () => openWall());
@@ -317,11 +326,18 @@ const TeaRoom = (() => {
 
   /* ---------------- posting ---------------- */
 
-  async function post(payload) {
+  async function post(payload, roomId) {
     /* A post lands on the wall that is open. Taking the room from the view
        rather than asking again is what makes it impossible to be reading
-       one group and posting to another. */
-    const row = await Backend.addDiscussion({ ...payload, roomId: wallRoom });
+       one group and posting to another.
+       THAT RULE NEEDS A VIEW. On the feed, and from the Discuss button
+       under a question, there is no single open wall to read — so those
+       callers pass the room explicitly, and `undefined` still means "the
+       wall I am looking at". An explicit null is the shared wall. */
+    const to = roomId === undefined ? (wallIsFeed() ? null : wallRoom) : roomId;
+    const row = await Backend.addDiscussion({ ...payload, roomId: to });
+    /* A post made to a group while reading the feed belongs in the feed,
+       so it is kept; one made from a group's page lands on that page. */
     posts.unshift(row); comments[row.id] = [];
     markSeen(Math.max(ts(row), seenAt()));
     repaint();
@@ -337,13 +353,24 @@ const TeaRoom = (() => {
     return row;
   }
   /** Called by the "Discuss with friends" button under a rationale. */
-  async function share(ctx, topic) {
+  async function share(ctx, topic, roomId) {
+    /* `roomId` is what the Discuss picker chose: null for everyone, a
+       group id, and undefined only from callers that predate the picker
+       (which then behave as before and use the open wall). */
     const row = await post({
       questionKey: ctx.questionKey, paperTitle: ctx.paperTitle, answerText: ctx.answerText,
       rationale: ctx.rationale, question: ctx.question || null, topic, kind: 'question'
-    });
+    }, roomId);
+    /* Open where it actually went, not where the wall happened to be. */
+    if (roomId !== undefined && roomId !== wallRoom && !wallIsFeed()) switchWall(roomId);
     openWall();
     return row;
+  }
+  /** The groups this account can post a question into. */
+  async function shareTargets() {
+    if (!rooms || !rooms.length) { try { await loadRooms(); } catch {} }
+    return (rooms || []).filter(r => r.kind === 'group' || (r.title || '').trim())
+      .map(r => ({ id: r.id, title: r.title || 'Group' }));
   }
   async function react(postId, on) {
     try { await Backend.setReaction?.(postId, on); } catch {}
@@ -565,6 +592,22 @@ const TeaRoom = (() => {
     // not opened yet: the poll bumps _newCm when a comment arrives for it
     return !!p._newCm;
   }
+  /* ON THE FEED, WHICH WALL A POST CAME FROM. Without it the feed is a
+     pile of posts with no way to tell a group's from everybody's — and
+     somebody answers in the wrong place. Only drawn on the feed: on a
+     single wall every post is from that wall and the badge is noise. */
+  function whereHTML(p) {
+    if (!p.room_id) return '<span class="tw-where is-all" title="Posted to everyone">🧱 Everyone</span>';
+    const r = (rooms || []).find(x => x.id === p.room_id);
+    /* THE WAY INTO A GROUP, and deliberately not a second switcher: the
+       badge already names the group, so it is the link. A strip on this
+       surface would be two switchers over one `wallRoom` — the mistake
+       v128 made and rejected, where clicking either leaves the other
+       naming the wall you just left. */
+    return `<a class="tw-where" href="#/group/${encodeURIComponent(p.room_id)}"
+      title="Open this group">👥 ${esc(r?.title || 'Group')}</a>`;
+  }
+
   function postHTML(p) {
     const n = comments[p.id] ? comments[p.id].length : (p.reply_count || 0);
     const fresh = !p.mine && ts(p) > seenAt();
@@ -574,6 +617,7 @@ const TeaRoom = (() => {
       <header class="tw-head">
         ${av(p.user_id, p.author_name)}
         <span class="tw-who"><b>${esc(p.author_name || 'A friend')}</b><i>${esc(relTime(p.created_at))}${p.kind === 'question' ? ' · shared a question' : ''}</i></span>
+        ${wallIsFeed() ? whereHTML(p) : ''}
         ${fresh ? '<span class="tw-flag is-post" title="New post you haven\'t seen">NEW</span>' : ''}
         ${newCm ? '<span class="tw-flag is-cm" title="New comments since you last looked">💬 new</span>' : ''}
         ${p.mine ? `<button class="tr-del" data-act="del-post" title="Delete">🗑</button>` : ''}
@@ -722,10 +766,21 @@ const TeaRoom = (() => {
       <div class="tw-comp-bar">
         <button class="tw-tool" data-act="photo">🖼 Photo</button>
         <button class="tw-tool" data-act="file">📎 File</button>
+        ${wallIsFeed() ? `<label class="tw-dest"><span class="tw-dest-lbl">to</span>
+          <select id="tw-dest">${destOptionsHTML(null)}</select></label>` : ''}
         <button class="btn btn-gold btn-sm" data-act="post">Post</button>
       </div>
     </div>`;
   }
+  /* WHERE A POST CAN GO. One list, used by the composer on the feed and
+     by the Discuss picker under a question — two places that would
+     otherwise drift, and the whole point of v138 is that they agree. */
+  function destOptionsHTML(selected) {
+    const mine = (rooms || []).filter(r => r.kind === 'group' || (r.title || '').trim());
+    return `<option value=""${!selected ? ' selected' : ''}>🧱 Everyone</option>`
+      + mine.map(r => `<option value="${esc(r.id)}"${selected === r.id ? ' selected' : ''}>👥 ${esc(r.title || 'Group')}</option>`).join('');
+  }
+
   function muteBarHTML() {
     const u = muteUntil();
     if (u) return `<div class="tr-muted-bar">🔕 Muted ~${Math.max(1, Math.round((u - now()) / 60000))} min <button class="tr-link" data-act="unmute">unmute</button></div>`;
@@ -769,7 +824,11 @@ const TeaRoom = (() => {
         btn.disabled = true; btn.textContent = 'Posting…';
         try {
           const media = pending.length ? await uploadAll(pending) : [];
-          await post({ topic: text, media, kind: 'post' });
+          /* On the feed the composer carries the destination; on a single
+             wall there is nothing to ask and nothing to get wrong. */
+          const destSel = root.querySelector('#tw-dest');
+          await post({ topic: text, media, kind: 'post' },
+            wallIsFeed() ? (destSel ? (destSel.value || null) : null) : undefined);
           ta.value = ''; ta.style.height = 'auto'; pending = []; paintPending();
         } catch (err) { alert('Could not post: ' + (err.message || err)); }
         btn.disabled = false; btn.textContent = 'Post';
@@ -778,7 +837,7 @@ const TeaRoom = (() => {
       if (act === 'older') {
         btn.disabled = true; btn.textContent = 'Loading…';
         try {
-          const more = (await Backend.listDiscussions({ limit: PAGE, before: posts[posts.length - 1]?.created_at })) || [];
+          const more = (await Backend.listDiscussions({ limit: PAGE, before: posts[posts.length - 1]?.created_at, ...wallQuery() })) || [];
           moreAvailable = more.length >= PAGE;
           more.forEach(p => { if (!posts.some(x => x.id === p.id)) posts.push(p); });
           repaint();
@@ -1234,35 +1293,46 @@ const TeaRoom = (() => {
        go to chat — so people looking at the wall, where groups are read,
        could not find it at all. The strip now always draws, because
        "＋ New group" is the thing somebody with no groups needs most. */
+    const onGroup = wallRoom && !wallIsFeed();
     host.innerHTML = `
-      ${mine.length ? `<button class="tw-room${wallRoom ? '' : ' is-on'}" data-wall-room="">🧱 Everyone</button>` : ''}
+      ${mine.length ? `<button class="tw-room${wallIsFeed() ? ' is-on' : ''}" data-wall-room="feed"
+        title="Everything from the groups you are in, and the shared wall">🏠 All</button>` : ''}
+      ${mine.length ? `<button class="tw-room${(!wallRoom && !wallIsFeed()) ? ' is-on' : ''}" data-wall-room="">🧱 Everyone</button>` : ''}
       ${mine.map(r => `<button class="tw-room${wallRoom === r.id ? ' is-on' : ''}" data-wall-room="${esc(r.id)}">${esc(r.title || 'Group')}</button>`).join('')}
-      ${wallRoom ? `<button class="tw-room tw-room-go" data-act="members" title="Who is in this group">👥 Members</button>` : ''}
-      ${wallRoom ? `<a class="tw-room tw-room-go" href="#/group/${encodeURIComponent(wallRoom)}">📝 Papers</a>` : ''}
+      ${onGroup ? `<button class="tw-room tw-room-go" data-act="members" title="Who is in this group">👥 Members</button>` : ''}
+      ${onGroup ? `<a class="tw-room tw-room-go" href="#/group/${encodeURIComponent(wallRoom)}">📝 Papers</a>` : ''}
       <button class="tw-room tw-room-new" data-act="newgroup" title="Make a study group">＋ New group</button>`;
     host.querySelector('[data-act="newgroup"]')?.addEventListener('click', () => newRoomFlow());
     host.querySelector('[data-act="members"]')?.addEventListener('click', () => membersFlow(wallRoom, surface));
-    host.querySelectorAll('[data-wall-room]').forEach(b => b.addEventListener('click', async () => {
-      const id = b.dataset.wallRoom || null;
-      if (id === wallRoom) return;
-      wallRoom = id;
-      const t = surface.querySelector('[data-tw-title]');
-      if (t) t.textContent = id ? '👥 ' + (mine.find(r => r.id === id)?.title || 'Group') : '🧱 Tea room wall';
-      /* A different wall is a different set of posts, so the loaded ones
-         are dropped rather than filtered — a stale post from the last
-         group appearing in this one is the failure this whole release is
-         about. */
-      /* `comments` is a const object shared by the whole module, so it is
-         emptied in place rather than replaced — reassigning it throws, and
-         the throw took the rest of this handler with it. */
-      posts = []; myRx = {}; loaded = false; lastPoll = null;
-      Object.keys(comments).forEach(k => delete comments[k]);
-      paintWallRooms(surface);
-      const feed = surface.querySelector('[data-tw-feed]');
-      if (feed) feed.innerHTML = '<p class="muted" style="padding:16px">Loading…</p>';
-      await ensureLoaded(true);
-      repaint();
-    }));
+    host.querySelectorAll('[data-wall-room]').forEach(b => b.addEventListener('click', () =>
+      switchWall(b.dataset.wallRoom === 'feed' ? 'feed' : (b.dataset.wallRoom || null), surface)));
+  }
+
+  /** Show a different wall. One definition, because v138 gave the Discuss
+      picker a second reason to switch. */
+  async function switchWall(id, surface) {
+    if (id === wallRoom) return;
+    wallRoom = id;
+    const host = surface || wallEl;
+    const t = host?.querySelector('[data-tw-title]');
+    if (t) {
+      t.textContent = wallIsFeed() ? '🏠 Your feed'
+        : id ? '👥 ' + ((rooms || []).find(r => r.id === id)?.title || 'Group')
+        : '🧱 Tea room wall';
+    }
+    /* A different wall is a different set of posts, so the loaded ones
+       are dropped rather than filtered — a stale post from the last
+       group appearing in this one is the failure v127 was about. */
+    /* `comments` is a const object shared by the whole module, so it is
+       emptied in place rather than replaced — reassigning it throws, and
+       the throw took the rest of this handler with it. */
+    posts = []; myRx = {}; loaded = false; lastPoll = null;
+    Object.keys(comments).forEach(k => delete comments[k]);
+    if (host) paintWallRooms(host);
+    const feed = host?.querySelector('[data-tw-feed]');
+    if (feed) feed.innerHTML = '<p class="muted" style="padding:16px">Loading…</p>';
+    await ensureLoaded(true);
+    repaint();
   }
 
   async function openWall() {
@@ -1425,7 +1495,10 @@ const TeaRoom = (() => {
   async function renderPanel(host, roomId) {
     panelHost = host;
     me = me || await Backend.currentUser().catch(() => null);
-    const want = roomId || null;
+    /* A group's page names its room; the Studio tile names none and gets
+       the FEED, which is what makes the wall a per-person notice board
+       rather than only the posts nobody filed into a group. */
+    const want = roomId || 'feed';
     /* Switching wall means dropping what was loaded, not filtering it — a
        post left over from the last wall appearing in this one is the bug
        v124 was about. */
@@ -1433,6 +1506,12 @@ const TeaRoom = (() => {
       wallRoom = want; posts = []; myRx = {}; loaded = false; lastPoll = null;
       Object.keys(comments).forEach(k => delete comments[k]);
     }
+    /* NO STRIP HERE — see THE FIX IS NOT A SECOND STRIP HERE below. But
+       the composer's destination list and the feed's badges are both
+       drawn from `rooms`, so they must be in hand before the markup is
+       built; this surface is often the first one opened, before any
+       chat has loaded them. */
+    if (!rooms.length) await loadRooms();
     host.innerHTML = `<div class="tr-surface tw-panel">
         <div class="tr-bar">
           <div data-tr-mute class="tr-mute-wrap"></div>
@@ -1493,7 +1572,8 @@ const TeaRoom = (() => {
     openMembers: (roomId, surface) => membersFlow(roomId, surface),
     newGroup: () => newRoomFlow(),
     openWall, closeWall, toggleWall, openChat, closeChat, toggleChat,
-    openComments, share, post, setMute, muteUntil,
+    openComments, share, shareTargets, post, setMute, muteUntil,
+    switchWall, wallIsFeed: () => wallIsFeed(),
     loadCfg, config, setNotif, askNotifPermission,
     // test seam: drive one poll cycle deterministically instead of waiting
     // on the timer, so the "same notification over and over" bug stays fixed

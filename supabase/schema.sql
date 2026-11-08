@@ -2370,3 +2370,143 @@ create trigger protect_paper_edition before update on public.papers
 drop trigger if exists protect_osce_edition on public.osce_stations;
 create trigger protect_osce_edition before update on public.osce_stations
   for each row execute function public.protect_edition();
+
+-- ============================================================
+-- 39) SPONSORED PRE-ROLL, AND AN IMPRESSION THAT CAN BE DEFENDED (v139)
+--
+-- Supabase costs real money every month and the sponsors are drug
+-- companies, so the number handed to them has to survive being
+-- questioned. A BROWSER CAN ALWAYS LIE about having watched a video —
+-- that is not fixable in a static app, and pretending otherwise would be
+-- the dishonest part. What IS enforceable here is the SHAPE of the
+-- number, and it is enforced by the database rather than by the client:
+--
+--   * one impression per candidate per campaign PER DAY — a unique
+--     index, so a refresh loop cannot inflate it and neither can a
+--     client that has been tampered with;
+--   * only a campaign that is approved AND live AND inside its dates;
+--   * only from a signed-in account, filed under that account's own id;
+--   * stamped with the SERVER's clock, never a time the client sent.
+--
+-- So the claim a sponsor is sold is "N distinct doctors, once each per
+-- day" — which is true, and is the claim the schema can keep.
+--
+-- APPROVAL IS A GATE, NOT A NOTE. NMRA rules restrict advertising
+-- prescription medicines to the public, so no campaign is ever served
+-- until a named human has approved it; the approver and the moment are
+-- recorded, and ANY edit to the creative drops the approval. A sponsor
+-- who swaps the video after sign-off gets their campaign taken off air,
+-- not grandfathered in.
+-- ============================================================
+
+create table if not exists public.ad_campaigns (
+  id            uuid primary key default gen_random_uuid(),
+  sponsor       text not null,
+  title         text not null,
+  media_url     text,                       -- self-hosted MP4 on Pages
+  poster_url    text,
+  duration_s    integer not null default 5,
+  -- draft -> approved -> live -> ended. Only 'live' is ever served, and
+  -- only while approved_at is set.
+  status        text not null default 'draft',
+  approved_by   uuid references auth.users(id),
+  approved_at   timestamptz,
+  starts_on     date,
+  ends_on       date,
+  tracks        text[] default '{}',        -- course targeting; empty = all
+  notes         text,
+  created_by    uuid references auth.users(id),
+  created_at    timestamptz default now(),
+  updated_at    timestamptz default now()
+);
+do $$ begin
+  alter table public.ad_campaigns add constraint ad_status_ck
+    check (status in ('draft', 'approved', 'live', 'ended'));
+exception when duplicate_object then null; end $$;
+do $$ begin
+  alter table public.ad_campaigns add constraint ad_duration_ck
+    check (duration_s between 1 and 60);
+exception when duplicate_object then null; end $$;
+
+create table if not exists public.ad_impressions (
+  id          bigserial primary key,
+  campaign_id uuid not null references public.ad_campaigns(id) on delete cascade,
+  user_id     uuid not null references auth.users(id) on delete cascade,
+  -- THE SERVER'S DAY, not the client's. A device with its clock wound
+  -- back would otherwise be a fresh impression every time.
+  day         date not null default (now() at time zone 'utc')::date,
+  watched_ms  integer not null default 0,
+  completed   boolean not null default false,
+  created_at  timestamptz default now()
+);
+-- THE DEDUP. This single index is what makes the monthly figure mean
+-- "distinct doctors" instead of "times a page loaded".
+create unique index if not exists ad_impressions_once_a_day
+  on public.ad_impressions (campaign_id, user_id, day);
+create index if not exists ad_impressions_report_idx
+  on public.ad_impressions (campaign_id, day);
+
+alter table public.ad_campaigns   enable row level security;
+alter table public.ad_impressions enable row level security;
+
+-- WHAT A CANDIDATE MAY SEE: a campaign that is live, approved, and in
+-- date. Not drafts, not approved-but-not-live, not expired.
+drop policy if exists ad_campaigns_read_live on public.ad_campaigns;
+create policy ad_campaigns_read_live on public.ad_campaigns for select
+  using (
+    status = 'live' and approved_at is not null
+    and (starts_on is null or starts_on <= (now() at time zone 'utc')::date)
+    and (ends_on   is null or ends_on   >= (now() at time zone 'utc')::date)
+  );
+drop policy if exists ad_campaigns_editor_all on public.ad_campaigns;
+create policy ad_campaigns_editor_all on public.ad_campaigns for all
+  using (public.is_editor()) with check (public.is_editor());
+
+-- A candidate records their OWN impression and nobody else's, and can
+-- never read the tally — the report is the editor's.
+drop policy if exists ad_impressions_insert_own on public.ad_impressions;
+create policy ad_impressions_insert_own on public.ad_impressions for insert
+  with check (
+    user_id = auth.uid()
+    and exists (select 1 from public.ad_campaigns c
+                where c.id = campaign_id and c.status = 'live' and c.approved_at is not null)
+  );
+drop policy if exists ad_impressions_editor_read on public.ad_impressions;
+create policy ad_impressions_editor_read on public.ad_impressions for select
+  using (public.is_editor());
+
+-- APPROVAL IS DROPPED BY ANY EDIT TO WHAT GETS SHOWN. Approving a
+-- creative and then swapping the file is the one way an approval gate
+-- becomes theatre, so the gate closes itself.
+create or replace function public.ad_reapprove() returns trigger
+  language plpgsql security definer set search_path = public as $$
+begin
+  new.updated_at := now();
+  if (new.media_url  is distinct from old.media_url)
+  or (new.poster_url is distinct from old.poster_url)
+  or (new.title      is distinct from old.title)
+  or (new.sponsor    is distinct from old.sponsor)
+  or (new.duration_s is distinct from old.duration_s) then
+    new.approved_at := null;
+    new.approved_by := null;
+    if new.status in ('approved', 'live') then new.status := 'draft'; end if;
+  end if;
+  -- Nobody marks their own approval by writing the column directly.
+  if new.approved_at is distinct from old.approved_at and new.approved_at is not null
+     and not public.is_editor() then
+    raise exception 'Only an editor can approve a campaign';
+  end if;
+  return new;
+end $$;
+drop trigger if exists ad_reapprove_t on public.ad_campaigns;
+create trigger ad_reapprove_t before update on public.ad_campaigns
+  for each row execute function public.ad_reapprove();
+
+-- WHO SEES ADS: free accounts. A paid candidate seeing advertising is
+-- the complaint that follows a paid tier, so the flag exists before the
+-- tier does and the player reads it from day one.
+alter table public.profiles add column if not exists plan text not null default 'free';
+do $$ begin
+  alter table public.profiles add constraint profiles_plan_ck
+    check (plan in ('free', 'paid'));
+exception when duplicate_object then null; end $$;

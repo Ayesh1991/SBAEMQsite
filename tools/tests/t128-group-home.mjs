@@ -52,9 +52,13 @@ say('the full-page wall takes a group rather than growing a second switcher',
   /async function renderPanel\(host, roomId\)/.test(tr)
   && !/data-tw-rooms/.test(tr.slice(tr.indexOf('async function renderPanel'), tr.indexOf('function releasePanel')))
   && /THE FIX IS NOT A SECOND STRIP HERE/.test(tr));
-/* And it can be pointed at ONE group, which is what the group page uses. */
+/* And it can be pointed at ONE group, which is what the group page uses.
+   v138 changed what it falls back to when NOT given one — the shared
+   wall became the feed, which is the shared wall plus your groups — but
+   the rule this asserts is unchanged: a roomId names the wall, and
+   changing wall drops what was loaded. */
 say('  and can be addressed to one group',
-  /const want = roomId \|\| null;/.test(tr) && /if \(want !== wallRoom\)/.test(tr));
+  /const want = roomId \|\| 'feed';/.test(tr) && /if \(want !== wallRoom\)/.test(tr));
 /* Switching wall must DROP what was loaded, not filter it. */
 say('  dropping the posts of the wall you came from',
   /wallRoom = want; posts = \[\]; myRx = \{\}; loaded = false/.test(tr));
