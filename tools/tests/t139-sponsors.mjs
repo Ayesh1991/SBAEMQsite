@@ -223,7 +223,13 @@ say('an unapproved campaign cannot be credited at all',
 sec('6. WHO IS SHOWN ONE');
 
 const ads = readFileSync('js/ads.js', 'utf8');
-say('staff are not the audience', /me\.isEditor \|\| me\.isAdmin\) return false/.test(ads));
+/* v140 made this conditional rather than absolute — the author of the
+   thing has to be able to look at it — so the rule asserted here is now
+   "staff are excluded BY DEFAULT", which is what it always meant. The
+   setting itself is t140's §1. */
+say('staff are not the audience',
+  /\(me\.isEditor \|\| me\.isAdmin\) && !c\.includeStaff\) return false/.test(ads)
+  && /includeStaff: false/.test(ads));
 say('  nor is anybody who has paid', /\(plan \|\| 'free'\) === 'free'/.test(ads));
 /* The flag exists before the tier does: a candidate who has paid and is
    still advertised to is the complaint that follows a paid tier. */
@@ -293,9 +299,10 @@ const stamp = await page.evaluate(async () => {
   const h = await (await fetch('/index.html')).text();
   const sw = await (await fetch('/sw.js')).text();
   const vs = [...new Set([...h.matchAll(/\?v=(\d+)/g)].map(m => m[1]))];
-  return { vs, sw: /aureum-v139/.test(sw) };
+  /* The literal belongs to the newest release file only — see the README. */
+  return { vs, sw: vs.length === 1 && sw.includes("'aureum-v" + vs[0] + "'") };
 });
-say('one version across every asset', stamp.vs.join() === '139', stamp.vs.join(', '));
+say('one version across every asset', stamp.vs.length === 1, stamp.vs.join(', '));
 say('  the service worker agrees', stamp.sw);
 
 console.log('\nerrors on the page: ' + (bad.length ? '\n  ' + bad.join('\n  ') : 'none'));

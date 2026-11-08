@@ -5141,6 +5141,7 @@ const DevConsole = (() => {
             Shown to free accounts only, once per session. <strong>Nothing runs until you
             approve it</strong>, and changing the creative withdraws that approval.</p>
         </header>
+        <div id="ad-settings" data-animate><p class="muted">Loading…</p></div>
         <div id="ad-list" data-animate><p class="muted">Loading…</p></div>
         <div class="card" data-animate>
           <details class="dev-collapse"><summary><span class="card-title">New campaign</span><span class="dc-caret">▸</span></summary>
@@ -5152,8 +5153,126 @@ const DevConsole = (() => {
     ctx.FX.viewIn(view);
     view.querySelector('#ad-form').innerHTML = adFormHTML(null);
     wireAdForm(view, view.querySelector('#ad-form'), null);
+    await paintAdSettings(view);
     await paintAds(view);
     await paintAdReport(view);
+  }
+
+  /* ================= WHO SEES ONE, AND HOW OFTEN (v140) =================
+
+     v139's rules are the right ones for candidates and between them
+     they make the feature impossible to check: ads go to free accounts,
+     staff are exempt, once a session, and the count dedups per day — so
+     the person who built it cannot see an ad at all, and having tested
+     the count once there is nothing more to learn for 24 hours.
+
+     EVERY SWITCH HERE CHANGES WHO LOOKS, NEVER WHAT IS COUNTED. The
+     per-day unique index is the basis of the figure a drug company is
+     given, and nothing on this card touches it. That is what makes
+     "show every time" safe to hand somebody: it is a viewing setting,
+     not a counting one, and the card says so where it is chosen. */
+  async function paintAdSettings(view) {
+    const { esc } = ctx;
+    const host = view.querySelector('#ad-settings'); if (!host) return;
+    let c;
+    try { c = await ctx.Backend.getAdSettings(); }
+    catch (e) { host.innerHTML = `<p class="muted">${esc(e.message || e)}</p>`; return; }
+    const ck = (k, on, label, why) => `
+      <label class="ad-opt">
+        <input type="checkbox" data-adset="${k}"${on ? ' checked' : ''}>
+        <span><strong>${label}</strong><em>${why}</em></span>
+      </label>`;
+    host.innerHTML = `
+      <div class="card">
+        <h3 class="card-title">Settings</h3>
+        <div class="ad-opts">
+          ${ck('enabled', c.enabled, 'Show advertisements',
+            'The master switch. Off means no candidate sees one, whatever is on air.')}
+          ${ck('includeStaff', c.includeStaff, 'Show them to me as well (editors and admins)',
+            'Off by default — staff are not the audience. Turn it on to see and assess the thing you built.')}
+          ${ck('includePaid', c.includePaid, 'Show them to paying accounts too',
+            'Off by default. Useful while launching, when nobody has paid yet and every view counts.')}
+        </div>
+        <label class="wl-f" style="max-width:420px"><span>How often one person sees an ad</span>
+          <select class="sel" id="ad-freq">
+            <option value="session"${c.frequency === 'session' ? ' selected' : ''}>Once per session — the normal setting</option>
+            <option value="day"${c.frequency === 'day' ? ' selected' : ''}>Once a day</option>
+            <option value="always"${c.frequency === 'always' ? ' selected' : ''}>Every time the app opens — for testing</option>
+          </select></label>
+        <p class="tiny muted"><strong>None of this changes what a sponsor is told.</strong>
+          An impression is still counted once per person per campaign per day, by a unique index in the
+          database. Showing an ad ten times in an afternoon is still one doctor and one impression —
+          which is why “every time” is safe to leave on while you are assessing it.</p>
+        <div class="qedit-btns">
+          <button class="btn btn-gold btn-sm" id="ad-save">Save settings</button>
+          <span class="dev-row-msg" id="ad-set-msg"></span>
+        </div>
+      </div>
+      <div class="card">
+        <h3 class="card-title">Try it</h3>
+        <p class="muted">Three things that make this assessable without waiting for tomorrow.</p>
+        <div class="ad-try">
+          <button class="btn btn-ghost btn-sm" id="ad-sample">Create the sample campaign</button>
+          <button class="btn btn-ghost btn-sm" id="ad-preview">Play one now</button>
+          <button class="btn btn-ghost btn-sm" id="ad-clear">Clear my impressions for today</button>
+        </div>
+        <p class="tiny muted">
+          <strong>Create the sample campaign</strong> puts the bundled five-second clip on air, approved,
+          so there is something to watch.
+          <strong>Play one now</strong> shows it to you immediately whatever the settings say, and does
+          not use up your session.
+          <strong>Clear my impressions</strong> deletes <em>your own</em> rows for today so the count can
+          be tried again — it cannot touch anybody else's, which is deliberate: a delete-and-reinsert
+          loop is exactly how the per-day index would be defeated.</p>
+        <p class="dev-row-msg" id="ad-try-msg"></p>
+      </div>`;
+
+    host.querySelector('#ad-save').addEventListener('click', async e => {
+      const btn = e.currentTarget, msg = host.querySelector('#ad-set-msg');
+      const next = { frequency: host.querySelector('#ad-freq').value };
+      host.querySelectorAll('[data-adset]').forEach(i => { next[i.dataset.adset] = i.checked; });
+      btn.disabled = true;
+      try {
+        await ctx.Backend.saveAdSettings(next);
+        /* The player caches these; a saved setting that needs a reload
+           to take effect is a setting somebody will think is broken. */
+        if (typeof Ads !== 'undefined') Ads.bust();
+        msg.textContent = 'Saved. Takes effect immediately.';
+      } catch (err) { msg.textContent = err.message || String(err); }
+      btn.disabled = false;
+    });
+
+    const say = t => { const m = host.querySelector('#ad-try-msg'); if (m) m.textContent = t; };
+    host.querySelector('#ad-sample').addEventListener('click', async e => {
+      e.currentTarget.disabled = true;
+      try {
+        const c2 = await ctx.Backend.saveCampaign({ sponsor: 'AUREUM (sample)',
+          title: 'Bundled test creative', mediaUrl: '/ads/sample-5s.mp4',
+          durationS: 5, notes: 'Sample for testing the player. Not a real sponsor.' });
+        await ctx.Backend.approveCampaign(c2.id);
+        await ctx.Backend.setCampaignStatus(c2.id, 'live');
+        say('Sample campaign is on air. Use “Play one now”, or open AUREUM in another window.');
+        await paintAds(view);
+      } catch (err) { say(err.message || String(err)); }
+      e.currentTarget.disabled = false;
+    });
+    host.querySelector('#ad-preview').addEventListener('click', async () => {
+      if (typeof Ads === 'undefined') { say('The ad player is not loaded.'); return; }
+      say('Playing…');
+      const shown = await Ads.maybeShow({ force: true, fresh: true });
+      say(shown ? 'That is what a candidate sees.'
+        : 'Nothing to play — no campaign is live and approved. Create the sample first.');
+    });
+    host.querySelector('#ad-clear').addEventListener('click', async e => {
+      e.currentTarget.disabled = true;
+      try {
+        const n = await ctx.Backend.clearMyImpressionsToday();
+        say(n ? `Cleared ${n} of your own impressions for today — you can be counted again.`
+              : 'You had none recorded today.');
+        await paintAdReport(view);
+      } catch (err) { say(err.message || String(err)); }
+      e.currentTarget.disabled = false;
+    });
   }
 
   function adFormHTML(c) {

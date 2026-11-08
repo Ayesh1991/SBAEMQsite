@@ -191,7 +191,17 @@ app opens; `#/dev/ads` runs the campaigns and produces the report.
   rules restrict advertising medicines to the public — never weaken this.
 - Creatives are **self-hosted MP4** on Pages. Never a YouTube embed:
   their terms forbid it and an embed cannot be counted.
-- Ads go to `plan = 'free'` accounts only; editors and admins never.
+- **Who sees one is configurable** (v140) — `app_config` row `ads`:
+  `enabled`, `frequency` (`session` | `day` | `always`), `includePaid`,
+  `includeStaff`. Defaults reproduce v139 exactly. `Ads.bust()` after
+  saving, or the player keeps the cached copy.
+- **Every setting changes who LOOKS, never what is COUNTED.** The
+  per-day unique index is the sponsor's number; if a testing switch
+  could move it, the switch would be a way of inflating an invoice.
+  That is why "every time" is safe — t140 §2 proves it.
+- **Clearing impressions is editor-only and own-rows-only.** Delete and
+  re-insert is how a unique index is defeated, so a candidate may not
+  do it at all. Never widen that policy.
 - **Playwright's Chromium has no H.264.** `ads/sample-5s.webm` is the
   fixture for the working path; `sample-5s.mp4` is a real undecodable
   video and is how t139 tests the failure path. Send sponsors MP4.
@@ -211,7 +221,7 @@ is built), then `npx playwright install chromium`.
 
 ```bash
 npm run serve                                  # leave running (Node, no python)
-npm test                                       # all 40 files, summarised
+npm test                                       # all 41 files, summarised
 node tools/tests/t135-history-by-course.mjs    # one release file
 ```
 
