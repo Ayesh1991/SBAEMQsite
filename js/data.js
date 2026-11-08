@@ -177,11 +177,29 @@ const Data = (() => {
    * paper this account may not read, in the policy that calls
    * can_read_tracks(). This removes what they MAY read and are not sitting.
    */
-  async function myPapers() {
+  /**
+   * The bank a candidate browses: their course's papers, newest edition
+   * per topic, nothing archived.
+   *
+   * `earlier` keeps every live edition — what the "also show earlier
+   * questions" link passes. The EDITOR'S view is myPapers()'s opposite
+   * number, publishedPapers(), which still returns everything including
+   * archived rows: content you cannot see is content you cannot re-make.
+   */
+  async function myPapers(earlier) {
     const all = await publishedPapers();
     if (typeof Course === 'undefined') return all;
     try { await Course.load(); } catch { return all; }
-    return all.filter(p => Course.fits(p));
+    const mine = all.filter(p => Course.fits(p));
+    return Course.newestEdition ? Course.newestEdition(mine, p => p.topicId, earlier) : mine;
+  }
+  /** Is there an older edition this candidate is not being shown? */
+  async function hasEarlierPapers() {
+    try {
+      const all = await publishedPapers();
+      await Course.load();
+      return Course.hasEarlier(all.filter(p => Course.fits(p)), p => p.topicId);
+    } catch { return false; }
   }
 
   /** Call after publishing/unpublishing so the next read re-fetches from Supabase. */
@@ -466,7 +484,7 @@ const Data = (() => {
   }
 
   return {
-    loadSyllabus, syllabusFor, bustSyllabus, loadManifest, publishedPapers, myPapers, bustPapers, reloadPapers, papersProblem,
+    loadSyllabus, syllabusFor, bustSyllabus, loadManifest, publishedPapers, myPapers, hasEarlierPapers, bustPapers, reloadPapers, papersProblem,
     categoryById, topicPath, classifyByTag,
     countSBA, countEMQ, countTF, validatePaper, flatten, looksLettered, loadPaper, primeContent
   };

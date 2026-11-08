@@ -292,8 +292,54 @@ const Course = (() => {
     return s === sel;
   }
 
+  /* ---------------- EDITIONS ----------------
+     A bank is re-made a topic at a time. While that is happening the old
+     questions must stay sittable, or the bank empties while the work is
+     done — so both editions are live and the newest one PER TOPIC is what
+     a candidate is shown.
+
+     PER TOPIC, not per bank. A global "2nd edition" switch would hide a
+     first-edition topic nobody has re-made yet, which is most of them for
+     most of the year. Newest-per-topic means a topic improves the day its
+     replacement is reviewed and nothing else moves.
+
+     AND NOT A CHOICE A CANDIDATE HAS TO MAKE. They should not have to
+     decide which generation of the content to trust; `earlier` is for the
+     few who want the extra volume, and it is a link, not a tab. */
+  const editionOf = row => Number(row && (row.edition ?? (row.meta && row.meta.edition))) || 1;
+  const isArchived = row => !!(row && (row.archivedAt || row.archived_at
+    || (row.meta && (row.meta.archivedAt || row.meta.archived_at))));
+
+  /**
+   * The rows worth showing: never an archived one, and for each topic only
+   * its newest edition — unless `earlier` is true, which keeps every live
+   * edition and is what the "also show earlier questions" link passes.
+   *
+   * `keyOf` says what "a topic" means for this bank; papers are filed under
+   * a topicId, OSCE stations under their own tag. A row with no key is its
+   * own group, so content nobody filed is never hidden by content that was.
+   */
+  function newestEdition(rows, keyOf, earlier) {
+    const live = (rows || []).filter(r => !isArchived(r));
+    if (earlier) return live;
+    const best = new Map();
+    live.forEach((r, i) => {
+      const k = keyOf ? (keyOf(r) || ('\u0000row' + i)) : ('\u0000row' + i);
+      const e = editionOf(r);
+      if (!best.has(k) || e > best.get(k)) best.set(k, e);
+    });
+    return live.filter((r, i) => {
+      const k = keyOf ? (keyOf(r) || ('\u0000row' + i)) : ('\u0000row' + i);
+      return editionOf(r) === best.get(k);
+    });
+  }
+  /** Is there anything older to offer? Decides whether the link is drawn. */
+  const hasEarlier = (rows, keyOf) =>
+    (rows || []).filter(r => !isArchived(r)).length > newestEdition(rows, keyOf, false).length;
+
   return { load, bust, live, all, byId, mine, current, currentId, statusOf, isActive,
-    fits, fitsSubject, subjects, hasSubjects, subjectName, stageName, choose,
+    fits, fitsSubject, editionOf, isArchived, newestEdition, hasEarlier,
+    subjects, hasSubjects, subjectName, stageName, choose,
     positions, positionsFor,
     remember, claimPending,
     picker, wirePicker, subjectBar,

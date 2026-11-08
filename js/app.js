@@ -931,11 +931,19 @@
      gets — subjectBar() draws nothing when there is nothing to choose
      between, and one chip is furniture. */
   let librarySubject = '';
+  /* WHETHER THE EARLIER EDITIONS ARE SHOWING. Off by default, and
+     deliberately not a tab: a candidate should not have to decide which
+     generation of the content to trust. It is a link for the few who want
+     the extra volume while a topic is being re-made. */
+  let libraryEarlier = false;
   async function renderLibrary(user) {
     window.__aureumUser = user;
     /* myPapers, not publishedPapers: the bank a candidate browses is their
-       own course's. The console still lists everything — see Data.myPapers. */
-    const [syllabus, allPapers, progress] = await Promise.all([Data.loadSyllabus(), Data.myPapers(), Backend.getProgress()]);
+       own course's, newest edition per topic, nothing archived. The
+       console still lists everything — see Data.myPapers. */
+    const [syllabus, allPapers, progress, earlierExist] = await Promise.all([
+      Data.loadSyllabus(), Data.myPapers(libraryEarlier), Backend.getProgress(),
+      Data.hasEarlierPapers ? Data.hasEarlierPapers().catch(() => false) : Promise.resolve(false)]);
     /* A FINAL MBBS BANK IS FIVE BANKS. Obstetrics, medicine, surgery and
        the rest all belong to one course, and a candidate revising O&G has
        no use for the other four in the same list. Untagged content is still
@@ -974,6 +982,15 @@
         </header>
 
         ${subjectBar}
+        ${/* Said only when there IS something older. A permanent link to
+              nothing is furniture, and this one disappears for good the
+              day the last topic is re-made. */''}
+        ${earlierExist ? `<p class="lib-earlier muted tiny" data-animate>
+          ${libraryEarlier
+            ? `Showing earlier editions as well. <button class="link-btn" id="lib-earlier">Show only the newest</button>`
+            : `Some topics have been re-written. You are seeing the newest of each.
+               <button class="link-btn" id="lib-earlier">Also show the earlier questions</button>`}
+        </p>` : ''}
 
         <div class="lib-search" data-animate>
           <span class="lib-search-ico">⌕</span>
@@ -1050,6 +1067,11 @@
        empty states are all counts of the papers on screen — filtering the
        DOM would leave every one of those numbers describing a list that is
        no longer there. The reads behind it are cached, so this is cheap. */
+    view.querySelector('#lib-earlier')?.addEventListener('click', () => {
+      libraryEarlier = !libraryEarlier;
+      renderLibrary(user);
+    });
+
     view.querySelector('.tk-subs')?.addEventListener('click', e => {
       const b = e.target.closest('[data-sub]'); if (!b) return;
       if ((b.dataset.sub || '') === librarySubject) return;

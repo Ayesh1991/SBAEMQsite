@@ -93,7 +93,8 @@ step. Mounting one means releasing the last: `TeaRoom.releasePanel()` and
   flashcard decks, cases. Anything one of them gains (a picker, a filter,
   a Course column, the move control) the other four need in the same
   release; four of the last six releases were one bank catching up.
-  `t132-every-bank.mjs` asks all five the same questions.
+  `t132-every-bank.mjs` asks all five the same questions, and
+  `t136-editions.mjs` asks them about editions.
 - **A candidate's own history is course-scoped too** (v135) — mocks and
   mistake decks are stamped with `track` on write and filtered on read,
   because `loadHistory()` feeds the weakness profile that shapes the next
@@ -115,6 +116,32 @@ step. Mounting one means releasing the last: `TeaRoom.releasePanel()` and
   `forgetCourseScoped()` in `js/course.js`. Add new course-scoped caches
   there.
 
+## Editions and archiving (v136)
+
+The Part 2 bank is being re-made; the old and new generations run at once.
+
+- **`edition` is a property of a paper**, not a curriculum branch and not
+  `review_status`. A 2nd-edition paper still goes draft → in_review →
+  published, and sits at "2nd edition, unreviewed" for months.
+- **The rule is the newest edition of each topic**, never a global switch —
+  most topics are not re-made yet and a switch would hide them.
+  `Course.newestEdition(rows, keyOf, earlier)` is the only place that
+  decides it. **Two rows with no key are not two editions of one thing.**
+- **Editions are on papers and OSCE stations only** — a deliberate
+  exception to "the five banks move together", because it is the SBA/EMQ
+  bank and the OSCE bank that are being re-made. Essays, cases and decks
+  keep the three-argument `stampCourse` and no `edition` column. If they
+  are ever re-made too, they need the column, the picker, the archive
+  control and a `newestEdition` call, in one release.
+- **Archiving is a timestamp, not a delete.** `unpublishPaper()` deletes the
+  row and `js/review.js` loads the paper to render a past attempt — so
+  deleting the old bank would keep every mark and destroy the candidate's
+  ability to see what they answered. Nothing about archiving narrows what
+  may be **read**; it changes what is worth showing. **Never add
+  `archived_at is null` to a read policy** — t136 §1 refuses it.
+- A migration adds the column with the default the *existing* rows need,
+  then moves the default for the new ones. Both halves, or it is wrong.
+
 ## Testing
 
 First time on a machine: `npm install` (Playwright only — nothing in `js/`
@@ -122,7 +149,7 @@ is built), then `npx playwright install chromium`.
 
 ```bash
 npm run serve                                  # leave running (Node, no python)
-npm test                                       # all 36 files, summarised
+npm test                                       # all 37 files, summarised
 node tools/tests/t135-history-by-course.mjs    # one release file
 ```
 

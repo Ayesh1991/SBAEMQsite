@@ -999,7 +999,16 @@ const OSCE = (() => {
        This is not the lock. The database already refused to send content
        this candidate may not read — see can_read_tracks() in the schema.
        What this removes is content they MAY read and are not sitting. */
-    const list = (typeof Course !== 'undefined') ? everything.filter(st => Course.fits(st)) : everything;
+    /* …and then the newest edition of each station, with nothing
+       archived. A station's "topic" for this purpose is its own topic
+       text: OSCE stations are not filed under a curriculum topicId the
+       way papers are, so a re-made station must carry the SAME topic as
+       the one it replaces or the two are read as different stations and
+       both are shown. That is the rule the handover brief states. */
+    const scoped = (typeof Course !== 'undefined') ? everything.filter(st => Course.fits(st)) : everything;
+    const list = (typeof Course !== 'undefined' && Course.newestEdition)
+      ? Course.newestEdition(scoped, st => String(st.topic || '').trim().toLowerCase(), false)
+      : scoped;
     /* ARRIVED FROM "THE GAP" ON THE PROGRESS PAGE.
        A module filter is not a bin and not a search: it cuts across both,
        and it is temporary — you came here to sit one station in it and

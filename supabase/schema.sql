@@ -2301,3 +2301,72 @@ create policy "disc replies own delete" on public.discussion_replies for delete
 drop policy if exists "messages own delete" on public.chat_messages;
 create policy "messages own delete" on public.chat_messages for delete
   using (auth.uid() = user_id or public.is_room_admin(room_id));
+
+-- ============================================================
+-- 38) EDITIONS, AND ARCHIVING WITHOUT DELETING (v136)
+--
+-- The O&G Part 2 bank holds 8000+ SBA and EMQ written before the review
+-- flow existed. They are being re-made from the sources, reviewed, and
+-- published alongside — and the old ones must stay sittable until their
+-- replacement is ready, or the bank empties while the work is done.
+--
+-- EDITION IS NOT review_status. That column answers "has a human checked
+-- this"; this one answers "which generation of the content is it". A
+-- second-edition paper still goes draft → in_review → published, and
+-- most of the new work will sit at "2nd edition, not yet reviewed" for
+-- months — a state one column could not express.
+--
+-- THE MIGRATION IS v123'S SHAPE. Add the column defaulting to 1 so every
+-- row that already exists becomes the first edition, THEN move the
+-- default to 2 so everything imported from now on is the second. A third
+-- edition one day means bumping that default again, deliberately.
+--
+-- ARCHIVED IS A TIMESTAMP, NOT A DELETE, and not a review status either.
+-- unpublishPaper() removes the row, and js/review.js and the simulator
+-- both load the paper to render the questions of an attempt somebody
+-- already sat — so deleting the old bank would keep every mark and
+-- destroy every candidate's ability to see what they answered. An
+-- archived row stays readable for exactly that reason: the database is
+-- asked "may this be read", and the answer is still yes. What changes is
+-- whether it is worth SHOWING, and that is the client's filter.
+-- ============================================================
+
+alter table public.papers         add column if not exists edition integer not null default 1;
+alter table public.papers         alter column edition set default 2;
+alter table public.osce_stations  add column if not exists edition integer not null default 1;
+alter table public.osce_stations  alter column edition set default 2;
+
+alter table public.papers         add column if not exists archived_at timestamptz;
+alter table public.osce_stations  add column if not exists archived_at timestamptz;
+
+do $$ begin
+  alter table public.papers add constraint papers_edition_ck check (edition >= 1);
+exception when duplicate_object then null; end $$;
+do $$ begin
+  alter table public.osce_stations add constraint osce_edition_ck check (edition >= 1);
+exception when duplicate_object then null; end $$;
+
+-- Finding the live rows of a course is the commonest read there is.
+create index if not exists papers_live_idx on public.papers (archived_at, edition);
+create index if not exists osce_live_idx on public.osce_stations (archived_at, edition);
+
+-- WHO MAY ARCHIVE. The same hand that may publish: an editor. Nothing
+-- here widens what anybody may READ — an archived row is readable by
+-- exactly the people it was readable by before, which is the whole point
+-- of archiving rather than deleting.
+create or replace function public.protect_edition()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if (new.edition is distinct from old.edition
+      or new.archived_at is distinct from old.archived_at)
+     and not public.is_editor() then
+    raise exception 'Only an editor can change a paper''s edition or archive it';
+  end if;
+  return new;
+end $$;
+drop trigger if exists protect_paper_edition on public.papers;
+create trigger protect_paper_edition before update on public.papers
+  for each row execute function public.protect_edition();
+drop trigger if exists protect_osce_edition on public.osce_stations;
+create trigger protect_osce_edition before update on public.osce_stations
+  for each row execute function public.protect_edition();

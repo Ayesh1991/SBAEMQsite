@@ -53,7 +53,7 @@ say('all five stamp through the one function, and nothing does it twice',
 /* Exactly one place writes `.tracks`, and it is inside stampCourse. */
 say('  with exactly one place that writes the tags',
   (dev.match(/\.tracks = \[tk\]/g) || []).length === 1
-  && /function stampCourse\(rec, courseSel, subjectSel\) \{\s*\n\s*const tk = pickedCourse\(courseSel\); if \(tk && !rec\.tracks\) rec\.tracks = \[tk\];/.test(dev));
+  && /function stampCourse\(rec, courseSel, subjectSel, editionSel\) \{\s*\n\s*const tk = pickedCourse\(courseSel\); if \(tk && !rec\.tracks\) rec\.tracks = \[tk\];/.test(dev));
 
 sec('   AND EVERY PUBLISHED LIST CAN PUT IT RIGHT');
 say('the move control knows all five tables',
@@ -181,10 +181,10 @@ const be = readFileSync('js/backend.js', 'utf8');
    tracks and subject are plain columns — they always parse — so dropping
    them here would turn a degraded read into an open one. */
 say('the OSCE fallback still asks for the tags',
-  /sb\.from\('osce_stations'\)\.select\('id,meta,tracks,subject'\)/.test(be));
+  /sb\.from\('osce_stations'\)\.select\('id,meta,tracks,subject/.test(be));
 say('  and keeps them on the card', /\.\.\.osceCard\(r\.meta\), tracks: r\.tracks \|\| \[\], subject: r\.subject \|\| null/.test(be));
 say('the papers fallback does too',
-  /sb\.from\('papers'\)\.select\('id,meta,tracks,subject'\)/.test(be));
+  /sb\.from\('papers'\)\.select\('id,meta,tracks,subject/.test(be));
 say('  with the reason written down', /A fallback is\s*\n\s*allowed to be slower; it is not allowed to show a candidate\s*\n\s*another course's bank/.test(be));
 /* No read of a tagged table may project the tags away. */
 say('and no bank read drops them any more',

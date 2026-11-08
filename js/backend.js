@@ -987,6 +987,33 @@ const Backend = (() => {
       return out;
     }
     /** File content under a course. `ids` null/empty = every untagged row in that table. */
+    /* ---------- EDITIONS AND ARCHIVING ----------
+       Only papers and osce_stations carry an edition: they are the two
+       banks being re-made, and the two the review flow already covers. */
+    const EDITIONED = { papers: 'published', osce_stations: 'oscestations' };
+    async function setEdition(table, ids, edition) {
+      const me = await currentUser();
+      if (!me || !me.isEditor) throw new Error("Only an editor can change a paper's edition.");
+      const key = EDITIONED[table]; if (!key) throw new Error('That bank has no editions.');
+      const n = Math.max(1, Number(edition) || 1);
+      const want = new Set(ids || []); const l = read(key, []); let hit = 0;
+      l.forEach(r => { if (want.has(r.id)) { r.edition = n; hit++; } });
+      write(key, l); return hit;
+    }
+    /* ARCHIVING IS NOT DELETING, and the difference is a candidate's
+       history: review.js loads the paper to show the questions of an
+       attempt already sat. unpublishPaper() removes the row; this keeps
+       it and only stops it being offered. */
+    async function setArchived(table, ids, archived) {
+      const me = await currentUser();
+      if (!me || !me.isEditor) throw new Error('Only an editor can archive content.');
+      const key = EDITIONED[table]; if (!key) throw new Error('That bank cannot be archived.');
+      const stamp = archived ? new Date().toISOString() : null;
+      const want = new Set(ids || []); const l = read(key, []); let hit = 0;
+      l.forEach(r => { if (want.has(r.id)) { r.archivedAt = stamp; hit++; } });
+      write(key, l); return hit;
+    }
+
     async function fileUnder(table, ids, trackIds, subject) {
       const me = await currentUser();
       if (!me || !me.isEditor) throw new Error('Only an editor may file content.');
@@ -1470,7 +1497,7 @@ const Backend = (() => {
 
     return { init, signUp, signIn, signOut, requestPasswordReset, updatePassword, onPasswordRecovery, currentUser, updateProfile,
       getRegistrationOpen, setRegistrationOpen, setUserStatus, setUserRole,
-      listTracks, saveTrack, myEnrolments, enrol, setPrimaryTrack, grantEnrolment, canReadTracks, listUntagged, fileUnder, listForReview, submitReview, recordReviewed, reviewCounts, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
+      listTracks, saveTrack, myEnrolments, enrol, setPrimaryTrack, grantEnrolment, canReadTracks, listUntagged, fileUnder, setEdition, setArchived, listForReview, submitReview, recordReviewed, reviewCounts, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
       getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
@@ -1683,7 +1710,7 @@ const Backend = (() => {
       'collection:meta->>collection,bp:meta->bp,' +
       'edited_by:meta->>edited_by,edited_at:meta->edited_at,' +
       'created_by:meta->>created_by,created_by_name:meta->>created_by_name,created_on:meta->created_on,' +
-      'created_at,tracks,subject';
+      'created_at,tracks,subject,edition,archivedAt:archived_at';
     let osceCardsOk = true;
     async function getOsceStations() {
       if (osceCardsOk) {
@@ -1703,8 +1730,9 @@ const Backend = (() => {
          allowed to be slower; it is not allowed to show a candidate
          another course's bank. */
       return (await catalogue('the OSCE stations',
-        () => sb.from('osce_stations').select('id,meta,tracks,subject').order('id')))
-        .map(r => ({ ...osceCard(r.meta), tracks: r.tracks || [], subject: r.subject || null }));
+        () => sb.from('osce_stations').select('id,meta,tracks,subject,edition,archived_at').order('id')))
+        .map(r => ({ ...osceCard(r.meta), tracks: r.tracks || [], subject: r.subject || null,
+          edition: r.edition || 1, archivedAt: r.archived_at || null }));
     }
     /* The searchable text — every prompt and every marking point — is most of
        a card's weight and is needed only if someone actually types in the box,
@@ -2279,7 +2307,7 @@ const Backend = (() => {
          read policy filters on `tracks`, so a policy cannot look inside
          jsonb it has no index on. Without them on the card, the bank has
          nothing to filter by and a true/false paper shows no T/F badge. */
-      'sba:meta->sba,emq:meta->emq,tf:meta->tf,tracks,subject';
+      'sba:meta->sba,emq:meta->emq,tf:meta->tf,tracks,subject,edition,archivedAt:archived_at';
     let cardSelectOk = true;          // set false once if the server will not project
     const numOr0 = v => (v == null || v === '') ? 0 : (Number(v) || 0);
 
@@ -2299,8 +2327,9 @@ const Backend = (() => {
       /* Same rule as the OSCE fallback above: the tags are plain columns
          and must survive the degraded read, or the bank opens up. */
       return (await catalogue('the question bank',
-        () => sb.from('papers').select('id,meta,tracks,subject').order('id')))
-        .map(r => ({ ...r.meta, tracks: r.tracks || [], subject: r.subject || null }));
+        () => sb.from('papers').select('id,meta,tracks,subject,edition,archived_at').order('id')))
+        .map(r => ({ ...r.meta, tracks: r.tracks || [], subject: r.subject || null,
+          edition: r.edition || 1, archivedAt: r.archived_at || null }));
     }
     /** One paper's questions, fetched when that paper is opened. */
     async function getPaperContent(id) {
@@ -3163,6 +3192,28 @@ const Backend = (() => {
       return out;
     }
     /** File content under a course. `ids` null/empty = every untagged row in that table. */
+    const EDITIONED = ['papers', 'osce_stations'];
+    async function setEdition(table, ids, edition) {
+      await ensureClient();
+      if (!EDITIONED.includes(table)) throw new Error('That bank has no editions.');
+      if (!(ids || []).length) return 0;
+      const { data, error } = await sb.from(table)
+        .update({ edition: Math.max(1, Number(edition) || 1) }).in('id', ids).select('id');
+      if (error) throw new Error(/row-level security|Only an editor/i.test(error.message || '')
+        ? "Only an editor can change a paper's edition." : error.message);
+      return (data || []).length;
+    }
+    async function setArchived(table, ids, archived) {
+      await ensureClient();
+      if (!EDITIONED.includes(table)) throw new Error('That bank cannot be archived.');
+      if (!(ids || []).length) return 0;
+      const { data, error } = await sb.from(table)
+        .update({ archived_at: archived ? new Date().toISOString() : null }).in('id', ids).select('id');
+      if (error) throw new Error(/row-level security|Only an editor/i.test(error.message || '')
+        ? 'Only an editor can archive content.' : error.message);
+      return (data || []).length;
+    }
+
     async function fileUnder(table, ids, trackIds, subject) {
       await ensureClient();
       if (!TAGGED.some(x => x.table === table)) throw new Error('Unknown content table: ' + table);
@@ -3395,7 +3446,7 @@ const Backend = (() => {
 
     return { init, signUp, signIn, signOut, requestPasswordReset, updatePassword, onPasswordRecovery, currentUser, updateProfile,
       getRegistrationOpen, setRegistrationOpen, setUserStatus, setUserRole,
-      listTracks, saveTrack, myEnrolments, enrol, setPrimaryTrack, grantEnrolment, canReadTracks, listUntagged, fileUnder, listForReview, submitReview, recordReviewed, reviewCounts, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
+      listTracks, saveTrack, myEnrolments, enrol, setPrimaryTrack, grantEnrolment, canReadTracks, listUntagged, fileUnder, setEdition, setArchived, listForReview, submitReview, recordReviewed, reviewCounts, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
       getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
