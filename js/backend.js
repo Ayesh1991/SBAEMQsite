@@ -1207,14 +1207,27 @@ const Backend = (() => {
         created_at: new Date().toISOString(), reply_count: 0, mine: true };
       list.unshift(row); write('disc', list); return row;
     }
+    /* MY FEED (v138) — the shared wall plus every group I am in, which is
+       what the wall shows when no single room is chosen. It is a THIRD
+       mode, not a loosening of the other two: asking for the shared wall
+       still means `room_id is null` exactly, because a member of three
+       groups must not find all three mixed into the wall they thought was
+       everybody's. */
+    function myFeedRooms() {
+      const e = sessionEmail(); if (!e) return [];
+      return read('rooms', []).filter(r => (r.members || []).some(m => m.user_id === e)).map(r => r.id);
+    }
+    const inMyFeed = d => !d.room_id || myFeedRooms().includes(d.room_id);
+
     async function pollDiscussions(sinceIso, opts) {
       const e = sessionEmail(); if (!e) return { threads: [], replies: [] };
       const since = sinceIso || '';
       const replies = read('discR', {});
       const want = opts?.roomId || null;
       if (want && !isRoomMember(want)) return { threads: [], replies: [] };
+      const keep = opts?.feed && !want ? inMyFeed : (d => (d.room_id || null) === want);
       return {
-        threads: read('disc', []).filter(d => d.created_at > since && (d.room_id || null) === want)
+        threads: read('disc', []).filter(d => d.created_at > since && keep(d))
           .map(d => ({ ...d, mine: d.user_id === e })),
         replies: Object.values(replies).flat().filter(r => r.created_at > since).map(r => ({ ...r, mine: r.user_id === e }))
       };
@@ -1228,7 +1241,10 @@ const Backend = (() => {
       /* A group's wall is unreadable to somebody who is not in it — not
          filtered out of the list afterwards, refused. */
       if (want && !isRoomMember(want)) return [];
-      rows = rows.filter(d => (d.room_id || null) === want);
+      /* Three modes, not two: one group, the shared wall exactly, or my
+         feed — the shared wall plus the groups I am in. */
+      rows = (opts?.feed && !want) ? rows.filter(inMyFeed)
+        : rows.filter(d => (d.room_id || null) === want);
       if (opts?.before) rows = rows.filter(d => d.created_at < opts.before);
       // mirror the cloud's slim projection so both paths behave identically
       return rows.slice(0, opts?.limit || 40).map(d => ({
@@ -1364,7 +1380,7 @@ const Backend = (() => {
          creator is an ordinary member is a group nobody can add to. */
       const members = [{ room_id: null, user_id: e, display_name: myName || null, role: 'admin', joined_at: new Date().toISOString() }]
         .concat((memberIds || []).filter(u => u && u !== e).map(u => ({ user_id: u, display_name: null, role: 'member', joined_at: new Date().toISOString() })));
-      const room = { id: 'r' + Date.now(), kind: kind || 'group', title: title || null, created_by: e, created_at: new Date().toISOString(), last_message_at: new Date().toISOString(), members, mine: true };
+      const room = { id: 'r' + Date.now() + Math.random().toString(36).slice(2, 6), kind: kind || 'group', title: title || null, created_by: e, created_at: new Date().toISOString(), last_message_at: new Date().toISOString(), members, mine: true };
       const list = read('rooms', []); list.unshift(room); write('rooms', list); return room;
     }
     /* ---------- WHO IS IN THE GROUP, AND WHO RUNS IT ----------
@@ -1445,7 +1461,7 @@ const Backend = (() => {
     async function sendChatMessage(roomId, body, media) {
       const e = sessionEmail(); if (!e) throw new Error('Not signed in.');
       const all = read('msgs', {}); const list = all[roomId] || (all[roomId] = []);
-      const row = { id: 'm' + Date.now(), room_id: roomId, user_id: e, author_name: discAuthor(), body: body || '', media: media || [], created_at: new Date().toISOString(), mine: true };
+      const row = { id: 'm' + Date.now() + Math.random().toString(36).slice(2, 6), room_id: roomId, user_id: e, author_name: discAuthor(), body: body || '', media: media || [], created_at: new Date().toISOString(), mine: true };
       list.push(row); write('msgs', all);
       const rooms = read('rooms', []); const r = rooms.find(x => x.id === roomId); if (r) { r.last_message_at = row.created_at; write('rooms', rooms); }
       return row;
@@ -2697,8 +2713,14 @@ const Backend = (() => {
     async function pollDiscussions(sinceIso, opts) {
       await ensureClient(); const id = await uid(); if (!id) return { threads: [], replies: [] };
       const since = sinceIso || new Date(Date.now() - 60000).toISOString();
+      /* The poll must ask the same question the list asked, or the feed
+         loads merged and then only ever updates with the shared wall —
+         a group's new post would appear on reload and never live. */
+      const base = sb.from('discussions').select(DISC_COLS);
+      const scoped = (opts?.feed && !opts?.roomId)
+        ? onFeed(base, await myRoomIds()) : onWall(base, opts?.roomId);
       const [t, r] = await Promise.all([
-        onWall(sb.from('discussions').select(DISC_COLS), opts?.roomId).gt('created_at', since).order('created_at', { ascending: true }).limit(80),
+        scoped.gt('created_at', since).order('created_at', { ascending: true }).limit(80),
         sb.from('discussion_replies').select('id,discussion_id,user_id,author_name,body,created_at').gt('created_at', since).order('created_at', { ascending: true }).limit(200)
       ]);
       return {
@@ -2717,10 +2739,27 @@ const Backend = (() => {
        otherwise see all three mixed into the wall they thought was
        everybody's. */
     const onWall = (q, roomId) => roomId ? q.eq('room_id', roomId) : q.is('room_id', null);
+    /* MY FEED (v138) — the shared wall plus every group I am in. A third
+       mode, deliberately: `feed` is the only thing that mixes rooms, and
+       asking for the shared wall still means `room_id is null` exactly.
+       RLS already refuses a group this account is not in, so the id list
+       is what makes the query cheap, not what makes it safe. */
+    async function myRoomIds() {
+      const id = await uid(); if (!id) return [];
+      const { data } = await sb.from('chat_members').select('room_id').eq('user_id', id);
+      return [...new Set((data || []).map(m => m.room_id).filter(Boolean))];
+    }
+    const onFeed = (q, ids) => ids.length
+      ? q.or('room_id.is.null,room_id.in.(' + ids.join(',') + ')')
+      : q.is('room_id', null);
+
     async function listDiscussions(opts) {
       await ensureClient(); const id = await uid();
       const limit = opts?.limit || 40;
-      let q = onWall(sb.from('discussions').select(DISC_COLS), opts?.roomId)
+      let base = sb.from('discussions').select(DISC_COLS);
+      let q = ((opts?.feed && !opts?.roomId)
+        ? onFeed(base, await myRoomIds())
+        : onWall(base, opts?.roomId))
         .order('created_at', { ascending: false }).limit(limit);
       if (opts?.before) q = q.lt('created_at', opts.before);          // "load older" paging
       const { data } = await q;

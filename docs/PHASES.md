@@ -727,6 +727,67 @@ shown the wrong state.
 
 ---
 
+## v138 — Asking the right room
+
+Groups have existed since v127 and a question could not be asked in one.
+"Discuss with friends" under a rationale called `TeaRoom.share()`, which
+called `post()`, which took the room **from the open wall**.
+
+That rule is right where it was written. On the wall's own composer,
+taking the destination from what you are looking at is exactly what makes
+it impossible to read one group and post to another, and the comment
+saying so has been there since v127.
+
+**But the rule needs a view.** Sitting a paper there is no wall on
+screen, so the question went wherever the wall had last been left —
+invisibly, and in practice always "everyone". Somebody in four groups
+could not ask one of them. So the Discuss box now asks, at the only
+moment the asker knows the answer, and remembers the group asked last
+because a candidate works through a paper one question at a time.
+
+`share(ctx, topic, roomId)` takes the room explicitly; `undefined` still
+means "the wall I am looking at", so every older caller behaves as it
+did. The confirmation names the destination — "Posted to the tea room"
+was true of four different places and said which of them none.
+
+### The wall is a feed
+
+A picker alone would have made a group's question somewhere you have to
+go and look. The wall is now **three states, not two**:
+
+| | shows |
+|---|---|
+| `'feed'` | the shared wall **plus every group I am in** — the default |
+| `null` | the shared wall exactly (`room_id is null`) |
+| `'<id>'` | one group |
+
+Only the feed mixes rooms. Asking for the shared wall still means
+`room_id is null` exactly, because a member of three groups must not find
+all three mixed into the wall they thought was everybody's — the same
+rule, and the same comment, that v127 wrote.
+
+Each post on the feed is badged with where it came from; on a single wall
+that badge would be noise, so it is not drawn. On the feed the composer
+has no single destination to infer, so it asks; on a single wall it does
+not. `wallQuery()` is the one definition of what the open wall wants, and
+the first read, the poll and "load older" all use it — **a list that
+merges while the poll does not would show a group's new post on reload
+and never live**, which reads as the group being quiet.
+
+The Studio's panel had no room strip at all: switching wall, and even
+seeing which groups exist, was possible only in the popped-out dock. It
+has the strip now.
+
+### Two groups are two groups
+
+Found on the way: local rooms were `'r' + Date.now()` with no random
+suffix, while every other id in that file has one. Two groups made in the
+same millisecond shared an id — and with it their members, posts, chat
+and files. Chat messages had the same flaw. Both fixed, and t138 §5 makes
+eight groups in a burst and counts them.
+
+---
+
 ## Not on this list, deliberately
 
 - **A build step.** It has been proposed twice and refused twice. 54 script

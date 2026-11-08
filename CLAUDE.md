@@ -64,6 +64,22 @@ Groups are `chat_rooms` reused — one row, one membership list, one
 `is_room_admin()` is what the add/remove/rename/promote policies ask. The
 maker of a group is its admin; a group is never left without one.
 
+**The wall has three states** (v138), and `wallQuery()` in `js/tearoom.js`
+is the one place that turns the open wall into a read:
+
+- `'feed'` — the shared wall **plus every group you are in**. The default,
+  and the only mode that mixes rooms.
+- `null` — the shared wall **exactly** (`room_id is null`). Never "every
+  post I may read": a member of three groups must not find all three in
+  the wall they thought was everybody's.
+- `'<id>'` — one group. A group's page always passes its own id.
+
+The list and the poll must ask the same question, or a group's new post
+appears on reload and never live. **Posting takes the room from the open
+wall** — but that needs a view, so the Discuss picker under a question
+and the feed's composer pass it explicitly; `undefined` still means "the
+wall I am looking at".
+
 A group's page is `js/group.js` (`Group`, **not** `GroupPaper` — that one
 sits a paper). `#/group/<id>/<tab>` for wall, chat, files, papers and
 members; `#/groups` lists them. **Every tab mounts the surface that already
@@ -166,7 +182,7 @@ is built), then `npx playwright install chromium`.
 
 ```bash
 npm run serve                                  # leave running (Node, no python)
-npm test                                       # all 38 files, summarised
+npm test                                       # all 39 files, summarised
 node tools/tests/t135-history-by-course.mjs    # one release file
 ```
 

@@ -25,6 +25,15 @@ const QEdit = (() => {
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+  /* THE GROUP YOU ASKED LAST TIME. Somebody revising works through a
+     paper one question at a time and asks the same group each time;
+     re-choosing it twenty times is the kind of friction that makes a
+     feature go unused. Per browser, and it is only a default — the
+     picker still shows every group and Everyone. */
+  const DEST_KEY = 'aureum-ask-dest';
+  const lastDest = () => { try { return localStorage.getItem(DEST_KEY) || null; } catch { return null; } };
+  const rememberDest = id => { try { id ? localStorage.setItem(DEST_KEY, id) : localStorage.removeItem(DEST_KEY); } catch {} };
+
   async function isDev() {
     if (devKnown !== null) return devKnown;
     try { devKnown = !!(await Backend.currentUser())?.isDeveloper; } catch { devKnown = false; }
@@ -98,16 +107,37 @@ const QEdit = (() => {
       const host = slot.querySelector('#qedit-editor');
       if (host.dataset.open === 'discuss') { host.dataset.open = ''; host.innerHTML = ''; return; }
       host.dataset.open = 'discuss';
+      /* WHO SEES THIS. Posting from the wall takes the room from the wall
+         you are looking at — but here there is no wall on screen, so until
+         v138 the question went wherever the wall happened to be left,
+         which from a paper is invisible and usually "everyone". Somebody
+         in four groups could not ask one of them. So it is asked, here,
+         at the only moment the asker knows the answer. */
       host.innerHTML = `
         <div class="qedit-box">
-          <label class="qedit-label">Post this to the tea room — a friend might see it differently</label>
+          <label class="qedit-label">Ask about this question — a friend might see it differently</label>
           <textarea id="qe-disc" class="qedit-expl" placeholder="What's worth chewing over here? e.g. 'Why is this first-line over the alternative?'"></textarea>
+          <label class="qedit-label qe-dest-row" id="qe-dest-row" hidden>Ask
+            <select id="qe-dest" class="qe-dest"></select>
+          </label>
           <div class="qedit-btns">
-            <button class="btn btn-gold btn-sm" id="qe-disc-send">☕ Send to tea room</button>
+            <button class="btn btn-gold btn-sm" id="qe-disc-send">☕ Send</button>
             <button class="btn btn-ghost btn-sm" id="qe-disc-cancel">Cancel</button>
             <span class="qedit-tag qedit-tag-me" id="qe-disc-msg"></span>
           </div>
         </div>`;
+      /* The picker only appears when there is a choice to make: with no
+         groups it is one option and a question nobody needs asked. */
+      (async () => {
+        const groups = (typeof TeaRoom !== 'undefined' && TeaRoom.shareTargets)
+          ? await TeaRoom.shareTargets().catch(() => []) : [];
+        if (!groups.length) return;
+        const sel = host.querySelector('#qe-dest'); if (!sel) return;
+        const last = lastDest();
+        sel.innerHTML = `<option value="">🧱 Everyone — the shared wall</option>`
+          + groups.map(g => `<option value="${esc(g.id)}"${last === g.id ? ' selected' : ''}>👥 ${esc(g.title)}</option>`).join('');
+        host.querySelector('#qe-dest-row').hidden = false;
+      })();
       host.querySelector('#qe-disc-cancel').addEventListener('click', () => { host.dataset.open = ''; host.innerHTML = ''; });
       host.querySelector('#qe-disc-send').addEventListener('click', async () => {
         const topic = host.querySelector('#qe-disc').value.trim();
@@ -117,12 +147,19 @@ const QEdit = (() => {
           // the WHOLE question travels with the post, so friends can read the
           // stem and options in the tea room without leaving what they're doing
           const payload = { questionKey: ctx.questionKey, paperTitle: ctx.paperTitle, answerText: ctx.answerText, rationale: ctx.rationale, question: ctx.question || null };
-          if (typeof TeaRoom !== 'undefined') await TeaRoom.share(payload, topic);
-          else await Backend.addDiscussion({ ...payload, topic });
-          host.innerHTML = `<div class="qedit-correction qedit-mine">☕ Posted to the tea room — <button class="link" id="qe-disc-open">open it here</button> or find it in <strong>Studio → Tea room</strong>.</div>`;
+          const sel = host.querySelector('#qe-dest');
+          const roomId = sel ? (sel.value || null) : null;
+          const where = sel && sel.value
+            ? (sel.options[sel.selectedIndex]?.text || 'your group') : 'everyone';
+          rememberDest(roomId);
+          if (typeof TeaRoom !== 'undefined') await TeaRoom.share(payload, topic, roomId);
+          else await Backend.addDiscussion({ ...payload, topic, roomId });
+          /* Say where it went. "Posted to the tea room" was true of four
+             different places and told you which of them none. */
+          host.innerHTML = `<div class="qedit-correction qedit-mine">☕ Asked ${esc(where)} — <button class="link" id="qe-disc-open">open it here</button> or find it in <strong>Studio → Tea room</strong>.</div>`;
           host.querySelector('#qe-disc-open')?.addEventListener('click', () => { if (typeof TeaRoom !== 'undefined') TeaRoom.openDock(); });
           host.dataset.open = '';
-        } catch (e) { btn.disabled = false; btn.textContent = '☕ Send to tea room'; host.querySelector('#qe-disc-msg').textContent = 'Could not send: ' + (e.message || e); }
+        } catch (e) { btn.disabled = false; btn.textContent = '☕ Send'; host.querySelector('#qe-disc-msg').textContent = 'Could not send: ' + (e.message || e); }
       });
     }
 

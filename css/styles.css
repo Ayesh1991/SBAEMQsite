@@ -7307,3 +7307,16 @@ body.sc-open { overflow: hidden; }
 .chip-row .chip { cursor: pointer; border: 1px solid rgba(255,255,255,.14);
   background: transparent; color: inherit; }
 .chip-row .chip.active { border-color: #5eead4; background: rgba(94,234,212,.14); }
+
+/* ---------- the feed: which wall a post came from (v138) ---------- */
+.tw-where { margin-left: auto; align-self: flex-start; padding: .1rem .45rem;
+  border-radius: 999px; font-size: .7rem; white-space: nowrap;
+  background: rgba(94,234,212,.14); color: #5eead4; }
+.tw-where.is-all { background: rgba(255,255,255,.07); color: var(--ink-3); }
+.tw-dest { display: inline-flex; align-items: center; gap: .3rem; margin-left: auto; }
+.tw-dest-lbl { font-size: .78rem; color: var(--ink-3); }
+.tw-dest select { background: rgba(255,255,255,.05); color: inherit;
+  border: 1px solid rgba(255,255,255,.14); border-radius: 8px; padding: .2rem .4rem; font-size: .8rem; }
+.qe-dest-row { display: flex; align-items: center; gap: .45rem; margin-top: .5rem; }
+.qe-dest { background: rgba(255,255,255,.05); color: inherit; border: 1px solid rgba(255,255,255,.14);
+  border-radius: 8px; padding: .25rem .45rem; font-size: .85rem; max-width: 300px; }
