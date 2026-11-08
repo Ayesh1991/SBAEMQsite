@@ -1135,6 +1135,38 @@ const Backend = (() => {
       }).filter(r => r.impressions || r.status !== 'ended');
     }
 
+    /* ---------- AD SETTINGS (v140) ----------
+       v139 shipped a pre-roll its own author could not see. These make
+       it assessable without weakening what a sponsor is told: showing
+       an ad more often changes who LOOKS at one, never what is
+       COUNTED — the per-day unique index is untouched by any of it. */
+    async function getAdSettings() {
+      const d = read('adcfg', null);
+      return Object.assign({ enabled: true, frequency: 'session',
+        includePaid: false, includeStaff: false }, d || {});
+    }
+    async function saveAdSettings(cfg) {
+      const me = await currentUser();
+      if (!me || !me.isEditor) throw new Error('Only an editor may change ad settings.');
+      const cur = await getAdSettings();
+      const next = Object.assign({}, cur, cfg || {});
+      next.enabled = !!next.enabled;
+      next.includePaid = !!next.includePaid;
+      next.includeStaff = !!next.includeStaff;
+      if (!['session', 'always', 'day'].includes(next.frequency)) next.frequency = 'session';
+      write('adcfg', next); return next;
+    }
+    /** Test aid: drop MY OWN impressions for today so counting can be
+        tried again. Never anybody else's — see section 40. */
+    async function clearMyImpressionsToday() {
+      const me = await currentUser();
+      if (!me || !me.isEditor) throw new Error('Only an editor may clear their own impressions.');
+      const e = sessionEmail(); const day = adToday();
+      const rows = read('adimp', []);
+      const keep = rows.filter(r => !(r.user_id === e && r.day === day));
+      write('adimp', keep); return rows.length - keep.length;
+    }
+
     async function fileUnder(table, ids, trackIds, subject) {
       const me = await currentUser();
       if (!me || !me.isEditor) throw new Error('Only an editor may file content.');
@@ -1644,7 +1676,8 @@ const Backend = (() => {
     return { init, signUp, signIn, signOut, requestPasswordReset, updatePassword, onPasswordRecovery, currentUser, updateProfile,
       getRegistrationOpen, setRegistrationOpen, setUserStatus, setUserRole,
       listTracks, saveTrack, myEnrolments, enrol, setPrimaryTrack, grantEnrolment, canReadTracks, listUntagged, fileUnder, setEdition, setArchived,
-      myPlan, setPlan, liveAds, listCampaigns, saveCampaign, approveCampaign, setCampaignStatus, recordImpression, adReport, listForReview, submitReview, recordReviewed, reviewCounts, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
+      myPlan, setPlan, liveAds, listCampaigns, saveCampaign, approveCampaign, setCampaignStatus, recordImpression, adReport,
+      getAdSettings, saveAdSettings, clearMyImpressionsToday, listForReview, submitReview, recordReviewed, reviewCounts, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
       getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,
@@ -3497,6 +3530,42 @@ const Backend = (() => {
       });
     }
 
+    /* ---------- AD SETTINGS (v140) ----------
+       app_config is public-read and developer-write, which is exactly
+       the shape wanted: the player reads these on every open and only
+       an editor can change them. */
+    async function getAdSettings() {
+      await ensureClient();
+      const base = { enabled: true, frequency: 'session', includePaid: false, includeStaff: false };
+      try {
+        const { data } = await sb.from('app_config').select('data').eq('id', 'ads').maybeSingle();
+        return Object.assign(base, (data && data.data) || {});
+      } catch { return base; }
+    }
+    async function saveAdSettings(cfg) {
+      await ensureClient();
+      const cur = await getAdSettings();
+      const next = Object.assign({}, cur, cfg || {});
+      next.enabled = !!next.enabled;
+      next.includePaid = !!next.includePaid;
+      next.includeStaff = !!next.includeStaff;
+      if (!['session', 'always', 'day'].includes(next.frequency)) next.frequency = 'session';
+      const { error } = await sb.from('app_config').upsert({ id: 'ads', data: next });
+      if (error) throw new Error(/row-level security/i.test(error.message || '')
+        ? 'Only an editor may change ad settings.' : error.message);
+      return next;
+    }
+    async function clearMyImpressionsToday() {
+      await ensureClient(); const id = await uid(); if (!id) return 0;
+      const day = new Date().toISOString().slice(0, 10);
+      /* The policy allows exactly this and nothing wider: own rows,
+         editor only. A failure here means the policy is doing its job. */
+      const { data, error } = await sb.from('ad_impressions').delete()
+        .eq('user_id', id).eq('day', day).select('id');
+      if (error) throw new Error('Only an editor may clear their own impressions.');
+      return (data || []).length;
+    }
+
     async function fileUnder(table, ids, trackIds, subject) {
       await ensureClient();
       if (!TAGGED.some(x => x.table === table)) throw new Error('Unknown content table: ' + table);
@@ -3736,7 +3805,8 @@ const Backend = (() => {
     return { init, signUp, signIn, signOut, requestPasswordReset, updatePassword, onPasswordRecovery, currentUser, updateProfile,
       getRegistrationOpen, setRegistrationOpen, setUserStatus, setUserRole,
       listTracks, saveTrack, myEnrolments, enrol, setPrimaryTrack, grantEnrolment, canReadTracks, listUntagged, fileUnder, setEdition, setArchived,
-      myPlan, setPlan, liveAds, listCampaigns, saveCampaign, approveCampaign, setCampaignStatus, recordImpression, adReport, listForReview, submitReview, recordReviewed, reviewCounts, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
+      myPlan, setPlan, liveAds, listCampaigns, saveCampaign, approveCampaign, setCampaignStatus, recordImpression, adReport,
+      getAdSettings, saveAdSettings, clearMyImpressionsToday, listForReview, submitReview, recordReviewed, reviewCounts, submitProposal, listMyProposals, listProposals, setProposalStatus, listFlaggedDetails, getDeclinedPapers, declinePaper,
       getEssayPapers, publishEssayPaper, unpublishEssayPaper, saveEssayFeedback, listEssayFeedback, getEssayFeedback, deleteEssayFeedback,
       getCpdVolumes, publishCpdVolume, unpublishCpdVolume, getCpdProgress, saveCpdAnswer, resetCpdSection,
       getProgress, recordAttempt, getAttempt, addXp, resetProgress,

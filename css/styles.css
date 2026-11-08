@@ -7348,3 +7348,11 @@ body.ad-open { overflow: hidden; }
 .ad-st-ended    { background: rgba(224,82,99,.14); color: #f0a3ad; }
 .ad-range { display: flex; flex-wrap: wrap; gap: .6rem; align-items: flex-end; margin-bottom: .6rem; }
 @media (max-width: 560px) { .ad-video { max-height: 48vh; } }
+
+/* ---------- ad settings (v140) ---------- */
+.ad-opts { display: flex; flex-direction: column; gap: .55rem; margin-bottom: .9rem; }
+.ad-opt { display: flex; gap: .6rem; align-items: flex-start; cursor: pointer; }
+.ad-opt input { margin-top: .25rem; flex: none; }
+.ad-opt span { display: flex; flex-direction: column; gap: .1rem; }
+.ad-opt em { font-style: normal; font-size: .78rem; color: var(--ink-3); }
+.ad-try { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }

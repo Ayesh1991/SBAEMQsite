@@ -874,6 +874,58 @@ campaign, and cannot create one that is already live.
 
 ---
 
+## v140 — Making the ad system assessable
+
+v139 shipped a pre-roll **its own author could not see.** Ads go to free
+accounts, staff are exempt, once a session, and the impression dedups
+per day. Every one of those is the right rule for candidates, and
+between them they make the feature impossible to check: the developer
+never sees an ad at all, and having tested the count once there is
+nothing more to learn for twenty-four hours.
+
+`#/dev/ads` now has a **Settings** card:
+
+| | |
+|---|---|
+| **Show advertisements** | the master switch |
+| **Show them to me as well** | editors and admins — off by default, because staff are not the audience, but the person who built it has to be able to look at it |
+| **Show them to paying accounts too** | off by default; useful while launching, when nobody has paid and every view counts |
+| **How often** | once per session · once a day · **every time the app opens** |
+
+and a **Try it** card: put the bundled five-second clip on air in one
+click, play one on demand, or clear your own impressions for today so
+counting can be tried again.
+
+### The line this release walks
+
+**Every switch changes who LOOKS at an ad. Not one changes what is
+COUNTED.** The per-day unique index is the entire basis of the figure a
+drug company is handed; if a testing setting could move it, the setting
+would be a way of inflating an invoice. So "every time the app opens" is
+safe to leave on — ten views in an afternoon is still one doctor and one
+impression — and t140 §2 *proves* that rather than asserting it in a
+comment: it plays four ads under three different frequency settings and
+then checks the sponsor is still told one.
+
+The card says the same thing where the choice is made, not in a document
+nobody opens.
+
+### The test aid is the narrowest one that works
+
+"Clear my impressions so I can count again" is exactly the shape of a
+hole — **delete and re-insert is how a unique index is defeated.** So
+the policy is as small as it can be while still being useful: an editor,
+their own rows, today. A candidate cannot do it at all, and an editor
+cannot touch anybody else's row, so no amount of this changes what a
+sponsor is told about real viewers. Verified on a real Postgres as an
+unprivileged role, not read over.
+
+A forced preview does not consume the session either: looking at an ad
+from the console must not be the reason a candidate — or the previewer —
+stops being shown one.
+
+---
+
 ## Not on this list, deliberately
 
 - **A build step.** It has been proposed twice and refused twice. 54 script

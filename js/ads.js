@@ -42,21 +42,60 @@ const Ads = (() => {
   const COUNT_AT_MS = 3000;
   const SKIP_AT_MS = 3000;
   const SESSION_KEY = 'aureum-ad-shown';
+  const DAY_KEY = 'aureum-ad-day';
+
+  /* SETTINGS (v140). v139 shipped a pre-roll its own author could not
+     see — staff exempt, free accounts only, once a session — and those
+     are the right rules for candidates and between them make the thing
+     impossible to check. These loosen WHO LOOKS at an ad. None of them
+     touch what is COUNTED: the per-day unique index is the sponsor's
+     number and it is untouched by every option here, which is why
+     "show every time" is safe to hand somebody. */
+  const DEFAULTS = { enabled: true, frequency: 'session', includePaid: false, includeStaff: false };
+  let cfg = null;
+  async function settings(force) {
+    if (cfg && !force) return cfg;
+    try { cfg = Object.assign({}, DEFAULTS, (await Backend.getAdSettings?.()) || {}); }
+    catch { cfg = Object.assign({}, DEFAULTS); }
+    return cfg;
+  }
+  /** Called by the console when the settings are saved. */
+  function bust() { cfg = null; }
 
   let showing = false;
 
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-  const seenThisSession = () => { try { return !!sessionStorage.getItem(SESSION_KEY); } catch { return false; } };
-  const markSeen = () => { try { sessionStorage.setItem(SESSION_KEY, '1'); } catch { /* private window */ } };
+  const today = () => new Date().toISOString().slice(0, 10);
+  /* HOW OFTEN somebody is shown one. 'always' is the testing setting and
+     is also a legitimate launch choice; it keeps no mark at all. */
+  function seenAlready(freq) {
+    try {
+      if (freq === 'always') return false;
+      if (freq === 'day') return localStorage.getItem(DAY_KEY) === today();
+      return !!sessionStorage.getItem(SESSION_KEY);
+    } catch { return false; }          // storage refused: show it, never block
+  }
+  function markSeen(freq) {
+    try {
+      if (freq === 'always') return;
+      if (freq === 'day') localStorage.setItem(DAY_KEY, today());
+      else sessionStorage.setItem(SESSION_KEY, '1');
+    } catch { /* private window */ }
+  }
 
   /** Is this account one we show advertising to at all? */
   async function eligible() {
     try {
+      const c = await settings();
+      if (!c.enabled) return false;                // the master switch
       const me = await Backend.currentUser();
       if (!me) return false;                       // signed out: nothing to file an impression under
-      if (me.isEditor || me.isAdmin) return false; // staff, not the audience
+      /* Staff are not the audience — but the person who BUILT this has
+         to be able to look at it, so it is a setting rather than a law. */
+      if ((me.isEditor || me.isAdmin) && !c.includeStaff) return false;
+      if (c.includePaid) return true;              // useful while launching
       const plan = await Backend.myPlan?.();
       return (plan || 'free') === 'free';
     } catch { return false; }
@@ -90,13 +129,17 @@ const Ads = (() => {
   async function maybeShow(opts) {
     const o = opts || {};
     if (showing) return false;
-    if (!o.force && seenThisSession()) return false;
+    const c = await settings(o.fresh);
+    if (!o.force && seenAlready(c.frequency)) return false;
     if (!o.force && !(await eligible())) return false;
     let track = null;
     try { track = (typeof Course !== 'undefined' && Course.currentId) ? Course.currentId() : null; } catch {}
     const campaign = await pick(track);
     if (!campaign || !campaign.mediaUrl) return false;
-    markSeen();
+    /* Only mark it on a real showing, and never on a forced preview —
+       previewing from the console must not use up a candidate's... or
+       rather the previewer's own session. */
+    if (!o.force) markSeen(c.frequency);
     try { return await play(campaign); }
     catch { closeAll(); return false; }            // never block the app
   }
@@ -189,5 +232,5 @@ const Ads = (() => {
     } catch { /* counting is the sponsor's problem, never the reader's */ }
   }
 
-  return { maybeShow, eligible, _pick: pick, _play: play, COUNT_AT_MS, SKIP_AT_MS };
+  return { maybeShow, eligible, settings, bust, _pick: pick, _play: play, COUNT_AT_MS, SKIP_AT_MS };
 })();

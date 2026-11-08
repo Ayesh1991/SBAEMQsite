@@ -2510,3 +2510,29 @@ do $$ begin
   alter table public.profiles add constraint profiles_plan_ck
     check (plan in ('free', 'paid'));
 exception when duplicate_object then null; end $$;
+
+-- ============================================================
+-- 40) MAKING THE AD SYSTEM ASSESSABLE (v140)
+--
+-- v139 shipped a pre-roll that the person who built it CANNOT SEE: ads
+-- go to free accounts, staff are exempt, and it shows once a session.
+-- Sound rules for candidates, and between them they make the feature
+-- impossible to check. Worse, the dedup is per day, so having tested
+-- the count once there is nothing more to learn for 24 hours.
+--
+-- The settings themselves need no table — app_config is public-read and
+-- developer-write, which is exactly the shape wanted: the player must
+-- read them on every open, and only an editor may change them.
+--
+-- WHAT DOES NEED A POLICY is clearing an impression so the count can be
+-- tested again. It is deliberately the narrowest possible: an editor
+-- may delete THEIR OWN rows and nobody else's. Not candidates — a
+-- delete-and-reinsert loop is exactly how the unique index would be
+-- defeated, and the index is the whole basis of the number sold to a
+-- sponsor. Not other people's rows either, so no amount of this can
+-- change what a drug company is told about real viewers.
+-- ============================================================
+
+drop policy if exists ad_impressions_editor_clear_own on public.ad_impressions;
+create policy ad_impressions_editor_clear_own on public.ad_impressions for delete
+  using (user_id = auth.uid() and public.is_editor());
