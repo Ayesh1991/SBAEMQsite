@@ -7,7 +7,7 @@ twenty releases to learn, and most of it is counter-intuitive.
 
 A static single-page app for Sri Lankan postgraduate and undergraduate
 medical exam preparation. **No build step.** The files in `js/` are served
-exactly as they are committed; `index.html` loads 52 `<script>` tags in a
+exactly as they are committed; `index.html` loads 54 `<script>` tags in a
 fixed order. Cloudflare Pages serves it, Pages Functions in `functions/api/`
 are the only server code, Supabase is the database.
 
@@ -29,8 +29,9 @@ are the only server code, Supabase is the database.
    function added to one and not the other works in testing and throws in
    production, or the reverse. The tests assert the lists match.
 
-3. **The version stamp is in three places.** `index.html` (`?v=N`, 52
-   occurrences), `sw.js` (`VERSION = 'aureum-vN'`), and the newest test
+3. **The version stamp is in three places.** `index.html` (`?v=N`, 53
+   occurrences — the suite checks they all agree, so the number itself is
+   not load-bearing), `sw.js` (`VERSION = 'aureum-vN'`), and the newest test
    file. Bump all three together — see `/release`.
 
 4. **A filter in the browser is never the security.** Row-level security in
@@ -141,6 +142,22 @@ The Part 2 bank is being re-made; the old and new generations run at once.
   `archived_at is null` to a read policy** — t136 §1 refuses it.
 - A migration adds the column with the default the *existing* rows need,
   then moves the default for the new ones. Both halves, or it is wrong.
+- **The re-make backlog is `#/dev/remake`** (v137) —
+  `Course.remakeBacklog(papers, topics, opts)`. Progress is counted in
+  **questions, not topics**: the topics are uneven enough that a topic
+  count flatters the work by an order of magnitude.
+- **`archivable` means superseded, never merely first-edition.** Offering
+  "put away" on a not-started topic would archive the only edition it has
+  — no questions for the candidate and no replacement coming. It is only
+  ever non-empty once a replacement is live.
+
+## Adding a console section
+
+A section needs its name in **two** places: the dispatch in
+`js/dev-console.js` *and* the route regex in `js/app.js` (the
+`^#/dev(?:/(papers|cards|…))?$` list). Miss the second and the link
+renders the hub — nothing throws and nothing says why. v137 made exactly
+this mistake.
 
 ## Testing
 
@@ -149,7 +166,7 @@ is built), then `npx playwright install chromium`.
 
 ```bash
 npm run serve                                  # leave running (Node, no python)
-npm test                                       # all 37 files, summarised
+npm test                                       # all 38 files, summarised
 node tools/tests/t135-history-by-course.mjs    # one release file
 ```
 

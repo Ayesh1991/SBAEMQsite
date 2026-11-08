@@ -337,8 +337,113 @@ const Course = (() => {
   const hasEarlier = (rows, keyOf) =>
     (rows || []).filter(r => !isArchived(r)).length > newestEdition(rows, keyOf, false).length;
 
+  /* ---------- the re-make backlog (v137) ----------
+
+     v136 made two editions able to coexist. It did not say how far through
+     8000 questions anybody is, and that is the question an editor actually
+     has: what is left, and what can be put away.
+
+     COUNTED IN QUESTIONS, NOT TOPICS. The topics are wildly uneven — one
+     holds 400 questions and the next holds 12 — so "48 of 105 topics" is a
+     number that feels like progress and is not one. Both are reported and
+     the question count is the one the bar draws.
+
+     FIVE STATES, BECAUSE FOUR OF THEM NEED DIFFERENT ACTIONS:
+       empty    — in the syllabus, no paper at all. Not backlog: a gap.
+       todo     — 1st edition only. The work.
+       flight   — a 2nd edition exists and is not published yet.
+       archive  — 2nd edition live, 1st still live. THE ACTIONABLE ONE:
+                  nothing is wrong, but the old paper is still being
+                  offered under "earlier editions" and wants putting away.
+       done     — 2nd edition live, 1st archived.
+
+     `archive` is the state this view exists for. It is invisible from every
+     other screen: the candidate's bank already shows the right thing, so
+     nothing looks broken, and the old questions sit there indefinitely. */
+  function remakeBacklog(papers, topics, opts) {
+    const o = opts || {};
+    const target = Number(o.target) || 2;
+    const rows = (papers || []).filter(p => !o.fits || o.fits(p));
+    const qOf = p => (Number(p.sba) || 0) + (Number(p.emq) || 0) + (Number(p.tf) || 0);
+
+    /* Papers awaiting review are a separate read; they carry a topicId and
+       an edition and nothing else this needs. */
+    const pending = new Map();
+    (o.pending || []).forEach(r => {
+      const k = r.topicId || r.topic; if (!k) return;
+      if (editionOf(r) >= target) pending.set(String(k), (pending.get(String(k)) || 0) + 1);
+    });
+
+    const byTopic = new Map();
+    rows.forEach(p => {
+      const k = String(p.topicId || '');
+      if (!byTopic.has(k)) byTopic.set(k, []);
+      byTopic.get(k).push(p);
+    });
+
+    /* The syllabus is the denominator: a topic with no paper is a gap that
+       a count of papers alone would never show. */
+    const seen = new Set();
+    const out = [];
+    (topics || []).forEach(t => {
+      const id = String(t.id || '');
+      seen.add(id);
+      out.push(classify(id, t.title || id, byTopic.get(id) || [], pending.get(id) || 0));
+    });
+    /* A paper filed under a topic the syllabus no longer lists still has to
+       appear, or re-making it is impossible: it would be in no list. */
+    byTopic.forEach((list, id) => {
+      if (seen.has(id)) return;
+      out.push(classify(id, (list[0] && list[0].topicId) || id || '(no topic)',
+        list, pending.get(id) || 0, !id ? 'unfiled' : 'orphan'));
+    });
+
+    function classify(id, title, list, pendingN, oddity) {
+      const live = list.filter(p => !isArchived(p));
+      const newest = live.length ? Math.max(...live.map(editionOf)) : 0;
+      const old = live.filter(p => editionOf(p) < target);
+      const at = live.filter(p => editionOf(p) >= target);
+      let state;
+      if (!list.length) state = 'empty';
+      else if (pendingN && newest < target) state = 'flight';
+      else if (newest < target) state = 'todo';
+      else if (old.length) state = 'archive';
+      else state = 'done';
+      return { id, title, state, oddity: oddity || null,
+        papers: list.length, pending: pendingN,
+        newestEdition: newest,
+        questions: list.reduce((n, p) => n + qOf(p), 0),
+        /* What the work is measured in: the questions still on the old
+           edition, and the ones already replaced. */
+        oldQuestions: old.reduce((n, p) => n + qOf(p), 0),
+        newQuestions: at.reduce((n, p) => n + qOf(p), 0),
+        /* SUPERSEDED, NOT MERELY OLD — only ever non-empty in the
+           `archive` state. An earlier draft of this returned every
+           first-edition paper, so a NOT-STARTED topic was offered a "put
+           away" control: taking it would have archived the only edition
+           that topic has, leaving the candidate no questions and no
+           replacement. Putting something away is only safe once something
+           has replaced it. */
+        archivable: state === 'archive' ? old.map(p => p.id) : [] };
+    }
+
+    const tally = s => out.filter(t => t.state === s).length;
+    const sum = (s, f) => out.filter(t => t.state === s).reduce((n, t) => n + f(t), 0);
+    /* DONE means the replacement is live, whether or not the old paper has
+       been put away — archiving is tidying, not re-making. */
+    const doneQ = sum('done', t => t.newQuestions) + sum('archive', t => t.newQuestions);
+    const leftQ = sum('todo', t => t.oldQuestions) + sum('flight', t => t.oldQuestions)
+      + sum('archive', t => t.oldQuestions);
+    return { topics: out, target,
+      counts: { empty: tally('empty'), todo: tally('todo'), flight: tally('flight'),
+        archive: tally('archive'), done: tally('done') },
+      questions: { done: doneQ, left: leftQ, total: doneQ + leftQ },
+      percent: (doneQ + leftQ) ? Math.round((doneQ / (doneQ + leftQ)) * 100) : 0,
+      archivable: out.filter(t => t.state === 'archive').flatMap(t => t.archivable) };
+  }
+
   return { load, bust, live, all, byId, mine, current, currentId, statusOf, isActive,
-    fits, fitsSubject, editionOf, isArchived, newestEdition, hasEarlier,
+    fits, fitsSubject, editionOf, isArchived, newestEdition, hasEarlier, remakeBacklog,
     subjects, hasSubjects, subjectName, stageName, choose,
     positions, positionsFor,
     remember, claimPending,

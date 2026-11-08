@@ -27,6 +27,7 @@ const DevConsole = (() => {
 
   /**
    * Entry point. section = 'hub' | 'papers' | 'cards' | 'users' | 'blueprint'
+   * | 'remake' (how far through the second edition)
    * | 'review' (flagged-question workshop) | 'ai' (AI systems panel).
    * The hub is a card launcher; each section is its own page with a back link.
    */
@@ -46,6 +47,7 @@ const DevConsole = (() => {
     if (section === 'settings') return renderSettingsSection(view);
     if (section === 'cpd') return renderCpdSection(view);
     if (section === 'courses') return renderCoursesSection(view);
+    if (section === 'remake') return renderRemakeSection(view);
     return renderHub(view);
   }
 
@@ -143,6 +145,12 @@ const DevConsole = (() => {
             <p>The exams AUREUM prepares people for. Open a new one, fill it with content before anybody can choose it, and set what its candidates are called.</p>
             <span class="dev-hub-count" id="hub-courses">…</span>
           </a>
+          <a class="dev-hub-card" href="#/dev/remake" style="--hub-accent:linear-gradient(135deg,#e05263,#f4c95d)">
+            <span class="dev-hub-ico">♻️</span>
+            <h3>Re-make backlog</h3>
+            <p>How far through the second edition, counted in questions rather than topics — what is replaced, what is in review, what has not been started, and which superseded papers are still being offered.</p>
+            <span class="dev-hub-count" id="hub-remake">…</span>
+          </a>
           <a class="dev-hub-card" href="#/dev/cpd" style="--hub-accent:linear-gradient(135deg,#5eead4,#818cf8)">
             <span class="dev-hub-ico">📖</span>
             <h3>CPD importer</h3>
@@ -196,6 +204,11 @@ const DevConsole = (() => {
       courseN = all.length ? `${live} open · ${all.length - live} being built` : 'run schema.sql';
     } catch { courseN = 'run schema.sql'; }
     put('#hub-courses', courseN);
+    /* The hub shows the one number worth seeing from outside the page. */
+    try {
+      const pct = await remakePercent();
+      if (pct != null) put('#hub-remake', pct + '%');
+    } catch { /* decorative */ }
     paintStandIn(view.querySelector('#dev-standin'));
     paintUnfiled(view.querySelector('#dev-unfiled'));
   }
@@ -4935,6 +4948,154 @@ const DevConsole = (() => {
     { id: 'pg-exit', label: 'Postgraduate — exit (Part 2 / final)' }
   ];
   const SUBJECTS = ['medicine', 'surgery', 'paediatrics', 'obgyn', 'psychiatry', 'anaesthesiology'];
+
+  /* ================= RE-MAKE BACKLOG (v137) =================
+
+     v136 made two editions able to coexist. The question it left
+     unanswered is the one an editor actually has: of 8000+ questions,
+     how many are done, what is next, and what can be put away.
+
+     THE BAR COUNTS QUESTIONS, NOT TOPICS, because the topics are wildly
+     uneven — "48 of 105 topics" feels like progress and is not one.
+
+     AND THE POINT OF THE PAGE IS THE "READY TO PUT AWAY" QUEUE. When a
+     2nd edition goes live the 1st is superseded but still live, so it is
+     still offered under "also show the earlier questions". Nothing looks
+     broken from any other screen — the candidate's bank already shows the
+     right paper — so the old questions sit there forever unless something
+     tells you they are there. This is that something. */
+  let rmBacklog = null;     // last computed backlog, so the filter need not re-read
+  let rmFilter = 'all';
+
+  /** The hub's one number. Null when there is nothing to re-make. */
+  async function remakePercent() {
+    const papers = await ctx.Data.publishedPapers();
+    const topics = (syllabus.categories || []).flatMap(c =>
+      (c.sections || []).flatMap(s => (s.topics || []).map(t => ({ id: t.id, title: t.title }))));
+    const b = Course.remakeBacklog(papers, topics, {});
+    return b.questions.total ? b.percent : null;
+  }
+
+  async function renderRemakeSection(view) {
+    const { esc } = ctx;
+    view.innerHTML = `
+      <section class="page">
+        <header data-animate>
+          ${backLink}
+          <p class="kicker">DEVELOPER · RE-MAKE</p>
+          <h1 class="page-title">The second edition, topic by topic</h1>
+          <p class="muted">A bank is re-made one topic at a time, and while that happens both editions are
+            live — a candidate is shown the newest of each. This is the editor's side of that: what is
+            replaced, what is in review, what has not been started, and which superseded papers are
+            still being offered and want putting away.</p>
+          <label class="wl-f" id="rm-track-wrap" style="max-width:320px"><span>Course</span>
+            <select class="sel" id="rm-track"></select></label>
+        </header>
+        <div id="rm-body" data-animate><p class="muted">Counting…</p></div>
+      </section>`;
+    ctx.FX.viewIn(view);
+    /* v130/v133: the editor's list is all(), never live() — a course is
+       filled before it is opened, and the one being built is precisely the
+       one being re-made. fillCoursePicker() is that list. */
+    await fillCoursePicker(view, '#rm-track-wrap', '#rm-track');
+    view.querySelector('#rm-track')?.addEventListener('change', () => {
+      rmFilter = 'all'; paintRemake(view);
+    });
+    await paintRemake(view);
+  }
+
+  async function paintRemake(view) {
+    const { esc } = ctx;
+    const body = view.querySelector('#rm-body'); if (!body) return;
+    body.innerHTML = '<p class="muted">Counting…</p>';
+    let papers = [], pending = [];
+    try { papers = await ctx.Data.publishedPapers(); }
+    catch (e) { body.innerHTML = `<p class="muted">Could not read the bank — ${esc(e.message || e)}</p>`; return; }
+    /* A paper awaiting review is what tells IN FLIGHT from NOT STARTED.
+       If this read fails the page is still right, only less specific. */
+    try { pending = await ctx.Backend.listForReview(); } catch { pending = []; }
+
+    const topics = (syllabus.categories || []).flatMap(c =>
+      (c.sections || []).flatMap(s => (s.topics || []).map(t =>
+        ({ id: t.id, title: t.title, section: s.title, category: c.title }))));
+    const course = pickedCourse('#rm-track') || (Course.currentId && Course.currentId()) || null;
+    const b = Course.remakeBacklog(papers, topics, {
+      pending: pending.filter(r => r.table === 'papers'),
+      fits: course ? (p => (p.tracks || []).length ? (p.tracks || []).includes(course) : true) : null
+    });
+    rmBacklog = b;
+
+    const label = { empty: 'no paper yet', todo: 'not started', flight: 'in review',
+      archive: 'ready to put away', done: 'done' };
+    const chip = (k, n) => `<button class="chip${rmFilter === k ? ' active' : ''}" data-rmf="${k}">`
+      + `${esc(label[k] || k)} <strong>${n}</strong></button>`;
+    const shown = b.topics.filter(t => rmFilter === 'all' || t.state === rmFilter);
+
+    body.innerHTML = `
+      <div class="card" data-animate>
+        <h3 class="card-title">Progress</h3>
+        <div class="rm-bar"><span style="width:${b.percent}%"></span></div>
+        <p class="rm-figure"><strong>${b.percent}%</strong> of the questions are on edition ${b.target}
+          — ${b.questions.done.toLocaleString()} replaced,
+          ${b.questions.left.toLocaleString()} still on the earlier edition.</p>
+        <p class="tiny muted">Counted in <strong>questions</strong>, not topics: the topics are very uneven,
+          so a count of topics flatters the work. ${b.counts.done + b.counts.archive} of
+          ${b.topics.length - b.counts.empty} topics that have any paper are re-made.</p>
+      </div>
+      ${b.archivable.length ? `
+      <div class="card rm-ready" data-animate>
+        <h3 class="card-title">${b.archivable.length} superseded paper${b.archivable.length === 1 ? '' : 's'} still being offered</h3>
+        <p class="muted">These topics have their edition ${b.target} live, and the earlier paper is still
+          live too — so it is still offered under “also show the earlier questions”. Putting it away stops
+          it being offered. <strong>Nothing is deleted:</strong> every mark, note and past attempt stays
+          readable, which is why this is archiving and not unpublishing.</p>
+        <button class="btn" id="rm-archive-all">Put away all ${b.archivable.length}</button>
+      </div>` : ''}
+      <div class="card" data-animate>
+        <div class="chip-row">
+          <button class="chip${rmFilter === 'all' ? ' active' : ''}" data-rmf="all">all <strong>${b.topics.length}</strong></button>
+          ${chip('archive', b.counts.archive)}${chip('todo', b.counts.todo)}${chip('flight', b.counts.flight)}
+          ${chip('done', b.counts.done)}${chip('empty', b.counts.empty)}
+        </div>
+        <div class="table-scroll"><table class="table">
+          <thead><tr><th>Topic</th><th>State</th><th>Papers</th><th>Questions</th><th></th></tr></thead>
+          <tbody>${shown.length ? shown.map(t => `
+            <tr>
+              <td>${esc(t.title)}${t.oddity ? `<span class="rm-odd" title="${t.oddity === 'unfiled'
+                ? 'This paper has no topic at all' : 'Filed under a topic the syllabus no longer lists'}">${
+                t.oddity === 'unfiled' ? 'no topic' : 'not in syllabus'}</span>` : ''}</td>
+              <td><span class="rm-state rm-${t.state}">${esc(label[t.state])}</span></td>
+              <td>${t.papers}${t.pending ? ` <span class="tiny muted">+${t.pending} in review</span>` : ''}</td>
+              <td>${t.questions.toLocaleString()}${t.state === 'archive'
+                ? ` <span class="tiny muted">(${t.oldQuestions.toLocaleString()} superseded)</span>` : ''}</td>
+              <td>${t.archivable.length ? `<button class="link-btn" data-rm-arch="${esc(t.id)}">put away</button>` : ''}</td>
+            </tr>`).join('') : '<tr><td colspan="5" class="muted">Nothing in this state.</td></tr>'}
+          </tbody>
+        </table></div>
+      </div>`;
+
+    body.querySelectorAll('[data-rmf]').forEach(btn => btn.addEventListener('click', () => {
+      rmFilter = btn.dataset.rmf; paintRemake(view);
+    }));
+    const archive = async (ids, btn, word) => {
+      if (!confirm(`Put away ${ids.length} superseded paper${ids.length === 1 ? '' : 's'}?\n\n`
+        + 'They stop being offered in the bank, in mocks and under "earlier editions". '
+        + 'Nothing is deleted — every mark, note and past attempt stays readable, '
+        + 'and this can be undone from the papers list.')) return;
+      btn.disabled = true; btn.textContent = 'Putting away…';
+      try {
+        await ctx.Backend.setArchived('papers', ids, true);
+        MOVABLE.papers.after();
+        await paintRemake(view);
+      } catch (e) { alert(e.message || e); btn.disabled = false; btn.textContent = word; }
+    };
+    const all = body.querySelector('#rm-archive-all');
+    if (all) all.addEventListener('click', () => archive(b.archivable, all, `Put away all ${b.archivable.length}`));
+    body.querySelectorAll('[data-rm-arch]').forEach(btn => btn.addEventListener('click', () => {
+      const t = b.topics.find(x => x.id === btn.dataset.rmArch);
+      if (t && t.archivable.length) archive(t.archivable, btn, 'put away');
+    }));
+  }
 
   async function renderCoursesSection(view) {
     const { esc } = ctx;

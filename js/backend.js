@@ -1044,8 +1044,15 @@ const Backend = (() => {
        it is first stored and keeps whatever it has on an edit, so fixing a
        typo in a reviewed paper does not send it back to the queue. */
     const REVIEWABLE = [
-      { table: 'papers', key: 'published', label: 'Paper', title: r => r.title || r.id },
-      { table: 'osce_stations', key: 'oscestations', label: 'OSCE station', title: r => r.topic || r.id }
+      /* `topic` is what the re-make backlog groups by (v137): a paper
+         awaiting review is the evidence that a topic is IN FLIGHT rather
+         than untouched, and without it that state cannot be told from
+         "nobody has started". The read must carry what the view filters
+         on — the bug of v117, v121, v129, v131, v132. */
+      { table: 'papers', key: 'published', label: 'Paper', title: r => r.title || r.id,
+        topic: r => r.topicId || (r.meta && r.meta.topicId) || '' },
+      { table: 'osce_stations', key: 'oscestations', label: 'OSCE station', title: r => r.topic || r.id,
+        topic: r => r.topic || '' }
     ];
     const setOf = t => REVIEWABLE.find(x => x.table === t);
 
@@ -1060,6 +1067,8 @@ const Backend = (() => {
         if (r.review_status && r.review_status !== 'published') {
           out.push({ table: t.table, label: t.label, id: r.id, title: String(t.title(r) || r.id),
             status: r.review_status, tracks: r.tracks || [],
+            topicId: t.topic ? String(t.topic(r) || '') : '',
+            edition: Number(r.edition) || 1,
             questionCount: countQuestions(t.table, r) });
         }
       }));
@@ -3234,8 +3243,13 @@ const Backend = (() => {
        on publish — the column default marks a new row 'draft', and an
        upsert that does not name the column leaves it alone on update. */
     const REVIEWABLE = [
-      { table: 'papers', label: 'Paper', title: 'meta->>title', count: 'meta->sba' },
-      { table: 'osce_stations', label: 'OSCE station', title: 'meta->>topic', count: 'meta->q_count' }
+      /* `topic` joined in v137 for the re-make backlog — see the local
+         list for why a projection that drops it breaks the IN FLIGHT
+         state silently. */
+      { table: 'papers', label: 'Paper', title: 'meta->>title', count: 'meta->sba',
+        topic: 'meta->>topicId' },
+      { table: 'osce_stations', label: 'OSCE station', title: 'meta->>topic', count: 'meta->q_count',
+        topic: 'topic' }
     ];
 
     async function listForReview() {
@@ -3244,11 +3258,12 @@ const Backend = (() => {
       for (const t of REVIEWABLE) {
         try {
           const { data, error } = await sb.from(t.table)
-            .select(`id,title:${t.title},status:review_status,tracks,n:${t.count}`)
+            .select(`id,title:${t.title},status:review_status,tracks,n:${t.count},topicId:${t.topic},edition`)
             .neq('review_status', 'published').order('id').limit(500);
           if (error) continue;
           (data || []).forEach(r => out.push({ table: t.table, label: t.label, id: r.id,
             title: String(r.title || r.id), status: r.status, tracks: r.tracks || [],
+            topicId: String(r.topicId || ''), edition: Number(r.edition) || 1,
             questionCount: Number(r.n) || 0 }));
         } catch { /* one missing table must not hide the others */ }
       }

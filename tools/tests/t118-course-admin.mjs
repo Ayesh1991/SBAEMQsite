@@ -57,7 +57,11 @@ say('an empty list falls back to the app’s own', /Progression\.POSITIONS\.slic
 /* The console has to be reachable, or it may as well not exist — this is
    the exact way the feature was unreachable before. */
 const app = readFileSync('js/app.js', 'utf8');
-say('the courses console is routable', /\|settings\|courses\)/.test(app));
+/* Position-independent: v137 added `remake` after `courses` and broke
+   this assertion about courses, which was still true. t137 §6 asserts the
+   general rule — every dispatched section is also routable. */
+say('the courses console is routable',
+  /\^#\\\/dev\(\?:\\\/\([a-z|]*\bcourses\b[a-z|]*\)\)\?\$/.test(app));
 
 /* ---------------------------------------------------------------- */
 sec('2. IN THE RUNNING APP — TODAY IS UNCHANGED');
