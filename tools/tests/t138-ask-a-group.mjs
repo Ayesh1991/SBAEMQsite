@@ -124,13 +124,20 @@ const feed = await page.evaluate(async () => {
   return { isFeed: TeaRoom.wallIsFeed(),
     rooms: [...host.querySelectorAll('[data-wall-room]')].map(b => b.textContent.trim()),
     badges: [...host.querySelectorAll('.tw-where')].map(b => b.textContent.trim()),
+    links: [...host.querySelectorAll('a.tw-where')].map(a => a.getAttribute('href')),
     posts: (txt.match(/Asked /g) || []).length,
     hasDest: !!host.querySelector('#tw-dest') };
 });
 say('the Studio wall opens on the feed', feed.isFeed);
-say('  with every group and Everyone to switch to',
-  feed.rooms.some(r => /All/.test(r)) && feed.rooms.some(r => /Everyone/.test(r))
-  && feed.rooms.some(r => /MD 2026/.test(r)), feed.rooms.join(' · '));
+/* NOT A SECOND SWITCHER. `wallRoom` is one piece of module state, so a
+   strip here as well as on the dock means clicking either leaves the
+   other naming the wall you just left — v128 made that mistake, t124
+   caught it, and v138's first draft made it again. The badge on each
+   post is the way into a group, and it already names the group. */
+say('  and does not grow a second room switcher', feed.rooms.length === 0,
+  feed.rooms.length + ' switchers');
+say('  the badge on a group post is the way into that group',
+  feed.links.some(h => /#\/group\//.test(h)), feed.links.join(' · ') || 'none');
 say('  showing all three questions at once', feed.posts === 3, feed.posts + ' posts');
 /* Without this the feed is a pile of posts and somebody answers in the
    wrong place. */

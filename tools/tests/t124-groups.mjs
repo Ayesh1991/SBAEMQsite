@@ -180,10 +180,15 @@ const strip = await page.evaluate(() => [...document.querySelectorAll('.tw-room'
    rule it tests. The strip still reads "everybody's, then each group" —
    it now also carries the controls that make and manage one, so the
    assertion names what it wants instead of counting buttons. */
-say('the wall offers everybody’s, then each group',
-  /Everyone/.test(strip[0]) && /Revision crew/.test(strip[1]), strip.join(' | '));
-say('  with the shared one open to begin with',
-  await page.evaluate(() => document.querySelector('.tw-room')?.classList.contains('is-on')));
+/* v138 PUT THE FEED IN FRONT, so the order shifted by one and the
+   default moved — the rule is still "the feed, then everybody's, then
+   each group", and still that a non-member is never offered a group. */
+say('the wall offers the feed, then everybody’s, then each group',
+  /All/.test(strip[0]) && /Everyone/.test(strip[1]) && /Revision crew/.test(strip[2]),
+  strip.join(' | '));
+say('  with the feed open to begin with',
+  await page.evaluate(() => document.querySelector('.tw-room')?.classList.contains('is-on'))
+  && await page.evaluate(() => TeaRoom.wallIsFeed()));
 
 /* Switching has to DROP what was loaded, not filter it — a post left over
    from the last group appearing in this one is the failure this whole
@@ -196,7 +201,7 @@ const switched = await page.evaluate(() => ({
   title: document.querySelector('[data-tw-title]')?.textContent || '',
   loaded: TeaRoom._posts ? TeaRoom._posts().map(p => p.topic) : null
 }));
-say('choosing a group lights it', switched.on === 1, 'tab ' + switched.on);
+say('choosing a group lights it', switched.on === 2, 'tab ' + switched.on);
 say('  and names it in the header', /Revision crew/.test(switched.title), switched.title);
 
 /* A non-member never sees the strip offer a group they cannot open. */

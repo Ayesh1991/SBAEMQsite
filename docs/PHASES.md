@@ -774,9 +774,13 @@ the first read, the poll and "load older" all use it — **a list that
 merges while the poll does not would show a group's new post on reload
 and never live**, which reads as the group being quiet.
 
-The Studio's panel had no room strip at all: switching wall, and even
-seeing which groups exist, was possible only in the popped-out dock. It
-has the strip now.
+**The panel does not grow a second strip** — the first draft of this
+release gave it one, and the suite refused it. `wallRoom` is a single
+piece of module state, so two switchers over it means clicking either
+leaves the other's header naming the wall you just left. v128 made that
+exact mistake, t124 caught it then, and t124 caught it again now. The way
+into a group from the feed is **the badge**, which already names the
+group: it is a link to that group's page.
 
 ### Two groups are two groups
 

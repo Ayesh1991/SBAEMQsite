@@ -599,7 +599,13 @@ const TeaRoom = (() => {
   function whereHTML(p) {
     if (!p.room_id) return '<span class="tw-where is-all" title="Posted to everyone">🧱 Everyone</span>';
     const r = (rooms || []).find(x => x.id === p.room_id);
-    return `<span class="tw-where" title="Posted to this group">👥 ${esc(r?.title || 'Group')}</span>`;
+    /* THE WAY INTO A GROUP, and deliberately not a second switcher: the
+       badge already names the group, so it is the link. A strip on this
+       surface would be two switchers over one `wallRoom` — the mistake
+       v128 made and rejected, where clicking either leaves the other
+       naming the wall you just left. */
+    return `<a class="tw-where" href="#/group/${encodeURIComponent(p.room_id)}"
+      title="Open this group">👥 ${esc(r?.title || 'Group')}</a>`;
   }
 
   function postHTML(p) {
@@ -1500,9 +1506,11 @@ const TeaRoom = (() => {
       wallRoom = want; posts = []; myRx = {}; loaded = false; lastPoll = null;
       Object.keys(comments).forEach(k => delete comments[k]);
     }
-    /* The strip and the composer's destination list are both drawn from
-       `rooms`, so they have to be in hand before the markup is built —
-       the panel is often the first surface opened, before any chat. */
+    /* NO STRIP HERE — see THE FIX IS NOT A SECOND STRIP HERE below. But
+       the composer's destination list and the feed's badges are both
+       drawn from `rooms`, so they must be in hand before the markup is
+       built; this surface is often the first one opened, before any
+       chat has loaded them. */
     if (!rooms.length) await loadRooms();
     host.innerHTML = `<div class="tr-surface tw-panel">
         <div class="tr-bar">
@@ -1510,12 +1518,10 @@ const TeaRoom = (() => {
           <button class="btn btn-ghost btn-sm" data-act="popwall">⧉ Pop out</button>
           <button class="btn btn-ghost btn-sm" data-act="popchat">💬 Chat</button>
         </div>
-        <div class="tw-rooms" data-tw-rooms></div>
         ${composerHTML()}
         <div class="tw-feed" data-tw-feed><p class="tr-empty">Loading…</p></div>
       </div>`;
     const root = host.querySelector('.tr-surface');
-    paintWallRooms(root);
     wireWall(root);
     root.querySelector('[data-act="popwall"]').addEventListener('click', () => openWall());
     root.querySelector('[data-act="popchat"]').addEventListener('click', () => openChat(want || undefined));

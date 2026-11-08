@@ -74,6 +74,12 @@ is the one place that turns the open wall into a read:
   the wall they thought was everybody's.
 - `'<id>'` — one group. A group's page always passes its own id.
 
+**Never put a room switcher on `renderPanel`.** `wallRoom` is one piece
+of module state; a second strip over it leaves one header naming the wall
+you just left. v128 made this mistake and v138 made it again — t124 and
+t128 both refuse it. The way into a group from the feed is the badge on
+each post, which links to that group's page.
+
 The list and the poll must ask the same question, or a group's new post
 appears on reload and never live. **Posting takes the room from the open
 wall** — but that needs a view, so the Discuss picker under a question
