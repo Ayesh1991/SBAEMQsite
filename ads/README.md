@@ -22,18 +22,56 @@ ffmpeg -i source.mov -t 5 -an -vf "scale=1280:-2" \
   -c:v libx264 -crf 30 -pix_fmt yuv420p -movflags +faststart out.mp4
 ```
 
-## The two sample files
+## Making one here, from HTML
 
-`sample-5s.mp4` is the shape of a real creative — H.264, what every
-browser plays.
+**Do not generate a branded drug advertisement with a text-to-video
+model.** Veo, Sora, Runway and Kling all still garble short strings, and
+"FEROCIA 200mg" coming out as "FERDCIA 20Omg" is a regulatory problem,
+not a cosmetic one. Use those models for a *background* if you want
+motion, and put the words on afterwards.
 
-`sample-5s.webm` exists **only for the test suite.** Playwright's
-Chromium ships without H.264, which is a licensed codec, so the MP4
-cannot be decoded there and the suite could never drive real playback.
-VP9 WebM it always supports. Do not send a sponsor a WebM: Safari's
-support is patchy and MP4 is the one that works everywhere.
+`src/` builds a creative out of DOM text instead, so the type is exactly
+what you typed and a dose change costs nothing:
 
-That gap is worth knowing about for another reason — it is how t139
-tests the failure path. A creative the browser cannot decode must let
-the candidate straight into the app and count nothing, and the MP4 in
-this very container is a genuine example of one.
+```sh
+node ads/src/render.mjs ferocia        # 150 PNGs, 5s at 30fps
+# then the ffmpeg line it prints
+```
+
+Each `src/<name>.html` exposes `window.setFrame(t)` and every frame is a
+pure function of `t` — no wall clock, no dropped frames, identical bytes
+on any machine. Copy `ferocia.html` to start a new one. The frames are
+gitignored; the MP4 beside them is what is kept.
+
+`ferocia-5s.mp4` is 68 KB for five seconds at 1280×720.
+
+## Uploading a creative
+
+The deploy is git-based, so "uploading to Cloudflare" means **adding the
+file to this folder and pushing.** Cloudflare Pages rebuilds and serves
+it at `https://<your-domain>/ads/<file>.mp4`. There is no dashboard
+upload step and no bandwidth charge.
+
+Easiest without a local clone: on github.com open the `ads/` folder →
+**Add file** → **Upload files** → drag it in → commit to `main`.
+
+Then in AUREUM: **Developer → Sponsors → New campaign**, and put
+`/ads/<file>.mp4` in the Video URL field — a path from the site root,
+not a full URL.
+
+## The sample files
+
+`sample-5s.mp4` / `.webm` — a plain test card.
+
+`ferocia-5s.mp4` / `.webm` / `.jpg` — a worked example of a pharmaceutical
+creative, built from `src/ferocia.html`. It carries a **SAMPLE CREATIVE**
+badge so it can never be mistaken for a live approved campaign.
+
+The `.webm` copies exist **only for the test suite.** Playwright's
+Chromium ships without H.264, a licensed codec, so the MP4s cannot be
+decoded there and the suite could never drive real playback. Do not send
+a sponsor a WebM: Safari's support is patchy and MP4 works everywhere.
+
+That gap is also how t139 tests the failure path. A creative the browser
+cannot decode must let the candidate straight into the app and count
+nothing, and the MP4 in this very container is a genuine example of one.
