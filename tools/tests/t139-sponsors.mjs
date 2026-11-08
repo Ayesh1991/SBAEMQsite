@@ -223,7 +223,13 @@ say('an unapproved campaign cannot be credited at all',
 sec('6. WHO IS SHOWN ONE');
 
 const ads = readFileSync('js/ads.js', 'utf8');
-say('staff are not the audience', /me\.isEditor \|\| me\.isAdmin\) return false/.test(ads));
+/* v140 made this conditional rather than absolute — the author of the
+   thing has to be able to look at it — so the rule asserted here is now
+   "staff are excluded BY DEFAULT", which is what it always meant. The
+   setting itself is t140's §1. */
+say('staff are not the audience',
+  /\(me\.isEditor \|\| me\.isAdmin\) && !c\.includeStaff\) return false/.test(ads)
+  && /includeStaff: false/.test(ads));
 say('  nor is anybody who has paid', /\(plan \|\| 'free'\) === 'free'/.test(ads));
 /* The flag exists before the tier does: a candidate who has paid and is
    still advertised to is the complaint that follows a paid tier. */
