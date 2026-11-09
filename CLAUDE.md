@@ -202,6 +202,16 @@ app opens; `#/dev/ads` runs the campaigns and produces the report.
 - **Clearing impressions is editor-only and own-rows-only.** Delete and
   re-insert is how a unique index is defeated, so a candidate may not
   do it at all. Never widen that policy.
+- **A wrong creative URL fails silently** (v141) — the video element
+  errors, `Ads` lets the candidate through, and from every screen it
+  looks like an ad system with nothing to show. `adUrlProblem()` in
+  `js/dev-console.js` refuses an `.html`, a YouTube/Vimeo link and
+  anything that is not a video; `adTidyUrl()` adds a missing leading
+  slash rather than refusing a typo.
+- **Creatives are built from HTML, not generated** — `ads/src/*.html`
+  exposes `setFrame(t)`, `node ads/src/render.mjs <name>` writes frames,
+  ffmpeg encodes. Text-to-video models garble short strings and a
+  mis-rendered drug name is a regulatory problem. See `ads/README.md`.
 - **Playwright's Chromium has no H.264.** `ads/sample-5s.webm` is the
   fixture for the working path; `sample-5s.mp4` is a real undecodable
   video and is how t139 tests the failure path. Send sponsors MP4.
@@ -221,7 +231,7 @@ is built), then `npx playwright install chromium`.
 
 ```bash
 npm run serve                                  # leave running (Node, no python)
-npm test                                       # all 41 files, summarised
+npm test                                       # all 42 files, summarised
 node tools/tests/t135-history-by-course.mjs    # one release file
 ```
 

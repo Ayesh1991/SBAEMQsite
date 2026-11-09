@@ -5317,12 +5317,43 @@ const DevConsole = (() => {
         durationS: Number(get('durationS')) || 5,
         startsOn: get('startsOn') || null, endsOn: get('endsOn') || null, notes: get('notes') };
       if (!rec.sponsor || !rec.mediaUrl) { msg.textContent = 'A sponsor and a video are the minimum.'; return; }
+      /* THE FIELD USED TO TAKE ANYTHING AND THE AD SIMPLY NEVER PLAYED.
+         The two real mistakes, both made on the first attempt: pointing
+         at the HTML the creative was BUILT from rather than the MP4 it
+         was rendered to, and leaving off the leading slash so the path
+         is resolved against whatever page happens to be open. Neither
+         throws; the video element just fails and the candidate is let
+         straight through, which is correct behaviour and completely
+         silent. So it is caught here, where somebody can fix it. */
+      const bad = adUrlProblem(rec.mediaUrl);
+      if (bad) { msg.textContent = bad; return; }
+      rec.mediaUrl = adTidyUrl(rec.mediaUrl);
+      if (rec.posterUrl) rec.posterUrl = adTidyUrl(rec.posterUrl);
       btn.disabled = true;
       try { await ctx.Backend.saveCampaign(rec); msg.textContent = 'Saved.'; await paintAds(view); }
       catch (err) { msg.textContent = err.message || String(err); }
       btn.disabled = false;
     });
   }
+
+  /** Say what is wrong with a creative URL, or nothing. */
+  function adUrlProblem(u) {
+    const v = String(u || '').trim();
+    if (/youtube\.com|youtu\.be|vimeo\.com/i.test(v))
+      return 'Not a YouTube or Vimeo link — their terms do not allow it and an embed cannot be counted. '
+        + 'Commit an MP4 under /ads/ and point at that.';
+    if (/\.html?($|[?#])/i.test(v))
+      return 'That is the HTML the creative is built FROM, not the video. '
+        + 'Render it (node ads/src/render.mjs) and use the .mp4 — e.g. /ads/ferocia-5s.mp4';
+    if (!/\.(mp4|webm|mov|m4v)($|[?#])/i.test(v))
+      return 'That does not look like a video file. Use a path ending in .mp4 — e.g. /ads/ferocia-5s.mp4';
+    return '';
+  }
+  /** A bare path is relative to whatever page is open; make it absolute. */
+  const adTidyUrl = u => {
+    const v = String(u || '').trim();
+    return (!v || /^https?:\/\//i.test(v) || v.startsWith('/')) ? v : '/' + v;
+  };
 
   const AD_STATE = { draft: 'draft', approved: 'approved, not on air', live: 'ON AIR', ended: 'ended' };
 
