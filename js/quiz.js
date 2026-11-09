@@ -42,6 +42,9 @@ const Quiz = (() => {
       elapsedBase: resume?.elapsedBase || 0,
       onFinish: opts.onFinish,
       onQuit: opts.onQuit,
+      /* Offered only where there is another view to go to — study-mode
+         T/F. Absent everywhere else, so the button is not drawn. */
+      onSwitch: opts.onSwitch || null,
       timeLimitSec: state_timeLimit(opts),
       timerId: null,
       remaining: resume?.remaining != null ? resume.remaining : null,
@@ -221,6 +224,8 @@ const Quiz = (() => {
           </div>
           <div class="quiz-head-right">
             ${mode === 'exam' && state.timeLimitSec ? `<div class="quiz-timer" id="quiz-timer">${fmtTime(state.remaining)}</div>` : ''}
+            ${state.onSwitch ? `<button class="btn btn-ghost btn-sm" id="quiz-rapid"
+              title="Show the whole T/F section as one list">⚡ Rapid</button>` : ''}
             <button class="btn btn-ghost btn-sm" id="quiz-quit">Exit</button>
           </div>
         </header>
@@ -278,6 +283,13 @@ const Quiz = (() => {
     state.container.querySelector('#quiz-flag')?.addEventListener('click', toggleFlag);
     state.container.querySelector('#quiz-flawed')?.addEventListener('click', toggleFlawed);
     state.container.querySelector('#quiz-note').addEventListener('click', toggleNoteEditor);
+    state.container.querySelector('#quiz-rapid')?.addEventListener('click', async () => {
+      /* Same session key, so the answers already given come straight
+         across — switching view is not starting again. The save must
+         LAND before the other reader reads it. */
+      await autosaveNow();
+      const f = state.onSwitch; destroy(); if (f) f();
+    });
     state.container.querySelector('#quiz-quit').addEventListener('click', () => {
       const keep = confirm('Exit this set? Your progress is saved — you can resume it later from the paper page.');
       if (keep) { autosaveNow(); const q = state.onQuit; destroy(); q(); }
@@ -503,7 +515,13 @@ const Quiz = (() => {
     }
   }
 
-  function autosaveNow() { if (state?.sessionKey && Backend.saveSession) Backend.saveSession(state.sessionKey, snapshot()).catch(() => {}); }
+  /* Returns the write, because switching view re-READS the session
+     immediately afterwards and a fire-and-forget save can lose that
+     race — taking this sitting's answers with it. */
+  function autosaveNow() {
+    if (!(state?.sessionKey && Backend.saveSession)) return Promise.resolve();
+    return Backend.saveSession(state.sessionKey, snapshot()).catch(() => {});
+  }
 
   function submit(timedOut) {
     const { questions, answers } = state;
@@ -525,16 +543,11 @@ const Quiz = (() => {
       if (rows.length && Backend.bumpQuestionStats) Backend.bumpQuestionStats(rows).catch(() => {});
     } catch {}
     try { if (typeof Track !== 'undefined') Track.flush(); } catch {}
-    const meta = state.loaded.meta, path = state.loaded.path;
-    const attempt = {
-      paperId: meta.id, paperTitle: state.loaded.paper.topic || meta.title,
-      kind: state.kind, studyMode: state.mode === 'study',
-      categoryId: meta.categoryId, categoryTitle: path.category?.title || '',
-      topicId: meta.topicId, topicTitle: path.topic?.title || '',
-      date: new Date().toISOString(), durationSec: Math.round((Date.now() - state.startedAt) / 1000),
-      timedOut: !!timedOut, total: questions.length, scored, correct,
-      percent: Math.round((correct / (scored || 1)) * 100), detail
-    };
+    const attempt = buildAttempt({
+      loaded: state.loaded, kind: state.kind, studyMode: state.mode === 'study',
+      total: questions.length, scored, correct, detail,
+      startedAt: state.startedAt, timedOut: !!timedOut
+    });
     if (state.simulator) {
       attempt.simulator = true;
       attempt.excludedKeys = [...state.flawed].map(i => questionKey(i));
@@ -546,5 +559,26 @@ const Quiz = (() => {
     finish(attempt);
   }
 
-  return { start, destroy, LETTERS, esc, snapshotQuestion };
+  /* ONE DEFINITION OF AN ATTEMPT, because there are now two things that
+     produce one: this module, and the rapid T/F reader in js/rapid.js.
+     An attempt is read by the history, the weakness profile that shapes
+     the next mock, the marksheet and the review page, so two builders
+     that drifted apart would show up as a candidate's history quietly
+     disagreeing with itself rather than as anything throwing. */
+  function buildAttempt(a) {
+    const meta = a.loaded.meta, path = a.loaded.path || {};
+    const scored = a.scored || 0;
+    return {
+      paperId: meta.id, paperTitle: a.loaded.paper.topic || meta.title,
+      kind: a.kind, studyMode: !!a.studyMode,
+      categoryId: meta.categoryId, categoryTitle: path.category?.title || '',
+      topicId: meta.topicId, topicTitle: path.topic?.title || '',
+      date: new Date().toISOString(),
+      durationSec: Math.round((Date.now() - a.startedAt) / 1000),
+      timedOut: !!a.timedOut, total: a.total, scored, correct: a.correct,
+      percent: Math.round((a.correct / (scored || 1)) * 100), detail: a.detail
+    };
+  }
+
+  return { start, destroy, LETTERS, esc, snapshotQuestion, buildAttempt };
 })();

@@ -1494,18 +1494,63 @@
       else if (saved) { await Backend.clearSession(sessionKey); }   // stale/complete
     } catch { /* optional */ }
     view.innerHTML = '';
-    Quiz.start(view, loaded, questions, {
-      mode, kind, sessionKey, resume,
-      timeLimitMinutes: Math.max(5, Math.round(questions.length * 1.8)),
-      onFinish: async (attempt) => {
-        addDailyCount(user, (attempt.detail || []).filter(d => d.chosen != null).length);
-        const summary = await Backend.recordAttempt(attempt);
-        try { ReviewQueue.addFromAttempt(attempt); } catch { /* optional */ }
-        location.hash = '#/results/' + summary.attemptId;
-      },
-      onQuit: () => { location.hash = '#/paper/' + encodeURIComponent(paperId); }
-    });
+
+    const onFinish = async (attempt) => {
+      addDailyCount(user, (attempt.detail || []).filter(d => d.chosen != null).length);
+      const summary = await Backend.recordAttempt(attempt);
+      try { ReviewQueue.addFromAttempt(attempt); } catch { /* optional */ }
+      location.hash = '#/results/' + summary.attemptId;
+    };
+    const onQuit = () => { location.hash = '#/paper/' + encodeURIComponent(paperId); };
+
+    /* TWO VIEWS OF STUDY MODE, NOT TWO MODES (v142). A T/F section is a
+       lead-in with five or six statements hanging off it; one at a time
+       reprints the lead-in six times and loses the thread of what is
+       being compared. The rapid reader shows the lead once and a line a
+       statement — the shape CPD already proved.
+       Same session key and same question keys on purpose, so switching
+       half way through keeps the answers and the attempt is identical
+       whichever way it was sat. Exam mode is not offered it: the page
+       shows every statement at once, so a candidate could read ahead,
+       and the clock belongs to one question at a time. */
+    const canRapid = kind === 'TF' && mode === 'study' && typeof Rapid !== 'undefined';
+    /* RE-READ THE SESSION ON EVERY MOUNT, never reuse the `resume` from
+       page load. Both readers autosave before handing over, so the
+       answers given in THIS sitting are in the session and nowhere
+       else — passing the page-load snapshot across would silently throw
+       away everything done since arriving, which is the one thing
+       switching view must never do. */
+    const mount = async (useRapid, first) => {
+      let r = resume;
+      if (!first) {
+        try {
+          const saved = await Backend.loadSession(sessionKey);
+          if (saved && (saved.answered || 0) > 0) r = saved;
+        } catch { /* keep what we had */ }
+      }
+      view.innerHTML = '';
+      if (useRapid) {
+        rememberTfView('rapid');
+        Rapid.start(view, loaded, questions, { kind, sessionKey, resume: r, onFinish, onQuit,
+          onSwitch: () => mount(false) });
+      } else {
+        if (canRapid) rememberTfView('single');
+        Quiz.start(view, loaded, questions, {
+          mode, kind, sessionKey, resume: r,
+          timeLimitMinutes: Math.max(5, Math.round(questions.length * 1.8)),
+          onFinish, onQuit,
+          onSwitch: canRapid ? () => mount(true) : null
+        });
+      }
+    };
+    await mount(canRapid && tfView() === 'rapid', true);
   }
+
+  /* Which T/F view this candidate last used. Per browser: it is a
+     reading preference, not something worth a row in the database. */
+  const TFVIEW_KEY = 'aureum-tf-view';
+  const tfView = () => { try { return localStorage.getItem(TFVIEW_KEY) === 'single' ? 'single' : 'rapid'; } catch { return 'rapid'; } };
+  const rememberTfView = v => { try { localStorage.setItem(TFVIEW_KEY, v); } catch {} };
 
   /* ================= results & review ================= */
 

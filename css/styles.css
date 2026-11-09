@@ -7356,3 +7356,22 @@ body.ad-open { overflow: hidden; }
 .ad-opt span { display: flex; flex-direction: column; gap: .1rem; }
 .ad-opt em { font-style: normal; font-size: .78rem; color: var(--ink-3); }
 .ad-try { display: flex; flex-wrap: wrap; gap: .5rem; margin: .6rem 0; }
+
+/* ---------- the rapid T/F reader (v142) ----------
+   The row, lead-in and feedback classes are CPD's `.cpdr-*` ON PURPOSE.
+   There is one rapid reader look and two places that use it; a second
+   set of class names would be a second thing to keep in step, and they
+   would drift the first time one of them was restyled. */
+.rpd { max-width: 920px; }
+.rpd-head { margin-bottom: 1rem; }
+.rpd-bar { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; margin: .6rem 0 .35rem; }
+.rpd-score { margin-left: auto; font-size: .9rem; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.rpd-score i { font-style: normal; color: var(--ink-3); }
+.rpd-hint { margin: 0; }
+.rpd-hint kbd { padding: .05rem .3rem; border: 1px solid rgba(255,255,255,.18);
+  border-radius: 4px; font-size: .95em; }
+.rpd-body { display: flex; flex-direction: column; gap: 1.1rem; }
+.rpd-foot { display: flex; gap: .6rem; flex-wrap: wrap; margin-top: 1.4rem; }
+@media (max-width: 560px) {
+  .rpd-score { margin-left: 0; width: 100%; }
+}
