@@ -29,3 +29,10 @@ node_modules
 node_modules/
 .env
 .env.*
+
+# Frames dropped by ads/src/render.mjs on the way to an MP4. 150 PNGs
+# per creative, and the MP4 beside them is the thing worth keeping.
+# Both spellings: the script writes frames-<name>/ now, and an earlier
+# one wrote a bare frames/ into whatever directory it was run from.
+frames/
+ads/src/frames-*/
