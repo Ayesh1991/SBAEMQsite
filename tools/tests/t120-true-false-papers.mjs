@@ -186,6 +186,11 @@ say('  with its three statements', /3 questions/.test(cards.count), cards.count)
 say('  and the route it links to exists', /#\/quiz\/t120-paper\/TF\/(exam|study)/.test(cards.href),
   cards.href);
 
+/* v142 MADE RAPID THE DEFAULT VIEW of study-mode T/F, so this asks for
+   the one-at-a-time reader by name. What it tests is unchanged and
+   still true — how a T/F renders as a question — it is simply no
+   longer the first thing a candidate meets. The rapid view is t142. */
+await page.evaluate(() => { try { localStorage.setItem('aureum-tf-view', 'single'); } catch {} });
 await page.goto(B + '/index.html?r=' + Math.random() + '#/quiz/t120-paper/TF/study', { waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(2300);
 const quiz = await page.evaluate(() => {

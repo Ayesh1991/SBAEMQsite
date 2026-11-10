@@ -961,6 +961,64 @@ problem rather than a cosmetic one. DOM text is exactly what was typed.
 
 ---
 
+## v142 — The rapid T/F reader
+
+A paper's true/false section is a lead-in with five or six statements
+hanging off it — *"Regarding pre-eclampsia:"* and then six things that
+are each true or false. One at a time, the lead-in is reprinted six
+times, the candidate loses the thread of what is being compared, and six
+clicks of navigation buy nothing. CPD solved this a long time ago: the
+lead once, then a line a statement, T and F on each line, the verdict
+the instant you commit.
+
+`js/rapid.js` (`Rapid`) is that reader, for papers.
+
+### A second view, not a second mode
+
+This is the whole design, and the thing worth getting right:
+
+- **the same session key**, so switching half way through a paper keeps
+  the answers;
+- **the same question keys** — `paperId:TF:number` — so every mark,
+  note, flag and review item lands where the other reader would have
+  put it;
+- **the same attempt**, built by `Quiz.buildAttempt`, so the history,
+  the marksheet and the weakness profile that shapes the next mock
+  cannot tell which reader produced it.
+
+Get that wrong and a candidate loses a sitting's work by pressing what
+looks like a display option. Two details make it true, and both were
+bugs in the first draft: each mount **re-reads the session** rather than
+reusing the page-load snapshot, and the handover **awaits** the save
+rather than firing it off — a fire-and-forget write loses the race with
+the read that follows it.
+
+`Quiz.buildAttempt` is new in this release for the same reason. Two
+builders of an attempt that drifted apart would not throw; a candidate's
+history would quietly disagree with itself.
+
+### Study only
+
+Every statement is on screen at once, so a candidate can read ahead, and
+the clock belongs to one question at a time. Exam mode keeps the
+one-at-a-time reader and is not offered the switch.
+
+### The inversion that would have broken quietly
+
+`Data.flatten()` turns each statement into a two-option question whose
+`answer` is an **index** — 0 true, 1 false — not the boolean the source
+file had. CPD's reader works on booleans. Read one as the other and
+**every verdict inverts**, with nothing thrown and a rationale
+underneath confidently explaining the wrong answer. Everything in
+`rapid.js` speaks indices, because the index is what the attempt and the
+question key already agree on.
+
+The row, lead-in and feedback classes are CPD's `.cpdr-*` on purpose:
+one rapid-reader look, two places that use it. A second set of names
+would drift the first time either was restyled.
+
+---
+
 ## Not on this list, deliberately
 
 - **A build step.** It has been proposed twice and refused twice. 54 script

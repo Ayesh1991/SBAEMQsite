@@ -216,6 +216,28 @@ app opens; `#/dev/ads` runs the campaigns and produces the report.
   fixture for the working path; `sample-5s.mp4` is a real undecodable
   video and is how t139 tests the failure path. Send sponsors MP4.
 
+## The rapid T/F reader (v142)
+
+`js/rapid.js` (`Rapid`) shows a whole T/F section as one list — the
+lead-in once, a line a statement, the verdict on commit. It is a second
+**view of study mode**, never a third mode:
+
+- same **session key** and same **question keys** (`paperId:TF:number`)
+  as the one-at-a-time reader, so switching view keeps the answers and
+  nothing downstream can tell them apart;
+- the attempt is built by **`Quiz.buildAttempt`**, the one definition.
+  Two builders that drifted would not throw — a candidate's history
+  would quietly disagree with itself;
+- **every mount re-reads the session** and the handover **awaits** the
+  save. Reusing the page-load snapshot, or a fire-and-forget write,
+  loses the sitting. Both were bugs in the first draft.
+- **Study only.** Every statement is on screen, so a candidate can read
+  ahead, and the clock belongs to one question at a time.
+- A flattened TF `answer` is an **index** (0 true, 1 false), not the
+  boolean the source file had. Read one as the other and every verdict
+  inverts, silently, with the rationale explaining the wrong answer.
+- The look is CPD's `.cpdr-*` classes, deliberately shared.
+
 ## Adding a console section
 
 A section needs its name in **two** places: the dispatch in
@@ -231,7 +253,7 @@ is built), then `npx playwright install chromium`.
 
 ```bash
 npm run serve                                  # leave running (Node, no python)
-npm test                                       # all 42 files, summarised
+npm test                                       # all 43 files, summarised
 node tools/tests/t135-history-by-course.mjs    # one release file
 ```
 
@@ -277,6 +299,7 @@ and must never appear in the repo.
 | Developer console (all sections) | `js/dev-console.js` |
 | Papers, syllabus, flatten/validate | `js/data.js` |
 | Sitting a paper | `js/quiz.js` |
+| The rapid T/F reader | `js/rapid.js` |
 | Adaptive mocks | `js/simulator.js`, `js/blueprint.js` |
 | OSCE bank and stations | `js/osce.js` |
 | Course scoping | `js/course.js` |
